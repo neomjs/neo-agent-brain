@@ -15,7 +15,8 @@
  * `unobserved`, never shown as current work.
  */
 
-import {holderOf} from './openWorkHolder.mjs';
+import {holderOf}            from './openWorkHolder.mjs';
+import {credentialRefusalOf} from './seatGitIdentity.mjs';
 
 const
     /** @summary Past this since the last pulse, the projection is stale. */
@@ -56,14 +57,25 @@ function summaryOf(row, stale) {
 }
 
 /**
- * @summary Project the producer's state into the per-seat envelope.
+ * @summary Empty per-seat open-work projection entry.
+ * @returns {{authored: Object[], reviewing: Object[], credentialRefusal: Object|null, tokenExpiresAt: String|null}}
+ * @private
+ */
+function emptySeatWork() {
+    return {authored: [], reviewing: [], credentialRefusal: null, tokenExpiresAt: null}
+}
+
+/**
+ * @summary Project the producer's state into the per-seat envelope. Each `seats[id]` entry carries
+ * `{authored, reviewing, credentialRefusal, tokenExpiresAt}`, creating an entry even when a seat holds
+ * no open pull-request rows so a refused credential or expiring token is surfaced on `fleetOpenWork.seats[id]`.
  * @param {Object|null} state The producer's state.
  * @param {Object}   options
  * @param {Function} options.now `() → epoch ms`.
  * @param {Number}   [options.staleAfterMs]
  * @param {Number}   [options.unavailableAfterMs]
  * @returns {{state: 'ok'|'stale'|'unavailable', observedAt: String|null, coverage: String, reason: String|null,
- *     detail: String|null, unobserved: Number, seats: Object, awaitingMerge: Object[]}}
+ *     detail: String|null, unobserved: Number, seats: Object<String, {authored: Object[], reviewing: Object[], credentialRefusal: Object|null, tokenExpiresAt: String|null}>, awaitingMerge: Object[]}}
  */
 export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unavailableAfterMs = UNAVAILABLE_AFTER_MS}) {
     const
@@ -72,7 +84,18 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
         freshness     = freshnessOf(state?.observedAt),
         seats         = {},
         awaitingMerge = [],
-        seat          = id => seats[id] ??= {authored: [], reviewing: []};
+        seat          = id => seats[id] ??= emptySeatWork();
+
+    for (const [id, readState] of Object.entries(state?.seatReads ?? {})) {
+        if (!id.startsWith('@') || !readState || typeof readState !== 'object') continue;
+        if (freshnessOf(readState.observedAt ?? state?.observedAt) === 'unavailable') continue;
+
+        const entry = seat(id);
+        entry.credentialRefusal = readState.credentialRefusal
+            ? credentialRefusalOf(readState.credentialRefusal, 'forge')
+            : null;
+        entry.tokenExpiresAt    = typeof readState.tokenExpiresAt === 'string' ? readState.tokenExpiresAt : null
+    }
 
     if (freshness === 'unavailable') {
         return {state: 'unavailable', observedAt: state?.observedAt ?? null, coverage: 'unavailable', reason: state?.reason ?? null, detail: state?.detail ?? null, unobserved: 0, seats, awaitingMerge}
@@ -129,7 +152,7 @@ export function createFleetOpenWorkSource({producer, now = () => Date.now(), ...
             const projection = projectOpenWork(producer.getState(), {now, ...bounds});
 
             return seat
-                ? {...projection, seats: {[seat]: projection.seats[seat] ?? {authored: [], reviewing: []}}}
+                ? {...projection, seats: {[seat]: projection.seats[seat] ?? emptySeatWork()}}
                 : projection
         }
     }

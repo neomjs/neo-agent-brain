@@ -25,6 +25,7 @@
 import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, openWorkQueryCost} from '../github-workflow/queries/openWorkQueries.mjs';
 import {normalizePullRequest, normalizeTerminal, reduceOpenWork}   from './openWorkReducer.mjs';
 import {redactReadFailure}                                         from './redactReadFailure.mjs';
+import {classifyHttpCredentialRefusal, credentialRefusalOf}        from './seatGitIdentity.mjs';
 
 const
     /** @summary Search pages per read and pulse. */
@@ -38,7 +39,7 @@ const
     OVERLAP_MS        = 10 * 60 * 1000,
     /** @summary A producer that has never pulsed. */
     FRESH             = Object.freeze({
-        snapshot: null, observedAt: null, coverage: 'unavailable', watermark: null, window: null, reason: null, detail: null, transitions: [], pulses: []
+        snapshot: null, observedAt: null, coverage: 'unavailable', watermark: null, window: null, reason: null, detail: null, seatReads: {}, transitions: [], pulses: []
     });
 
 /**
@@ -195,6 +196,61 @@ function unreadReason(unread, failed = []) {
 }
 
 /**
+ * @summary Normalize a failed per-seat open-work read into a frozen `{surface, cause, verdict, status, reason}`
+ * descriptor (`seatGitIdentity.mjs`). Reuses a wire-attached `error.credentialRefusal` directly so HTTP headers
+ * are classified once at the wire; falls back to `INSUFFICIENT_SCOPES` / `classifyHttpCredentialRefusal` for
+ * direct `query` stubs.
+ * @param {Error|Object|null} error
+ * @param {String}            reason Redacted failure message.
+ * @returns {Object} Frozen `credentialRefusal` descriptor.
+ * @private
+ */
+function classifySeatReadFailure(error, reason) {
+    if (error?.credentialRefusal && typeof error.credentialRefusal === 'object') {
+        return error.credentialRefusal.reason === reason && Object.isFrozen(error.credentialRefusal)
+            ? error.credentialRefusal
+            : Object.freeze({...error.credentialRefusal, reason})
+    }
+
+    const status = Number.isInteger(error?.status) ? error.status : null;
+
+    if (error?.code === 'INSUFFICIENT_SCOPES') {
+        return credentialRefusalOf({
+            surface: 'forge',
+            cause  : 'insufficient-capability',
+            verdict: 'refused',
+            status : status ?? 200,
+            reason
+        }, 'forge')
+    }
+
+    if (status !== null && status >= 400) {
+        const classified = classifyHttpCredentialRefusal({
+            status,
+            headers: error?.headers ?? null,
+            body   : error?.body ?? {message: typeof error?.message === 'string' ? error.message : ''},
+            verdict: error?.verdict ?? null
+        });
+
+        return credentialRefusalOf({
+            surface: 'forge',
+            cause  : error?.cause ?? classified.cause,
+            verdict: classified.verdict,
+            status : classified.status,
+            reason
+        }, 'forge')
+    }
+
+    return credentialRefusalOf({
+        surface: 'forge',
+        cause  : 'transport-unavailable',
+        verdict: 'unanswered',
+        status,
+        reason
+    }, 'forge')
+}
+
+/**
  * @summary Create the producer. Each seat reads its own work with its own PAT, the Fleet's observe
  * read: the open pull requests it authored or holds a review request on, and the
  * ones it authored that closed in its catch-up window. One seat's PAT never reads another seat's
@@ -275,20 +331,31 @@ export function createOpenWorkProducer({
         }
 
         const
-            scope         = slugs.map(slug => `repo:${slug}`).join(' '),
-            tally         = {cost: 0, pages: 0, calls: 0, costUnknown: false, quota: []},
-            seats         = await readers(),
-            unread        = seats.filter(seat => !seat.query).map(seat => seat.seat),
-            reads         = [],
+            scope     = slugs.map(slug => `repo:${slug}`).join(' '),
+            tally     = {cost: 0, pages: 0, calls: 0, costUnknown: false, quota: []},
+            seats     = await readers(),
+            unread    = seats.filter(seat => !seat.query).map(seat => seat.seat),
+            reads     = [],
+            seatReads = Object.fromEntries(seats
+                .map(({seat}) => [seat, state.seatReads?.[seat] ?? null])
+                .filter(([seat, entry]) => seat && entry)),
             coverageSeats = seats.map(({seat, query, benched}) => ({seat, benched: !!benched, outcome: query ? 'failed' : 'credential-unread', authored: null, held: null, terminal: null}));
 
         for (const {seat, login, query, apiBase} of seats.filter(seat => seat.query)) {
             // a seat's terminal window and watermark are its own; a saved single watermark seeds them
+            let latestTokenExpiresAt = null, answeredAny = false;
             const
+                // `tokenExpiresAt` rides on `data` as a non-enumerable property; wrappers must not JSON/structuredClone-copy `data` ahead of this read.
+                observedQuery = async (text, variables) => {
+                    const data = await query(text, variables);
+                    answeredAny = true;
+                    latestTokenExpiresAt = typeof data?.tokenExpiresAt === 'string' ? data.tokenExpiresAt : null;
+                    return data
+                },
                 mark         = state.readers?.[login] ?? {watermark: state.watermark ?? null, window: null},
                 resume       = mark.window?.scope === scope && mark.window.since === mark.watermark,
                 window       = state.snapshot && mark.watermark ? (resume ? mark.window : {scope, since: mark.watermark, until: at, cursor: null}) : null,
-                open         = (search, progress) => readSearch({query, text: OPEN_WORK_SNAPSHOT, search: `is:pr is:open archived:false ${search} ${scope}`, pageBudget, tally, apiBase, stamp, progress}),
+                open         = (search, progress) => readSearch({query: observedQuery, text: OPEN_WORK_SNAPSHOT, search: `is:pr is:open archived:false ${search} ${scope}`, pageBudget, tally, apiBase, stamp, progress}),
                 coverageSeat = coverageSeats.find(row => row.seat === seat);
 
             try {
@@ -296,14 +363,28 @@ export function createOpenWorkProducer({
                 const authored = await open(`author:${login}`, coverageSeat.authored = {complete: false, rows: 0});
                 const held     = await open(`review-requested:${login}`, coverageSeat.held = {complete: false, rows: 0});
                 const ended    = window
-                        ? await readSearch({query, text: OPEN_WORK_TERMINAL, search: `is:pr is:closed closed:${searchTime(window.since)}..${searchTime(window.until)} author:${login} ${scope}`, cursor: window.cursor, pageBudget, tally, apiBase, stamp, progress: coverageSeat.terminal})
+                        ? await readSearch({query: observedQuery, text: OPEN_WORK_TERMINAL, search: `is:pr is:closed closed:${searchTime(window.since)}..${searchTime(window.until)} author:${login} ${scope}`, cursor: window.cursor, pageBudget, tally, apiBase, stamp, progress: coverageSeat.terminal})
                         : {nodes: [], complete: true, cursor: null};
                 coverageSeat.outcome = authored.complete && held.complete && ended.complete ? 'complete' : 'partial';
 
+                seatReads[seat] = {
+                    observedAt       : at,
+                    credentialRefusal: null,
+                    tokenExpiresAt   : answeredAny ? latestTokenExpiresAt : (state.seatReads?.[seat]?.tokenExpiresAt ?? null)
+                };
                 reads.push({seat, login, apiBase, mark, window, nodes: [...authored.nodes, ...held.nodes], complete: authored.complete && held.complete, ended})
             } catch (error) {
                 // a message-less error still failed: without the fallback it would count as answered
-                reads.push({seat, failure: redactReadFailure(error) ?? 'the read failed without a message', refused: error?.status === 401 || error?.code === 'INSUFFICIENT_SCOPES'})
+                const
+                    failure           = redactReadFailure(error) ?? 'the read failed without a message',
+                    credentialRefusal = classifySeatReadFailure(error, failure);
+
+                seatReads[seat] = {
+                    observedAt    : at,
+                    credentialRefusal,
+                    tokenExpiresAt: answeredAny ? latestTokenExpiresAt : (state.seatReads?.[seat]?.tokenExpiresAt ?? null)
+                };
+                reads.push({seat, failure, refused: error?.status === 401 || error?.code === 'INSUFFICIENT_SCOPES'})
             }
         }
 
@@ -315,7 +396,8 @@ export function createOpenWorkProducer({
             return finish({
                 coverage: state.snapshot ? 'stale' : 'unavailable',
                 reason  : unreadReason(unread, failed) ?? 'no seat has a GitHub login',
-                detail  : failed[0]?.failure ?? null
+                detail  : failed[0]?.failure ?? null,
+                seatReads
             }, {at, failed: true, ...tally, seats: coverageSeats})
         }
 
@@ -339,9 +421,9 @@ export function createOpenWorkProducer({
         }
 
         const
-            missed   = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)).concat(outside.complete ? [] : ['outside']),
-            byKey    = rows => [...new Map(rows.map(row => [row.key, row])).values()],
-            rows     = byKey([
+            missed = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)).concat(outside.complete ? [] : ['outside']),
+            byKey  = rows => [...new Map(rows.map(row => [row.key, row])).values()],
+            rows   = byKey([
                 ...answered.flatMap(read => read.nodes.map(node => normalizePullRequest(node, identities, {apiBase: read.apiBase}))),
                 ...outsideNodes.map(node => normalizePullRequest(node, identities, {apiBase: outsideReader?.apiBase}))
             ]),
@@ -375,6 +457,7 @@ export function createOpenWorkProducer({
             observedAt : at,
             coverage,
             readers    : marks,
+            seatReads,
             watermark,
             window     : null,
             reason     : unreadReason(unread.filter(owes), failed.filter(read => owes(read.seat))),

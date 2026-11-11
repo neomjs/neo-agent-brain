@@ -1369,6 +1369,28 @@ class FleetRegistryService extends Base {
     }
 
     /**
+     * @summary Strictly read a registered seat's forge credential without swallowing decrypt or parse
+     * errors, so `FleetControlBridge#getAgent` can classify `planeCredential` inside Brain without
+     * exposing secret bytes on the wire. Brain-internal only.
+     * @param {String} id
+     * @returns {{state: 'ok', credential: String|null}|{state: 'unreadable'}}
+     */
+    readCredentialStrict(id) {
+        this.ensureLoaded();
+        if (!this.agents.has(id)) {
+            return {state: 'ok', credential: null}
+        }
+        try {
+            const
+                map   = this.readCredentialsForMutation(),
+                value = map[id];
+            return {state: 'ok', credential: typeof value === 'string' && value.trim() ? value.trim() : null}
+        } catch {
+            return {state: 'unreadable'}
+        }
+    }
+
+    /**
      * @summary Replace a single registered seat's forge PAT via a fresh strict read-decrypt-modify-encrypt-write
      * delta and immediate strict readback verification. Preserves concurrent entries for all other seats.
      * Brain-internal only; never exposed on `FleetControlBridge` or the wire.

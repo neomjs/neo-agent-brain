@@ -725,4 +725,185 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             expect(Object.keys(second.snapshot.rows)).toEqual([])
         })
     }
+
+    test('projects typed per-seat credentialRefusal and preserves last answered tokenExpiresAt across failed reads (#1601)', async () => {
+        let euclidMode = 'expiring';
+
+        const
+            withExpiry = (data, tokenExpiresAt) => {
+                Object.defineProperty(data, 'tokenExpiresAt', {value: tokenExpiresAt, enumerable: false, configurable: true});
+                return data
+            },
+            adaQuery    = async () => withExpiry({rateLimit: {cost: 1}, search: {nodes: [], pageInfo: {hasNextPage: false}}}, null),
+            euclidQuery = async (text, variables) => {
+                if (euclidMode === 'expiring') {
+                    return withExpiry({rateLimit: {cost: 1}, search: {nodes: [], pageInfo: {hasNextPage: false}}}, '2026-12-20T00:00:00.000Z')
+                }
+                if (euclidMode === '401') {
+                    throw Object.assign(new Error('GitHub GraphQL answered 401: Bad credentials'), {status: 401})
+                }
+                if (euclidMode === 'scopes') {
+                    throw Object.assign(
+                        new Error("GitHub GraphQL answered 200: The 'login' field requires ['read:org']"),
+                        {status: 200, code: 'INSUFFICIENT_SCOPES'}
+                    )
+                }
+                if (euclidMode === '403-rate-limited') {
+                    throw Object.assign(
+                        new Error('GitHub GraphQL answered 403: You have exceeded a secondary rate limit.'),
+                        {status: 403, headers: {'retry-after': '60', 'x-ratelimit-remaining': '0'}, body: {message: 'You have exceeded a secondary rate limit.'}}
+                    )
+                }
+                if (euclidMode === 'partial-then-fail') {
+                    if (kindOf(variables.query) === 'open') {
+                        return withExpiry({rateLimit: {cost: 1}, search: {nodes: [], pageInfo: {hasNextPage: false}}}, '2026-12-25T00:00:00.000Z')
+                    }
+                    throw Object.assign(new Error('GitHub GraphQL answered 502: no data'), {status: 502})
+                }
+                if (euclidMode === '502') {
+                    throw Object.assign(new Error('GitHub GraphQL answered 502: no data'), {status: 502})
+                }
+                return withExpiry({rateLimit: {cost: 1}, search: {nodes: [], pageInfo: {hasNextPage: false}}}, null)
+            },
+            nowMs    = {value: Date.parse('2026-10-02T10:00:00.000Z')},
+            producer = createOpenWorkProducer({
+                readers   : async () => [
+                    {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: adaQuery},
+                    {seat: '@neo-gpt',      login: 'neo-gpt',      query: euclidQuery}
+                ],
+                repos: async () => ['acme/app'],
+                identities,
+                now  : () => new Date(nowMs.value)
+            }),
+            source   = createFleetOpenWorkSource({producer, now: () => nowMs.value + 1000});
+
+        // 1. Answered reads with zero PR rows still create seats[id] with credentialRefusal: null and tokenExpiresAt
+        await producer.pulse();
+        expect(source.readOpenWork().seats).toEqual({
+            '@neo-opus-ada': {authored: [], reviewing: [], credentialRefusal: null, tokenExpiresAt: null},
+            '@neo-gpt'     : {authored: [], reviewing: [], credentialRefusal: null, tokenExpiresAt: '2026-12-20T00:00:00.000Z'}
+        });
+
+        // 2. HTTP 401 projects frozen authentication-rejected refusal while preserving last answered tokenExpiresAt
+        euclidMode  = '401';
+        nowMs.value += 60000;
+        await producer.pulse();
+        const after401 = source.readOpenWork().seats['@neo-gpt'];
+        expect(after401).toEqual({
+            authored         : [],
+            reviewing        : [],
+            credentialRefusal: {
+                surface: 'forge',
+                cause  : 'authentication-rejected',
+                verdict: 'refused',
+                status : 401,
+                reason : 'GitHub GraphQL answered 401: Bad credentials'
+            },
+            tokenExpiresAt: '2026-12-20T00:00:00.000Z'
+        });
+        expect(Object.isFrozen(after401.credentialRefusal)).toBe(true);
+
+        // 3. GraphQL INSUFFICIENT_SCOPES -> cause: 'insufficient-capability', verdict: 'refused'
+        euclidMode  = 'scopes';
+        nowMs.value += 60000;
+        await producer.pulse();
+        expect(source.readOpenWork().seats['@neo-gpt'].credentialRefusal).toEqual({
+            surface: 'forge',
+            cause  : 'insufficient-capability',
+            verdict: 'refused',
+            status : 200,
+            reason : "GitHub GraphQL answered 200: The 'login' field requires ['read:org']"
+        });
+
+        // 4. Rate-limited HTTP 403 -> cause: 'transport-unavailable', verdict: 'unanswered' (never a refusal)
+        euclidMode  = '403-rate-limited';
+        nowMs.value += 60000;
+        await producer.pulse();
+        expect(source.readOpenWork().seats['@neo-gpt'].credentialRefusal).toEqual({
+            surface: 'forge',
+            cause  : 'transport-unavailable',
+            verdict: 'unanswered',
+            status : 403,
+            reason : 'GitHub GraphQL answered 403: You have exceeded a secondary rate limit.'
+        });
+
+        // 5. Partial-read failure keeps the answered page's fresh tokenExpiresAt from this pulse
+        euclidMode  = 'partial-then-fail';
+        nowMs.value += 60000;
+        await producer.pulse();
+        expect(source.readOpenWork().seats['@neo-gpt']).toEqual({
+            authored         : [],
+            reviewing        : [],
+            credentialRefusal: {
+                surface: 'forge',
+                cause  : 'transport-unavailable',
+                verdict: 'unanswered',
+                status : 502,
+                reason : 'GitHub GraphQL answered 502: no data'
+            },
+            tokenExpiresAt: '2026-12-25T00:00:00.000Z'
+        });
+
+        // 6. HTTP 5xx -> cause: 'transport-unavailable', verdict: 'unanswered', preserving latest answered tokenExpiresAt
+        euclidMode  = '502';
+        nowMs.value += 60000;
+        await producer.pulse();
+        expect(source.readOpenWork().seats['@neo-gpt']).toEqual({
+            authored         : [],
+            reviewing        : [],
+            credentialRefusal: {
+                surface: 'forge',
+                cause  : 'transport-unavailable',
+                verdict: 'unanswered',
+                status : 502,
+                reason : 'GitHub GraphQL answered 502: no data'
+            },
+            tokenExpiresAt: '2026-12-25T00:00:00.000Z'
+        });
+
+        // 5. Recovery to a non-expiring token clears credentialRefusal and updates tokenExpiresAt to null
+        euclidMode  = 'no-expiry';
+        nowMs.value += 60000;
+        await producer.pulse();
+        expect(source.readOpenWork().seats['@neo-gpt']).toEqual({
+            authored         : [],
+            reviewing        : [],
+            credentialRefusal: null,
+            tokenExpiresAt   : null
+        });
+
+        // 6. Single-seat Fleet whose very first pulse fails with 401 still projects seats[id].credentialRefusal
+        const
+            soloNow      = Date.parse('2026-10-02T11:00:00.000Z'),
+            soloProducer = createOpenWorkProducer({
+                readers   : async () => [{
+                    seat : '@neo-gpt',
+                    login: 'neo-gpt',
+                    query: async () => { throw Object.assign(new Error('GitHub GraphQL answered 401: Bad credentials'), {status: 401}) }
+                }],
+                repos: async () => ['acme/app'],
+                identities,
+                now  : () => new Date(soloNow)
+            }),
+            soloSource   = createFleetOpenWorkSource({producer: soloProducer, now: () => soloNow + 1000});
+
+        await soloProducer.pulse();
+        expect(soloSource.readOpenWork()).toMatchObject({
+            state: 'unavailable',
+            seats: {
+                '@neo-gpt': {
+                    authored         : [],
+                    reviewing        : [],
+                    credentialRefusal: {
+                        surface: 'forge',
+                        cause  : 'authentication-rejected',
+                        verdict: 'refused',
+                        status : 401,
+                        reason : 'GitHub GraphQL answered 401: Bad credentials'
+                    },
+                    tokenExpiresAt: null
+                }
+            }
+        })
+    })
 });

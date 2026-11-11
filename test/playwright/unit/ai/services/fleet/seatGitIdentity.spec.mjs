@@ -4,6 +4,7 @@ import fs             from 'node:fs';
 import os             from 'node:os';
 import path           from 'node:path';
 import {
+    classifyHttpCredentialRefusal,
     convergeSeatGitIdentity,
     gitIdentityEnv,
     normalizeGitIdentityDeclaration,
@@ -324,6 +325,57 @@ test.describe('proveSeatForgeAccount', () => {
         expect(await proveSeatForgeAccount({agent: GITHUB_SEAT, credential: 'ghp_revoked', fetchFn: forge({}).fetchFn})).toEqual({ok: false, verdict: 'refused', reason: 'unknown'});
         expect(await proveSeatForgeAccount({agent: gitlab, credential: 'glpat_seat', fetchFn: mine.fetchFn})).toEqual({ok: true, verdict: 'proved'});
         expect(mine.calls).toEqual([{url: 'https://gitlab.example.test/api/v4/user', authorization: 'Bearer glpat_seat'}])
+    });
+
+    test('a rate-limited 403 or 200 classifies as transport-unavailable / unanswered, never a credential refusal (#1601)', async () => {
+        expect(classifyHttpCredentialRefusal({
+            status : 403,
+            headers: new Headers({'retry-after': '60', 'x-ratelimit-remaining': '0'}),
+            body   : {message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'}
+        })).toEqual({cause: 'transport-unavailable', verdict: 'unanswered', status: 403});
+
+        expect(classifyHttpCredentialRefusal({
+            status : 403,
+            headers: {'retry-after': '60'},
+            body   : {}
+        })).toEqual({cause: 'transport-unavailable', verdict: 'unanswered', status: 403});
+
+        expect(classifyHttpCredentialRefusal({
+            status : 403,
+            headers: {'X-RateLimit-Remaining': '0'},
+            body   : {message: 'API rate limit exceeded for user ID 1.'}
+        })).toEqual({cause: 'transport-unavailable', verdict: 'unanswered', status: 403});
+
+        expect(classifyHttpCredentialRefusal({
+            status : 200,
+            headers: new Headers(),
+            body   : {errors: [{type: 'RATE_LIMITED', message: 'API rate limit exceeded'}]}
+        })).toEqual({cause: 'transport-unavailable', verdict: 'unanswered', status: 200});
+
+        expect(classifyHttpCredentialRefusal({
+            status : 403,
+            headers: new Headers({'x-ratelimit-remaining': '4999'}),
+            body   : {message: 'Resource not accessible by personal access token'}
+        })).toEqual({cause: 'insufficient-capability', verdict: 'refused', status: 403});
+
+        const proof = await proveSeatForgeAccount({
+            agent     : GITHUB_SEAT,
+            credential: 'ghp_seat',
+            fetchFn   : async () => ({
+                ok     : false,
+                status : 403,
+                headers: new Headers({'retry-after': '60', 'x-ratelimit-remaining': '0'}),
+                json   : async () => ({message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'})
+            })
+        });
+
+        expect(proof).toEqual({ok: false, verdict: 'unanswered', reason: 'unknown'});
+        expect(proof.credentialRefusal).toMatchObject({
+            surface: 'forge',
+            cause  : 'transport-unavailable',
+            verdict: 'unanswered',
+            status : 403
+        })
     });
 });
 

@@ -31,6 +31,30 @@ export const CREDENTIAL_REFUSAL_CAUSES = Object.freeze([
 ]);
 
 /**
+ * @summary Read a response header case-insensitively from a Fetch `Headers` instance or plain object.
+ * @param {Object|null} headers
+ * @param {String}      name
+ * @returns {String|null}
+ * @private
+ */
+function readHeaderValue(headers, name) {
+    if (!headers) return null;
+    try {
+        if (typeof headers.get === 'function') {
+            const value = headers.get(name);
+            return typeof value === 'string' ? value : null
+        }
+        const target = name.toLowerCase();
+        for (const [key, value] of Object.entries(headers)) {
+            if (key.toLowerCase() === target && value !== null && value !== undefined) {
+                return String(value)
+            }
+        }
+    } catch {}
+    return null
+}
+
+/**
  * @summary Extract non-secret provider classification text from response headers/body without ever echoing it.
  * @param {Object|null} headers
  * @param {*}           body
@@ -43,18 +67,47 @@ function providerFailureSignal(headers, body) {
         for (const key of ['message', 'error', 'error_description', 'reason']) {
             if (typeof body[key] === 'string') parts.push(body[key])
         }
+        if (Array.isArray(body.errors)) {
+            for (const entry of body.errors) {
+                if (typeof entry?.message === 'string') parts.push(entry.message);
+                if (typeof entry?.type === 'string') parts.push(entry.type)
+            }
+        }
     }
-    try {
-        const wwwAuth = typeof headers?.get === 'function'
-            ? headers.get('www-authenticate')
-            : (headers?.['www-authenticate'] ?? headers?.['WWW-Authenticate']);
-        if (typeof wwwAuth === 'string') parts.push(wwwAuth)
-    } catch {}
+    const wwwAuth = readHeaderValue(headers, 'www-authenticate');
+    if (wwwAuth) parts.push(wwwAuth);
     return parts.join(' ')
 }
 
 /**
+ * @summary Detect GitHub primary or secondary rate-limit responses (`retry-after`, `x-ratelimit-remaining: 0`,
+ * GraphQL `RATE_LIMITED`, or GitHub's rate-limit message) so rate-limited `403` and `200` responses classify
+ * as transient `transport-unavailable` / `'unanswered'`, never as credential refusals.
+ * @param {Object|null} headers
+ * @param {*}           body
+ * @param {String}      signal
+ * @returns {Boolean}
+ * @private
+ */
+function isRateLimitedSignal(headers, body, signal) {
+    const retryAfter = readHeaderValue(headers, 'retry-after');
+    if (retryAfter !== null && retryAfter.trim() !== '') {
+        return true
+    }
+    const remaining = readHeaderValue(headers, 'x-ratelimit-remaining');
+    if (remaining !== null && remaining.trim() === '0') {
+        return true
+    }
+    if (Array.isArray(body?.errors) && body.errors.some(entry => entry?.type === 'RATE_LIMITED')) {
+        return true
+    }
+    return /\b(secondary rate limit|rate limit exceeded|api rate limit|abuse detection|rate[_ -]?limited)\b/i.test(signal)
+}
+
+/**
  * @summary Classify an HTTP or transport failure into the closed {@link CREDENTIAL_REFUSAL_CAUSES} taxonomy.
+ * Rate-limited responses (`429`, or `403`/`200` carrying GitHub rate-limit headers or secondary-rate-limit text)
+ * classify as `{cause: 'transport-unavailable', verdict: 'unanswered'}`.
  * @param {Object}      [options={}]
  * @param {Number|null} [options.status=null]
  * @param {Object|null} [options.headers=null]
@@ -70,8 +123,12 @@ export function classifyHttpCredentialRefusal({status = null, headers = null, bo
         return {cause: 'transport-unavailable', verdict: 'unanswered', status: numericStatus}
     }
 
+    const signal = providerFailureSignal(headers, body);
+    if ((numericStatus === 403 || numericStatus === 200) && isRateLimitedSignal(headers, body, signal)) {
+        return {cause: 'transport-unavailable', verdict: 'unanswered', status: numericStatus}
+    }
+
     if (numericStatus === 401 || numericStatus === 403) {
-        const signal = providerFailureSignal(headers, body);
         if (/\bexpired\b/i.test(signal)) {
             return {cause: 'expired', verdict: 'refused', status: numericStatus}
         }

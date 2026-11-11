@@ -17,13 +17,14 @@
  * seat owes the pulse no coverage. That one read per pulse also supplies the identity rows.
  */
 
-import fs                                          from 'fs';
-import path                                        from 'path';
-import FleetControlBridge                          from './FleetControlBridge.mjs';
-import {createFleetOpenWorkSource}                 from './fleetOpenWorkSource.mjs';
-import {createOpenWorkProducer}                    from './openWorkProducer.mjs';
-import {participationOf, presenceIdentityForAgent} from './fleetPresenceStateAdapter.mjs';
-import {writeFileAtomicSync}                       from '../shared/atomicFileWrite.mjs';
+import fs                                                       from 'fs';
+import path                                                     from 'path';
+import FleetControlBridge                                       from './FleetControlBridge.mjs';
+import {createFleetOpenWorkSource}                              from './fleetOpenWorkSource.mjs';
+import {createOpenWorkProducer}                                 from './openWorkProducer.mjs';
+import {participationOf, presenceIdentityForAgent}              from './fleetPresenceStateAdapter.mjs';
+import {attachCredentialRefusal, classifyHttpCredentialRefusal} from './seatGitIdentity.mjs';
+import {writeFileAtomicSync}                                    from '../shared/atomicFileWrite.mjs';
 
 /** @summary The existing pulse cadence; measured quota evidence determines whether it fits each issuer. */
 const PULSE_MS = 60 * 1000;
@@ -104,11 +105,77 @@ export function seatReaders({listDefinitions, resolveCredential, apiBase = 'http
     }
 }
 
+const TOKEN_EXPIRATION_PATTERN = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?\s*(?:(UTC|Z)|([+-])(\d{2}):?(\d{2}))$/i;
+
+/**
+ * @summary Read a header case-insensitively from a Fetch `Headers` instance or a plain object fixture.
+ * @param {Object|null} headers
+ * @param {String}      name
+ * @returns {String|null}
+ * @private
+ */
+function readHeader(headers, name) {
+    if (!headers) return null;
+    if (typeof headers.get === 'function') return headers.get(name);
+    const target = name.toLowerCase();
+    for (const [key, value] of Object.entries(headers)) {
+        if (key.toLowerCase() === target) return typeof value === 'string' ? value : null
+    }
+    return null
+}
+
+/**
+ * @summary Parse GitHub's `GitHub-Authentication-Token-Expiration` response header into an ISO-8601 UTC string,
+ * accepting `YYYY-MM-DD HH:MM:SS UTC`, `YYYY-MM-DD HH:MM:SS ±HHMM`, and ISO-8601 UTC defensively and returning
+ * `null` for anything else (absent or unparseable, never a guessed date).
+ * @param {*} raw
+ * @returns {String|null}
+ */
+export function parseGithubTokenExpiration(raw) {
+    if (typeof raw !== 'string') return null;
+    const match = raw.trim().match(TOKEN_EXPIRATION_PATTERN);
+    if (!match) return null;
+
+    const
+        year       = Number(match[1]),
+        month      = Number(match[2]),
+        day        = Number(match[3]),
+        hour       = Number(match[4]),
+        minute     = Number(match[5]),
+        second     = Number(match[6]),
+        ms         = match[7] ? Number(match[7].padEnd(3, '0')) : 0,
+        sign       = match[9] ?? null,
+        offHours   = sign ? Number(match[10]) : 0,
+        offMinutes = sign ? Number(match[11]) : 0;
+
+    if (offHours > 23 || offMinutes > 59) return null;
+
+    const
+        baseUtcMs = Date.UTC(year, month - 1, day, hour, minute, second, ms),
+        check     = new Date(baseUtcMs);
+
+    if (
+        !Number.isFinite(baseUtcMs) ||
+        check.getUTCFullYear() !== year ||
+        check.getUTCMonth() !== month - 1 ||
+        check.getUTCDate() !== day ||
+        check.getUTCHours() !== hour ||
+        check.getUTCMinutes() !== minute ||
+        check.getUTCSeconds() !== second
+    ) {
+        return null
+    }
+
+    const offsetMs = sign ? (sign === '+' ? 1 : -1) * (offHours * 60 + offMinutes) * 60000 : 0;
+    return new Date(baseUtcMs - offsetMs).toISOString()
+}
+
 /**
  * @summary One GitHub GraphQL call. A missing token, an HTTP failure or a GraphQL error throws, and
- * the producer records it as a failed read. The error carries its HTTP `status` and GitHub's error
- * `type` as `code`, so a refused PAT (401) or one missing a scope (`INSUFFICIENT_SCOPES`, answered
- * with 200) is told apart from a read that may pass on the next pulse.
+ * the producer records it as a failed read. The error carries its HTTP `status`, GitHub's error
+ * `type` as `code`, and a wire-classified `credentialRefusal` (`attachCredentialRefusal`), while
+ * answered `data` carries a non-enumerable `tokenExpiresAt` ISO-8601 string (`null` when the token
+ * has no expiry or an unparseable header).
  * @param {Object}   options
  * @param {String|null} options.token
  * @param {Function} [options.fetchImpl]
@@ -132,19 +199,54 @@ export function createGithubGraphqlQuery({token, fetchImpl = globalThis.fetch, a
         if (!response.ok || payload?.errors?.length || !payload?.data) {
             const
                 value = name => {
-                    const raw = response.headers?.get?.(name);
+                    const raw = readHeader(response.headers, name);
                     return raw !== null && raw !== undefined && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
                 },
-                rate  = payload?.data?.rateLimit,
-                reset = value('x-ratelimit-reset'),
-                quota = {viewer: {id: payload?.data?.viewer?.id ?? null}, rateLimit: {
+                rate                  = payload?.data?.rateLimit,
+                reset                 = value('x-ratelimit-reset'),
+                quota                 = {viewer: {id: payload?.data?.viewer?.id ?? null}, rateLimit: {
                     cost     : Number.isFinite(rate?.cost) ? rate.cost : null,
                     limit    : rate?.limit ?? value('x-ratelimit-limit'),
                     remaining: rate?.remaining ?? value('x-ratelimit-remaining'),
                     resetAt  : rate?.resetAt ?? (reset !== null && Number.isFinite(new Date(reset * 1000).getTime()) ? new Date(reset * 1000).toISOString() : null)
-                }};
-            throw Object.assign(new Error(`GitHub GraphQL answered ${response.status}: ${payload?.errors?.[0]?.message ?? 'no data'}`), {status: response.status, code: payload?.errors?.[0]?.type ?? null, quota})
+                }},
+                detailText            = payload?.errors?.[0]?.message
+                    ?? (typeof payload?.message === 'string' && payload.message.trim() ? payload.message.trim() : null)
+                    ?? 'no data',
+                message               = `GitHub GraphQL answered ${response.status}: ${detailText}`,
+                hasInsufficientScopes = Array.isArray(payload?.errors) &&
+                    payload.errors.some(entry => entry?.type === 'INSUFFICIENT_SCOPES'),
+                classified            = hasInsufficientScopes
+                    ? {cause: 'insufficient-capability', verdict: 'refused', status: response.status}
+                    : !response.ok
+                        ? classifyHttpCredentialRefusal({status: response.status, headers: response.headers, body: payload})
+                        : {cause: 'transport-unavailable', verdict: 'unanswered', status: response.status};
+
+            throw attachCredentialRefusal(
+                Object.assign(
+                    new Error(message),
+                    {
+                        status : response.status,
+                        code   : payload?.errors?.[0]?.type ?? null,
+                        verdict: classified.verdict,
+                        quota
+                    }
+                ),
+                {
+                    surface: 'forge',
+                    cause  : classified.cause,
+                    verdict: classified.verdict,
+                    status : classified.status,
+                    reason : message
+                }
+            )
         }
+
+        Object.defineProperty(payload.data, 'tokenExpiresAt', {
+            value       : parseGithubTokenExpiration(readHeader(response.headers, 'github-authentication-token-expiration')),
+            enumerable  : false,
+            configurable: true
+        });
 
         return payload.data
     }
