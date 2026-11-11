@@ -201,13 +201,14 @@ function testSeams({spawnStub, registry} = {}) {
         credentialEnvVar : 'GH_TOKEN',
         bridgeTokenEnvVar: 'NEO_FLEET_BRIDGE_TOKEN',
         // Reset the curated-launch resolution fields too — fallback tests set them explicitly.
-        instanceRoot           : null,
-        harnessBinaryPaths     : null,
-        harnessGenerationOptIns: null,
+        instanceRoot      : null,
+        harnessBinaryPaths: null,
+        // Start specs run the installed binaries unless they opt a family in, whatever the shipped defaults are
+        harnessGenerationOptIns: {antigravity: false, 'claude-desktop': false, 'codex-desktop': false},
         // a store no host holds: the profile check reads the ledger of every Desktop family
-        harnessGenerationRoot        : '/nonexistent/fleet-spec-harness-generations',
-        harnessGenerationStore       : null,
-        harnessGenerationAttempts    : new Map(),
+        harnessGenerationRoot    : '/nonexistent/fleet-spec-harness-generations',
+        harnessGenerationStore   : null,
+        harnessGenerationAttempts: new Map(),
         // no spec reads the host's managed preferences; one opts in to a gate that refuses
         harnessHostGate              : () => ({ready: true, reason: null}),
         codexDesktopCapabilityProbeFn: null,
@@ -2054,18 +2055,23 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
     /**
      * An installed ChatGPT.app under `root` with an executable main binary and bundled CLI, plus a generation
      * store double that admits by copying the bundle (or refuses with `rejectAs`), and the store's call log.
+     * `admitted` seeds builds the store already holds, each with its copy present.
      */
-    function harnessGenerationFixture(root, {rejectAs = null} = {}) {
+    function harnessGenerationFixture(root, {rejectAs = null, admitted = []} = {}) {
         const
             installed = path.join(root, 'Applications', 'ChatGPT.app'),
             storeRoot = path.join(root, 'harnesses'),
             ledger    = {version: 1, admitted: [], rejected: []},
-            calls     = [];
+            calls     = [],
+            binaries  = ['Contents/MacOS/ChatGPT', 'Contents/Resources/codex-cli/bin/codex'];
 
-        for (const relative of ['Contents/MacOS/ChatGPT', 'Contents/Resources/codex-cli/bin/codex']) {
-            fs.mkdirSync(path.dirname(path.join(installed, relative)), {recursive: true});
-            fs.symlinkSync(process.execPath, path.join(installed, relative));
+        for (const appBundle of [installed, ...admitted.map(({id}) => path.join(storeRoot, 'codex-desktop', id, 'ChatGPT.app'))]) {
+            for (const relative of binaries) {
+                fs.mkdirSync(path.dirname(path.join(appBundle, relative)), {recursive: true});
+                fs.symlinkSync(process.execPath, path.join(appBundle, relative));
+            }
         }
+        admitted.forEach(entry => ledger.admitted.push({appName: 'ChatGPT.app', executable: 'ChatGPT', ...entry}));
 
         FleetLifecycleService.harnessBinaryPaths     = {'codex-desktop': path.join(installed, 'Contents/MacOS/ChatGPT'),
             codex: path.join(installed, 'Contents/Resources/codex-cli/bin/codex')};
@@ -2081,14 +2087,18 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
                 }
                 const id = 'a'.repeat(64);
                 fs.cpSync(sourceBundle, path.join(at, family, id, 'ChatGPT.app'), {recursive: true, verbatimSymlinks: true});
-                ledger.admitted.push({id, appName: 'ChatGPT.app', executable: 'ChatGPT', shortVersion: '26.1103', buildVersion: '25894'});
+                // as the engine: a known build regains its copy without a second ledger entry
+                if (!ledger.admitted.some(entry => entry.id === id)) {
+                    ledger.admitted.push({id, appName: 'ChatGPT.app', executable: 'ChatGPT', shortVersion: '26.1103', buildVersion: '25894'})
+                }
                 return {admitted: true, id}
             },
+            // as the engine: only generations whose copy is present
             list          : ({root: at, family}) => [...ledger.admitted].reverse().map(entry => {
                 const appBundle = path.join(at, family, entry.id, entry.appName);
                 return {id: entry.id, appBundle, binaryPath: path.join(appBundle, 'Contents', 'MacOS', entry.executable),
                     shortVersion: entry.shortVersion, buildVersion: entry.buildVersion}
-            })
+            }).filter(generation => fs.existsSync(generation.binaryPath))
         };
         FleetLifecycleService.execFileFn = (command, args, opts, callback) => callback(null, 'Usage: mcp add --url <URL> --bearer-token-env-var <ENV>', '');
 
@@ -2097,7 +2107,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
 
     test('the background acquisition reads the same opt-in, store root and installed bundle a Start reads', () => {
         install();
-        FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true};
+        FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true, antigravity: false};
         FleetLifecycleService.harnessBinaryPaths      = {
             'codex-desktop': '/Vendor/ChatGPT.app/Contents/MacOS/ChatGPT',
             antigravity    : '/Vendor/Antigravity.app/Contents/MacOS/Electron'
@@ -2149,6 +2159,55 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         }
     });
 
+    test('an opted-in Start whose family already holds an admitted build starts from it and never admits the older installed bundle', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-held-'));
+        install();
+        try {
+            // the store holds a newer build from the vendor feed; the installed 26.1103 is new to its ledger
+            const
+                fed                = {id: 'b'.repeat(64), shortVersion: '26.1110', buildVersion: '26001'},
+                {storeRoot, calls} = harnessGenerationFixture(root, {admitted: [fed]}),
+                copy               = path.join(storeRoot, 'codex-desktop', fed.id, 'ChatGPT.app');
+
+            FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true};
+
+            await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'seat', harnessType: 'codex-desktop'})).resolves.toEqual({
+                harnessType      : 'codex-desktop',
+                binaryPath       : path.join(copy, 'Contents/Resources/codex-cli/bin/codex'),
+                launchBinaryPath : path.join(copy, 'Contents/MacOS/ChatGPT'),
+                harnessGeneration: {family: 'codex-desktop', generationId: fed.id, shortVersion: '26.1110', buildVersion: '26001'}
+            });
+            expect(calls.filter(([call]) => call === 'materialize'), 'the installed bundle is only the bootstrap candidate').toEqual([])
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
+    test('an opted-in Start whose admitted copy is gone bootstraps from the installed bundle again instead of refusing', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-gone-'));
+        install();
+        try {
+            // the ledger still lists the installed build, but its copy was removed from the store
+            const
+                known              = {id: 'a'.repeat(64), shortVersion: '26.1103', buildVersion: '25894'},
+                {storeRoot, calls} = harnessGenerationFixture(root, {admitted: [known]});
+
+            fs.rmSync(path.join(storeRoot, 'codex-desktop', known.id), {recursive: true});
+            FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true};
+
+            await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'seat', harnessType: 'codex-desktop'}))
+                .resolves.toMatchObject({harnessGeneration: {generationId: known.id}});
+            expect(calls.filter(([call]) => call === 'materialize')).toHaveLength(1)
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
+    test('a unit run never reaches the host\'s harness-generation store: the root resolves beneath the run\'s own Fleet root', () => {
+        expect(AiConfig.fleet.harnessGenerations.root).toBe(path.join(AiConfig.fleet.dataDir, 'harnesses'));
+        expect(AiConfig.fleet.harnessGenerations.root).not.toBe(path.resolve(os.homedir(), '.neo-ai', 'harnesses'))
+    });
+
     test('an opted-in Start with no admitted generation refuses by name with the latest rejection and never proves the installed bundle', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-none-'));
         install();
@@ -2188,7 +2247,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         }
     });
 
-    test('an opted-in Antigravity context proves the selected generation and carries its pin; one without the pin does not validate', async () => {
+    test('the shipped default opts Antigravity in: its context proves the selected generation and carries its pin; one without the pin does not validate', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-antigravity-'));
         install({agents: {seat: agentDef('seat', {harnessType: 'antigravity', metadata: {}})}});
         try {
@@ -2199,7 +2258,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             fs.mkdirSync(path.dirname(binary), {recursive: true});
             fs.symlinkSync(process.execPath, binary);
             FleetLifecycleService.harnessBinaryPaths        = {antigravity: process.execPath};
-            FleetLifecycleService.harnessGenerationOptIns   = {antigravity: true};
+            FleetLifecycleService.harnessGenerationOptIns   = null; // the `fleet.harnessGenerations` leaves decide
             FleetLifecycleService.harnessGenerationRoot     = root;
             FleetLifecycleService.harnessGenerationStore    = {
                 list      : () => [{id: 'a'.repeat(64), appBundle, binaryPath: binary, shortVersion: '1.23', buildVersion: '1.23.0'}],

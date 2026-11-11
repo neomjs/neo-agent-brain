@@ -53,6 +53,8 @@ process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = path.join(os.tmpdir(), 'neo-unit-abs
 const unitFleetRoot = path.join(os.tmpdir(), `neo-unit-fleet-${process.pid}`);
 
 process.env.NEO_FLEET_DATA_DIR = unitFleetRoot;
+// The harness-generation store defaults to the host's `~/.neo-ai/harnesses`, and an opted-in Start admits into it.
+process.env.NEO_FLEET_HARNESS_GENERATIONS_ROOT = path.join(unitFleetRoot, 'harnesses');
 process.on('exit', () => rmSync(unitFleetRoot, {force: true, recursive: true}));
 
 // Brain specs retain the Chroma capability by default. Body-focused runs do not select this

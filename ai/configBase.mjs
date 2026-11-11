@@ -642,8 +642,9 @@ class ConfigBase extends ConfigProvider {
                 },
                 /**
                  * Admitted vendor-harness builds (`harnessGeneration.mjs`). A family that opts in starts its
-                 * seats from the family's selected generation instead of its `harnessBinaries` path, and
-                 * admits the installed build first when that build is new to the family's ledger.
+                 * seats from the family's selected generation instead of its `harnessBinaries` path. Its
+                 * installed build only bootstraps a family that holds no generation; after that, the Fleet's
+                 * acquisition is the family's only source.
                  */
                 harnessGenerations: {
                     /**
@@ -653,10 +654,11 @@ class ConfigBase extends ConfigProvider {
                      */
                     root: leaf(path.resolve(os.homedir(), '.neo-ai', 'harnesses'), 'NEO_FLEET_HARNESS_GENERATIONS_ROOT', 'string', {planeMember: false, planeMemberReason: 'vendor app copies, not plane data — a seat started from one must outlive any plane, so every machine places the store explicitly'}),
                     /**
-                     * Antigravity seats start from the selected generation.
+                     * Antigravity seats start from the selected generation. On by default: every seat
+                     * profile keeps Antigravity's own updater off (`autoCheckForUpdates`).
                      * @type {boolean}
                      */
-                    antigravity: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_ANTIGRAVITY', 'boolean'),
+                    antigravity: leaf(true, 'NEO_FLEET_HARNESS_GENERATIONS_ANTIGRAVITY', 'boolean'),
                     /**
                      * Claude Desktop seats start from the selected generation, and only while the host
                      * turns Claude's own updater off by policy (`disableAutoUpdates`); without it, every
