@@ -111,13 +111,13 @@ export function buildMemoryResolveCandidate({
             // Truthiness alone is not enough here: an unparseable-but-truthy stored value (e.g. a
             // corrupted string) passes a `? :` check and then throws inside this map, failing the
             // whole enriched call. Parseability is the real invariant.
-            timestamp    : resolveRowTimestamp(metadata),
-            prompt       : metadata.prompt,
-            thought      : metadata.thought,
-            response     : metadata.response,
-            type         : metadata.type,
-            agentIdentity: metadata.agentIdentity || null,
-            trustTier    : resolveTrustTier(metadata)
+            timestamp      : resolveRowTimestamp(metadata),
+            prompt         : metadata.prompt,
+            decisionContext: metadata.thought ?? metadata.decisionContext ?? null,
+            response       : metadata.response,
+            type           : metadata.type,
+            agentIdentity  : metadata.agentIdentity || null,
+            trustTier      : resolveTrustTier(metadata)
         }
     }
 }

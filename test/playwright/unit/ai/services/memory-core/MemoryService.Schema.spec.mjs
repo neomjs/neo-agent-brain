@@ -97,6 +97,7 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
         const node = upsertNodeCalls[0];
 
         expect(node.type).toBe('AGENT_MEMORY');
+        expect(node.description).toBe('Turn diary entry inside session session-xyz.');
 
         // Ensure the structured properties are present and correctly named
         expect(node.properties).toBeDefined();

@@ -169,7 +169,7 @@ class ContextAssembler extends Base {
     }
 
     /**
-     * Formats raw memory entries into message objects.
+     * @summary Formats raw memory entries into user/model message objects using decisionContext.
      * @param {Array} memories
      * @returns {Array}
      */
@@ -178,7 +178,7 @@ class ContextAssembler extends Base {
         memories.forEach(m => {
             const agentMeta = m.agent ? `[Agent: ${m.agent} | Model: ${m.model || 'unknown'}]\n` : '';
             messages.push({ role: 'user', content: m.prompt });
-            messages.push({ role: 'model', content: `${agentMeta}Thought: ${m.thought}\n\n${m.response}` });
+            messages.push({ role: 'model', content: `${agentMeta}Decision Context: ${m.decisionContext ?? m.thought ?? ''}\n\n${m.response}` });
         });
         return messages;
     }

@@ -468,6 +468,27 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
         expect(addMemory.inputSchema.properties.prompt.type).toBe('string');
         expect(addMemory.inputSchema.properties.decisionContext.type).toBe('string');
         expect(addMemory.inputSchema.properties.thought).toBeUndefined();
+
+        expect(JSON.stringify(tools)).not.toMatch(/\bthought\b/i);
+
+        const getNeighbors = byName.get_neighbors;
+        expect(getNeighbors.inputSchema.required).toEqual(['id']);
+        expect(getNeighbors.inputSchema.properties.limit).toMatchObject({type: 'integer', minimum: 1, maximum: 200, default: 50});
+        expect(getNeighbors.inputSchema.properties.offset).toMatchObject({type: 'integer', minimum: 0, default: 0});
+        expect(getNeighbors.inputSchema.properties.direction).toMatchObject({type: 'string', enum: ['both', 'inbound', 'outbound'], default: 'both'});
+        expect(getNeighbors.inputSchema.properties.types).toMatchObject({type: 'array', items: {type: 'string'}});
+        expect(getNeighbors.inputSchema.properties.relationships).toMatchObject({type: 'array', items: {type: 'string'}});
+        expect(getNeighbors.outputSchema.properties.totalCount.type).toBe('integer');
+        expect(getNeighbors.outputSchema.properties.truncated.type).toBe('boolean');
+        expect(getNeighbors.outputSchema.properties.limit.type).toBe('integer');
+        expect(getNeighbors.outputSchema.properties.offset.type).toBe('integer');
+
+        for (const readToolId of ['get_session_memories', 'query_raw_memories', 'query_recent_turns']) {
+            const readHandbook = await callTool('get_mcp_tool_handbook', {toolId: readToolId});
+            expect(readHandbook.found).toBe(true);
+            expect(JSON.stringify(readHandbook), `${readToolId} handbook must reference decisionContext`).toContain('decisionContext');
+            expect(JSON.stringify(readHandbook), `${readToolId} handbook must not reference thought`).not.toMatch(/\bthought\b/i);
+        }
         expect(inspectDeploy.inputSchema.properties.mailboxReadState).toMatchObject({
             type    : 'object',
             required: ['messageId', 'recipient']

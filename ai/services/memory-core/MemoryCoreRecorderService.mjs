@@ -27,6 +27,7 @@ import {
 const SENSITIVE_PAYLOAD_KEYS = new Set([
     'body',
     'content',
+    'decisionContext',
     'message',
     'prompt',
     'response',

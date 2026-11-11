@@ -90,7 +90,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
                 // The WAL drain embeds before `add`, through the collection's own embedding function.
                 embed: async texts => texts.map(() => [0]),
                 add  : async ({ids = [], metadatas = []} = {}) => { ids.forEach((id, i) => memStore.set(id, metadatas[i] || {})); },
-                get: async ({ids = []} = {}) => {
+                get  : async ({ids = []} = {}) => {
                     const found = ids.filter(id => memStore.has(id));
                     return {ids: found, metadatas: found.map(id => memStore.get(id))};
                 }
@@ -587,7 +587,8 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
             expect(recent.turns[0].projectionPending).toBe(true);
             expect(recent.turns[0].prompt).toBe('graph-down prompt');
             expect(recent.turns[0].response).toBe('graph-down response');
-            expect(recent.turns[0].thought).toBe('graph-down thought');
+            expect(recent.turns[0].decisionContext).toBe('graph-down thought');
+            expect('thought' in recent.turns[0]).toBe(false);
         } finally {
             GraphService.upsertNode        = originalUpsertNode;
             MemoryService.buildMiniSummary = originalBuildSummary;
@@ -648,7 +649,8 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
             expect(turn.projectionPending).toBe(false);
             expect(turn.prompt).toBe('graph-drain prompt');
             expect(turn.response).toBe('graph-drain response');
-            expect(turn.thought).toBe('graph-drain thought');
+            expect(turn.decisionContext).toBe('graph-drain thought');
+            expect('thought' in turn).toBe(false);
         } finally {
             MemoryService._scheduleMemoryGraphProjection = originalSchedule;
             MemoryService.buildMiniSummary               = originalBuildSummary;
@@ -743,7 +745,8 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         expect(fullTurn).toBeTruthy();
         expect(fullTurn.prompt).toBe('overlay prompt');
         expect(fullTurn.response).toBe('overlay response');
-        expect(fullTurn.thought).toBe('overlay thought');
+        expect(fullTurn.decisionContext).toBe('overlay thought');
+        expect('thought' in fullTurn).toBe(false);
 
         collectionMode = 'ok';
     });

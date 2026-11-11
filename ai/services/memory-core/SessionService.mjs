@@ -9,6 +9,7 @@ import {verifyPersistedVector}                       from './helpers/verifyPersi
 import {
     canonicalizeSessionTurnInput,
     computeSessionTurnInputRevision,
+    formatTurnDocumentForRead,
     resolveTurnDocumentForRead
 } from './helpers/turnDocumentText.mjs';
 import {
@@ -637,7 +638,7 @@ class SessionService extends Base {
     }
 
     /**
-     * Summarizes a single session.
+     * @summary Summarizes a single session into factual structured JSON while preserving canonical turn-input revision digests.
      * @param {String} sessionId The ID of the session to summarize.
      * @returns {Promise<object|null>}
      */
@@ -760,7 +761,7 @@ class SessionService extends Base {
         const buildSummaryPrompt = sessionContent => `
 Analyze the following development session and provide a structured summary in JSON format. The JSON object should have the following properties:
 
-- "summary": (String) A detailed summary of the session. Identify the main goal, key decisions, modified code, and the final outcome. Mention the involvement of specific agents if obvious.
+- "summary": (String) A concise, factual summary of the session. State the goals, recorded decisions, deciding facts, modified artifacts, and final outcomes in factual register. Explicitly avoid chain-of-thought or "thought process" / "reasoning" narration. Mention participating agents when relevant.
 - "title": (String) A concise, descriptive title for the session (max 10 words).
 - "category": (String) Classify the task into one of the following: 'bugfix', 'feature', 'refactoring', 'documentation', 'new-app', 'analysis', 'other'.
 - "quality": (Number) A score from 0-100 rating the session's flow and focus. 100 is a perfect, focused session. 0 is a completely derailed or useless session.
@@ -777,7 +778,7 @@ Unique Tools Utilized: ${Array.from(allToolsUsed).join(', ') || 'none recorded'}
 
 ---
 
-${sessionContent}
+${formatTurnDocumentForRead(sessionContent) ?? ''}
 `;
 
         // Consumer-Friction Channel: wrap the summarization LLM invocation with a bidirectional
@@ -866,7 +867,7 @@ ${sessionContent}
                           timestamp  : Number(memories.metadatas?.[index]?.timestamp) || index
                       }))
                       .sort((a, b) => a.timestamp - b.timestamp)
-                      .map(turn => (turn.miniSummary || turn.document.slice(0, FALLBACK_CHARS)).trim())
+                      .map(turn => (turn.miniSummary || (formatTurnDocumentForRead(turn.document) ?? '').slice(0, FALLBACK_CHARS)).trim())
                       .filter(Boolean);
 
             if (degradedEntries.length > 0) {

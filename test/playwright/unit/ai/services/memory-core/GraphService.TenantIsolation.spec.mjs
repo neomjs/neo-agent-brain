@@ -165,7 +165,14 @@ test.describe('GraphService — RLS read-side return boundary (#10011)', () => {
         requester.value = '@tenant-b';
 
         // B cannot see root-a, so it must not receive root-a's vicinity at all.
-        expect(GraphService.getNeighbors({id: 'root-a'}).neighbors).toEqual([]);
+        expect(GraphService.getNeighbors({id: 'root-a'})).toEqual({
+            neighbors : [],
+            totalCount: 0,
+            truncated : false,
+            nextOffset: null,
+            limit     : 50,
+            offset    : 0
+        });
     });
 
     test('queryNodeTopology rejects an invisible root and prunes invisible far nodes', () => {
@@ -636,5 +643,186 @@ test.describe('GraphService.listEdgeRecordsByType — RLS-safe relation enumerat
         expect(() => GraphService.listEdgeRecordsByType({types: 'BLOCKS'})).toThrow(/non-empty strings/);
         expect(() => GraphService.listEdgeRecordsByType({types: ['']})).toThrow(/non-empty strings/);
         expect(GraphService.listEdgeRecordsByType({types: []})).toEqual({records: [], truncated: false});
+    });
+});
+
+test.describe('GraphService — bounded getNeighbors & AGENT_MEMORY description normalization (#1580)', () => {
+    let GraphService, originalDb;
+
+    test.beforeAll(async () => {
+        GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+    });
+
+    test.beforeEach(() => {
+        originalDb      = GraphService.db;
+        requester.value = null;
+    });
+
+    test.afterEach(() => {
+        GraphService.db = originalDb;
+        requester.value = null;
+    });
+
+    test('bounds hub-node getNeighbors to default limit=50, clamps 1..200, and paginates deterministically', () => {
+        const nodes = [node('hub-root', {type: 'AgentIdentity', name: 'Hub'})],
+              edges = [];
+
+        for (let i = 0; i < 210; i++) {
+            const id     = `mem-${String(i).padStart(3, '0')}`,
+                  weight = Number((1 - (i % 5) * 0.1).toFixed(2));
+            nodes.push(node(id, {type: 'AGENT_MEMORY', name: id, description: `Agent thought flow inside session s-${i}.`}));
+            edges.push(edge(`e-${i}`, id, 'hub-root', weight, {}, 'AUTHORED_BY'));
+        }
+
+        GraphService.db = makeFakeDb(nodes, edges);
+
+        const defaultPage = GraphService.getNeighbors({id: 'hub-root'});
+        expect(defaultPage.limit).toBe(50);
+        expect(defaultPage.offset).toBe(0);
+        expect(defaultPage.neighbors).toHaveLength(50);
+        expect(defaultPage.totalCount).toBe(210);
+        expect(defaultPage.truncated).toBe(true);
+        expect(defaultPage.nextOffset).toBe(50);
+        expect(defaultPage.neighbors[0].description).toMatch(/^Turn diary entry inside session /);
+
+        const maxClamped = GraphService.getNeighbors({id: 'hub-root', limit: 500, offset: -10});
+        expect(maxClamped.limit).toBe(200);
+        expect(maxClamped.offset).toBe(0);
+        expect(maxClamped.neighbors).toHaveLength(200);
+        expect(maxClamped.truncated).toBe(true);
+        expect(maxClamped.nextOffset).toBe(200);
+
+        const tailPage = GraphService.getNeighbors({id: 'hub-root', limit: 200, offset: 200});
+        expect(tailPage.neighbors).toHaveLength(10);
+        expect(tailPage.totalCount).toBe(210);
+        expect(tailPage.truncated).toBe(false);
+        expect(tailPage.nextOffset).toBeNull();
+
+        const minClamped = GraphService.getNeighbors({id: 'hub-root', limit: 0});
+        expect(minClamped.limit).toBe(1);
+        expect(minClamped.neighbors).toHaveLength(1);
+    });
+
+    test('filters by direction, types, and relationships, deduplicates self-loops on both, and breaks ties deterministically', () => {
+        GraphService.db = makeFakeDb([
+            node('root',  {type: 'EPIC', name: 'Root'}),
+            node('n-b',   {type: 'ISSUE', name: 'Issue B'}),
+            node('n-a',   {type: 'ISSUE', name: 'Issue A'}),
+            node('n-pr',  {type: 'PULL_REQUEST', name: 'PR 1'})
+        ], [
+            edge('e-self', 'root', 'root', 1.0, {}, 'SELF_REF'),
+            edge('e-b',    'root', 'n-b',  0.8, {}, 'PARENT_OF'),
+            edge('e-a-z',  'root', 'n-a',  0.8, {}, 'Z_LINK'),
+            edge('e-a-a',  'root', 'n-a',  0.8, {}, 'A_LINK'),
+            edge('e-in',   'n-pr', 'root', 0.9, {}, 'IMPLEMENTS')
+        ]);
+
+        const both = GraphService.getNeighbors({id: 'root', direction: 'both'});
+        expect(both.neighbors.map(n => `${n.id}:${n.relationship}`)).toEqual([
+            'root:SELF_REF',
+            'n-pr:IMPLEMENTS',
+            'n-a:A_LINK',
+            'n-a:Z_LINK',
+            'n-b:PARENT_OF'
+        ]);
+
+        const inbound = GraphService.getNeighbors({id: 'root', direction: 'inbound'});
+        expect(inbound.neighbors.map(n => n.id)).toEqual(['root', 'n-pr']);
+
+        const outboundIssues = GraphService.getNeighbors({
+            id           : 'root',
+            direction    : 'outbound',
+            types        : ['ISSUE'],
+            relationships: ['PARENT_OF']
+        });
+        expect(outboundIssues.neighbors.map(n => n.id)).toEqual(['n-b']);
+        expect(outboundIssues.totalCount).toBe(1);
+        expect(outboundIssues.truncated).toBe(false);
+        expect(outboundIssues.nextOffset).toBeNull();
+    });
+
+    test('normalizes legacy AGENT_MEMORY descriptions across getNode, getNeighbors, searchNodes, getContextFrontier, and queryNodeTopology', () => {
+        const legacyDesc = 'Agent thought flow inside session sess-1580.',
+              diaryDesc  = 'Turn diary entry inside session sess-1580.';
+
+        const frontierNode = node('frontier', {type: 'AGENT_MEMORY', name: 'Frontier Mem', description: legacyDesc}),
+              memNode      = node('mem-1580', {type: 'AGENT_MEMORY', name: 'Memory 1580', description: legacyDesc}),
+              customNode   = node('mem-custom', {type: 'AGENT_MEMORY', name: 'Custom Mem', description: 'Explicit custom description'}),
+              issueNode    = node('issue-1580', {type: 'ISSUE', name: 'Issue 1580', description: legacyDesc});
+
+        const fakeDb = makeFakeDb(
+            [frontierNode, memNode, customNode, issueNode],
+            [
+                edge('e-f-m', 'frontier', 'mem-1580',   1.0, {}, 'SPAWNED_MEMORY'),
+                edge('e-f-c', 'frontier', 'mem-custom', 0.9, {}, 'SPAWNED_MEMORY'),
+                edge('e-f-i', 'frontier', 'issue-1580', 0.9, {}, 'GUIDES')
+            ]
+        );
+        fakeDb.storage.db = {
+            prepare: () => ({
+                all: () => [memNode, customNode, issueNode].map(n => ({data: JSON.stringify(n)}))
+            })
+        };
+        GraphService.db = fakeDb;
+
+        expect(GraphService.getNode({id: 'mem-1580'}).description).toBe(diaryDesc);
+        expect(GraphService.getNode({id: 'mem-custom'}).description).toBe('Explicit custom description');
+        expect(GraphService.getNode({id: 'issue-1580'}).description).toBe(legacyDesc);
+
+        const byIdNeighbor = new Map(GraphService.getNeighbors({id: 'frontier'}).neighbors.map(n => [n.id, n.description]));
+        expect(byIdNeighbor.get('mem-1580')).toBe(diaryDesc);
+        expect(byIdNeighbor.get('mem-custom')).toBe('Explicit custom description');
+        expect(byIdNeighbor.get('issue-1580')).toBe(legacyDesc);
+
+        const byIdSearch = new Map(GraphService.searchNodes({query: '1580'}).nodes.map(n => [n.id, n.description]));
+        expect(byIdSearch.get('mem-1580')).toBe(diaryDesc);
+        expect(byIdSearch.get('mem-custom')).toBe('Explicit custom description');
+        expect(byIdSearch.get('issue-1580')).toBe(legacyDesc);
+
+        const frontierView = GraphService.getContextFrontier();
+        expect(frontierView.frontier.description).toBe(diaryDesc);
+        const byIdFrontier = new Map(frontierView.strategicNeighbors.map(n => [n.id, n.description]));
+        expect(byIdFrontier.get('mem-1580')).toBe(diaryDesc);
+        expect(byIdFrontier.get('issue-1580')).toBe(legacyDesc);
+
+        const topoView = GraphService.queryNodeTopology({nodeId: 'mem-1580', maxDepth: 2});
+        expect(topoView.root.description).toBe(diaryDesc);
+        const byIdTopo = new Map(topoView.nodes.map(n => [n.id, n.description]));
+        expect(byIdTopo.get('mem-1580')).toBe(diaryDesc);
+        expect(byIdTopo.get('issue-1580')).toBe(legacyDesc);
+    });
+
+    test('computes totalCount strictly after RLS visibility filtering and preserves real zero edge weights (#1580)', () => {
+        requester.value = '@seat-a';
+
+        GraphService.db = makeFakeDb(
+            [
+                node('hub', {type: 'AgentIdentity', sharedEntity: true}),
+                node('vis-default', {type: 'ISSUE', sharedEntity: true}),
+                node('vis-zero',    {type: 'MESSAGE', sharedEntity: true}),
+                node('hidden-node', {type: 'AGENT_MEMORY', userId: 'seat-b'}),
+                node('hidden-edge-target', {type: 'ISSUE', sharedEntity: true})
+            ],
+            [
+                edge('e-default',     'hub', 'vis-default',        undefined, {},                  'GUIDES'),
+                edge('e-zero',        'hub', 'vis-zero',           0,         {},                  'SENT_TO'),
+                edge('e-hidden-node', 'hub', 'hidden-node',        0.95,      {},                  'AUTHORED_BY'),
+                edge('e-hidden-edge', 'hub', 'hidden-edge-target', 0.90,      {userId: 'seat-b'},  'MENTIONS')
+            ]
+        );
+
+        const page = GraphService.getNeighbors({id: 'hub', limit: 1});
+        expect(page.totalCount).toBe(2);
+        expect(page.truncated).toBe(true);
+        expect(page.nextOffset).toBe(1);
+        expect(page.neighbors).toHaveLength(1);
+        expect(page.neighbors[0]).toMatchObject({id: 'vis-default', weight: 1.0});
+
+        const page2 = GraphService.getNeighbors({id: 'hub', limit: 5, offset: 1});
+        expect(page2.totalCount).toBe(2);
+        expect(page2.truncated).toBe(false);
+        expect(page2.nextOffset).toBeNull();
+        expect(page2.neighbors).toHaveLength(1);
+        expect(page2.neighbors[0]).toMatchObject({id: 'vis-zero', weight: 0});
     });
 });

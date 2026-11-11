@@ -145,8 +145,9 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         // No live summarizer in unit → summary falls back to truncated raw (never content-empty).
         expect(result.turns[0].summary).toBeTruthy();
         expect(result.turns[0].summaryFallback).toBe(true);
-        // summary projection does not surface raw prompt/thought directly
+        // summary projection does not surface raw prompt/decisionContext directly
         expect(result.turns[0].prompt).toBeUndefined();
+        expect(result.turns[0].decisionContext).toBeUndefined();
         expect(result.turns[0].thought).toBeUndefined();
     });
 
@@ -167,7 +168,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect(shared.count).toBeGreaterThan(0);
         expect(shared.memorySharing).toEqual({policy: 'team', clamped: false});
         expect(JSON.stringify(shared)).not.toContain('A-only thought');
-        expect(shared.turns.every(turn => turn.prompt === undefined && turn.response === undefined && turn.thought === undefined)).toBe(true);
+        expect(shared.turns.every(turn => turn.prompt === undefined && turn.response === undefined && turn.decisionContext === undefined && turn.thought === undefined)).toBe(true);
     });
 
     test('AC7b no-scope fail-closed: no resolvable userId returns EMPTY, not all', async () => {
@@ -183,7 +184,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect(result.turns).toEqual([]);
     });
 
-    test('detail:full joins Chroma content and the public projection excludes thought', async () => {
+    test('detail:full joins Chroma content and the public projection excludes decisionContext', async () => {
         const result = await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () => {
             await MemoryService.addMemory({prompt: 'full prompt', response: 'full response', decisionContext: 'secret thought'});
             return MemoryService.queryRecentTurns({agentIdentity: '@me', limit: 1, detail: 'full', projection: 'public'});
@@ -192,8 +193,9 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect(result.count).toBe(1);
         expect(result.turns[0].prompt).toBe('full prompt');
         expect(result.turns[0].response).toBe('full response');
-        // AC5 — public projection must NOT surface the private thought field.
-        expect(result.turns[0].thought).toBeUndefined();
+        // AC5 — public projection must NOT surface the private decisionContext field (or legacy thought).
+        expect('decisionContext' in result.turns[0]).toBe(false);
+        expect('thought' in result.turns[0]).toBe(false);
     });
 
     test('AC8 fail-soft: add_memory succeeds and the turn is recallable (raw fallback) when summarization is unavailable', async () => {
@@ -211,17 +213,18 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect(result.turns[0].summaryFallback).toBe(true);
     });
 
-    test('RA1 privacy: own-agent private projection includes thought', async () => {
+    test('RA1 privacy: own-agent private projection includes decisionContext without thought', async () => {
         const result = await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () => {
             await MemoryService.addMemory({prompt: 'own prompt', response: 'own response', decisionContext: 'own secret'});
             return MemoryService.queryRecentTurns({agentIdentity: '@me', limit: 1, detail: 'full', projection: 'private'});
         });
 
         expect(result.count).toBe(1);
-        expect(result.turns[0].thought).toBe('own secret');   // own-agent → private grants thought
+        expect(result.turns[0].decisionContext).toBe('own secret');   // own-agent → private grants decisionContext
+        expect('thought' in result.turns[0]).toBe(false);
     });
 
-    test('RA1 privacy: a peer cannot read another agent\'s thought via private (downgraded to public)', async () => {
+    test('RA1 privacy: a peer cannot read another agent\'s decisionContext via private (downgraded to public)', async () => {
         // agent-b writes in tenant-a.
         await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-b'}, async () => {
             await MemoryService.addMemory({prompt: 'b prompt', response: 'b response', decisionContext: 'b secret'});
@@ -233,7 +236,8 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
 
         expect(result.count).toBe(1);
         expect(result.turns[0].response).toBe('b response');   // same-tenant content is visible
-        expect(result.turns[0].thought).toBeUndefined();        // but thought NEVER crosses to a non-owner
+        expect('decisionContext' in result.turns[0]).toBe(false);
+        expect('thought' in result.turns[0]).toBe(false);        // private field NEVER crosses to a non-owner
     });
 
     test('RA2 cursor: (timestamp,id) pagination disambiguates equal timestamps (no dup, no skip)', async () => {
@@ -1036,7 +1040,8 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         // The peer sees the row, and the row carries no private reasoning.
         expect(JSON.stringify(summaryRead)).not.toContain(secret);
         expect(JSON.stringify(fullRead)).not.toContain(secret);
-        expect(fullRead.turns.find(turn => turn.id === 'budget-thought').thought).toBeUndefined();
+        expect('decisionContext' in fullRead.turns.find(turn => turn.id === 'budget-thought')).toBe(false);
+        expect('thought' in fullRead.turns.find(turn => turn.id === 'budget-thought')).toBe(false);
 
         // And the fixture genuinely carried a secret, so green means the boundary held rather than the
         // canary never having been written.
@@ -1280,18 +1285,20 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             prompt  : 'public prompt sharing-own-741',
             response: 'public response sharing-own-741'
         });
+        expect('decisionContext' in ownFullPublic.turns[0]).toBe(false);
         expect('thought' in ownFullPublic.turns[0]).toBe(false);
         const ownPrivate = await read({detail: 'full', projection: 'private'});
         expect(ownPrivate.turns.map(turn => turn.id)).toEqual(['sharing-own-741']);
-        expect(ownPrivate.turns[0].thought).toBe('OWN-THOUGHT-741');
+        expect(ownPrivate.turns[0].decisionContext).toBe('OWN-THOUGHT-741');
+        expect('thought' in ownPrivate.turns[0]).toBe(false);
         expect(JSON.stringify(ownPrivate)).not.toContain(secret);
         const shared = await read({memorySharing: 'team'});
         expect(shared.turns.map(turn => turn.id)).toEqual(['sharing-foreign-741', 'sharing-own-741']);
         expect(shared.memorySharing).toEqual({policy: 'team', clamped: false});
         expect(JSON.stringify(shared)).not.toContain(secret);
-        expect(shared.turns.every(turn => turn.prompt === undefined && turn.response === undefined && turn.thought === undefined)).toBe(true);
+        expect(shared.turns.every(turn => turn.prompt === undefined && turn.response === undefined && turn.decisionContext === undefined && turn.thought === undefined)).toBe(true);
         // Explicit team + detail:'full' uses the public projection default, hydrating distinct prompt and response
-        // across foreign-tenant rows (including same-identity foreign row sharing-foreign-741) while omitting thought.
+        // across foreign-tenant rows (including same-identity foreign row sharing-foreign-741) while omitting decisionContext.
         const sharedFull = await read({memorySharing: 'team', detail: 'full'});
         expect(sharedFull.turns.map(turn => turn.id)).toEqual(['sharing-foreign-741', 'sharing-own-741']);
         expect(sharedFull.memorySharing).toEqual({policy: 'team', clamped: false});
@@ -1305,7 +1312,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             prompt  : 'public prompt sharing-own-741',
             response: 'public response sharing-own-741'
         });
-        expect(sharedFull.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+        expect(sharedFull.turns.every(turn => !('decisionContext' in turn) && !('thought' in turn))).toBe(true);
         expect(JSON.stringify(sharedFull)).not.toContain(secret);
         expect(JSON.stringify(sharedFull)).not.toContain('OWN-THOUGHT-741');
         // Peer cross-tenant + same-tenant Chroma hydration under explicit team + detail:'full'.
@@ -1322,7 +1329,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             prompt  : 'public prompt sharing-peer-same-tenant-741',
             response: 'public response sharing-peer-same-tenant-741'
         });
-        expect(peerSharedFull.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+        expect(peerSharedFull.turns.every(turn => !('decisionContext' in turn) && !('thought' in turn))).toBe(true);
         expect(JSON.stringify(peerSharedFull)).not.toContain(secret);
         expect(JSON.stringify(peerSharedFull)).not.toContain(peerSameTenantSecret);
         // Omitted sharing with detail:'full' on a peer does NOT trigger implicitTeam (retains private tenant scope),
@@ -1335,6 +1342,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             prompt  : 'public prompt sharing-peer-same-tenant-741',
             response: 'public response sharing-peer-same-tenant-741'
         });
+        expect('decisionContext' in peerOmittedFull.turns[0]).toBe(false);
         expect('thought' in peerOmittedFull.turns[0]).toBe(false);
         expect(JSON.stringify(peerOmittedFull)).not.toContain(peerSameTenantSecret);
     });
@@ -1533,7 +1541,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             } else {
                 expect(result.clampedFull.memorySharing).toEqual({policy: 'private', clamped: true});
                 expect(result.clampedFull.turns.map(turn => turn.id)).toEqual(own);
-                expect(result.clampedFull.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+                expect(result.clampedFull.turns.every(turn => !('decisionContext' in turn) && !('thought' in turn))).toBe(true);
             }
             expect(result.first.turns.map(turn => turn.id)).toEqual([expected[0]]);
             expect(result.narrowed.turns.map(turn => turn.id)).toEqual(own);
@@ -1569,13 +1577,14 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect(result.turns[0].summary).toContain('public wal response 3');
         expect(result.turns[0]).not.toHaveProperty('prompt');
         expect(result.turns[0]).not.toHaveProperty('response');
+        expect(result.turns[0]).not.toHaveProperty('decisionContext');
         expect(result.turns[0]).not.toHaveProperty('thought');
         expect(JSON.stringify(result)).not.toContain(secret);
         const second = await RequestContextService.run({userId: 'wal-caller-741', agentIdentityNodeId: '@wal-caller-741'}, () =>
             MemoryService.queryRecentTurns({agentIdentity: identity, memorySharing: 'team', limit: 2, before: result.nextCursor}));
         expect(second.turns.map(turn => turn.id)).toEqual(['sharing-wal-1', 'sharing-wal-graph']);
         // Full public hydration under effective team sharing reads distinct prompt + response from the pending WAL
-        // overlay while omitting private thought, and reports null prompt/response when a graph row has no Chroma/WAL record.
+        // overlay while omitting private decisionContext, and reports null prompt/response when a graph row has no Chroma/WAL record.
         const fullFirst = await RequestContextService.run({userId: 'wal-caller-741', agentIdentityNodeId: '@wal-caller-741'}, () =>
             MemoryService.queryRecentTurns({agentIdentity: identity, memorySharing: 'team', detail: 'full', limit: 2}));
         expect(fullFirst.turns.map(turn => turn.id)).toEqual(['sharing-wal-3', 'sharing-wal-2']);
@@ -1592,7 +1601,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             prompt           : 'public wal prompt 2',
             response         : 'public wal response 2'
         });
-        expect(fullFirst.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+        expect(fullFirst.turns.every(turn => !('decisionContext' in turn) && !('thought' in turn))).toBe(true);
         expect(JSON.stringify(fullFirst)).not.toContain(secret);
         const fullSecond = await RequestContextService.run({userId: 'wal-caller-741', agentIdentityNodeId: '@wal-caller-741'}, () =>
             MemoryService.queryRecentTurns({agentIdentity: identity, memorySharing: 'team', detail: 'full', limit: 2, before: fullFirst.nextCursor}));
@@ -1610,7 +1619,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             prompt           : null,
             response         : null
         });
-        expect(fullSecond.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+        expect(fullSecond.turns.every(turn => !('decisionContext' in turn) && !('thought' in turn))).toBe(true);
         expect(JSON.stringify(fullSecond)).not.toContain(secret);
         const unbound = await MemoryService.queryRecentTurns({agentIdentity: identity, memorySharing: 'team', limit: 2});
         expect(unbound).toMatchObject({count: 0, turns: [], nextCursor: null, scope: 'fail-closed: no resolvable tenant'});

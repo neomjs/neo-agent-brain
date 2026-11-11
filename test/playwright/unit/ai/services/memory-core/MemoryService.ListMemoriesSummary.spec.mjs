@@ -11,12 +11,13 @@ setup({
     }
 });
 
-import {expect, test} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import GraphService   from '../../../../../../ai/services/memory-core/GraphService.mjs';
-import MemoryService  from '../../../../../../ai/services/memory-core/MemoryService.mjs';
-import StorageRouter  from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
+import {expect, test}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import GraphService                from '../../../../../../ai/services/memory-core/GraphService.mjs';
+import MemoryService               from '../../../../../../ai/services/memory-core/MemoryService.mjs';
+import {formatTurnDocumentForRead} from '../../../../../../ai/services/memory-core/helpers/turnDocumentText.mjs';
+import StorageRouter               from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
 
 /**
  * @summary In-memory Chroma read seam for the session-scoped summary contract.
@@ -73,7 +74,7 @@ test.describe('MemoryService.listMemories compact summary contract', () => {
         });
 
         try {
-            const view              = await MemoryService.listMemories({sessionId, limit: 10}),
+            const view               = await MemoryService.listMemories({sessionId, limit: 10}),
                   [stored, fallback] = view.memories;
 
             expect(stored).toMatchObject({
@@ -88,6 +89,66 @@ test.describe('MemoryService.listMemories compact summary contract', () => {
             })
         } finally {
             GraphService.db?.removeNode(storedId)
+        }
+    });
+
+    test('#1580 serializes decisionContext without thought on listMemories and rewrites Agent Thought: headers at read boundaries only', async () => {
+        const sessionId = `list-dc-${process.pid}`,
+              legacyId  = `${sessionId}-legacy`,
+              legacyRow = {
+                  sessionId,
+                  timestamp: 1,
+                  prompt   : 'Prompt text',
+                  thought  : 'Decided X because Y',
+                  response : 'Response text',
+                  type     : 'agent-interaction'
+              };
+
+        collection.rows.set(legacyId, {id: legacyId, metadata: legacyRow});
+
+        const listed = await MemoryService.listMemories({sessionId, limit: 10});
+        expect(listed.memories).toHaveLength(1);
+        expect(listed.memories[0].decisionContext).toBe('Decided X because Y');
+        expect('thought' in listed.memories[0]).toBe(false);
+        expect(legacyRow.thought).toBe('Decided X because Y');
+
+        const legacyDoc = 'User Prompt: P\nAgent Thought: Decided X because Y\nAgent Response: R';
+        expect(formatTurnDocumentForRead(legacyDoc))
+            .toBe('User Prompt: P\nDecision Context: Decided X because Y\nAgent Response: R');
+        expect(formatTurnDocumentForRead('Inline mention of Agent Thought: inside prose stays untouched'))
+            .toBe('Inline mention of Agent Thought: inside prose stays untouched');
+
+        const origGetSummaryCollection = StorageRouter.getSummaryCollection,
+              targetId                 = `brief-target-${process.pid}`,
+              neighborId               = `brief-mem-${process.pid}`;
+
+        StorageRouter.getSummaryCollection = async () => ({
+            get: async () => ({
+                documents: [null],
+                metadatas: [legacyRow]
+            })
+        });
+
+        GraphService.upsertNode({id: targetId, type: 'EPIC', name: 'Target Epic'});
+        GraphService.upsertNode({
+            id              : neighborId,
+            type            : 'AGENT_MEMORY',
+            name            : 'Neighbor Mem',
+            semanticVectorId: neighborId,
+            properties      : {sessionId}
+        });
+        GraphService.linkNodes(targetId, neighborId, 'DISCUSSED_IN', 0.9);
+
+        try {
+            const brief = await MemoryService.preBriefSession({targetId, limit: 5});
+            const ctx   = brief.context.find(c => c.id === neighborId);
+            expect(ctx.episodicContext).toContain('Decision Context: Decided X because Y');
+            expect(ctx.episodicContext).not.toContain('Agent Thought:');
+            expect(legacyRow.thought).toBe('Decided X because Y');
+        } finally {
+            StorageRouter.getSummaryCollection = origGetSummaryCollection;
+            GraphService.db?.removeNode(neighborId);
+            GraphService.db?.removeNode(targetId)
         }
     })
 });

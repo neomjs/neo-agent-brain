@@ -812,14 +812,14 @@ test.describe('MemoryService — context frontier trust-tier weighting (#10292)'
             });
 
             seededNeighbors.push({
-                id              : `summary-${i}`,
-                type            : 'SESSION_SUMMARY',
-                name            : `Summary ${i}`,
-                description     : `Summary description ${i}: ` + 'z'.repeat(300),
+                id          : `summary-${i}`,
+                type        : 'SESSION_SUMMARY',
+                name        : `Summary ${i}`,
+                description : `Summary description ${i}: ` + 'z'.repeat(300),
                 semanticVectorId,
-                relationship    : 'STRATEGIC_PIVOT',
-                weight          : Number((1 - (i * 0.005)).toFixed(6)),
-                direction       : 'outbound'
+                relationship: 'STRATEGIC_PIVOT',
+                weight      : Number((1 - (i * 0.005)).toFixed(6)),
+                direction   : 'outbound'
             });
         }
 
@@ -1031,7 +1031,7 @@ test.describe('MemoryService.queryMemories — agentIdentity, detail, and projec
         })).rejects.toThrow(/requires a bound caller identity/);
     });
 
-    test('supports detail=summary (miniSummary string + boolean summaryFallback, omitting prompt/thought/response) and detail=full with projection=public', async () => {
+    test('supports detail=summary (miniSummary string + boolean summaryFallback, omitting prompt/decisionContext/response) and detail=full with public/private decisionContext projection', async () => {
         const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
 
         const summaryView = await MemoryService.queryMemories({
@@ -1043,6 +1043,7 @@ test.describe('MemoryService.queryMemories — agentIdentity, detail, and projec
         expect(summaryView.count).toBe(1);
         const item = summaryView.results[0];
         expect(item.prompt).toBeUndefined();
+        expect(item.decisionContext).toBeUndefined();
         expect(item.thought).toBeUndefined();
         expect(item.response).toBeUndefined();
         expect(typeof item.miniSummary).toBe('string');
@@ -1086,7 +1087,19 @@ test.describe('MemoryService.queryMemories — agentIdentity, detail, and projec
         expect(publicFullView.count).toBe(1);
         expect(publicFullView.results[0].prompt).toContain('Grace prompt text');
         expect(publicFullView.results[0].response).toBe('Grace response text');
-        expect(publicFullView.results[0].thought).toBeUndefined();
+        expect('decisionContext' in publicFullView.results[0]).toBe(false);
+        expect('thought' in publicFullView.results[0]).toBe(false);
+
+        const privateFullView = await MemoryService.queryMemories({
+            query        : 'Grace',
+            nResults     : 10,
+            agentIdentity: '@neo-opus-grace',
+            detail       : 'full',
+            projection   : 'private'
+        });
+        expect(privateFullView.count).toBe(1);
+        expect(privateFullView.results[0].decisionContext).toBe('Grace private thought');
+        expect('thought' in privateFullView.results[0]).toBe(false);
 
         await expect(MemoryService.queryMemories({query: 'Grace', nResults: 5, detail: 'invalid'}))
             .rejects.toThrow(TypeError);

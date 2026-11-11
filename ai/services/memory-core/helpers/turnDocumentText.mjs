@@ -17,6 +17,10 @@ import {createHash} from 'node:crypto';
  * distinct document shape and must NOT be passed through this helper.
  */
 
+const STORED_THOUGHT_LABEL   = 'Agent Thought: ';
+const READ_THOUGHT_LABEL     = 'Decision Context: ';
+const STORED_THOUGHT_LINE_RE = new RegExp(`(^|\\n)${STORED_THOUGHT_LABEL}`, 'g');
+
 /**
  * @summary Composes the canonical turn-document text from a turn's split fields.
  *
@@ -33,7 +37,17 @@ import {createHash} from 'node:crypto';
  * @returns {String} The canonical `User Prompt: … \n Agent Thought: … \n Agent Response: …` text.
  */
 export function composeTurnDocumentText({prompt, thought, response} = {}) {
-    return `User Prompt: ${prompt}\nAgent Thought: ${thought}\nAgent Response: ${response}`;
+    return `User Prompt: ${prompt}\n${STORED_THOUGHT_LABEL}${thought}\nAgent Response: ${response}`;
+}
+
+/**
+ * @summary Rewrites stored `Agent Thought:` line headers to `Decision Context:` at MCP read and prompt boundaries without mutating canonical turn documents or revision digests.
+ * @param {String|null|undefined} text Raw or reconstructed turn/session text.
+ * @returns {String|null|undefined} Relabeled text when `text` is a string; otherwise returns `text` unchanged.
+ */
+export function formatTurnDocumentForRead(text) {
+    if (typeof text !== 'string') return text;
+    return text.replace(STORED_THOUGHT_LINE_RE, `$1${READ_THOUGHT_LABEL}`);
 }
 
 /**
