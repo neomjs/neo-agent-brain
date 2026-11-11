@@ -424,8 +424,8 @@ async function streamAndVerifyAntigravityArchive({
         throw refusal('archive-fetch-failed', 'missing response body')
     }
 
-    let byteLength = 0;
-    const limiter = new Transform({
+    let   byteLength = 0;
+    const limiter    = new Transform({
         transform(chunk, _encoding, callback) {
             byteLength += chunk.length;
             if (byteLength > maxAllowed) {
@@ -664,6 +664,13 @@ async function runAcquireAntigravityUpdate({
         stagingRoot = path.join(familyRoot, `.update-staging-${randomUUID()}`),
         archivePath = path.join(stagingRoot, 'update.zip'),
         extractDir  = path.join(stagingRoot, 'extracted');
+
+    fsImpl.mkdirSync(familyRoot, {recursive: true, mode: 0o700});
+
+    // A run its process was killed in leaves its staging behind. Runs are serialized, so none is live.
+    for (const entry of fsImpl.readdirSync(familyRoot)) {
+        if (entry.startsWith('.update-staging-')) fsImpl.rmSync(path.join(familyRoot, entry), {recursive: true, force: true})
+    }
 
     fsImpl.mkdirSync(extractDir, {recursive: true, mode: 0o700});
 

@@ -201,9 +201,9 @@ function testSeams({spawnStub, registry} = {}) {
         credentialEnvVar : 'GH_TOKEN',
         bridgeTokenEnvVar: 'NEO_FLEET_BRIDGE_TOKEN',
         // Reset the curated-launch resolution fields too — fallback tests set them explicitly.
-        instanceRoot                 : null,
-        harnessBinaryPaths           : null,
-        harnessGenerationOptIns      : null,
+        instanceRoot           : null,
+        harnessBinaryPaths     : null,
+        harnessGenerationOptIns: null,
         // a store no host holds: the profile check reads the ledger of every Desktop family
         harnessGenerationRoot        : '/nonexistent/fleet-spec-harness-generations',
         harnessGenerationStore       : null,
@@ -2093,6 +2093,22 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         return {installed, storeRoot, calls}
     }
 
+    test('the background acquisition reads the same opt-in, store root and installed bundle a Start reads', () => {
+        install();
+        FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true};
+        FleetLifecycleService.harnessBinaryPaths      = {
+            'codex-desktop': '/Vendor/ChatGPT.app/Contents/MacOS/ChatGPT',
+            antigravity    : '/Vendor/Antigravity.app/Contents/MacOS/Electron'
+        };
+
+        expect(FleetLifecycleService.harnessAcquisitionContext('codex-desktop')).toEqual({
+            optedIn: true, root: '/nonexistent/fleet-spec-harness-generations', installedBundle: '/Vendor/ChatGPT.app'
+        });
+        expect(FleetLifecycleService.harnessAcquisitionContext('antigravity')).toEqual({
+            optedIn: false, root: '/nonexistent/fleet-spec-harness-generations', installedBundle: '/Vendor/Antigravity.app'
+        })
+    });
+
     test('a family that has not opted in to harness generations proves its harnessBinaries paths and never reads the store', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-off-'));
         install();
@@ -2153,7 +2169,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         install();
         try {
             const {calls} = harnessGenerationFixture(root), store = FleetLifecycleService.harnessGenerationStore, admit = store.materialize;
-            let full = true;
+            let   full    = true;
 
             FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true};
             store.materialize = async options => {
@@ -2190,8 +2206,8 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             FleetLifecycleService.antigravityRuntimeProbeFn = async () => ({available: true, reason: null, fingerprints: {}});
 
             const
-                agent   = FleetLifecycleService.getRegistry().getDefinition('seat'),
-                context = await FleetLifecycleService.resolveAntigravityStartContext(agent),
+                agent                            = FleetLifecycleService.getRegistry().getDefinition('seat'),
+                context                          = await FleetLifecycleService.resolveAntigravityStartContext(agent),
                 {harnessGeneration, ...unpinned} = context.capability;
 
             expect(context.capability).toMatchObject({binaryPath: binary, launchBinaryPath: binary});

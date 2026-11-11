@@ -203,8 +203,8 @@ test.describe('antigravityUpdate', () => {
             family      : 'antigravity',
             sourceBundle: installed,
             seams       : {
-                copyBundle      : (source, target) => fs.cpSync(source, target, {recursive: true}),
-                readBundleInfo  : () => ({
+                copyBundle    : (source, target) => fs.cpSync(source, target, {recursive: true}),
+                readBundleInfo: () => ({
                     bundleId    : 'com.google.antigravity',
                     shortVersion: '2.29.1',
                     buildVersion: '2.29.1',
@@ -243,7 +243,7 @@ test.describe('antigravityUpdate', () => {
         }])
     });
 
-    test('streams archive to disk, verifies SHA-512, extracts, admits a new Antigravity generation, and cleans staging', async () => {
+    test('streams archive to disk, verifies SHA-512, extracts, admits a new Antigravity generation, and cleans staging, a killed run\'s included', async () => {
         const
             storeRoot = path.join(root, 'generations'),
             installed = makeAntigravityBundle(path.join(root, 'installed'), {
@@ -270,6 +270,11 @@ test.describe('antigravityUpdate', () => {
             throw new Error(`unexpected URL ${url}`)
         };
 
+        // a run whose process was killed mid-download left its staging behind
+        const killedRun = path.join(storeRoot, 'antigravity', '.update-staging-killed');
+        fs.mkdirSync(killedRun, {recursive: true});
+        fs.writeFileSync(path.join(killedRun, 'update.zip'), 'partial');
+
         const result = await acquireAntigravityUpdate({
             root          : storeRoot,
             appBundle     : installed,
@@ -277,6 +282,7 @@ test.describe('antigravityUpdate', () => {
             architecture  : 'arm64',
             readPlistKey  : readFakePlistKey,
             extractArchive: (archivePath, destinationDir) => {
+                expect(fs.existsSync(killedRun), 'the killed run is swept before the new staging').toBe(false);
                 expect(fs.readFileSync(archivePath)).toEqual(archiveBytes);
                 makeAntigravityBundle(destinationDir, {
                     shortVersion: '2.30.0',
@@ -290,8 +296,8 @@ test.describe('antigravityUpdate', () => {
                     sourceBundle,
                     source,
                     seams: {
-                        copyBundle      : (src, target) => fs.cpSync(src, target, {recursive: true}),
-                        readBundleInfo  : () => ({
+                        copyBundle    : (src, target) => fs.cpSync(src, target, {recursive: true}),
+                        readBundleInfo: () => ({
                             bundleId    : 'com.google.antigravity',
                             shortVersion: '2.30.0',
                             buildVersion: '2.30.0',

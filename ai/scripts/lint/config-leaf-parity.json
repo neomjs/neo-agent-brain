@@ -238,6 +238,7 @@
         "fleet.harnessBinaries.openCode",
         "fleet.harnessGenerations",
         "fleet.harnessGenerations.antigravity",
+        "fleet.harnessGenerations.checkIntervalHours",
         "fleet.harnessGenerations.claudeDesktop",
         "fleet.harnessGenerations.codexDesktop",
         "fleet.harnessGenerations.root",

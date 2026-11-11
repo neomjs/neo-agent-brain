@@ -71,9 +71,9 @@ import {assertFleetPlaneAdmissionBearerClass,
         assertFleetPlaneBearerClass,
         assertFleetViewerMcAuthorizationClass,
         declaresFleetPlaneBearer}                                         from './fleetServer.mjs';
-import {openPlaneCredentialChannel, planeCredentialAnswer}               from './planeCredentialChannel.mjs';
-import {createPlaneFleetClient}   from './planeFleetClient.mjs';
-import {createPlaneMailboxClient} from './planeMailboxClient.mjs';
+import {openPlaneCredentialChannel, planeCredentialAnswer} from './planeCredentialChannel.mjs';
+import {createPlaneFleetClient}                            from './planeFleetClient.mjs';
+import {createPlaneMailboxClient}                          from './planeMailboxClient.mjs';
 import {createPlaneWakeIdentitiesReader,
         createPlaneWakeObservationsReader}                               from './planeWakeIdentitiesReader.mjs';
 import {createFleetWakeSseConsumer}       from './fleetWakeSseConsumer.mjs';
@@ -91,6 +91,7 @@ import {wireFleetCatchUpSource}                                          from '.
 import {wireFleetTasksSource}                                            from './wireFleetTasksSource.mjs';
 import {wireFleetGoldenPathSource}                                       from './wireFleetGoldenPathSource.mjs';
 import {wireFleetGraphSceneSource}                                       from './wireFleetGraphSceneSource.mjs';
+import {wireFleetHarnessAcquisition}                                     from './wireFleetHarnessAcquisition.mjs';
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
 import {fileStore, wireFleetOpenWorkSource}                              from './wireFleetOpenWorkSource.mjs';
 import {wireFleetOpenWorkWakes}                                          from './wireFleetOpenWorkWakes.mjs';
@@ -161,7 +162,7 @@ async function boot() {
     //    a bearer resolving to any OTHER subject would silently re-attribute every admission
     //    decision — refusal is the only honest outcome.
     //  - in-process mode: the existing host-graph verification (seeded AgentIdentity node).
-    const planeBase         = AiConfig.fleet.planeBase.trim(),
+    const planeBase = AiConfig.fleet.planeBase.trim(),
           // The launcher's credential pipe: set, the bearer and its class arrive as the first frame,
           // and every later frame is a rotation (served once the transport listens)
           credentialChannel = AiConfig.fleet.planeCredentialFd === null ? null : openPlaneCredentialChannel({
@@ -182,6 +183,7 @@ async function boot() {
         fleetWakeStreamConsumer = null,
         armedAdmissionBearer    = '',
         openWork                = null,
+        harnessAcquisition      = null,
         wakeRound               = null,
         server                  = null,
         viewer;
@@ -744,6 +746,13 @@ async function boot() {
         }) : null;
         openWork = wireFleetOpenWorkSource({registry: FleetRegistryService, readPresence, onPulse: wakeRound});
 
+        // Nothing but the Fleet ever updates a seat's harness: it fetches and admits every opted-in family's
+        // new builds itself, and a seat adopts one at its next Start.
+        harnessAcquisition = wireFleetHarnessAcquisition({
+            context   : family => lifecycle.harnessAcquisitionContext(family),
+            intervalMs: AiConfig.fleet.harnessGenerations.checkIntervalHours * 3_600_000
+        });
+
         AiConfig.fleet.openWorkWakes && console.log(wakeRound
             ? '[fleet] open-work wakes wired; rounds stay quiet until measured admission holds'
             : '[fleet] open-work wakes requested but unwired: a plane-verified viewer is required');
@@ -778,6 +787,8 @@ async function boot() {
                 remaining      = () => Math.max(0, budgetMs - elapsed());
             console.log(`[fleet] received ${signal}; stopping.`);
             bridgeSupervisor?.stop();
+            // no new harness run starts; one in flight dies with the process, and its family's next run sweeps its staging
+            harnessAcquisition?.stop();
             try {
                 // The first line lands before the first await: a handoff the host kills mid-way still leaves its trace.
                 if (runtime.generation) {
