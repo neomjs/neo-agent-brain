@@ -1,12 +1,12 @@
-import BaseServer              from '../BaseServer.mjs';
-import aiConfig                from './config.mjs';
-import logger                  from './logger.mjs';
-import ConnectionService       from '../../../services/neural-link/ConnectionService.mjs';
-import HealthService           from '../../../services/neural-link/HealthService.mjs';
-import {listTools, callTool}   from './toolService.mjs';
-import {attestDiagnosticPaths} from './diagnosticPathAttestation.mjs';
-import {formatWithImages}      from './imageContent.mjs';
-import {isParentProcessAlive}  from './standalone.mjs';
+import BaseServer                              from '../BaseServer.mjs';
+import aiConfig                                from './config.mjs';
+import logger                                  from './logger.mjs';
+import ConnectionService                       from '../../../services/neural-link/ConnectionService.mjs';
+import HealthService                           from '../../../services/neural-link/HealthService.mjs';
+import {buildToolCatalog, listTools, callTool} from './toolService.mjs';
+import {attestDiagnosticPaths}                 from './diagnosticPathAttestation.mjs';
+import {formatWithImages}                      from './imageContent.mjs';
+import {isParentProcessAlive}                  from './standalone.mjs';
 
 let _turnId = 0;
 
@@ -98,6 +98,7 @@ class Server extends BaseServer {
      */
     getToolService() {
         return {
+            buildToolCatalog,
             listTools,
             callTool: async (name, args, options) => {
                 _turnId++;
@@ -134,6 +135,16 @@ class Server extends BaseServer {
         // Unforced: the client hint selects the projection; absent → full developer/operator surface.
         const projection = request?.params?._meta?.neoToolProjection;
         return projection === undefined ? null : {mode: projection};
+    }
+
+    /**
+     * @summary Static `initialize` instructions hold across every client projection an unforced instance accepts.
+     * @returns {Array<Object|null>}
+     */
+    getAcceptedInstructionProjections() {
+        return this.toolProjectionMode != null
+            ? [{mode: this.toolProjectionMode}]
+            : [null, {mode: 'harness-embedded'}];
     }
 
     /**

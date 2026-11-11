@@ -547,7 +547,8 @@ const toolService = Neo.create(ToolService, {
     toolListDescriptionMaxLength: 120
 });
 
-const callTool  = toolService.callTool .bind(toolService);
-const listTools = toolService.listTools.bind(toolService);
+const buildToolCatalog = toolService.buildToolCatalog.bind(toolService);
+const callTool         = toolService.callTool        .bind(toolService);
+const listTools        = toolService.listTools       .bind(toolService);
 
-export {callTool, listTools};
+export {buildToolCatalog, callTool, listTools};

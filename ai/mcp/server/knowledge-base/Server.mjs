@@ -1,12 +1,12 @@
-import BaseServer                             from '../BaseServer.mjs';
-import aiConfig                               from './config.mjs';
-import ConfigBase, {PLANE_MEMBER_PATHS}       from './configBase.mjs';
-import logger                                 from './logger.mjs';
-import DatabaseService                        from '../../../services/knowledge-base/DatabaseService.mjs';
-import HealthService                          from '../../../services/knowledge-base/HealthService.mjs';
-import KBRecorderService                      from '../../../services/knowledge-base/KBRecorderService.mjs';
-import {listTools, callTool}                  from './toolService.mjs';
-import {describeCollectionStats, STATS_LEVEL} from './describeCollectionStats.mjs';
+import BaseServer                              from '../BaseServer.mjs';
+import aiConfig                                from './config.mjs';
+import ConfigBase, {PLANE_MEMBER_PATHS}        from './configBase.mjs';
+import logger                                  from './logger.mjs';
+import DatabaseService                         from '../../../services/knowledge-base/DatabaseService.mjs';
+import HealthService                           from '../../../services/knowledge-base/HealthService.mjs';
+import KBRecorderService                       from '../../../services/knowledge-base/KBRecorderService.mjs';
+import {buildToolCatalog, listTools, callTool} from './toolService.mjs';
+import {describeCollectionStats, STATS_LEVEL}  from './describeCollectionStats.mjs';
 
 /**
  * @summary The Knowledge Base MCP Server application.
@@ -76,7 +76,7 @@ class Server extends BaseServer {
      * @returns {{listTools: Function, callTool: Function}}
      */
     getToolService() {
-        return {listTools, callTool};
+        return {buildToolCatalog, listTools, callTool};
     }
 
     /**

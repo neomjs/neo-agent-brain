@@ -1,11 +1,11 @@
-import BaseServer            from '../BaseServer.mjs';
-import logger                from './logger.mjs';
-import {listTools, callTool} from './toolService.mjs';
-import AuthMiddleware        from '../shared/services/AuthMiddleware.mjs';
-import RequestContextService from '../shared/services/RequestContextService.mjs';
-import StdioIdentityResolver from '../shared/services/StdioIdentityResolver.mjs';
-import BootEnvelopeResolver  from '../shared/services/BootEnvelopeResolver.mjs';
-import {formatHostEndpoint}  from '../shared/helpers/hostEndpoint.mjs';
+import BaseServer                              from '../BaseServer.mjs';
+import logger                                  from './logger.mjs';
+import {buildToolCatalog, listTools, callTool} from './toolService.mjs';
+import AuthMiddleware                          from '../shared/services/AuthMiddleware.mjs';
+import RequestContextService                   from '../shared/services/RequestContextService.mjs';
+import StdioIdentityResolver                   from '../shared/services/StdioIdentityResolver.mjs';
+import BootEnvelopeResolver                    from '../shared/services/BootEnvelopeResolver.mjs';
+import {formatHostEndpoint}                    from '../shared/helpers/hostEndpoint.mjs';
 import {
     buildSqliteHolderDiagnostics,
     formatHarnessGroups
@@ -132,7 +132,7 @@ class Server extends BaseServer {
      * @returns {{listTools: Function, callTool: Function}}
      */
     getToolService() {
-        return {listTools, callTool};
+        return {buildToolCatalog, listTools, callTool};
     }
 
     /**

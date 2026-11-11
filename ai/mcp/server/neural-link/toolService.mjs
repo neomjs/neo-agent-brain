@@ -134,6 +134,7 @@ const callTool = async (name, args, options={}) => {
     }
 };
 
-const listTools = toolService.listTools.bind(toolService);
+const buildToolCatalog = toolService.buildToolCatalog.bind(toolService);
+const listTools        = toolService.listTools       .bind(toolService);
 
-export {callTool, listTools};
+export {buildToolCatalog, callTool, listTools};

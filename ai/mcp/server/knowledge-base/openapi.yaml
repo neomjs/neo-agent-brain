@@ -30,7 +30,7 @@ tags:
 # Harness tool-projection policy (mirrors neural-link). In a maintainer harness spawned with
 # `--tool-projection-mode harness-embedded`, only `read`-tier tools load by default; `extended` +
 # `admin` tools are withheld and reachable on demand via `get_mcp_tool_handbook`. This caps the
-# loaded surface against the harness ~100-tool ceiling without removing any capability.
+# loaded surface against the harness ~100-tool ceiling without removing any capability. Operations marked `x-neo-tool-catalog: true` expand their `summary` in `initialize` instructions.
 x-neo-harness-tool-projection:
   defaultVisibleTiers:
     - read
@@ -125,7 +125,7 @@ paths:
       x-annotations:
         readOnlyHint: true
       description: Returns lazy-loaded usage detail for one Knowledge Base MCP tool.
-      tags: [Documents]
+      tags: [Health]
       requestBody:
         required: true
         content:
@@ -206,6 +206,7 @@ paths:
       summary: Inspect container diagnoses, log tails, and recovery runs via KB; use when triaging degraded plane services or crashes.
       operationId: inspect_deployment
       x-neo-tool-tier: extended
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
@@ -701,6 +702,7 @@ paths:
       summary: Map class inheritance for Neo.mjs code only (not your own or any tenant's repositories); use when finding subclasses.
       operationId: get_class_hierarchy
       x-neo-tool-tier: read
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true

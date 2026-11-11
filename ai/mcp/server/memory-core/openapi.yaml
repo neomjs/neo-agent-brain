@@ -49,7 +49,7 @@ tags:
 # tiers; the `extended` (on-demand diagnostics / session-lifecycle / frontier / wake) + `admin` (destructive /
 # permission) tiers are withheld, reachable on demand via `get_mcp_tool_handbook`. mc's visible set includes
 # `write` because a maintainer's core writes (A2A add_message/mark_read, add_memory, record_turn_presence) are
-# constant — like gh, unlike kb.
+# constant — like gh, unlike kb. Operations marked `x-neo-tool-catalog: true` expand their `summary` in `initialize` instructions.
 x-neo-harness-tool-projection:
   defaultVisibleTiers:
     - read
@@ -424,6 +424,7 @@ paths:
       summary: "Inspect orchestrator service logs/diagnoses plus optional mailboxReadState; use when debugging plane or inbox state."
       operationId: inspect_deployment
       x-neo-tool-tier: extended
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
@@ -1175,6 +1176,7 @@ paths:
       summary: "Synthesize a live Bird View of open epics, blockers, and unassigned work; use when orienting before picking a lane."
       operationId: explore_lane_landscape
       x-neo-tool-tier: read
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
@@ -1767,6 +1769,7 @@ paths:
       summary: "Hydrate top-weight graph neighbors and linked summaries for a node targetId; use when priming context on a graph node."
       operationId: pre_brief_session
       x-neo-tool-tier: extended
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       description: |
         Instantly contextualizes the agent by targeting a specific Epic or Graph Node,
@@ -2289,6 +2292,7 @@ paths:
       summary: "Traverse multi-hop (maxDepth) graph nodes and edges around a nodeId; use when 1-hop neighbor lookup is too shallow."
       operationId: query_hybrid_graph
       x-neo-tool-tier: read
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true

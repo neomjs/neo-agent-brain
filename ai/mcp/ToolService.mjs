@@ -92,6 +92,12 @@ class ToolService_tmp extends Base {
      */
     serviceMapping = null
     /**
+     * Catalog metadata in OpenAPI declaration order; `x-neo-tool-catalog: true` marks spotlight tools.
+     * @member {Array<Object>|null} toolCatalogEntries=null
+     * @protected
+     */
+    toolCatalogEntries = null
+    /**
      * Tool projection tier by operationId. Populated from `x-neo-tool-tier`.
      * @member {Object|null} toolProjectionTiers=null
      * @protected
@@ -155,11 +161,13 @@ class ToolService_tmp extends Base {
         if (!me.openApiFilePath) {
             me.toolMapping        = {};
             me.allToolsForListing = [];
+            me.toolCatalogEntries = [];
             return;
         }
 
         me.toolMapping         = {};
         me.allToolsForListing  = [];
+        me.toolCatalogEntries  = [];
         me.toolHandbookMapping = {};
         me.toolProjectionTiers = {};
         me.exactToolProfiles   = {};
@@ -209,6 +217,12 @@ class ToolService_tmp extends Base {
                     };
                     me.toolMapping[toolName] = tool;
                     me.toolProjectionTiers[toolName] = toolTier;
+                    me.toolCatalogEntries.push({
+                        family   : (Array.isArray(operation.tags) && operation.tags[0]) || 'General',
+                        name     : toolName,
+                        spotlight: operation['x-neo-tool-catalog'] === true,
+                        summary  : me.buildToolListDescription(operation)
+                    });
                     // The prose/schema split: the listing carries shape only when compaction is on,
                     // and the handbook is where the fully-described schema lives — the same lazy
                     // surface the compacted operation description already defers to. The described
@@ -447,11 +461,11 @@ class ToolService_tmp extends Base {
             handbook  = dedicated || fullDescription || operation.summary || toolName;
 
         const entry = {
-            toolId  : toolName,
-            found   : true,
-            title   : toolName,
+            toolId: toolName,
+            found : true,
+            title : toolName,
             handbook,
-            source  : dedicated ? 'x-neo-tool-handbook' : (operation.description ? 'description' : 'summary')
+            source: dedicated ? 'x-neo-tool-handbook' : (operation.description ? 'description' : 'summary')
         };
 
         if (schemas) {
@@ -463,6 +477,50 @@ class ToolService_tmp extends Base {
         }
 
         return entry
+    }
+
+    /**
+     * @summary Builds a compact family and spotlight-tool catalog from OpenAPI `tags` and `summary`.
+     * Operations marked `x-neo-tool-catalog: true` expand their trigger summary; unmarked servers list family starters.
+     * @param {Object} [options={}]
+     * @param {String[]} [options.listedToolNames] Pre-filtered visible tool names; defaults to projection listing.
+     * @param {Number} [options.maxStarterTools=2] Maximum unmarked starter tools per family.
+     * @param {Object|String|null} [options.toolProjection=null] Projection context when `listedToolNames` is omitted.
+     * @returns {String}
+     */
+    buildToolCatalog({listedToolNames, maxStarterTools=2, toolProjection=null} = {}) {
+        const me = this;
+
+        me.initializeToolMapping();
+
+        const visibleNames = new Set(
+            listedToolNames ?? me.getToolsForProjection(toolProjection).filter(Boolean).map(tool => tool.name)
+        );
+        const families = new Map();
+
+        for (const entry of me.toolCatalogEntries) {
+            if (!visibleNames.has(entry.name)) {
+                continue;
+            }
+            if (!families.has(entry.family)) {
+                families.set(entry.family, []);
+            }
+            families.get(entry.family).push(entry);
+        }
+
+        const lines = [];
+
+        for (const [family, entries] of families) {
+            const starters   = entries.filter(entry => !entry.spotlight).slice(0, maxStarterTools).map(entry => entry.name);
+            const spotlights = entries.filter(entry => entry.spotlight).map(entry => `${entry.name} (${entry.summary})`);
+            const items      = [...starters, ...spotlights];
+
+            if (items.length > 0) {
+                lines.push(`${family}: ${items.join(', ')}`);
+            }
+        }
+
+        return lines.join('\n');
     }
 
     /**
