@@ -1,12 +1,12 @@
-import BaseServer              from '../BaseServer.mjs';
-import aiConfig                from './config.mjs';
-import logger                  from './logger.mjs';
-import ConnectionService       from '../../../services/neural-link/ConnectionService.mjs';
-import HealthService           from '../../../services/neural-link/HealthService.mjs';
-import {listTools, callTool}   from './toolService.mjs';
-import {attestDiagnosticPaths} from './diagnosticPathAttestation.mjs';
-import {formatWithImages}      from './imageContent.mjs';
-import {isParentProcessAlive}  from './standalone.mjs';
+import BaseServer                              from '../BaseServer.mjs';
+import aiConfig                                from './config.mjs';
+import logger                                  from './logger.mjs';
+import ConnectionService                       from '../../../services/neural-link/ConnectionService.mjs';
+import HealthService                           from '../../../services/neural-link/HealthService.mjs';
+import {buildToolCatalog, listTools, callTool} from './toolService.mjs';
+import {attestDiagnosticPaths}                 from './diagnosticPathAttestation.mjs';
+import {formatWithImages}                      from './imageContent.mjs';
+import {isParentProcessAlive}                  from './standalone.mjs';
 
 let _turnId = 0;
 
@@ -98,6 +98,7 @@ class Server extends BaseServer {
      */
     getToolService() {
         return {
+            buildToolCatalog,
             listTools,
             callTool: async (name, args, options) => {
                 _turnId++;

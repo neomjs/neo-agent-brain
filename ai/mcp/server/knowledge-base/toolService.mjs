@@ -37,8 +37,8 @@ const readDeploymentInspection = args => readDeploymentStateSnapshot({
  * @param {Number} [options.limit]
  * @returns {{tools: Object[], nextCursor: String|undefined}}
  */
-const listTransportVisibleTools = ({cursor=0, limit} = {}) => {
-    const allTools = toolService.listTools().tools.filter(tool => (
+const listTransportVisibleTools = ({cursor=0, limit, toolProjection} = {}) => {
+    const allTools = toolService.listTools({toolProjection}).tools.filter(tool => (
         tool.name !== ingestToolName || isIngestSourceFilesToolVisible()
     ));
 
@@ -185,6 +185,12 @@ const callTool = async (name, args) => {
     }
 };
 
+const buildToolCatalog = (options = {}) => {
+    const listedToolNames = options.listedToolNames
+        ?? listTransportVisibleTools({toolProjection: options.toolProjection}).tools.map(tool => tool.name);
+
+    return toolService.buildToolCatalog({...options, listedToolNames});
+};
 const listTools = listTransportVisibleTools;
 
-export {callTool, ingestSourceFilesViaMcp, listTools};
+export {buildToolCatalog, callTool, ingestSourceFilesViaMcp, listTools};

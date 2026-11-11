@@ -1,8 +1,8 @@
-import BaseServer            from '../BaseServer.mjs';
-import aiConfig              from './config.mjs';
-import logger                from './logger.mjs';
-import HealthService         from '../../../services/gitlab-workflow/HealthService.mjs';
-import {listTools, callTool} from './toolService.mjs';
+import BaseServer                              from '../BaseServer.mjs';
+import aiConfig                                from './config.mjs';
+import logger                                  from './logger.mjs';
+import HealthService                           from '../../../services/gitlab-workflow/HealthService.mjs';
+import {buildToolCatalog, listTools, callTool} from './toolService.mjs';
 
 /**
  * @summary The GitLab Workflow MCP Server application.
@@ -46,7 +46,7 @@ class Server extends BaseServer {
      * @returns {{listTools: Function, callTool: Function}}
      */
     getToolService() {
-        return {listTools, callTool};
+        return {buildToolCatalog, listTools, callTool};
     }
 
     /**

@@ -220,11 +220,41 @@ class BaseServer extends Base {
     }
 
     /**
-     * @summary Override: MCP `initialize` instructions directing clients to `get_mcp_tool_handbook(toolId)`.
+     * @summary Override: MCP `initialize` instructions pairing the handbook pointer with the projection-scoped tool catalog.
+     * @param {Object} [options={}]
+     * @param {Object|String|null} [options.toolProjection] Optional explicit projection override.
      * @returns {String|null}
      */
-    getServerInstructions() {
-        return 'Tool descriptions and input schemas in tools/list are compacted to save context tokens. Call get_mcp_tool_handbook({toolId}) before invoking an unfamiliar tool to read its full usage guide and parameter descriptions.';
+    getServerInstructions({toolProjection} = {}) {
+        const handbookLine = 'Tool descriptions and input schemas in tools/list are compacted to save context tokens. Call get_mcp_tool_handbook({toolId}) before invoking an unfamiliar tool to read its full usage guide and parameter descriptions.';
+        let   toolService  = null;
+
+        try {
+            toolService = this.getToolService();
+        } catch {
+            return handbookLine;
+        }
+
+        if (!toolService?.buildToolCatalog) {
+            return handbookLine;
+        }
+
+        let effectiveProjection = toolProjection;
+
+        if (effectiveProjection === undefined) {
+            const built = this.buildToolProjectionContext({request: {params: {}}, phase: 'listTools'});
+            effectiveProjection = typeof built?.then === 'function'
+                ? (this.toolProjectionMode != null ? {mode: this.toolProjectionMode} : null)
+                : built;
+        }
+
+        const listedToolNames = (toolService.listTools({toolProjection: effectiveProjection})?.tools || [])
+            .map(tool => tool.name);
+        const listedSet = new Set(listedToolNames);
+        const preamble  = listedSet.has('get_mcp_tool_handbook') ? handbookLine : '';
+        const catalog   = toolService.buildToolCatalog({listedToolNames, toolProjection: effectiveProjection});
+
+        return [preamble, catalog].filter(Boolean).join('\n') || null;
     }
 
     /**

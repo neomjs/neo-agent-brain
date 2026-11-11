@@ -1,6 +1,6 @@
-import BaseServer            from '../BaseServer.mjs';
-import PolicyService         from '../shared/services/PolicyService.mjs';
-import {listTools, callTool} from './services/toolService.mjs';
+import BaseServer                              from '../BaseServer.mjs';
+import PolicyService                           from '../shared/services/PolicyService.mjs';
+import {buildToolCatalog, listTools, callTool} from './services/toolService.mjs';
 
 /**
  * @summary Minimal stderr-only logger shim for file-system MCP server. Routes all log levels
@@ -55,7 +55,7 @@ class Server extends BaseServer {
      * @returns {{listTools: Function, callTool: Function}}
      */
     getToolService() {
-        return {listTools, callTool};
+        return {buildToolCatalog, listTools, callTool};
     }
 
     /**

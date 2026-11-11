@@ -27,6 +27,8 @@ tags:
     description: Operations related to repository labels
   - name: Issues
     description: Operations related to repository issues and pull requests
+  - name: Discussions
+    description: Operations related to GitHub Discussions
   - name: Repository
     description: Operations related to the repository itself
 
@@ -35,7 +37,7 @@ tags:
 # `extended` (rare ops) + `admin` (dangerous) tiers are withheld, reachable on demand via
 # `get_mcp_tool_handbook`. gh's visible set includes `write` because a maintainer's core writes
 # (review, comment, create, assign, label, link, transition) are constant — unlike kb, whose writes are
-# all admin-destructive (visible=[read] there).
+# all admin-destructive (visible=[read] there). Operations marked `x-neo-tool-catalog: true` expand their `summary` in `initialize` instructions.
 x-neo-harness-tool-projection:
   defaultVisibleTiers:
     - read
@@ -391,6 +393,7 @@ paths:
       summary: Read a live GitHub issue/PR body and comments, or PR merge-readiness; use when inspecting live thread or gate state.
       operationId: get_conversation
       x-neo-tool-tier: read
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
@@ -934,7 +937,7 @@ paths:
         readOnlyHint: true
       description: |
         Read-only review-body shape and coherence check. When `pr_number` is supplied for a Round-2 disposition body, also fetches the pull request's submitted reviews and checks the Round-2 disposition table against the cited Round-1 Required Actions (`getRound2DispositionRelationFailure`). Without `pr_number`, performs only body-local checks with no GitHub I/O. Does not predict the review-budget gate; submit through `manage_pr_review`.
-      tags: [PullRequests]
+      tags: [Pull Requests]
       requestBody:
         required: true
         content:
@@ -1014,7 +1017,7 @@ paths:
         Create or update one formal PR review. Read `.agents/skills/pr-review/SKILL.md` and use its exact cycle template. Create requires `pr_number`, `state`, and `body`; update requires `review_id` and `body`.
 
         APPROVED requires reviewer-keyed `acknowledgedRequestChanges` for outstanding current-head RCs. REQUEST_CHANGES is budgeted on post-cutover PRs: two submitted RCs, then COMMENT/APPROVED or one complete terminal Drop+Supersede. Incomplete history fails closed. `reviewBudgetOverrideReason` is a disclosed exceptional bypass persisted in the review body. CREATE bodies must not supply service-owned `[review-budget-managed]` / `[review-budget-override]` marker lines or their reserved audit-field list entries; the service rejects them before GitHub access and appends the canonical receipt itself when applicable. Direct gh/UI submission is outside this pre-submit gate and only receives workflow telemetry.
-      tags: [PullRequests]
+      tags: [Pull Requests]
       parameters:
         - name: pr_number
           in: path
@@ -1153,7 +1156,7 @@ paths:
         `add` polls the live PR and mutates only on `mergeable: true`; false returns `PR_MERGE_CONFLICT`, while exhausted null/malformed source returns `PR_MERGEABILITY_UNAVAILABLE`. Positive mergeability remains admissible with `BLOCKED`, `BEHIND`, or `UNSTABLE`. `remove` bypasses mergeability so stale requests can always be withdrawn.
 
         At least one user/team is required; leading `@` is stripped. Results verify GitHub's returned reviewer arrays, never echo the request: an absent add target returns `REVIEWER_NOT_SEATED`, a still-present remove target returns `REVIEWER_STILL_REQUESTED`, and an unreadable result returns `REVIEWER_STATE_UNVERIFIABLE`. Trust `verifiedReviewers` / `verifiedTeamReviewers`. Source/mutation transport failures return `GH_API_ERROR`.
-      tags: [PullRequests]
+      tags: [Pull Requests]
       parameters:
         - name: pr_number
           in: path
@@ -1527,7 +1530,7 @@ paths:
         **MANDATORY WORKFLOW:**
         - Always provide a clear title and body.
         - Categories are mapped internally; default is 'Ideas'. If another categorical structure is needed, specify it.
-      tags: [Issues]
+      tags: [Discussions]
       requestBody:
         required: true
         content:
@@ -1583,7 +1586,7 @@ paths:
         - Closes a discussion with `reason` RESOLVED, OUTDATED or DUPLICATE, once its verdict has been posted as a comment.
         - The author closes their own discussion: closing one you did not author is refused unless `acknowledgedForeignClose` states why.
         - An already-closed discussion returns its current state unchanged.
-      tags: [Issues]
+      tags: [Discussions]
       requestBody:
         required: true
         content:
@@ -1865,7 +1868,7 @@ paths:
         **Action: 'update'**
         - Updates an existing discussion comment.
         - Requires `comment_id` and `body`.
-      tags: [Issues]
+      tags: [Discussions]
       requestBody:
         required: true
         content:
@@ -1919,6 +1922,7 @@ paths:
       summary: Set, replace, or remove GitHub parent_child or blocked_by issue edges; use when linking epic subs or ticket blockers.
       operationId: update_issue_relationship
       x-neo-tool-tier: write
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: false

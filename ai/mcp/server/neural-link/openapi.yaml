@@ -13,7 +13,8 @@ x-neo-harness-tool-projection:
     Harness-embedded agents receive read-tier Neural Link tools by default.
     Write-locked tools are withheld until Topological Locking and explicit-target
     semantics exist. Admin tools stay operator-only unless a later authorization
-    leaf grants them deliberately.
+    leaf grants them deliberately. Operations marked x-neo-tool-catalog: true
+    expand their summary in initialize instructions.
 x-neo-exact-tool-profiles:
   description: >
     Server-pinned exact profiles declare their complete operation set and any
@@ -141,6 +142,7 @@ paths:
       x-neo-tool-tier: read
       x-handler: check_namespace
       x-pass-as-object: true
+      tags: [Introspection]
       requestBody:
         required: true
         content:
@@ -218,6 +220,7 @@ paths:
       x-neo-tool-tier: read
       x-handler: get_namespace_tree
       x-pass-as-object: true
+      tags: [Introspection]
       requestBody:
         required: true
         content:
@@ -678,6 +681,7 @@ paths:
       summary: Read a state.Provider's data, stores, owner component and parent id; use when checking the view-model state of a view.
       operationId: inspect_state_provider
       x-neo-tool-tier: read
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       description: |
         Inspects a specific state provider.
@@ -1058,6 +1062,7 @@ paths:
       summary: Compare a container's items, VDOM children, and live DOM order; use when diagnosing engine-vs-DOM child desync bugs.
       operationId: verify_component_consistency
       x-neo-tool-tier: read
+      x-neo-tool-catalog: true
       x-pass-as-object: true
       description: |
         Diffs a container's three child-order surfaces — logical items, vdom child nodes, and the rendered DOM — reporting count, order, membership and duplicate mismatches.

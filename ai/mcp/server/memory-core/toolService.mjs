@@ -641,7 +641,7 @@ const serviceMapping = {
     list_messages                          : listMessagesTool,
     get_message                            : MailboxService         .getMessage              .bind(MailboxService),
     query_messages                         : MailboxService         .queryMessages           .bind(MailboxService),
-    get_rem_pipeline_state                : HealthService          .getRemPipelineState     .bind(HealthService),
+    get_rem_pipeline_state                 : HealthService          .getRemPipelineState     .bind(HealthService),
     get_sqlite_holder_diagnostics:
                               HealthService          .getSqliteHolderDiagnostics.bind(HealthService),
     get_deployment_state_snapshot: readDeploymentInspection,
@@ -771,9 +771,16 @@ const createTransportVisibleToolFacade = ({
         }
     };
 
-    return {callTool, listTools}
+    const buildToolCatalog = (options = {}) => {
+        const listedToolNames = options.listedToolNames
+            ?? listTools({toolProjection: options.toolProjection}).tools.map(tool => tool.name);
+
+        return toolService.buildToolCatalog({...options, listedToolNames});
+    };
+
+    return {buildToolCatalog, callTool, listTools}
 };
 
-const {callTool, listTools} = createTransportVisibleToolFacade();
+const {buildToolCatalog, callTool, listTools} = createTransportVisibleToolFacade();
 
-export {callTool, createTransportVisibleToolFacade, listTools, readLaneLandscapeConfig};
+export {buildToolCatalog, callTool, createTransportVisibleToolFacade, listTools, readLaneLandscapeConfig};
