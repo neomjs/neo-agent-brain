@@ -3578,11 +3578,10 @@ class FleetLifecycleService extends Base {
         if (installed && fs.existsSync(installed) && !this.harnessGenerationsOf(harnessType).length) {
             const
                 {shortVersion, buildVersion} = store.readBundleInfo(installed),
-                attempt                      = [root, harnessType, shortVersion, buildVersion].join('\0'),
-                known                        = store.readLedger({root, family: harnessType}).admitted
-                    .some(entry => entry.shortVersion === shortVersion && entry.buildVersion === buildVersion);
+                attempt                      = [root, harnessType, shortVersion, buildVersion].join('\0');
 
-            if (!known && !this.harnessGenerationAttempts.has(attempt)) {
+            // a ledger entry whose copy is gone does not count: admission restores the copy under the same id
+            if (!this.harnessGenerationAttempts.has(attempt)) {
                 const admission = store.materialize({root, family: harnessType, sourceBundle: installed, source: 'installed'});
 
                 this.harnessGenerationAttempts.set(attempt, admission);

@@ -2087,14 +2087,18 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
                 }
                 const id = 'a'.repeat(64);
                 fs.cpSync(sourceBundle, path.join(at, family, id, 'ChatGPT.app'), {recursive: true, verbatimSymlinks: true});
-                ledger.admitted.push({id, appName: 'ChatGPT.app', executable: 'ChatGPT', shortVersion: '26.1103', buildVersion: '25894'});
+                // as the engine: a known build regains its copy without a second ledger entry
+                if (!ledger.admitted.some(entry => entry.id === id)) {
+                    ledger.admitted.push({id, appName: 'ChatGPT.app', executable: 'ChatGPT', shortVersion: '26.1103', buildVersion: '25894'})
+                }
                 return {admitted: true, id}
             },
+            // as the engine: only generations whose copy is present
             list          : ({root: at, family}) => [...ledger.admitted].reverse().map(entry => {
                 const appBundle = path.join(at, family, entry.id, entry.appName);
                 return {id: entry.id, appBundle, binaryPath: path.join(appBundle, 'Contents', 'MacOS', entry.executable),
                     shortVersion: entry.shortVersion, buildVersion: entry.buildVersion}
-            })
+            }).filter(generation => fs.existsSync(generation.binaryPath))
         };
         FleetLifecycleService.execFileFn = (command, args, opts, callback) => callback(null, 'Usage: mcp add --url <URL> --bearer-token-env-var <ENV>', '');
 
@@ -2163,6 +2167,26 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         }
     });
 
+    test('an opted-in Start whose admitted copy is gone bootstraps from the installed bundle again instead of refusing', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-gone-'));
+        install();
+        try {
+            // the ledger still lists the installed build, but its copy was removed from the store
+            const
+                known              = {id: 'a'.repeat(64), shortVersion: '26.1103', buildVersion: '25894'},
+                {storeRoot, calls} = harnessGenerationFixture(root, {admitted: [known]});
+
+            fs.rmSync(path.join(storeRoot, 'codex-desktop', known.id), {recursive: true});
+            FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true};
+
+            await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'seat', harnessType: 'codex-desktop'}))
+                .resolves.toMatchObject({harnessGeneration: {generationId: known.id}});
+            expect(calls.filter(([call]) => call === 'materialize')).toHaveLength(1)
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
     test('a unit run never reaches the host\'s harness-generation store: the root resolves beneath the run\'s own Fleet root', () => {
         expect(AiConfig.fleet.harnessGenerations.root).toBe(path.join(AiConfig.fleet.dataDir, 'harnesses'));
         expect(AiConfig.fleet.harnessGenerations.root).not.toBe(path.resolve(os.homedir(), '.neo-ai', 'harnesses'))
@@ -2207,7 +2231,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         }
     });
 
-    test('an opted-in Antigravity context proves the selected generation and carries its pin; one without the pin does not validate', async () => {
+    test('the shipped default opts Antigravity in: its context proves the selected generation and carries its pin; one without the pin does not validate', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-antigravity-'));
         install({agents: {seat: agentDef('seat', {harnessType: 'antigravity', metadata: {}})}});
         try {
@@ -2218,7 +2242,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             fs.mkdirSync(path.dirname(binary), {recursive: true});
             fs.symlinkSync(process.execPath, binary);
             FleetLifecycleService.harnessBinaryPaths        = {antigravity: process.execPath};
-            FleetLifecycleService.harnessGenerationOptIns   = {antigravity: true};
+            FleetLifecycleService.harnessGenerationOptIns   = null; // the `fleet.harnessGenerations` leaves decide
             FleetLifecycleService.harnessGenerationRoot     = root;
             FleetLifecycleService.harnessGenerationStore    = {
                 list      : () => [{id: 'a'.repeat(64), appBundle, binaryPath: binary, shortVersion: '1.23', buildVersion: '1.23.0'}],
