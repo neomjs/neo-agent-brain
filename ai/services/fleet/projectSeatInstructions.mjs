@@ -28,12 +28,13 @@ export const HOME_INSTRUCTION_FILES = Object.freeze({
 });
 
 /**
- * The checkout files each harness loads as project instructions. A checkout carrying one already supplies the
- * seat's rules, and a home copy beside it loads them twice: Claude reads user and project files under no shared
- * cap, and Codex reads its home file whole, outside the byte budget its project files share.
+ * The checkout files each harness loads as project instructions, in its order. A checkout carrying one already
+ * supplies the seat's rules, and a home copy beside it loads them twice: Claude reads user and project files under
+ * no shared cap, and Codex reads its home file whole, outside the byte budget its project files share. Claude reads
+ * `AGENTS.md` when no `CLAUDE.md` is there.
  */
 const REPOSITORY_INSTRUCTION_FILES = Object.freeze({
-    'claude-code'  : Object.freeze(['CLAUDE.md', path.join('.claude', 'CLAUDE.md')]),
+    'claude-code'  : Object.freeze(['CLAUDE.md', path.join('.claude', 'CLAUDE.md'), 'AGENTS.md']),
     'codex'        : Object.freeze(['AGENTS.override.md', 'AGENTS.md']),
     'codex-desktop': Object.freeze(['AGENTS.override.md', 'AGENTS.md'])
 });
@@ -43,6 +44,13 @@ const REPOSITORY_INSTRUCTION_FILES = Object.freeze({
  * package's own metadata, so Fleet names no tenant.
  */
 const SKILLS_OWNER = /github\.com[/:]([^/]+)\//.exec(createRequire(import.meta.url)('neo-agent-skills/package.json').repository?.url ?? '')?.[1] ?? null;
+
+/**
+ * The first line of the pointer the Engine commits as `AGENTS.md` (`AGENTS_MD_POINTER` in neomjs/neo's
+ * `buildScripts/util/agentsMdPointer.mjs`). A checkout whose generation failed holds it instead of the rules.
+ * Copied, because the Engine this repository pins predates the pointer; import it once the pin carries it.
+ */
+export const AGENTS_MD_POINTER_MARKER = '<!-- neo-agents-md: pointer -->';
 
 const {NOT_APPLICABLE, PROJECTED, REPOSITORY_SUPPLIED} = SEAT_INSTRUCTION_STATES;
 
@@ -204,8 +212,9 @@ async function refuseShadowedCodexHome({homeRoot, fileSystem}) {
 
 /**
  * @summary Whether a checkout entry is a file the harness can read. `null`: nothing is there. `true`: a
- * readable file, through a symlink or not. Otherwise the reason it cannot supply instructions. Only `ENOENT`
- * means absent and only `EACCES` or `EPERM` means unreadable; any other error is a failed observation and throws.
+ * readable file, through a symlink or not. Otherwise the reason it cannot supply instructions, which includes the
+ * Engine's `AGENTS.md` pointer: it reads, but holds no rules. Only `ENOENT` means absent and only `EACCES` or `EPERM`
+ * means unreadable; any other error is a failed observation and throws.
  * @param {String} filePath
  * @param {Object} fileSystem
  * @returns {Promise<Boolean|String|null>}
@@ -230,12 +239,16 @@ async function inspectCheckoutFile(filePath, fileSystem) {
 
     if (!stats.isFile()) return 'not a file';
 
+    let content;
+
     try {
-        await fileSystem.access(filePath, constants.R_OK)
+        await fileSystem.access(filePath, constants.R_OK);
+        content = await fileSystem.readFile(filePath, 'utf8')
     } catch (error) {
+        if (error?.code === 'ENOENT') return null;
         if (error?.code === 'EACCES' || error?.code === 'EPERM') return 'unreadable';
         throw error
     }
 
-    return true
+    return content.startsWith(AGENTS_MD_POINTER_MARKER) ? 'the pointer: no rules were generated' : true
 }
