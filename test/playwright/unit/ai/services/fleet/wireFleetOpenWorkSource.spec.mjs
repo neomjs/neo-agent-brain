@@ -22,6 +22,7 @@ import {
     createGithubGraphqlQuery,
     fileStore,
     githubSlugsOf,
+    parseGithubTokenExpiration,
     seatIdentities,
     seatReaders,
     wireFleetOpenWorkSource
@@ -315,5 +316,85 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
 
     test('without a registry nothing is wired', () => {
         expect(wireFleetOpenWorkSource({})).toBeNull()
+    });
+
+    test('captures GitHub-Authentication-Token-Expiration as ISO-8601 UTC and projects credentialRefusal and tokenExpiresAt per seat (#1601)', async () => {
+        // GitHub documented formats: 'YYYY-MM-DD HH:MM:SS UTC' and 'YYYY-MM-DD HH:MM:SS ±HHMM'
+        expect(parseGithubTokenExpiration('2026-10-07 19:07:53 UTC')).toBe('2026-10-07T19:07:53.000Z');
+        expect(parseGithubTokenExpiration('2026-12-01 15:44:24 -0700')).toBe('2026-12-01T22:44:24.000Z');
+        expect(parseGithubTokenExpiration('2026-12-01T08:30:00Z')).toBe('2026-12-01T08:30:00.000Z');
+
+        // Absent or unparseable headers return null — never a guessed date
+        for (const invalid of [null, undefined, '', '   ', 'never', '5', '2026-12-01', '2026-12-01 19:07:53', '2026-02-31 00:00:00 UTC', '2026-13-01 00:00:00 UTC']) {
+            expect(parseGithubTokenExpiration(invalid), String(invalid)).toBeNull()
+        }
+
+        const
+            dataDir   = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-1601-')),
+            PAT_ADA   = 'ghp_ADA_EXPIRING_SECRET_1601',
+            PAT_IDLE  = 'ghp_IDLE_REFUSED_SECRET_1601',
+            bridge    = {},
+            seats     = [
+                {id: 'ada',   githubUsername: 'neo-opus-ada', metadata: {repo: {repoSlug: 'acme/app', cloneUrl: 'https://github.com/acme/app.git'}}},
+                {id: 'empty', githubUsername: 'idle-seat',    metadata: {}}
+            ],
+            fetchImpl = async (url, {headers}) => {
+                if (headers.Authorization === `Bearer ${PAT_ADA}`) {
+                    return {
+                        ok     : true,
+                        status : 200,
+                        headers: new Headers({'GitHub-Authentication-Token-Expiration': '2026-12-15 09:30:00 UTC'}),
+                        json   : async () => ({data: {rateLimit: {cost: 1}, search: {pageInfo: {hasNextPage: false}, nodes: []}}})
+                    }
+                }
+                return {
+                    ok     : false,
+                    status : 401,
+                    headers: new Headers(),
+                    json   : async () => ({message: 'Bad credentials'})
+                }
+            };
+
+        try {
+            const wired = wireFleetOpenWorkSource({
+                registry   : {
+                    listAgents       : () => seats,
+                    getDataDir       : () => dataDir,
+                    resolveCredential: id => id === 'ada' ? PAT_ADA : PAT_IDLE
+                },
+                bridge,
+                createQuery: token => createGithubGraphqlQuery({token, fetchImpl}),
+                pulseMs    : 3600000
+            });
+
+            await wired.producer.pulse();
+            await wired.stop();
+
+            const projection = bridge.openWorkSource.readOpenWork();
+
+            expect(projection.seats['@neo-opus-ada']).toEqual({
+                authored         : [],
+                reviewing        : [],
+                credentialRefusal: null,
+                tokenExpiresAt   : '2026-12-15T09:30:00.000Z'
+            });
+            expect(projection.seats['@idle-seat']).toEqual({
+                authored         : [],
+                reviewing        : [],
+                credentialRefusal: {
+                    surface: 'forge',
+                    cause  : 'authentication-rejected',
+                    verdict: 'refused',
+                    status : 401,
+                    reason : 'GitHub GraphQL answered 401: Bad credentials'
+                },
+                tokenExpiresAt: null
+            });
+            expect(Object.isFrozen(projection.seats['@idle-seat'].credentialRefusal)).toBe(true);
+            expect(JSON.stringify(projection)).not.toContain(PAT_ADA);
+            expect(JSON.stringify(projection)).not.toContain(PAT_IDLE)
+        } finally {
+            fs.rmSync(dataDir, {recursive: true, force: true})
+        }
     });
 });

@@ -1,8 +1,10 @@
+import crypto                                 from 'node:crypto';
 import Base                                   from 'neo.mjs/src/core/Base.mjs';
 import FleetManager                           from './FleetManager.mjs';
 import FleetRegistryService                   from './FleetRegistryService.mjs';
 import FleetTenantService                     from './FleetTenantService.mjs';
 import {resolveIdentityDisplay}               from './resolveIdentityDisplay.mjs';
+import {resolveSeatPlaneTarget}               from './resolveSeatPlaneTarget.mjs';
 import {managedMemorySource, seatHoldsMemory} from './seatMemoryImport.mjs';
 
 import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from './deriveHarnessLaunchSpec.mjs';
@@ -40,6 +42,22 @@ const PLANE_DECLARATION_FIELDS = Object.freeze([
     'id', 'githubUsername', 'harnessType', 'forge', 'forgeHost', 'gitName', 'gitEmail',
     'memoryImport', 'metadata', 'modelProvider', 'mcpServers', 'mcpTarget'
 ]);
+
+/**
+ * @summary Compare two secret strings in constant time over fixed-width SHA-256 digests so neither byte
+ * mismatches nor token lengths leak through timing.
+ * @param {String} left
+ * @param {String} right
+ * @returns {Boolean}
+ * @private
+ */
+function timingSafeEqualStrings(left, right) {
+    const
+        leftDigest  = crypto.createHash('sha256').update(left, 'utf8').digest(),
+        rightDigest = crypto.createHash('sha256').update(right, 'utf8').digest();
+
+    return crypto.timingSafeEqual(leftDigest, rightDigest)
+}
 
 /**
  * @summary Routes one own-inbox verb to its primitive on the operator-mailbox seam. The verbs build
@@ -895,12 +913,59 @@ class FleetControlBridge extends Base {
     }
 
     /**
-     * @summary Get a single agent definition (no credential).
+     * @summary Get a single agent definition (no credential bytes) enriched with `planeCredential`
+     * (`'none' | 'same-as-forge' | 'distinct' | 'unreadable'`), informing the operator which bindings a
+     * credential replacement may touch without ever selecting a scope or exposing secret material.
+     * Returns `null` when `id` is unknown.
      * @param {String} id
      * @returns {Object|null}
      */
     getAgent(id) {
-        return this.getRegistry().getAgent(id);
+        const
+            registry = this.getRegistry(),
+            agent    = registry.getAgent(id);
+
+        if (!agent) {
+            return null
+        }
+
+        const placement = resolveSeatPlaneTarget({
+            target     : agent.mcpTarget ?? null,
+            harnessType: agent.harnessType,
+            planeBase  : this.getManager()?.planeBase ?? null
+        });
+
+        if (placement?.kind !== 'plane') {
+            return {...agent, planeCredential: 'none'}
+        }
+
+        const
+            tenantService = this.getTenantService(),
+            planeRead     = typeof tenantService?.inspectBoundSeatPlaneCredential === 'function'
+                ? tenantService.inspectBoundSeatPlaneCredential({planeBase: placement.endpoint, agentId: id})
+                : null,
+            forgeRead     = typeof registry.readCredentialStrict === 'function'
+                ? registry.readCredentialStrict(id)
+                : null;
+
+        if (!planeRead || !forgeRead || planeRead.state === 'unreadable' || forgeRead.state === 'unreadable') {
+            return {...agent, planeCredential: 'unreadable'}
+        }
+
+        if (planeRead.state === 'none') {
+            return {...agent, planeCredential: 'none'}
+        }
+
+        if (!forgeRead.credential) {
+            return {...agent, planeCredential: 'distinct'}
+        }
+
+        return {
+            ...agent,
+            planeCredential: timingSafeEqualStrings(planeRead.credential, forgeRead.credential)
+                ? 'same-as-forge'
+                : 'distinct'
+        }
     }
 
     /**

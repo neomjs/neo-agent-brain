@@ -49,6 +49,22 @@ function rejectionReasonFor(status, subject = 'tenant') {
     return Number.isInteger(status) ? `${subject} MCP readiness failed (${status})` : `${subject} authentication failed`;
 }
 
+/**
+ * @summary Whether a decrypted `seat-plane-credentials.enc` entry holds both a non-empty credential and
+ * a complete bound `{id, dataRoot}` plane identity.
+ * @param {*} selected
+ * @returns {Boolean}
+ * @private
+ */
+function isCompleteBoundPlaneRow(selected) {
+    return Boolean(
+        selected && typeof selected === 'object' && !Array.isArray(selected) &&
+        typeof selected.credential === 'string' && selected.credential.trim() &&
+        typeof selected.plane?.id === 'string' && selected.plane.id.trim() &&
+        typeof selected.plane.dataRoot === 'string' && selected.plane.dataRoot.trim()
+    )
+}
+
 
 /**
  * @class Neo.ai.services.fleet.FleetTenantService
@@ -476,10 +492,7 @@ class FleetTenantService extends Base {
             return {ok: false, cause: 'indeterminate', reason: 'seat plane credential store is malformed'}
         }
         const selected = existing?.[agentId];
-        if (!selected || typeof selected !== 'object' || Array.isArray(selected) ||
-            typeof selected.credential !== 'string' || !selected.credential.trim() ||
-            typeof selected.plane?.id !== 'string' || !selected.plane.id.trim() ||
-            typeof selected.plane.dataRoot !== 'string' || !selected.plane.dataRoot.trim()) {
+        if (!isCompleteBoundPlaneRow(selected)) {
             return {
                 ok    : false,
                 cause : 'indeterminate',
@@ -491,6 +504,42 @@ class FleetTenantService extends Base {
             endpoint,
             plane: {id: selected.plane.id, dataRoot: selected.plane.dataRoot}
         }
+    }
+
+    /**
+     * @summary Strictly inspect whether `seat-plane-credentials.enc` holds a complete bound plane entry
+     * for `(planeBase, agentId)` so `FleetControlBridge#getAgent` can classify `planeCredential` inside
+     * Brain without exposing secret bytes on the wire. Brain-internal only.
+     * @param {Object} params
+     * @param {String} params.planeBase
+     * @param {String} params.agentId
+     * @returns {{state: 'present', credential: String}|{state: 'none'}|{state: 'unreadable'}}
+     */
+    inspectBoundSeatPlaneCredential({planeBase, agentId} = {}) {
+        const endpoint = this.normalizeEndpoint(planeBase);
+        if (!endpoint) {
+            return {state: 'none'}
+        }
+        try {
+            assertSeatSegment(agentId, 'agentId', 'FleetTenantService.inspectBoundSeatPlaneCredential')
+        } catch {
+            return {state: 'none'}
+        }
+        let record;
+        try {
+            record = this.readSeatPlaneCredentialsForMutation()
+        } catch {
+            return {state: 'unreadable'}
+        }
+        const existing = record[endpoint];
+        if (existing !== undefined && (!existing || typeof existing !== 'object' || Array.isArray(existing))) {
+            return {state: 'unreadable'}
+        }
+        const selected = existing?.[agentId];
+        if (!isCompleteBoundPlaneRow(selected)) {
+            return {state: 'none'}
+        }
+        return {state: 'present', credential: selected.credential.trim()}
     }
 
     /**

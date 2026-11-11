@@ -23,8 +23,8 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         expect(freshness).toBe('ok');
         expect(unobserved).toBe(0);
         expect(seats).toEqual({
-            '@neo-opus-ada': {authored: [summary], reviewing: []},
-            '@neo-gpt'     : {authored: [], reviewing: [summary]}
+            '@neo-opus-ada': {authored: [summary], reviewing: [], credentialRefusal: null, tokenExpiresAt: null},
+            '@neo-gpt'     : {authored: [], reviewing: [summary], credentialRefusal: null, tokenExpiresAt: null}
         });
         expect(awaitingMerge).toEqual([])
     });
@@ -183,5 +183,49 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
 
     test('a partial pulse is still answered, and says so', () => {
         expect(source(state({coverage: 'partial'})).readOpenWork()).toMatchObject({state: 'ok', coverage: 'partial'})
+    });
+
+    test('projects frozen credentialRefusal and tokenExpiresAt for seats with or without rows, including after JSON reload (#1601)', () => {
+        const reloadedState = JSON.parse(JSON.stringify(state({
+            seatReads: {
+                '@neo-opus-ada': {
+                    observedAt       : OBSERVED,
+                    credentialRefusal: null,
+                    tokenExpiresAt   : '2026-11-30T12:00:00.000Z'
+                },
+                '@neo-fable-clio': {
+                    observedAt       : OBSERVED,
+                    credentialRefusal: {
+                        surface: 'forge',
+                        cause  : 'authentication-rejected',
+                        verdict: 'refused',
+                        status : 401,
+                        reason : 'GitHub GraphQL answered 401: Bad credentials'
+                    },
+                    tokenExpiresAt: '2026-11-09T00:00:00.000Z'
+                }
+            }
+        })));
+
+        const read = source(reloadedState).readOpenWork();
+
+        expect(read.seats['@neo-opus-ada'].credentialRefusal).toBeNull();
+        expect(read.seats['@neo-opus-ada'].tokenExpiresAt).toBe('2026-11-30T12:00:00.000Z');
+        expect(read.seats['@neo-fable-clio']).toEqual({
+            authored         : [],
+            reviewing        : [],
+            credentialRefusal: {
+                surface: 'forge',
+                cause  : 'authentication-rejected',
+                verdict: 'refused',
+                status : 401,
+                reason : 'GitHub GraphQL answered 401: Bad credentials'
+            },
+            tokenExpiresAt: '2026-11-09T00:00:00.000Z'
+        });
+        expect(Object.isFrozen(read.seats['@neo-fable-clio'].credentialRefusal)).toBe(true);
+
+        // Past the unavailable bound, stale seatReads leave the projection alongside snapshot rows
+        expect(source(reloadedState, 120).readOpenWork()).toMatchObject({state: 'unavailable', seats: {}})
     });
 });

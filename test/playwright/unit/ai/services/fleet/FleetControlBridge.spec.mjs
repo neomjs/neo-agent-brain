@@ -22,6 +22,7 @@ import * as core                   from 'neo.mjs/src/core/_export.mjs';
 import FleetControlBridge          from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
 import FleetManager                from '../../../../../../ai/services/fleet/FleetManager.mjs';
 import FleetRegistryService        from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import FleetTenantService          from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
 import SeatOperatorRegistryService from '../../../../../../ai/services/fleet/SeatOperatorRegistryService.mjs';
 import {dispatchFleetRequest}      from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
 
@@ -336,7 +337,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
     });
 
     test('getAgent delegates by id', () => {
-        expect(FleetControlBridge.getAgent('alice')).toEqual({id: 'alice'});
+        expect(FleetControlBridge.getAgent('alice')).toEqual({id: 'alice', planeCredential: 'none'});
         expect(calls).toEqual([['getAgent', 'alice']]);
     });
 
@@ -1383,5 +1384,151 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — in plane mode a seat
         expect(result.status).toBe('rejected');
         expect(result.reason).toMatch(/^the plane defined 'seat-one', but this host could not apply it: the credential store cannot be read/);
         expect(FleetRegistryService.getAgent('seat-one')).toBeNull()
+    })
+});
+
+test.describe.serial('Neo.ai.services.fleet.FleetControlBridge — getAgent planeCredential and listAgents store isolation (#1601)', () => {
+    const
+        PLANE         = 'http://127.0.0.1:3102',
+        SERVED        = Object.freeze({id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'}),
+        SHARED_PAT    = 'ghp_SHARED_FORGE_AND_PLANE_SECRET_1601',
+        DISTINCT_PAT  = 'plane_DISTINCT_BOUND_BEARER_SECRET_1601';
+
+    let tmpDir, managedRoot;
+
+    test.beforeEach(() => {
+        tmpDir      = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-bridge-plane-cred-1601-'));
+        managedRoot = path.join(tmpDir, 'managed');
+        fs.mkdirSync(managedRoot, {recursive: true});
+
+        FleetRegistryService.dataDir    = tmpDir;
+        FleetRegistryService.agentsRoot = managedRoot;
+        FleetTenantService.dataDir      = tmpDir;
+        FleetTenantService.probeFn      = async ({expectedIdentity, servedPlane}) => ({
+            ok       : true,
+            status   : 200,
+            verdict  : 'proved',
+            resources: {
+                'memory-core'   : {ok: true, status: 200, verdict: 'proved', identity: expectedIdentity, ...(servedPlane ? {plane: SERVED} : {})},
+                'knowledge-base': {ok: true, status: 200, verdict: 'proved', ...(servedPlane ? {plane: SERVED} : {})}
+            }
+        });
+        FleetManager.planeBase          = PLANE;
+
+        FleetControlBridge.registry      = FleetRegistryService;
+        FleetControlBridge.manager       = FleetManager;
+        FleetControlBridge.tenantService = FleetTenantService
+    });
+
+    test.afterEach(() => {
+        FleetControlBridge.registry      = null;
+        FleetControlBridge.manager       = null;
+        FleetControlBridge.tenantService = null;
+        FleetManager.planeBase           = null;
+        FleetTenantService.dataDir       = null;
+        FleetTenantService.probeFn       = null;
+        FleetRegistryService.dataDir     = null;
+        FleetRegistryService.agentsRoot  = null;
+        fs.rmSync(tmpDir, {recursive: true, force: true})
+    });
+
+    test('getAgent(id).planeCredential returns each of its four states from fixture stores, null for unknown id, and zero credential bytes (AC-1)', async () => {
+        expect(FleetControlBridge.getAgent('missing-seat')).toBeNull();
+
+        FleetRegistryService.defineAgent({
+            id            : 'alice',
+            githubUsername: 'alice',
+            harnessType   : 'codex',
+            credential    : SHARED_PAT
+        });
+
+        // 1. 'none' when plane store holds no complete row for the endpoint, and when Fleet serves no plane
+        const noneUnbound = await dispatchFleetRequest(createFleetWireRequest('getAgent', 'alice'), FleetControlBridge);
+        expect(noneUnbound).toMatchObject({ok: true, result: {id: 'alice', planeCredential: 'none'}});
+        expect(JSON.stringify(noneUnbound)).not.toContain(SHARED_PAT);
+
+        // 2. 'same-as-forge' when a complete bound plane row matches the forge credential
+        await FleetTenantService.storeSeatPlaneCredential({
+            planeBase : PLANE,
+            agentId   : 'alice',
+            identity  : '@alice',
+            credential: SHARED_PAT
+        });
+        const sameAsForge = await dispatchFleetRequest(createFleetWireRequest('getAgent', 'alice'), FleetControlBridge);
+        expect(sameAsForge).toMatchObject({ok: true, result: {id: 'alice', planeCredential: 'same-as-forge'}});
+        expect(JSON.stringify(sameAsForge)).not.toContain(SHARED_PAT);
+
+        // When Fleet serves no plane at all, even a seat with a stored plane file answers 'none'
+        FleetManager.planeBase = null;
+        expect(FleetControlBridge.getAgent('alice').planeCredential).toBe('none');
+        FleetManager.planeBase = PLANE;
+
+        // 3. 'distinct' when the complete bound plane row holds another credential
+        await FleetTenantService.storeSeatPlaneCredential({
+            planeBase : PLANE,
+            agentId   : 'alice',
+            identity  : '@alice',
+            credential: DISTINCT_PAT
+        });
+        const distinct = await dispatchFleetRequest(createFleetWireRequest('getAgent', 'alice'), FleetControlBridge);
+        expect(distinct).toMatchObject({ok: true, result: {id: 'alice', planeCredential: 'distinct'}});
+        expect(JSON.stringify(distinct)).not.toContain(SHARED_PAT);
+        expect(JSON.stringify(distinct)).not.toContain(DISTINCT_PAT);
+
+        // 4a. 'unreadable' when the plane credential store cannot be decrypted
+        const
+            planeStorePath = path.join(tmpDir, 'seat-plane-credentials.enc'),
+            savedPlaneRaw  = fs.readFileSync(planeStorePath, 'utf8');
+
+        fs.writeFileSync(planeStorePath, 'corrupt-plane-ciphertext');
+        const unreadablePlane = await dispatchFleetRequest(createFleetWireRequest('getAgent', 'alice'), FleetControlBridge);
+        expect(unreadablePlane).toMatchObject({ok: true, result: {id: 'alice', planeCredential: 'unreadable'}});
+        expect(JSON.stringify(unreadablePlane)).not.toContain(SHARED_PAT);
+        expect(JSON.stringify(unreadablePlane)).not.toContain(DISTINCT_PAT);
+
+        // 4b. 'unreadable' when the forge credential store cannot be decrypted
+        fs.writeFileSync(planeStorePath, savedPlaneRaw);
+        fs.writeFileSync(path.join(tmpDir, 'credentials.enc'), 'corrupt-forge-ciphertext');
+        const unreadableForge = await dispatchFleetRequest(createFleetWireRequest('getAgent', 'alice'), FleetControlBridge);
+        expect(unreadableForge).toMatchObject({ok: true, result: {id: 'alice', planeCredential: 'unreadable'}});
+        expect(JSON.stringify(unreadableForge)).not.toContain(SHARED_PAT);
+        expect(JSON.stringify(unreadableForge)).not.toContain(DISTINCT_PAT)
+    });
+
+    test('listAgents stays registry-only and reads neither credential store (AC-2)', async () => {
+        FleetRegistryService.defineAgent({
+            id            : 'alice',
+            githubUsername: 'alice',
+            harnessType   : 'codex',
+            credential    : SHARED_PAT
+        });
+        await FleetTenantService.storeSeatPlaneCredential({
+            planeBase : PLANE,
+            agentId   : 'alice',
+            identity  : '@alice',
+            credential: DISTINCT_PAT
+        });
+
+        let forgeReads = 0, planeReads = 0;
+        const
+            origForgeRead = FleetRegistryService.readCredentialsForMutation,
+            origPlaneRead = FleetTenantService.readSeatPlaneCredentialsForMutation;
+
+        FleetRegistryService.readCredentialsForMutation          = function(...args) { forgeReads++; return origForgeRead.apply(this, args) };
+        FleetTenantService.readSeatPlaneCredentialsForMutation   = function(...args) { planeReads++; return origPlaneRead.apply(this, args) };
+
+        try {
+            const roster = await dispatchFleetRequest(createFleetWireRequest('listAgents', {}), FleetControlBridge);
+
+            expect(roster.ok).toBe(true);
+            expect(roster.result).toHaveLength(1);
+            expect(roster.result[0]).not.toHaveProperty('planeCredential');
+            expect(JSON.stringify(roster)).not.toContain(SHARED_PAT);
+            expect(JSON.stringify(roster)).not.toContain(DISTINCT_PAT);
+            expect({forgeReads, planeReads}).toEqual({forgeReads: 0, planeReads: 0})
+        } finally {
+            FleetRegistryService.readCredentialsForMutation        = origForgeRead;
+            FleetTenantService.readSeatPlaneCredentialsForMutation = origPlaneRead
+        }
     })
 });
