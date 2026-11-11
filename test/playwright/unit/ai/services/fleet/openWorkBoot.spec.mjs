@@ -12,14 +12,19 @@ function bootSlice({enabled = true, plane = true, start}) {
     let wakeOptions;
     const events = [], round = () => {},
         seams    = {
-            startFleetBridgeServer               : async options => { events.push('listen'); return start?.(options) ?? {close() {}} },
-            settleFleetBridge                    : async () => ({state: 'ready', port: 1, action: 'verified', publicKeySha256: '0123456789abcdef'}),
-            superviseFleetBridge                 : () => ({stop() {}}),
-            FLEET_BRIDGE_STATES                  : {READY: 'ready'},
-            neuralLinkConfig                     : {port: 1},
-            FleetManager                         : {},
-            AiConfig                             : {fleet: {openWorkWakes: enabled, bearerHandshake: false}},
-            planeClient                          : plane ? {addMessage() { events.push('send') }} : null,
+            startFleetBridgeServer     : async options => { events.push('listen'); return start?.(options) ?? {close() {}} },
+            settleFleetBridge          : async () => ({state: 'ready', port: 1, action: 'verified', publicKeySha256: '0123456789abcdef'}),
+            superviseFleetBridge       : () => ({stop() {}}),
+            FLEET_BRIDGE_STATES        : {READY: 'ready'},
+            neuralLinkConfig           : {port: 1},
+            FleetManager               : {},
+            AiConfig                   : {fleet: {openWorkWakes: enabled, bearerHandshake: false, harnessGenerations: {checkIntervalHours: 6}}},
+            planeClient                : plane ? {addMessage() { events.push('send') }} : null,
+            lifecycle                  : {harnessAcquisitionContext: family => ({family, optedIn: false})},
+            wireFleetHarnessAcquisition: options => {
+                events.push(['acquire', options.context('codex-desktop'), options.intervalMs]);
+                return {stop() {}}
+            },
             planeCredential                      : null,
             FleetRegistryService                 : {}, RequestContextService: {run() {}},
             wireFleetOpenWorkWakes               : options => { wakeOptions = options; events.push('wake'); return round },
@@ -28,7 +33,7 @@ function bootSlice({enabled = true, plane = true, start}) {
             assertFleetViewerMcAuthorizationClass: () => null,
             console                              : {log() {}, warn() {}}, port: 1, bearerToken: 'fixture', viewer: {}, origins: []
         },
-        run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork; ${source.slice(begin, end)} })()`);
+        run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork, harnessAcquisition; ${source.slice(begin, end)} })()`);
     return {events, round, config: seams.AiConfig, wakeOptions: () => wakeOptions, run: () => run(...Object.values(seams))}
 }
 
@@ -63,7 +68,9 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         for (const [enabled, plane, wakes] of [[false, true, false], [true, false, false], [true, true, true]]) {
             const h = bootSlice({enabled, plane});
             await h.run();
-            expect(h.events).toEqual(wakes ? ['listen', 'wake', ['observe', h.round]] : ['listen', ['observe', null]]);
+            // the harness acquisition is wired after the observer in every mode, reading the lifecycle's context
+            const acquire = ['acquire', {family: 'codex-desktop', optedIn: false}, 6 * 3_600_000];
+            expect(h.events).toEqual(wakes ? ['listen', 'wake', ['observe', h.round], acquire] : ['listen', ['observe', null], acquire]);
             if (wakes) {
                 expect(h.wakeOptions().isEnabled()).toBe(true);
                 h.config.fleet.openWorkWakes = false;
@@ -80,11 +87,12 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                 fleetWakeStreamConsumer: {stop() { events.push('stream') }},
                 openWork               : {stop: () => { events.push('observer'); return active }},
                 wakeRound              : {stop: async () => { events.push('wake'); throw new Error('stop failure') }},
+                harnessAcquisition     : {stop() { events.push('acquisition') }},
                 planeClient            : {close: async () => { events.push('plane') }}
             }),
             running = stop();
         await Promise.resolve();
-        expect(events).toEqual(['stream', 'observer', 'wake']);
+        expect(events).toEqual(['stream', 'observer', 'wake', 'acquisition']);
         release();
         await expect(running).rejects.toThrow('stop failure');
         expect(events.at(-1)).toBe('plane');
@@ -113,10 +121,11 @@ test.describe('Fleet open-work boot custody (#761)', () => {
             drains    = [],
             deadlines = [],
             shutdown  = shutdownSlice({
-                AiConfig        : {fleet: {shutdownBudgetMs: 300}},
-                bridgeSupervisor: {stop() { events.push('bridge-stop') }},
-                runtime         : {generation: 'gen-1081'},
-                lifecycle       : {
+                AiConfig          : {fleet: {shutdownBudgetMs: 300}},
+                bridgeSupervisor  : {stop() { events.push('bridge-stop') }},
+                harnessAcquisition: {stop() { events.push('acquisition-stop') }},
+                runtime           : {generation: 'gen-1081'},
+                lifecycle         : {
                     listRunning       : () => [{id: 'seat-1'}],
                     getLaunchAdmission: () => ({
                         proofTimeoutMs: 5000,
@@ -162,16 +171,18 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         expect(match).not.toBeNull();
         expect(Number(match[1])).toBeGreaterThanOrEqual(250);
         expect(Number(match[1])).toBeLessThan(480);
-        expect(events).toEqual(['bridge-stop', 'close-unclean', 'close-plane', ['exit', 0]]);
+        // no harness run starts once shutdown begins; the one in flight is not awaited
+        expect(events).toEqual(['bridge-stop', 'acquisition-stop', 'close-unclean', 'close-plane', ['exit', 0]]);
 
         const fastLogs   = [],
             fastErrors   = [],
             fastEvents   = [],
             fastShutdown = shutdownSlice({
-                AiConfig        : {fleet: {shutdownBudgetMs: 300}},
-                bridgeSupervisor: {stop() {}},
-                runtime         : {generation: 'gen-1081-fast'},
-                lifecycle       : {
+                AiConfig          : {fleet: {shutdownBudgetMs: 300}},
+                bridgeSupervisor  : {stop() {}},
+                harnessAcquisition: null,
+                runtime           : {generation: 'gen-1081-fast'},
+                lifecycle         : {
                     listRunning       : () => [{id: 'seat-1'}],
                     getLaunchAdmission: () => ({
                         proofTimeoutMs: 5000,
@@ -258,7 +269,8 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                   FLEET_BRIDGE_STATES                  : {READY: 'ready'},
                   neuralLinkConfig                     : {port: 1},
                   FleetManager                         : {getTenantService: async () => ({})},
-                  AiConfig                             : {fleet: {openWorkWakes: false, bearerHandshake: false, bearer: 'supplied'}},
+                  AiConfig                             : {fleet: {openWorkWakes: false, bearerHandshake: false, bearer: 'supplied', harnessGenerations: {checkIntervalHours: 6}}},
+                  wireFleetHarnessAcquisition          : () => ({stop() {}}),
                   planeClient                          : null,
                   planeCredential                      : null,
                   credentialChannel                    : null,
@@ -277,7 +289,7 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                   viewer                               : {agentIdentityNodeId: 'AGENT:tobiu'},
                   origins                              : []
               },
-              run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork; ${source.slice(preBegin, preEnd)}\n${source.slice(postBegin, postEnd)} })()`);
+              run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork, harnessAcquisition; ${source.slice(preBegin, preEnd)}\n${source.slice(postBegin, postEnd)} })()`);
 
         const running = run(...Object.values(seams));
         await Promise.resolve();

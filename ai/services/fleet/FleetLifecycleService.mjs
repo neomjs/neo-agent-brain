@@ -3503,6 +3503,21 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary What the Fleet's background acquisition needs for one GUI family, from the same reads a Start
+     * makes: whether the family starts its seats from admitted generations, the store root, and the installed
+     * `.app` that serves as the vendor feed's reference bundle until a generation is selected.
+     * @param {String} harnessType
+     * @returns {{optedIn: Boolean, root: String, installedBundle: String|null}}
+     */
+    harnessAcquisitionContext(harnessType) {
+        return {
+            optedIn        : this.harnessGenerationsOptedIn(harnessType),
+            root           : this.getHarnessGenerationRoot(),
+            installedBundle: appBundleOf(this.getHarnessBinaryPath(harnessType))
+        }
+    }
+
+    /**
      * @summary A GUI family's admitted generations whose copy is present, newest first, whether or not the
      * family opts in now: a seat started while it did still runs from one. Empty for every other family.
      * @param {String} harnessType
