@@ -300,6 +300,52 @@ test.describe('Neo.ai.mcp.server.BaseServer — MCP initialize instructions for 
         }
     });
 
+    test('unforced Neural Link initialize instructions name only tools listed for per-request harness-embedded clients (AC-1)', async () => {
+        class UnforcedProjectedNeuralLinkServer extends NeuralLinkServer {
+            static config = {className: `Neo.test.mcp.server.UnforcedProjectedNeuralLinkServer${++_testClassCounter}`}
+            async initAsync() {}
+        }
+
+        const Cls                                = Neo.setupClass(UnforcedProjectedNeuralLinkServer),
+              server                             = Neo.create(Cls),
+              mcpServer                          = server.createMcpServer(),
+              [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair(),
+              client                             = new Client({name: 'embedded-harness-client', version: '1.0.0'}),
+              allOpIds                           = readAllOperationIds('ai/mcp/server/neural-link/openapi.yaml');
+
+        await Promise.all([
+            mcpServer.connect(serverTransport),
+            client.connect(clientTransport)
+        ]);
+
+        try {
+            const instructions    = client.getInstructions(),
+                  fullListing     = await client.listTools(),
+                  embeddedListing = await client.listTools({_meta: {neoToolProjection: 'harness-embedded'}}),
+                  fullSet         = new Set(fullListing.tools.map(t => t.name)),
+                  embeddedSet     = new Set(embeddedListing.tools.map(t => t.name)),
+                  namedTools      = extractCatalogToolNames(instructions);
+
+            expect(fullSet.size).toBeGreaterThan(embeddedSet.size);
+            assertInstructionsWithinBudget(instructions, 'neural-link (unforced intersection)');
+            expect(namedTools.length).toBeGreaterThan(0);
+
+            for (const namedTool of namedTools) {
+                expect(embeddedSet.has(namedTool), `unforced neural-link instructions named withheld tool ${namedTool}`).toBe(true);
+                expect(fullSet.has(namedTool)).toBe(true);
+            }
+
+            for (const opId of allOpIds) {
+                if (!embeddedSet.has(opId)) {
+                    expect(instructions).not.toMatch(new RegExp(`\\b${opId}\\b`));
+                }
+            }
+        } finally {
+            await client.close();
+            await mcpServer.close();
+        }
+    });
+
     test('budget gate rejects catalogs exceeding 15 lines or 1,600 bytes and x-neo-tool-catalog leaves tools/list byte-identical (AC-2, AC-5)', () => {
         const sixteenLineFixture   = Array.from({length: 16}, (_, i) => `Family${i}: tool_${i}`).join('\n');
         const oversizedByteFixture = Array.from({length: 10}, (_, i) => `Family${i}: tool_${i} (${'x'.repeat(170)})`).join('\n');

@@ -138,6 +138,16 @@ class Server extends BaseServer {
     }
 
     /**
+     * @summary Static `initialize` instructions hold across every client projection an unforced instance accepts.
+     * @returns {Array<Object|null>}
+     */
+    getAcceptedInstructionProjections() {
+        return this.toolProjectionMode != null
+            ? [{mode: this.toolProjectionMode}]
+            : [null, {mode: 'harness-embedded'}];
+    }
+
+    /**
      * @summary HealthService for the healthcheck gate + startup-status logging.
      * @returns {Object}
      */
