@@ -214,6 +214,8 @@ export function participationOf(row) {
  *     spellings of one seat — leading `@`s are stripped before the single canonical prefix, so an
  *     answered plane row is never converted into a fabricated `seat absent` by spelling alone.
  * @param {Date|String} [options.capturedAt] Capture timestamp — the observation-time bound above.
+ *     When omitted (`undefined`) and the resolved report carries a valid `payload.generatedAt`, that
+ *     producer timestamp becomes the single snapshot bound for both `beaconFacetAtBound` and `capability.capturedAt`.
  * @returns {Promise<{capability: Object, states: Object[]}>} `states` rows:
  *     `{agentId, presence, beacon, lastSeenAt, confidence, source, participation, participationRead}` (+ `reason`
  *     when `presence` is `unknown`, or `{validationState, since}` when the plane vouched stale validation);
@@ -227,17 +229,18 @@ export async function readFleetPresenceSnapshot({
     agents = [],
     readPresence = null,
     presenceIdentityFor = presenceIdentityForAgent,
-    capturedAt = new Date()
+    capturedAt
 } = {}) {
-    const hasReader = typeof readPresence === 'function',
-          // ONE resolved bound: the same instant the envelope declares as `capturedAt` is the
-          // instant every beacon horizon is evaluated against — bound and declaration can never
-          // drift apart by clock skew or a second `new Date()`
-          capturedAtIso = toIsoString(capturedAt),
-          capturedAtMs  = new Date(capturedAtIso).getTime(),
+    const hasReader     = typeof readPresence === 'function',
+          explicitBound = capturedAt !== undefined,
           states        = []
 
-    let byIdentity        = null,
+    // ONE resolved bound: the same instant the envelope declares as `capturedAt` is the
+    // instant every beacon horizon is evaluated against — bound and declaration can never
+    // drift apart by clock skew or a second `new Date()`
+    let capturedAtIso     = toIsoString(explicitBound ? capturedAt : new Date()),
+        capturedAtMs      = new Date(capturedAtIso).getTime(),
+        byIdentity        = null,
         participationById = null,
         readReasonCode    = null,
         readReason        = hasReader
@@ -251,6 +254,15 @@ export async function readFleetPresenceSnapshot({
             if (!Array.isArray(payload?.agents)) {
                 readReason = 'presence answer unreadable'
             } else {
+                if (!explicitBound && (typeof payload.generatedAt === 'string' || payload.generatedAt instanceof Date)) {
+                    const generatedAtMs = Date.parse(payload.generatedAt)
+
+                    if (Number.isFinite(generatedAtMs)) {
+                        capturedAtMs  = generatedAtMs
+                        capturedAtIso = new Date(generatedAtMs).toISOString()
+                    }
+                }
+
                 byIdentity        = new Map()
                 participationById = new Map()
 
@@ -296,7 +308,7 @@ export async function readFleetPresenceSnapshot({
 
         if (!agentId) continue
 
-        let presence          = 'unknown',
+        let presence = 'unknown',
             // no observation for this seat until an answered report carries its row
             beacon            = 'unobserved',
             lastSeenAt        = null,
@@ -339,8 +351,8 @@ export async function readFleetPresenceSnapshot({
             presence,
             beacon,
             lastSeenAt,
-            confidence       : presence === 'unknown' ? 'none' : 'observed',
-            source           : PRESENCE_SOURCE_LABEL,
+            confidence: presence === 'unknown' ? 'none' : 'observed',
+            source    : PRESENCE_SOURCE_LABEL,
             participation,
             participationRead
         }

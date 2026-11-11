@@ -23,6 +23,7 @@ import FleetRegistryService                                                    f
 import FleetTenantService                                                      from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
 import {armFleetSeatWake}                                                      from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
 import {createFleetCockpitStatus}                                              from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
+import {createPlaneWhoIsOnlineReader}                                          from '../../../../../../ai/services/fleet/planeWhoIsOnlineReader.mjs';
 import {PACKAGE_SLOTS_RECORD, PACKAGE_RECEIPT_PATH, runtimeGenerationIdentity} from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
 import {
     CREDENTIAL_REFUSAL_CAUSES,
@@ -2540,9 +2541,10 @@ test.describe('Neo.ai.services.fleet.FleetManager — the roster\'s plane axes a
     });
 
     test.afterEach(() => {
-        FleetManager.lifecycleService     = null;
-        FleetManager.presenceStateOptions = null;
-        FleetManager.wakeStateOptions     = null;
+        FleetManager.lifecycleService         = null;
+        FleetManager.presenceStateOptions     = null;
+        FleetManager.retainedPresenceSnapshot = null;
+        FleetManager.wakeStateOptions         = null;
     });
 
     test('a presence read still out at the bound reads as pending on every seat, and the snapshot answers', async () => {
@@ -2596,5 +2598,118 @@ test.describe('Neo.ai.services.fleet.FleetManager — the roster\'s plane axes a
 
         expect(late).toHaveLength(1);
         expect(late[0]).toMatch(/^\[fleet\] roster presence read answered after \d+ ms \(bound 50 ms\)$/);
+    });
+
+    test('retains a late-settling presence report across bounded poll timeouts within 4 * timeoutMs and expires past the horizon', async () => {
+        FleetManager.lifecycleService = {
+            getRegistry: () => ({
+                listAgents: () => [
+                    {id: 'neo-kimi-phoebe', githubUsername: 'neo-kimi-phoebe'},
+                    {id: 'alice',           githubUsername: 'alice'}
+                ]
+            })
+        };
+
+        let currentMs = Date.parse('2026-11-11T02:00:00.000Z');
+        const
+            now      = () => currentMs,
+            pending  = [],
+            callTool = () => new Promise(resolve => pending.push(resolve));
+
+        FleetManager.presenceStateOptions = {
+            readPresence: createPlaneWhoIsOnlineReader({callTool})
+        };
+
+        const poll1 = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now});
+
+        expect(pending).toHaveLength(1);
+        expect(poll1.capability).toMatchObject({state: 'degraded', reason: 'presence read still pending after 50 ms'});
+        expect(poll1.states.every(row => row.presence === 'unknown' && row.participation === null && row.participationRead.state === 'unread')).toBe(true);
+
+        currentMs += 80;
+        const settledGeneratedAt = '2026-11-11T02:00:00.075Z';
+
+        pending.shift()({
+            generatedAt: settledGeneratedAt,
+            agents     : [
+                {
+                    identity: '@neo-kimi-phoebe',
+                    state   : 'benched',
+                    signals : {
+                        participationStatus: 'operator_benched',
+                        statusReason       : 'paused for maintenance',
+                        participationSince : '2026-11-01T00:00:00.000Z'
+                    }
+                },
+                {
+                    identity: '@alice',
+                    state   : 'online',
+                    signals : {
+                        participationStatus: 'active',
+                        statusReason       : null,
+                        participationSince : null,
+                        turnPresence       : {
+                            fresh     : true,
+                            freshUntil: '2026-11-11T02:05:00.000Z',
+                            expiresAt : '2026-11-11T02:10:00.000Z'
+                        }
+                    }
+                }
+            ]
+        });
+        await new Promise(resolve => setImmediate(resolve));
+
+        currentMs += 150;
+        const poll2 = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now});
+
+        expect(pending, 'settled plane reader dispatches a fresh plane call on the next poll').toHaveLength(1);
+        expect(poll2.capability).toMatchObject({
+            state     : 'wired',
+            confidence: 'observed',
+            reason    : null,
+            capturedAt: settledGeneratedAt
+        });
+        expect(poll2.states.find(row => row.agentId === 'neo-kimi-phoebe')).toMatchObject({
+            presence     : 'benched',
+            participation: {
+                status: 'operator_benched',
+                reason: 'paused for maintenance',
+                since : '2026-11-01T00:00:00.000Z'
+            },
+            participationRead: {state: 'read'}
+        });
+        expect(poll2.states.find(row => row.agentId === 'alice')).toMatchObject({
+            presence         : 'active-turn',
+            beacon           : 'fresh',
+            participation    : {status: 'active', reason: null, since: null},
+            participationRead: {state: 'read'}
+        });
+
+        currentMs += 100;
+        const poll3 = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now});
+
+        expect(poll3.capability).toMatchObject({state: 'degraded', reason: 'presence read still pending after 50 ms'});
+        expect(poll3.states.every(row => row.presence === 'unknown' && row.participation === null && row.participationRead.state === 'unread')).toBe(true);
+    });
+
+    test('replacing or clearing readPresence drops any retained snapshot from a prior reader', async () => {
+        let   currentMs = Date.parse('2026-11-11T02:00:00.000Z');
+        const now       = () => currentMs;
+
+        FleetManager.presenceStateOptions = {
+            readPresence: async () => ({
+                generatedAt: '2026-11-11T02:00:00.000Z',
+                agents     : [{identity: '@alice', state: 'online', signals: {participationStatus: 'active'}}]
+            })
+        };
+
+        const settled = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now});
+        expect(settled.capability.state).toBe('wired');
+
+        FleetManager.presenceStateOptions = {readPresence: never};
+        const swapped = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now});
+
+        expect(swapped.capability).toMatchObject({state: 'degraded', reason: 'presence read still pending after 50 ms'});
+        expect(swapped.states[0]).toMatchObject({presence: 'unknown', participation: null, participationRead: {state: 'unread'}});
     });
 });

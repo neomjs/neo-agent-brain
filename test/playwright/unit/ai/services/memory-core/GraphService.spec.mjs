@@ -1936,3 +1936,54 @@ test.describe('GraphService — getLifecycleCensus (#10158)', () => {
         expect(census.error).toContain('unavailable');
     });
 });
+
+test.describe('GraphService#getSessionNodeCount — covering partial index', () => {
+    let GraphService, SQLite, originalDb;
+
+    test.beforeAll(async () => {
+        GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        SQLite       = (await import('../../../../../../ai/graph/storage/SQLite.mjs')).default;
+    });
+
+    test.beforeEach(() => { originalDb = GraphService.db; });
+    test.afterEach(()  => { GraphService.db = originalDb; });
+
+    test('counts deployment-wide SESSION nodes via SEARCH Nodes USING COVERING INDEX idx_nodes_session_user_id', async () => {
+        const dbPath  = path.join(os.tmpdir(), `neo-session-count-${process.pid}-${Date.now()}.sqlite`),
+              storage = Neo.create(SQLite, {dbPath});
+
+        try {
+            await storage.initAsync();
+
+            const insert = storage.db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)');
+
+            insert.run('SESSION:null-user', JSON.stringify({id: 'SESSION:null-user', label: 'SESSION', properties: {userId: null}}));
+            insert.run('SESSION:empty-user', JSON.stringify({id: 'SESSION:empty-user', label: 'SESSION', properties: {userId: ''}}));
+            insert.run('SESSION:omitted-user', JSON.stringify({id: 'SESSION:omitted-user', label: 'SESSION', properties: {}}));
+            insert.run('SESSION:tenanted', JSON.stringify({id: 'SESSION:tenanted', label: 'SESSION', properties: {userId: 'tenant-alpha'}}));
+            insert.run('MESSAGE:1', JSON.stringify({id: 'MESSAGE:1', label: 'MESSAGE', properties: {}}));
+
+            const executedSql = [],
+                  rawDb       = storage.db,
+                  spyDb       = {
+                      prepare(sql) {
+                          executedSql.push(sql);
+                          return rawDb.prepare(sql);
+                      }
+                  };
+
+            GraphService.db = {storage: {db: spyDb}};
+
+            expect(GraphService.getSessionNodeCount()).toBe(3);
+            expect(executedSql).toHaveLength(1);
+
+            const planDetails = rawDb.prepare(`EXPLAIN QUERY PLAN ${executedSql[0]}`).all().map(row => row.detail).join('\n');
+
+            expect(planDetails).toContain('SEARCH Nodes USING COVERING INDEX idx_nodes_session_user_id');
+        } finally {
+            storage.db?.close();
+            storage.destroy?.();
+            ['', '-wal', '-shm'].forEach(suffix => fs.rmSync(dbPath + suffix, {force: true}));
+        }
+    });
+});
