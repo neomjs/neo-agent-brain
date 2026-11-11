@@ -1039,4 +1039,40 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         expect(third.conceptsUpserted).toBe(0);
         expect(third.conceptsSkipped).toBe(1);
     });
+
+    test('shares row-check verdicts with ConceptService.importEdges and never writes to the concept store', async () => {
+        writeFixture(
+            [
+                {id: 'alpha-concept', name: 'Alpha Concept', tier: 1, description: 'Primary',   uniqueToNeo: true,  tags: []},
+                {id: 'beta-concept',  name: 'Beta Concept',  tier: 2, description: 'Secondary', uniqueToNeo: false, tags: []}
+            ],
+            []
+        );
+
+        const candidateRows = [
+            {source: 'alpha-concept', target: 'file:ai/services/ConceptService.mjs', type: 'IMPLEMENTED_BY'},
+            {source: 'alpha-concept', target: 'file:src/Neo.mjs',                    type: 'IMPLEMENTED_BY'},
+            {source: 'alpha-concept', target: 'ext:sample-analogue',                 type: 'ANALOGOUS_TO', note: 'Shared check.'},
+            {source: 'alpha-concept', target: 'beta-concept',                        type: 'REQUIRES'},
+            {source: 'alpha-concept', target: 'file:src/NoSuchFile.mjs',             type: 'IMPLEMENTED_BY'},
+            {source: 'alpha-concept', target: 'ext:',                                type: 'ANALOGOUS_TO'},
+            {source: 'alpha-concept', target: 'file:src/Neo.mjs',                    type: 'BOGUS_EDGE_TYPE'}
+        ];
+
+        const importReport   = ConceptService.importEdges({tenant: 'neo-shared', rows: candidateRows}),
+              normalized     = ConceptIngestor.normalizeOutboundEdges('alpha-concept', candidateRows),
+              edgesPath      = path.join(tmpConceptsDir, 'edges.jsonl'),
+              bytesAfterSave = fs.readFileSync(edgesPath, 'utf8');
+
+        expect(importReport.added.length).toBe(4);
+        expect(normalized.edges.length).toBe(4);
+        expect(importReport.refused.map(item => item.code)).toEqual(
+            normalized.findings.map(finding => finding.code)
+        );
+
+        const syncStats = await ConceptIngestor.syncConceptsToGraph();
+        expect(syncStats.edgesAdded).toBe(4);
+        expect(syncStats.integrityFindings).toEqual([]);
+        expect(fs.readFileSync(edgesPath, 'utf8')).toBe(bytesAfterSave);
+    });
 });

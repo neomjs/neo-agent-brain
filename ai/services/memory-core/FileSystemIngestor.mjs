@@ -1,26 +1,23 @@
 import fs              from 'fs';
 import path            from 'path';
-import {createRequire} from 'module';
 import {fileURLToPath} from 'url';
 import Base            from 'neo.mjs/src/core/Base.mjs';
 import crypto          from 'crypto';
 import GraphService    from './GraphService.mjs';
 import logger          from '../../mcp/server/memory-core/logger.mjs';
+import {
+    DEFAULT_FILESYSTEM_IGNORE_EXTS,
+    DEFAULT_FILESYSTEM_IGNORE_PATTERNS,
+    SPLIT_TREE_ROOTS,
+    getRepositoryNodeId,
+    isIgnoredRepositoryPath,
+    resolveRepositoryFileReference,
+    resolveSplitTreeFileReference
+} from '../shared/conceptEdgeValidation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 const neoRootDir = path.resolve(__dirname, '../../../');
-const require    = createRequire(import.meta.url);
-
-/**
- * The named roots a reference authored against the pre-split neo repository resolves in, in order:
- * this checkout, then the Engine package at the version this checkout pins. A reference to a file a
- * newer Engine added reads `MISSING_FILE` at that version. A third root joins only by ticket.
- */
-const SPLIT_TREE_ROOTS = Object.freeze([
-    Object.freeze({name: 'neo-agent-brain', dir: neoRootDir}),
-    Object.freeze({name: 'neo.mjs', dir: path.dirname(require.resolve('neo.mjs/package.json')), version: require('neo.mjs/package.json').version})
-]);
 
 /**
  * @summary Ingests the physical Neo project structure into Native Graph nodes.
@@ -40,11 +37,11 @@ class FileSystemIngestor extends Base {
         /**
          * Standard high-noise directories and files to completely ignore.
          */
-        ignorePatterns_: ['node_modules', 'dist', '.git', '.DS_Store', 'build', '.env', '.neo-ai-data', 'docs/output', 'tmp', '.idea', '.gemini', '.codex', '.claude', '.agents', 'resources/images', 'resources/fonts'],
+        ignorePatterns_: [...DEFAULT_FILESYSTEM_IGNORE_PATTERNS],
         /**
          * Extensions to explicitly ignore (images, fonts, raw binaries)
          */
-        ignoreExts_: ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4', '.avi', '.map', '.pdf', '.zip', '.tar', '.gz']
+        ignoreExts_: [...DEFAULT_FILESYSTEM_IGNORE_EXTS]
     }
 
     /**
@@ -56,7 +53,7 @@ class FileSystemIngestor extends Base {
      * @returns {String} Canonical `file-<path>` node ID.
      */
     getRepositoryNodeId(relativePath) {
-        return `file-${String(relativePath).replace(/\\/g, '/')}`;
+        return getRepositoryNodeId(relativePath);
     }
 
     /**
@@ -68,11 +65,10 @@ class FileSystemIngestor extends Base {
      * @returns {Boolean}
      */
     isIgnoredPath(relativePath, isDirectory=false) {
-        if (this.ignorePatterns.some(pattern => relativePath === pattern || relativePath.startsWith(pattern + '/'))) {
-            return true;
-        }
-
-        return !isDirectory && this.ignoreExts.includes(path.extname(relativePath).toLowerCase());
+        return isIgnoredRepositoryPath(relativePath, isDirectory, {
+            ignorePatterns: this.ignorePatterns,
+            ignoreExts    : this.ignoreExts
+        });
     }
 
     /**
@@ -88,26 +84,10 @@ class FileSystemIngestor extends Base {
      * @returns {Object} The {@link #resolveFileReference} shape, plus `root` and `rootVersion` when valid.
      */
     resolveSplitTreeReference(relativePath, roots=SPLIT_TREE_ROOTS) {
-        const
-            resolutions = roots.map(root => ({root, resolution: this.resolveFileReference(relativePath, root.dir)})),
-            resolved    = resolutions.filter(({resolution}) => resolution.valid);
-
-        if (resolved.length > 1) {
-            return {
-                valid       : false,
-                code        : 'AMBIGUOUS_FILE',
-                reason      : `File reference exists in more than one repository root (${resolved.map(({root}) => root.name).join(', ')}): ${resolved[0].resolution.relativePath}`,
-                relativePath: resolved[0].resolution.relativePath
-            }
-        }
-
-        if (resolved.length === 0) {
-            return resolutions[0].resolution
-        }
-
-        const {root, resolution} = resolved[0];
-
-        return {...resolution, root: root.name, ...(root.version ? {rootVersion: root.version} : {})}
+        return resolveSplitTreeFileReference(relativePath, roots, {
+            ignorePatterns: this.ignorePatterns,
+            ignoreExts    : this.ignoreExts
+        });
     }
 
     /**
@@ -121,145 +101,10 @@ class FileSystemIngestor extends Base {
      * @returns {Object} `{valid, code, reason, absolutePath, nodeId, relativePath}`.
      */
     resolveFileReference(relativePath, rootDir=neoRootDir) {
-        const rawPath = typeof relativePath === 'string' ? relativePath.trim().replace(/\\/g, '/') : '';
-
-        if (!rawPath || path.isAbsolute(rawPath) || /^[A-Za-z]:\//.test(rawPath)) {
-            return {
-                valid : false,
-                code  : 'INVALID_FILE_REFERENCE',
-                reason: 'File references must be non-empty repository-relative paths.'
-            }
-        }
-
-        const
-            normalizedPath = path.posix.normalize(rawPath),
-            resolvedRoot   = path.resolve(rootDir),
-            absolutePath   = path.resolve(resolvedRoot, normalizedPath),
-            containment    = path.relative(resolvedRoot, absolutePath);
-
-        if (normalizedPath === '.' || normalizedPath === '..' || normalizedPath.startsWith('../')
-            || containment === '..' || containment.startsWith(`..${path.sep}`) || path.isAbsolute(containment)) {
-            return {
-                valid       : false,
-                code        : 'OUTSIDE_REPOSITORY',
-                reason      : `File reference escapes the repository root: ${rawPath}`,
-                relativePath: normalizedPath
-            }
-        }
-
-        if (this.isIgnoredPath(normalizedPath)) {
-            return {
-                valid       : false,
-                code        : 'IGNORED_FILE',
-                reason      : `File reference is excluded from filesystem projection: ${normalizedPath}`,
-                relativePath: normalizedPath
-            }
-        }
-
-        let stat;
-
-        try {
-            stat = fs.lstatSync(absolutePath)
-        } catch {
-            return {
-                valid       : false,
-                code        : 'MISSING_FILE',
-                reason      : `Repository file does not exist: ${normalizedPath}`,
-                absolutePath,
-                relativePath: normalizedPath
-            }
-        }
-
-        if (!stat.isFile()) {
-            return {
-                valid       : false,
-                code        : 'NOT_A_FILE',
-                reason      : `Repository reference is not a regular file: ${normalizedPath}`,
-                absolutePath,
-                relativePath: normalizedPath
-            }
-        }
-
-        const
-            authoredSegments  = normalizedPath.split('/'),
-            canonicalSegments = [];
-
-        let currentDirectory = resolvedRoot;
-
-        try {
-            for (let index = 0; index < authoredSegments.length; index++) {
-                const
-                    segment      = authoredSegments[index],
-                    entries      = fs.readdirSync(currentDirectory),
-                    exactEntry   = entries.find(entry => entry === segment),
-                    matchingCase = exactEntry || entries.find(entry => entry.toLowerCase() === segment.toLowerCase());
-
-                if (!exactEntry) {
-                    const canonicalPath = [
-                        ...canonicalSegments,
-                        matchingCase || segment,
-                        ...authoredSegments.slice(index + 1)
-                    ].join('/');
-
-                    return {
-                        valid       : false,
-                        code        : 'NON_CANONICAL_FILE_REFERENCE',
-                        reason      : `File reference must use the repository's exact path casing: ${canonicalPath}`,
-                        absolutePath,
-                        relativePath: normalizedPath
-                    }
-                }
-
-                canonicalSegments.push(exactEntry);
-                currentDirectory = path.join(currentDirectory, exactEntry)
-            }
-        } catch (error) {
-            return {
-                valid       : false,
-                code        : 'CANONICAL_PATH_UNVERIFIED',
-                reason      : `Could not verify repository path casing for ${normalizedPath}: ${error.message}`,
-                absolutePath,
-                relativePath: normalizedPath
-            }
-        }
-
-        const
-            realRoot              = fs.realpathSync(resolvedRoot),
-            realPath              = fs.realpathSync(absolutePath),
-            realContainment       = path.relative(realRoot, realPath),
-            canonicalRelativePath = realContainment.replace(/\\/g, '/');
-
-        if (realContainment === '..' || realContainment.startsWith(`..${path.sep}`) || path.isAbsolute(realContainment)) {
-            return {
-                valid       : false,
-                code        : 'OUTSIDE_REPOSITORY',
-                reason      : `File reference resolves outside the repository root: ${normalizedPath}`,
-                absolutePath,
-                relativePath: normalizedPath
-            }
-        }
-
-        // The walker deliberately skips symlinks and emits the filesystem's exact
-        // case. An alias through a symlinked parent or a case-mismatched path on a
-        // case-insensitive host would therefore create a second, unowned FILE id.
-        if (canonicalRelativePath !== normalizedPath) {
-            return {
-                valid       : false,
-                code        : 'NON_CANONICAL_FILE_REFERENCE',
-                reason      : `File reference must use the repository's canonical path: ${canonicalRelativePath}`,
-                absolutePath,
-                relativePath: normalizedPath
-            }
-        }
-
-        return {
-            valid       : true,
-            code        : null,
-            reason      : null,
-            absolutePath,
-            nodeId      : this.getRepositoryNodeId(normalizedPath),
-            relativePath: normalizedPath
-        }
+        return resolveRepositoryFileReference(relativePath, rootDir, {
+            ignorePatterns: this.ignorePatterns,
+            ignoreExts    : this.ignoreExts
+        });
     }
 
     /**
