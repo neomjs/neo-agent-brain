@@ -40,7 +40,7 @@ x-neo-harness-tool-projection:
 paths:
   /healthcheck:
     get:
-      summary: Health Check
+      summary: Probe KB server and ChromaDB liveness; use when KB calls fail.
       operationId: healthcheck
       x-pass-as-object: true
       x-neo-tool-tier: read
@@ -78,7 +78,7 @@ paths:
 
   /ingestion/progress:
     get:
-      summary: Ingestion progress for THIS PROCESS only; pull-mode tenant lanes run elsewhere.
+      summary: Read ingestion progress for THIS PROCESS only (not scheduled repo sync); use when checking in-process KB ingest.
       operationId: get_ingestion_progress
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -119,7 +119,7 @@ paths:
 
   /tool/handbook:
     post:
-      summary: Tool Handbook
+      summary: Fetch full usage docs and schemas for one Knowledge Base tool; use when a listed summary is not enough to call it.
       operationId: get_mcp_tool_handbook
       x-neo-tool-tier: read
       x-annotations:
@@ -166,7 +166,7 @@ paths:
 
   /deployment/state/snapshot:
     post:
-      summary: Read the graph-independent deployment-state bridge snapshot.
+      summary: Read the orchestrator deployment and repo-sync snapshot via KB; use when Memory Core is down or checking sync state.
       operationId: get_deployment_state_snapshot
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -203,7 +203,7 @@ paths:
 
   /deployment/inspect:
     post:
-      summary: Inspect bounded cloud deployment state from the orchestrator bridge.
+      summary: Inspect container diagnoses, log tails, and recovery runs via KB; use when triaging degraded plane services or crashes.
       operationId: inspect_deployment
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -238,7 +238,7 @@ paths:
 
   /db/data/manage:
     post:
-      summary: Manage Knowledge Base Data
+      summary: Create, embed, sync, or delete the KB vector corpus; use when resetting ChromaDB or syncing a diff of at most 50 chunks.
       operationId: manage_knowledge_base
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -285,7 +285,7 @@ paths:
 
   /db/data/ingest:
     post:
-      summary: Ingest Source Files
+      summary: Push and embed a small batch of source files into KB; use when incrementally ingesting changed repo files (<=50 chunks).
       operationId: ingest_source_files
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -326,7 +326,7 @@ paths:
 
   /documents/query:
     post:
-      summary: Search the Knowledge Base and return ranked source references.
+      summary: Return ranked KB source references without synthesis; use when more than the top 5 references are needed.
       operationId: query_documents
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -460,7 +460,7 @@ paths:
 
   /knowledge/ask:
     post:
-      summary: Ask the Knowledge Base for a synthesized answer with cited references.
+      summary: Synthesize one grounded answer with top-5 cited refs; use when asking how a concept works or where it lives.
       operationId: ask_knowledge_base
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -642,7 +642,7 @@ paths:
 
   /knowledge/agent-faqs:
     post:
-      summary: List Agent FAQs
+      summary: List recurring agent Knowledge Base query clusters from telemetry; use when auditing common KB questions or doc gaps.
       operationId: list_agent_faqs
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -698,7 +698,7 @@ paths:
       # The scope belongs on the DEFAULT-visible tier: `tools/list` shows `summary`, while the long
       # `description` below is only served on an explicit `get_mcp_tool_handbook` call. A caller who
       # never fetches the handbook is exactly the caller who would misread the scope.
-      summary: Static class-hierarchy map for Neo.mjs code only — not your own or any tenant's repositories.
+      summary: Map class inheritance for Neo.mjs code only (not your own or any tenant's repositories); use when finding subclasses.
       operationId: get_class_hierarchy
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -757,7 +757,7 @@ paths:
 
   /documents:
     get:
-      summary: List Documents
+      summary: List paginated raw document chunks stored in the Knowledge Base; use when inspecting indexed corpus chunks after embed.
       operationId: list_documents
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -802,7 +802,7 @@ paths:
 
   /documents/{id}:
     get:
-      summary: Get Document by ID
+      summary: Fetch one stored Knowledge Base chunk by document ID; use when inspecting a specific chunk returned by list or query.
       operationId: get_document_by_id
       x-neo-tool-tier: read
       x-pass-as-object: true
