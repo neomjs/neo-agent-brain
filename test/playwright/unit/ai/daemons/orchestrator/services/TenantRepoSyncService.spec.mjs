@@ -294,14 +294,16 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // base" — a far more expensive request than the operator made, and one they cannot undo.
         const throttled = 'acme/throttled',
               healthy   = 'acme/healthy',
-              untouched = 'acme/untouched';
+              untouched = 'acme/untouched',
+              // The manifest key the sweep writes. A fixture keyed by the bare slug is one no sweep produces.
+              key       = repoSlug => `t1/${repoSlug}`;
 
         await TenantRepoSyncService.writePersistedRevisions({
             filePath : revisionsFile,
             revisions: {
-                [throttled]: {lastIngestedRev: 'sha-throttled', lastRunAttemptAt: 111, consecutiveFailures: 42, ingestContractVersion: 3},
-                [healthy]  : {lastIngestedRev: 'sha-healthy',   lastRunAttemptAt: 222, consecutiveFailures: 0},
-                [untouched]: {lastIngestedRev: 'sha-untouched', lastRunAttemptAt: 333, consecutiveFailures: 7}
+                [key(throttled)]: {lastIngestedRev: 'sha-throttled', lastRunAttemptAt: 111, consecutiveFailures: 42, ingestContractVersion: 3},
+                [key(healthy)]  : {lastIngestedRev: 'sha-healthy',   lastRunAttemptAt: 222, consecutiveFailures: 0},
+                [key(untouched)]: {lastIngestedRev: 'sha-untouched', lastRunAttemptAt: 333, consecutiveFailures: 7}
             }
         });
 
@@ -323,7 +325,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         // and the suppression is attributable to the STREAK: no embeddingRecovery in this fixture,
         // so `recoveryBypass` cannot be what releases the lane a moment from now.
-        expect(dueStateFor(beforeClear[throttled])).toMatchObject({due: false, recoveryBypass: false, backoffCapped: true});
+        expect(dueStateFor(beforeClear[key(throttled)])).toMatchObject({due: false, recoveryBypass: false, backoffCapped: true});
 
         const result = await TenantRepoSyncService.clearTenantRepoBackoff({
             onlyRepoSlugs    : [throttled, healthy],
@@ -332,41 +334,72 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         });
 
         expect(result.status).toBe('completed');
-        expect(result.details.cleared).toEqual([{repoSlug: throttled, previousConsecutiveFailures: 42}]);
+        expect(result.details.cleared).toEqual([{repoSlug: throttled, tenantId: 't1', previousConsecutiveFailures: 42}]);
         // Already-clear is REPORTED, not folded into success: an operator who clears a backoff and
         // is told nothing cannot distinguish a completed no-op from a mistyped selector.
         expect(result.details.unchanged).toEqual([
-            {repoSlug: healthy, consecutiveFailures: 0, reason: 'already-clear'}
+            {repoSlug: healthy, tenantId: 't1', consecutiveFailures: 0, reason: 'already-clear'}
         ]);
 
         const persisted = await TenantRepoSyncService.readPersistedRevisions({filePath: revisionsFile});
 
-        expect(persisted[throttled].consecutiveFailures).toBe(0);
+        expect(persisted[key(throttled)].consecutiveFailures).toBe(0);
         // every other field survives verbatim — the streak is the only thing this operation owns
-        expect(persisted[throttled].lastIngestedRev).toBe('sha-throttled');
-        expect(persisted[throttled].lastRunAttemptAt).toBe(111);
-        expect(persisted[throttled].ingestContractVersion).toBe(3);
+        expect(persisted[key(throttled)].lastIngestedRev).toBe('sha-throttled');
+        expect(persisted[key(throttled)].lastRunAttemptAt).toBe(111);
+        expect(persisted[key(throttled)].ingestContractVersion).toBe(3);
         // and a repo outside the selector is not collateral
-        expect(persisted[untouched].consecutiveFailures).toBe(7);
+        expect(persisted[key(untouched)].consecutiveFailures).toBe(7);
 
         // AC-1's third clause: the consumption is RECORDED, not just performed. Persisted beside the
         // reset so the deployment-state snapshot can surface it to an operator with no shell — and
         // carrying what the streak was, because "cleared 42 -> 0" answers a question "cleared" does
         // not: whether the suppression removed was the one being chased.
-        expect(persisted[throttled].backoffClearedFromFailures).toBe(42);
-        expect(typeof persisted[throttled].backoffClearedAt).toBe('string');
+        expect(persisted[key(throttled)].backoffClearedFromFailures).toBe(42);
+        expect(typeof persisted[key(throttled)].backoffClearedAt).toBe('string');
         // an unchanged repo earns no marker — a clear that did nothing must not read as an
         // intervention later. NULL rather than absent: the checkpoint normalizer is an allowlist
         // that materializes every field, so "never cleared" is present-and-null exactly like every
         // other unobserved field in that shape.
-        expect(persisted[healthy].backoffClearedAt).toBeNull();
-        expect(persisted[untouched].backoffClearedAt).toBeNull();
+        expect(persisted[key(healthy)].backoffClearedAt).toBeNull();
+        expect(persisted[key(untouched)].backoffClearedAt).toBeNull();
 
         // the other half of the clause: the same derivation, same instant, now releases the lane —
         // and the repo left outside the selector stays suppressed, so this is a scoped release
         // rather than a manifest-wide one.
-        expect(dueStateFor(persisted[throttled])).toMatchObject({due: true, dueReason: 'cadence'});
-        expect(dueStateFor(persisted[untouched]).due).toBe(false)
+        expect(dueStateFor(persisted[key(throttled)])).toMatchObject({due: true, dueReason: 'cadence'});
+        expect(dueStateFor(persisted[key(untouched)]).due).toBe(false)
+    });
+
+    test('clear-backoff clears a slug under every tenant that configures it, and leaves an entry no sweep wrote alone', async () => {
+        const repoSlug = 'acme/shared';
+
+        await TenantRepoSyncService.writePersistedRevisions({
+            filePath : revisionsFile,
+            revisions: {
+                [`t1/${repoSlug}`]: {lastIngestedRev: 'sha-t1',   lastRunAttemptAt: 111, consecutiveFailures: 5},
+                [`t2/${repoSlug}`]: {lastIngestedRev: 'sha-t2',   lastRunAttemptAt: 222, consecutiveFailures: 9},
+                // Keyed by the bare slug, which is the only shape the clear used to find.
+                [repoSlug]        : {lastIngestedRev: 'sha-bare', lastRunAttemptAt: 333, consecutiveFailures: 3}
+            }
+        });
+
+        const result = await TenantRepoSyncService.clearTenantRepoBackoff({
+            onlyRepoSlugs    : [repoSlug],
+            revisionsFilePath: revisionsFile,
+            tenantReposConfig: {tenantRepos: ['t1', 't2'].map(tenantId => ({repoSlug, tenantId}))}
+        });
+
+        expect(result.details.cleared).toEqual([
+            {repoSlug, tenantId: 't1', previousConsecutiveFailures: 5},
+            {repoSlug, tenantId: 't2', previousConsecutiveFailures: 9}
+        ]);
+
+        const persisted = await TenantRepoSyncService.readPersistedRevisions({filePath: revisionsFile});
+
+        expect(persisted[`t1/${repoSlug}`].consecutiveFailures).toBe(0);
+        expect(persisted[`t2/${repoSlug}`].consecutiveFailures).toBe(0);
+        expect(persisted[repoSlug].consecutiveFailures).toBe(3)
     });
 
     test('both entry paths refuse the SAME selector sets — the divergence cannot reopen silently', async () => {
@@ -440,12 +473,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('clear-backoff without tenantReposConfig resolves graph and kb-config.yaml tiers via resolveTenantReposConfig', async () => {
-        const repoSlug = 'github-content-sync';
+        const repoSlug = 'github-content-sync',
+              key      = `neo-shared/${repoSlug}`;
 
         await TenantRepoSyncService.writePersistedRevisions({
             filePath : revisionsFile,
             revisions: {
-                [repoSlug]: {
+                [key]: {
                     lastIngestedRev      : 'sha-content-sync',
                     lastRunAttemptAt     : 555,
                     consecutiveFailures  : 3,
@@ -472,13 +506,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         });
 
         expect(result.status).toBe('completed');
-        expect(result.details.cleared).toEqual([{repoSlug, previousConsecutiveFailures: 3}]);
+        expect(result.details.cleared).toEqual([{repoSlug, tenantId: 'neo-shared', previousConsecutiveFailures: 3}]);
 
         const persisted = await TenantRepoSyncService.readPersistedRevisions({filePath: revisionsFile});
 
-        expect(persisted[repoSlug].consecutiveFailures).toBe(0);
-        expect(persisted[repoSlug].backoffClearedFromFailures).toBe(3);
-        expect(persisted[repoSlug].lastIngestedRev).toBe('sha-content-sync');
+        expect(persisted[key].consecutiveFailures).toBe(0);
+        expect(persisted[key].backoffClearedFromFailures).toBe(3);
+        expect(persisted[key].lastIngestedRev).toBe('sha-content-sync');
     });
 
     test('embedding recovery checkpoints degrade by omission, retain restart truth, and consumed grants become history (#16692)', async () => {
