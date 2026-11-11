@@ -2366,6 +2366,45 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(warnings, 'exactly one WARN names the parked repo and the flag').toHaveLength(1);
     });
 
+    test('a refused bulk prefetch is named on the run with a bounded reason, for that repo only', async () => {
+        const
+            taskStateService = createTaskStateService(),
+            logs             = [],
+            builder          = makeFakeEnvelopeBuilder();
+
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/cold'});
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/warm'});
+
+        const result = await TenantRepoSyncService.runTask({
+            reason           : 'manual',
+            taskStateService,
+            writeLog         : (level, message) => logs.push(`${level} ${message}`),
+            tenantReposConfig: {tenantRepos: [
+                {tenantId: 't1', repoSlug: 'org/cold', mirrorRoot, cloneUrl: 'https://github.com/neomjs/cold.git'},
+                {tenantId: 't1', repoSlug: 'org/warm', mirrorRoot, cloneUrl: 'https://github.com/neomjs/warm.git'}
+            ]},
+            gitMirror      : makeFakeGitMirror(),
+            envelopeBuilder: async args => ({
+                ...await builder(args),
+                ...(args.repoSlug === 'org/cold' ? {
+                    unavailablePrefetches: [
+                        {requested: 5, reason: 'KB_GITMIRROR_PREFETCH_FETCH_FAILED'},
+                        {requested: 3, reason: 'fatal: unable to access https://user:TOKEN-must-not-project@host/x.git'}
+                    ]
+                } : {})
+            }),
+            knowledgeBaseIngestionService: makeFakeIngestionService(),
+            onlyRepoSlugs                : ['org/cold', 'org/warm'],
+            revisionsFilePath            : revisionsFile
+        });
+
+        expect(result.status).toBe('completed');
+        expect(logs.filter(line => line.includes('blob prefetch unavailable'))).toEqual([
+            'WARN [TenantRepoSync] t1/org/cold blob prefetch unavailable: prefetches=2 requested=8 ' +
+            'reasons=KB_GITMIRROR_PREFETCH_FETCH_FAILED,unclassified'
+        ]);
+    });
+
     test('a sweep whose every entry is disabled skips as all-disabled, not as unconfigured (#434)', async () => {
         const
             ingestCalls = [],

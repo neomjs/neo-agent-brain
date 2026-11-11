@@ -77,13 +77,18 @@ export function isBinaryRevisionBlob(value) {
  * one per extraction route. An adapter without `openRevisionBlobSession`, a session that fails to
  * open, and every read after `close` answer `null`, which sends the caller to the per-file read.
  *
+ * It also keeps the materialization's bulk prefetches that ended `unavailable`, whichever scope
+ * asked for them, so the root reader can name every fallback to one round trip per blob.
+ *
  * @param {Object} options
- * @returns {{read: function(String): Promise<Buffer|null>, close: function(): Promise<void>}}
+ * @returns {{read: function(String): Promise<Buffer|null>, close: function(): Promise<void>, unavailablePrefetches: Object[]}}
  */
 function createSharedBlobSession({gitMirror, mirrorRoot, tenantId, repoSlug, revision}) {
     let opening, closed = false;
 
     return {
+        unavailablePrefetches: [],
+
         async read(sourcePath) {
             if (closed || typeof gitMirror.openRevisionBlobSession !== 'function') {
                 return null
@@ -318,6 +323,9 @@ export function createRepositoryRevisionReader({
 
         /**
          * @summary Bulk-prefetches regular blobs inside this scope when the adapter supports it.
+         *
+         * A prefetch that ends `unavailable` is kept on the shared session: the reads that follow
+         * still work, one round trip each, and {@link unavailablePrefetches} is their only trace.
          * @param {String[]} sourcePaths
          * @returns {Promise<Object|null>}
          */
@@ -341,14 +349,32 @@ export function createRepositoryRevisionReader({
                 paths.push(entry.sourcePath)
             }
 
-            return await gitMirror.prefetchRevisionBlobs({
+            const result = await gitMirror.prefetchRevisionBlobs({
                 mirrorRoot,
                 tenantId,
                 repoSlug,
                 revision,
                 sourcePaths: paths,
                 credentialRef
-            })
+            });
+
+            if (result?.status === 'unavailable') {
+                blobSession.unavailablePrefetches.push(Object.freeze({
+                    requested: result.requested,
+                    reason   : result.reason
+                }))
+            }
+
+            return result
+        },
+
+        /**
+         * @summary The bulk prefetches of this materialization that ended `unavailable`, scopes included.
+         * @returns {Array<{requested: Number, reason: (String|null)}>} `reason` is the adapter's own: a
+         *     bounded code, or an error message that must not leave the process unclassified.
+         */
+        get unavailablePrefetches() {
+            return Object.freeze([...blobSession.unavailablePrefetches])
         },
 
         /**
