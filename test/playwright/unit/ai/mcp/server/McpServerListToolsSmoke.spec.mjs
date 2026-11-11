@@ -354,9 +354,9 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
             handbookTool = byName.get_mcp_tool_handbook;
 
         expect(handbookTool.description.length).toBeLessThanOrEqual(120);
-        expect(queryDocs.description).toBe('Return ranked KB source references without synthesis; use when enumerating all matching chunks or >5 results.');
+        expect(queryDocs.description).toBe('Return ranked KB source references without synthesis; use when more than the top 5 references are needed.');
         expect(queryDocs.description).not.toContain('Prefer `ask_knowledge_base`');
-        expect(askKnowledge.description).toBe('Synthesize one grounded Neo.mjs answer with top-5 cited refs; use when asking how a concept works or where it lives.');
+        expect(askKnowledge.description).toBe('Synthesize one grounded answer with top-5 cited refs; use when asking how a concept works or where it lives.');
         expect(askKnowledge.description).not.toContain('zero-cost RAG subagent');
         expect(handbookTool.annotations.readOnlyHint).toBe(true);
 
@@ -1076,15 +1076,21 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
         ]);
     });
 
-    test('github-workflow, gitlab-workflow, and neural-link summaries follow <what>; use when <trigger> without repeating operationId (#1566, #1565)', () => {
-        const
-            targetServers  = servers.filter(server => ['github-workflow', 'gitlab-workflow', 'neural-link'].includes(server.name)),
-            expectedCounts = {'github-workflow': 25, 'gitlab-workflow': 14, 'neural-link': 60};
+    test('all six MCP server OpenAPI contracts follow <what>; use when <trigger> without repeating operationId (#1566, #1565, #1564, #1567)', () => {
+        const expectedCounts = {
+            'file-system'    : 7,
+            'github-workflow': 25,
+            'gitlab-workflow': 14,
+            'knowledge-base' : 13,
+            'memory-core'    : 55,
+            'neural-link'    : 60
+        };
 
-        for (const server of targetServers) {
+        for (const server of servers) {
             const
                 operationsById = getOperationsById(server),
-                entries        = Object.entries(operationsById);
+                entries        = Object.entries(operationsById),
+                summaries      = new Set();
 
             expect(entries.length, `${server.name} operation count`).toBe(expectedCounts[server.name]);
 
@@ -1092,65 +1098,17 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
                 const
                     summary   = operation.summary,
                     bareTitle = operationId.replace(/_/g, ' ').toLowerCase(),
-                    bytes     = Buffer.byteLength(summary, 'utf8');
+                    bytes     = Buffer.byteLength(summary, 'utf8'),
+                    maxBytes  = operationId === 'healthcheck' ? 68 : 120;
 
-                expect(bytes, `${server.name}.${operationId} summary byte length`).toBeLessThanOrEqual(120);
+                expect(bytes, `${server.name}.${operationId} summary byte length`).toBeLessThanOrEqual(maxBytes);
                 expect(summary, `${server.name}.${operationId} must match <what>; use when <trigger>`).toMatch(/^[^;]+; use when [^;]+$/);
                 expect(summary.toLowerCase(), `${server.name}.${operationId} must not repeat operationId`).not.toContain(operationId.toLowerCase());
                 expect(summary.toLowerCase(), `${server.name}.${operationId} must not be the bare title`).not.toBe(bareTitle);
+                summaries.add(summary);
             }
-        }
-    });
 
-    test('memory-core summaries follow <what>; use when <trigger> without repeating operationId (#1564)', () => {
-        const
-            server         = servers.find(item => item.name === 'memory-core'),
-            operationsById = getOperationsById(server),
-            entries        = Object.entries(operationsById),
-            summaries      = new Set();
-
-        expect(entries.length, 'memory-core operation count').toBe(55);
-
-        for (const [operationId, operation] of entries) {
-            const
-                summary   = operation.summary,
-                bareTitle = operationId.replace(/_/g, ' ').toLowerCase(),
-                bytes     = Buffer.byteLength(summary, 'utf8'),
-                maxBytes  = operationId === 'healthcheck' ? 68 : 120;
-
-            expect(bytes, `memory-core.${operationId} summary byte length`).toBeLessThanOrEqual(maxBytes);
-            expect(summary, `memory-core.${operationId} must match <what>; use when <trigger>`).toMatch(/^[^;]+; use when [^;]+$/);
-            expect(summary.toLowerCase(), `memory-core.${operationId} must not repeat operationId`).not.toContain(operationId.toLowerCase());
-            expect(summary.toLowerCase(), `memory-core.${operationId} must not be the bare title`).not.toBe(bareTitle);
-            summaries.add(summary);
-        }
-
-        expect(summaries.size, 'memory-core summaries must be distinct across all 55 tools').toBe(55);
-    });
-
-    test('knowledge-base and file-system summaries follow <what>; use when <trigger> without repeating operationId (#1567)', () => {
-        const
-            targetServers  = servers.filter(server => ['knowledge-base', 'file-system'].includes(server.name)),
-            expectedCounts = {'knowledge-base': 13, 'file-system': 7};
-
-        for (const server of targetServers) {
-            const
-                operationsById = getOperationsById(server),
-                entries        = Object.entries(operationsById);
-
-            expect(entries.length, `${server.name} operation count`).toBe(expectedCounts[server.name]);
-
-            for (const [operationId, operation] of entries) {
-                const
-                    summary   = operation.summary,
-                    bareTitle = operationId.replace(/_/g, ' ').toLowerCase(),
-                    bytes     = Buffer.byteLength(summary, 'utf8');
-
-                expect(bytes, `${server.name}.${operationId} summary byte length`).toBeLessThanOrEqual(120);
-                expect(summary, `${server.name}.${operationId} must match <what>; use when <trigger>`).toMatch(/^[^;]+; use when [^;]+$/);
-                expect(summary.toLowerCase(), `${server.name}.${operationId} must not repeat operationId`).not.toContain(operationId.toLowerCase());
-                expect(summary.toLowerCase(), `${server.name}.${operationId} must not be the bare title`).not.toBe(bareTitle);
-            }
+            expect(summaries.size, `${server.name} summaries must be distinct`).toBe(entries.length);
         }
     });
 });

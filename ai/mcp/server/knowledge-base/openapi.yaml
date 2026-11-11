@@ -238,7 +238,7 @@ paths:
 
   /db/data/manage:
     post:
-      summary: Create, embed, sync, or delete the KB vector corpus; use when running full corpus admin or resetting ChromaDB.
+      summary: Create, embed, sync, or delete the KB vector corpus; use when resetting ChromaDB or syncing a diff of at most 50 chunks.
       operationId: manage_knowledge_base
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -285,7 +285,7 @@ paths:
 
   /db/data/ingest:
     post:
-      summary: Push and embed a small batch of source files into KB; use when incrementally ingesting changed repo files (<50 chunks).
+      summary: Push and embed a small batch of source files into KB; use when incrementally ingesting changed repo files (<=50 chunks).
       operationId: ingest_source_files
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -326,7 +326,7 @@ paths:
 
   /documents/query:
     post:
-      summary: Return ranked KB source references without synthesis; use when enumerating all matching chunks or >5 results.
+      summary: Return ranked KB source references without synthesis; use when more than the top 5 references are needed.
       operationId: query_documents
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -460,7 +460,7 @@ paths:
 
   /knowledge/ask:
     post:
-      summary: Synthesize one grounded Neo.mjs answer with top-5 cited refs; use when asking how a concept works or where it lives.
+      summary: Synthesize one grounded answer with top-5 cited refs; use when asking how a concept works or where it lives.
       operationId: ask_knowledge_base
       x-neo-tool-tier: read
       x-pass-as-object: true
