@@ -92,7 +92,8 @@ function failingOf(names) {
 
 /**
  * @summary Describe the observed action and retain its complete task identity for live revalidation.
- * A `repair-ci` wake also names its head's failing checks.
+ * A `repair-ci` wake also names its head's failing checks. The message asks to wake its seat: the plane
+ * stamps the viewer as its sender, and for a human sender an omitted `wakeSuppressed` defaults to quiet.
  * @param {Object} wake The planner's admission.
  * @param {String[]|null} [failedChecks] A `repair-ci` wake's failing checks; null when they could not be read.
  * @returns {Object} Payload for the injected same-plane add_message sender.
@@ -108,6 +109,7 @@ export function wakeMessageOf(wake, failedChecks = null) {
             'Re-check the live pull request, head, checks and review state before acting. ' +
             'This message describes a producer observation, not a guarantee of the current state.',
         relatedTickets: [wake.pr],
+        wakeSuppressed: false,
         task          : {
             id  : `open-work:${wake.key}`, state: 'Submitted', producerRole: 'fleet-open-work',
             kind: wake.kind, head: wake.head, episode: wake.episode
