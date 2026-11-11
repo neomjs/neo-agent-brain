@@ -463,6 +463,44 @@ class FleetTenantService extends Base {
     }
 
     /**
+     * @summary Strictly read and validate a seat's bound plane entry in `seat-plane-credentials.enc`
+     * without mutating the store, returning `{state: 'present'|'none'|'unreadable', endpoint?, row?, reason?}`
+     * so `canPersistBoundSeatPlaneCredential` and `inspectBoundSeatPlaneCredential` share one read path.
+     * @param {Object} params
+     * @param {String} params.planeBase
+     * @param {String} params.agentId
+     * @param {String} caller
+     * @returns {{state: 'present', endpoint: String, row: Object}|{state: 'none'|'unreadable', reason: String}}
+     * @private
+     */
+    #readBoundSeatPlaneRowStrict({planeBase, agentId} = {}, caller) {
+        const endpoint = this.normalizeEndpoint(planeBase);
+        if (!endpoint) {
+            return {state: 'none', reason: 'planeBase must be a valid http(s) URL'}
+        }
+        try {
+            assertSeatSegment(agentId, 'agentId', caller)
+        } catch {
+            return {state: 'none', reason: 'a valid seat id is required'}
+        }
+        let record;
+        try {
+            record = this.readSeatPlaneCredentialsForMutation()
+        } catch {
+            return {state: 'unreadable', reason: 'seat plane credential store cannot be read'}
+        }
+        const existing = record[endpoint];
+        if (existing !== undefined && (!existing || typeof existing !== 'object' || Array.isArray(existing))) {
+            return {state: 'unreadable', reason: 'seat plane credential store is malformed'}
+        }
+        const selected = existing?.[agentId];
+        if (!isCompleteBoundPlaneRow(selected)) {
+            return {state: 'none', reason: `agent '${agentId}' holds no bound plane credential at '${endpoint}'`}
+        }
+        return {state: 'present', endpoint, row: selected}
+    }
+
+    /**
      * @summary Validate before any store mutation that `seat-plane-credentials.enc` can be decrypted and
      * already holds a complete bound plane entry (`{id, dataRoot}`) for `(planeBase, agentId)`.
      * Never returns secret material.
@@ -472,37 +510,17 @@ class FleetTenantService extends Base {
      * @returns {{ok: Boolean, endpoint?: String, plane?: {id: String, dataRoot: String}, reason?: String, cause?: String}}
      */
     canPersistBoundSeatPlaneCredential({planeBase, agentId} = {}) {
-        const endpoint = this.normalizeEndpoint(planeBase);
-        if (!endpoint) {
-            return {ok: false, cause: 'indeterminate', reason: 'planeBase must be a valid http(s) URL'}
-        }
-        try {
-            assertSeatSegment(agentId, 'agentId', 'FleetTenantService.canPersistBoundSeatPlaneCredential')
-        } catch {
-            return {ok: false, cause: 'indeterminate', reason: 'a valid seat id is required'}
-        }
-        let record;
-        try {
-            record = this.readSeatPlaneCredentialsForMutation()
-        } catch {
-            return {ok: false, cause: 'indeterminate', reason: 'seat plane credential store cannot be read'}
-        }
-        const existing = record[endpoint];
-        if (existing !== undefined && (!existing || typeof existing !== 'object' || Array.isArray(existing))) {
-            return {ok: false, cause: 'indeterminate', reason: 'seat plane credential store is malformed'}
-        }
-        const selected = existing?.[agentId];
-        if (!isCompleteBoundPlaneRow(selected)) {
-            return {
-                ok    : false,
-                cause : 'indeterminate',
-                reason: `agent '${agentId}' holds no bound plane credential at '${endpoint}'`
-            }
+        const strictRead = this.#readBoundSeatPlaneRowStrict(
+            {planeBase, agentId},
+            'FleetTenantService.canPersistBoundSeatPlaneCredential'
+        );
+        if (strictRead.state !== 'present') {
+            return {ok: false, cause: 'indeterminate', reason: strictRead.reason}
         }
         return {
-            ok   : true,
-            endpoint,
-            plane: {id: selected.plane.id, dataRoot: selected.plane.dataRoot}
+            ok      : true,
+            endpoint: strictRead.endpoint,
+            plane   : {id: strictRead.row.plane.id, dataRoot: strictRead.row.plane.dataRoot}
         }
     }
 
@@ -516,30 +534,14 @@ class FleetTenantService extends Base {
      * @returns {{state: 'present', credential: String}|{state: 'none'}|{state: 'unreadable'}}
      */
     inspectBoundSeatPlaneCredential({planeBase, agentId} = {}) {
-        const endpoint = this.normalizeEndpoint(planeBase);
-        if (!endpoint) {
-            return {state: 'none'}
+        const strictRead = this.#readBoundSeatPlaneRowStrict(
+            {planeBase, agentId},
+            'FleetTenantService.inspectBoundSeatPlaneCredential'
+        );
+        if (strictRead.state !== 'present') {
+            return {state: strictRead.state}
         }
-        try {
-            assertSeatSegment(agentId, 'agentId', 'FleetTenantService.inspectBoundSeatPlaneCredential')
-        } catch {
-            return {state: 'none'}
-        }
-        let record;
-        try {
-            record = this.readSeatPlaneCredentialsForMutation()
-        } catch {
-            return {state: 'unreadable'}
-        }
-        const existing = record[endpoint];
-        if (existing !== undefined && (!existing || typeof existing !== 'object' || Array.isArray(existing))) {
-            return {state: 'unreadable'}
-        }
-        const selected = existing?.[agentId];
-        if (!isCompleteBoundPlaneRow(selected)) {
-            return {state: 'none'}
-        }
-        return {state: 'present', credential: selected.credential.trim()}
+        return {state: 'present', credential: strictRead.row.credential.trim()}
     }
 
     /**

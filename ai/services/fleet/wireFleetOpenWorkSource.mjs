@@ -17,14 +17,14 @@
  * seat owes the pulse no coverage. That one read per pulse also supplies the identity rows.
  */
 
-import fs                                          from 'fs';
-import path                                        from 'path';
-import FleetControlBridge                          from './FleetControlBridge.mjs';
-import {createFleetOpenWorkSource}                 from './fleetOpenWorkSource.mjs';
-import {createOpenWorkProducer}                    from './openWorkProducer.mjs';
-import {participationOf, presenceIdentityForAgent} from './fleetPresenceStateAdapter.mjs';
-import {classifyHttpCredentialRefusal}             from './seatGitIdentity.mjs';
-import {writeFileAtomicSync}                       from '../shared/atomicFileWrite.mjs';
+import fs                                                       from 'fs';
+import path                                                     from 'path';
+import FleetControlBridge                                       from './FleetControlBridge.mjs';
+import {createFleetOpenWorkSource}                              from './fleetOpenWorkSource.mjs';
+import {createOpenWorkProducer}                                 from './openWorkProducer.mjs';
+import {participationOf, presenceIdentityForAgent}              from './fleetPresenceStateAdapter.mjs';
+import {attachCredentialRefusal, classifyHttpCredentialRefusal} from './seatGitIdentity.mjs';
+import {writeFileAtomicSync}                                    from '../shared/atomicFileWrite.mjs';
 
 /** @summary The existing pulse cadence; measured quota evidence determines whether it fits each issuer. */
 const PULSE_MS = 60 * 1000;
@@ -125,9 +125,9 @@ function readHeader(headers, name) {
 }
 
 /**
- * @summary Parse GitHub's `GitHub-Authentication-Token-Expiration` response header (`YYYY-MM-DD HH:MM:SS UTC`,
- * `YYYY-MM-DD HH:MM:SS ±HHMM`, or ISO-8601 UTC) into an ISO-8601 UTC string. Returns `null` when absent
- * or unparseable, never a guessed date.
+ * @summary Parse GitHub's `GitHub-Authentication-Token-Expiration` response header into an ISO-8601 UTC string,
+ * accepting `YYYY-MM-DD HH:MM:SS UTC`, `YYYY-MM-DD HH:MM:SS ±HHMM`, and ISO-8601 UTC defensively and returning
+ * `null` for anything else (absent or unparseable, never a guessed date).
  * @param {*} raw
  * @returns {String|null}
  */
@@ -173,9 +173,9 @@ export function parseGithubTokenExpiration(raw) {
 /**
  * @summary One GitHub GraphQL call. A missing token, an HTTP failure or a GraphQL error throws, and
  * the producer records it as a failed read. The error carries its HTTP `status`, GitHub's error
- * `type` as `code`, and HTTP refusal classification (`cause`, `verdict`), while answered `data` carries
- * a non-enumerable `tokenExpiresAt` ISO-8601 string (`null` when the token has no expiry or an
- * unparseable header).
+ * `type` as `code`, and a wire-classified `credentialRefusal` (`attachCredentialRefusal`), while
+ * answered `data` carries a non-enumerable `tokenExpiresAt` ISO-8601 string (`null` when the token
+ * has no expiry or an unparseable header).
  * @param {Object}   options
  * @param {String|null} options.token
  * @param {Function} [options.fetchImpl]
@@ -202,28 +202,42 @@ export function createGithubGraphqlQuery({token, fetchImpl = globalThis.fetch, a
                     const raw = readHeader(response.headers, name);
                     return raw !== null && raw !== undefined && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
                 },
-                rate        = payload?.data?.rateLimit,
-                reset       = value('x-ratelimit-reset'),
-                quota       = {viewer: {id: payload?.data?.viewer?.id ?? null}, rateLimit: {
+                rate                  = payload?.data?.rateLimit,
+                reset                 = value('x-ratelimit-reset'),
+                quota                 = {viewer: {id: payload?.data?.viewer?.id ?? null}, rateLimit: {
                     cost     : Number.isFinite(rate?.cost) ? rate.cost : null,
                     limit    : rate?.limit ?? value('x-ratelimit-limit'),
                     remaining: rate?.remaining ?? value('x-ratelimit-remaining'),
                     resetAt  : rate?.resetAt ?? (reset !== null && Number.isFinite(new Date(reset * 1000).getTime()) ? new Date(reset * 1000).toISOString() : null)
                 }},
-                httpRefusal = !response.ok
-                    ? classifyHttpCredentialRefusal({status: response.status, headers: response.headers, body: payload})
-                    : null,
-                detailText  = payload?.errors?.[0]?.message
+                detailText            = payload?.errors?.[0]?.message
                     ?? (typeof payload?.message === 'string' && payload.message.trim() ? payload.message.trim() : null)
-                    ?? 'no data';
+                    ?? 'no data',
+                message               = `GitHub GraphQL answered ${response.status}: ${detailText}`,
+                hasInsufficientScopes = Array.isArray(payload?.errors) &&
+                    payload.errors.some(entry => entry?.type === 'INSUFFICIENT_SCOPES'),
+                classified            = hasInsufficientScopes
+                    ? {cause: 'insufficient-capability', verdict: 'refused', status: response.status}
+                    : !response.ok
+                        ? classifyHttpCredentialRefusal({status: response.status, headers: response.headers, body: payload})
+                        : {cause: 'transport-unavailable', verdict: 'unanswered', status: response.status};
 
-            throw Object.assign(
-                new Error(`GitHub GraphQL answered ${response.status}: ${detailText}`),
+            throw attachCredentialRefusal(
+                Object.assign(
+                    new Error(message),
+                    {
+                        status : response.status,
+                        code   : payload?.errors?.[0]?.type ?? null,
+                        verdict: classified.verdict,
+                        quota
+                    }
+                ),
                 {
-                    status: response.status,
-                    code  : payload?.errors?.[0]?.type ?? null,
-                    quota,
-                    ...(httpRefusal ? {cause: httpRefusal.cause, verdict: httpRefusal.verdict} : {})
+                    surface: 'forge',
+                    cause  : classified.cause,
+                    verdict: classified.verdict,
+                    status : classified.status,
+                    reason : message
                 }
             )
         }

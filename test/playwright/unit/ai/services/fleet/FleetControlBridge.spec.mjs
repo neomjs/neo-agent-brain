@@ -1389,10 +1389,10 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — in plane mode a seat
 
 test.describe.serial('Neo.ai.services.fleet.FleetControlBridge — getAgent planeCredential and listAgents store isolation (#1601)', () => {
     const
-        PLANE         = 'http://127.0.0.1:3102',
-        SERVED        = Object.freeze({id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'}),
-        SHARED_PAT    = 'ghp_SHARED_FORGE_AND_PLANE_SECRET_1601',
-        DISTINCT_PAT  = 'plane_DISTINCT_BOUND_BEARER_SECRET_1601';
+        PLANE        = 'http://127.0.0.1:3102',
+        SERVED       = Object.freeze({id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'}),
+        SHARED_PAT   = 'ghp_SHARED_FORGE_AND_PLANE_SECRET_1601',
+        DISTINCT_PAT = 'plane_DISTINCT_BOUND_BEARER_SECRET_1601';
 
     let tmpDir, managedRoot;
 
@@ -1414,6 +1414,8 @@ test.describe.serial('Neo.ai.services.fleet.FleetControlBridge — getAgent plan
             }
         });
         FleetManager.planeBase          = PLANE;
+        FleetManager.tenantService      = FleetTenantService;
+        FleetManager.forgeProofFn       = async () => ({ok: true, verdict: 'proved'});
 
         FleetControlBridge.registry      = FleetRegistryService;
         FleetControlBridge.manager       = FleetManager;
@@ -1425,6 +1427,8 @@ test.describe.serial('Neo.ai.services.fleet.FleetControlBridge — getAgent plan
         FleetControlBridge.manager       = null;
         FleetControlBridge.tenantService = null;
         FleetManager.planeBase           = null;
+        FleetManager.tenantService       = null;
+        FleetManager.forgeProofFn        = null;
         FleetTenantService.dataDir       = null;
         FleetTenantService.probeFn       = null;
         FleetRegistryService.dataDir     = null;
@@ -1493,6 +1497,59 @@ test.describe.serial('Neo.ai.services.fleet.FleetControlBridge — getAgent plan
         expect(unreadableForge).toMatchObject({ok: true, result: {id: 'alice', planeCredential: 'unreadable'}});
         expect(JSON.stringify(unreadableForge)).not.toContain(SHARED_PAT);
         expect(JSON.stringify(unreadableForge)).not.toContain(DISTINCT_PAT)
+    });
+
+    test('a tenant-targeted seat holding a row stored by setPlaneCredential projects that row and matches replaceSeatCredential under forge-and-bound-plane (AC-1)', async () => {
+        const ROTATED_PAT = 'ghp_ROTATED_FORGE_AND_PLANE_SECRET_1601';
+
+        FleetRegistryService.defineAgent({
+            id            : 'tenant-seat',
+            githubUsername: 'tenant-seat',
+            harnessType   : 'codex',
+            credential    : SHARED_PAT,
+            mcpTarget     : {kind: 'tenant', tenantId: 'tenant-1'}
+        });
+
+        expect(FleetControlBridge.getAgent('tenant-seat').planeCredential).toBe('none');
+        expect((await FleetManager.replaceSeatCredential({
+            id        : 'tenant-seat',
+            credential: ROTATED_PAT,
+            scope     : 'forge-and-bound-plane'
+        })).status).toBe('rejected');
+
+        expect(await FleetManager.setPlaneCredential({
+            id        : 'tenant-seat',
+            credential: SHARED_PAT
+        })).toEqual({status: 'stored', endpoint: PLANE, agentId: 'tenant-seat'});
+
+        const projectedSame = await dispatchFleetRequest(createFleetWireRequest('getAgent', 'tenant-seat'), FleetControlBridge);
+        expect(projectedSame).toMatchObject({ok: true, result: {id: 'tenant-seat', planeCredential: 'same-as-forge'}});
+        expect(JSON.stringify(projectedSame)).not.toContain(SHARED_PAT);
+
+        await FleetManager.setPlaneCredential({
+            id        : 'tenant-seat',
+            credential: DISTINCT_PAT
+        });
+        expect(FleetControlBridge.getAgent('tenant-seat').planeCredential).toBe('distinct');
+
+        const replaced = await FleetManager.replaceSeatCredential({
+            id        : 'tenant-seat',
+            credential: ROTATED_PAT,
+            scope     : 'forge-and-bound-plane'
+        });
+
+        expect(replaced).toMatchObject({
+            status : 'replaced',
+            id     : 'tenant-seat',
+            scope  : 'forge-and-bound-plane',
+            receipt: {persistedAuthority: {forge: 'replaced', plane: 'replaced'}}
+        });
+        expect(JSON.stringify(replaced)).not.toContain(ROTATED_PAT);
+        expect(FleetControlBridge.getAgent('tenant-seat').planeCredential).toBe('same-as-forge');
+        expect(FleetTenantService.inspectBoundSeatPlaneCredential({
+            planeBase: PLANE,
+            agentId  : 'tenant-seat'
+        })).toEqual({state: 'present', credential: ROTATED_PAT})
     });
 
     test('listAgents stays registry-only and reads neither credential store (AC-2)', async () => {

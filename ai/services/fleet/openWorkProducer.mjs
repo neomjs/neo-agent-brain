@@ -196,16 +196,22 @@ function unreadReason(unread, failed = []) {
 }
 
 /**
- * @summary Classify a failed per-seat open-work read into a frozen `{surface, cause, verdict, status, reason}`
- * descriptor (`seatGitIdentity.mjs`). GraphQL `INSUFFICIENT_SCOPES` maps to `cause: 'insufficient-capability'`;
- * HTTP failures (`status >= 400`) run through `classifyHttpCredentialRefusal`; transport or transient GraphQL
- * failures carry `verdict: 'unanswered'`.
+ * @summary Normalize a failed per-seat open-work read into a frozen `{surface, cause, verdict, status, reason}`
+ * descriptor (`seatGitIdentity.mjs`). Reuses a wire-attached `error.credentialRefusal` directly so HTTP headers
+ * are classified once at the wire; falls back to `INSUFFICIENT_SCOPES` / `classifyHttpCredentialRefusal` for
+ * direct `query` stubs.
  * @param {Error|Object|null} error
  * @param {String}            reason Redacted failure message.
  * @returns {Object} Frozen `credentialRefusal` descriptor.
  * @private
  */
 function classifySeatReadFailure(error, reason) {
+    if (error?.credentialRefusal && typeof error.credentialRefusal === 'object') {
+        return error.credentialRefusal.reason === reason && Object.isFrozen(error.credentialRefusal)
+            ? error.credentialRefusal
+            : Object.freeze({...error.credentialRefusal, reason})
+    }
+
     const status = Number.isInteger(error?.status) ? error.status : null;
 
     if (error?.code === 'INSUFFICIENT_SCOPES') {
@@ -221,7 +227,8 @@ function classifySeatReadFailure(error, reason) {
     if (status !== null && status >= 400) {
         const classified = classifyHttpCredentialRefusal({
             status,
-            body   : {message: typeof error?.message === 'string' ? error.message : ''},
+            headers: error?.headers ?? null,
+            body   : error?.body ?? {message: typeof error?.message === 'string' ? error.message : ''},
             verdict: error?.verdict ?? null
         });
 
@@ -324,12 +331,12 @@ export function createOpenWorkProducer({
         }
 
         const
-            scope         = slugs.map(slug => `repo:${slug}`).join(' '),
-            tally         = {cost: 0, pages: 0, calls: 0, costUnknown: false, quota: []},
-            seats         = await readers(),
-            unread        = seats.filter(seat => !seat.query).map(seat => seat.seat),
-            reads         = [],
-            seatReads     = Object.fromEntries(seats
+            scope     = slugs.map(slug => `repo:${slug}`).join(' '),
+            tally     = {cost: 0, pages: 0, calls: 0, costUnknown: false, quota: []},
+            seats     = await readers(),
+            unread    = seats.filter(seat => !seat.query).map(seat => seat.seat),
+            reads     = [],
+            seatReads = Object.fromEntries(seats
                 .map(({seat}) => [seat, state.seatReads?.[seat] ?? null])
                 .filter(([seat, entry]) => seat && entry)),
             coverageSeats = seats.map(({seat, query, benched}) => ({seat, benched: !!benched, outcome: query ? 'failed' : 'credential-unread', authored: null, held: null, terminal: null}));
@@ -338,6 +345,7 @@ export function createOpenWorkProducer({
             // a seat's terminal window and watermark are its own; a saved single watermark seeds them
             let latestTokenExpiresAt = null, answeredAny = false;
             const
+                // `tokenExpiresAt` rides on `data` as a non-enumerable property; wrappers must not JSON/structuredClone-copy `data` ahead of this read.
                 observedQuery = async (text, variables) => {
                     const data = await query(text, variables);
                     answeredAny = true;
@@ -374,7 +382,7 @@ export function createOpenWorkProducer({
                 seatReads[seat] = {
                     observedAt    : at,
                     credentialRefusal,
-                    tokenExpiresAt: state.seatReads?.[seat]?.tokenExpiresAt ?? null
+                    tokenExpiresAt: answeredAny ? latestTokenExpiresAt : (state.seatReads?.[seat]?.tokenExpiresAt ?? null)
                 };
                 reads.push({seat, failure, refused: error?.status === 401 || error?.code === 'INSUFFICIENT_SCOPES'})
             }
@@ -413,9 +421,9 @@ export function createOpenWorkProducer({
         }
 
         const
-            missed   = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)).concat(outside.complete ? [] : ['outside']),
-            byKey    = rows => [...new Map(rows.map(row => [row.key, row])).values()],
-            rows     = byKey([
+            missed = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)).concat(outside.complete ? [] : ['outside']),
+            byKey  = rows => [...new Map(rows.map(row => [row.key, row])).values()],
+            rows   = byKey([
                 ...answered.flatMap(read => read.nodes.map(node => normalizePullRequest(node, identities, {apiBase: read.apiBase}))),
                 ...outsideNodes.map(node => normalizePullRequest(node, identities, {apiBase: outsideReader?.apiBase}))
             ]),

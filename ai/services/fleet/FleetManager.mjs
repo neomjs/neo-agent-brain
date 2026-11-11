@@ -30,6 +30,24 @@ import path                             from 'node:path';
 export {REPLACE_SEAT_CREDENTIAL_SCOPES};
 
 /**
+ * @summary Derive the bound-plane endpoint that `replaceSeatCredential({scope: 'forge-and-bound-plane'})`
+ * and `FleetControlBridge#getAgent(id).planeCredential` inspect for a seat: a `'plane'` placement's
+ * resolved endpoint, else the Fleet's own `planeBase` (or `null` when this Fleet serves no plane).
+ * @param {Object|null} agent
+ * @param {String|null} [planeBase=null]
+ * @returns {String|null}
+ */
+export function resolveBoundPlaneEndpoint(agent, planeBase = null) {
+    const placement = resolveSeatPlaneTarget({
+        target     : agent?.mcpTarget ?? null,
+        harnessType: agent?.harnessType,
+        planeBase
+    });
+
+    return placement?.kind === 'plane' ? placement.endpoint : (planeBase || null)
+}
+
+/**
  * @summary Bounds one of the roster's plane-sourced reads: past `timeoutMs` it serves an unexpired
  * retained observation when configured, else rejects naming the wait while the plane call runs on.
  * A call that settles after the bound refreshes retention and logs its duration once.
@@ -1257,6 +1275,16 @@ class FleetManager extends Base {
     }
 
     /**
+     * @summary Return the bound-plane endpoint that `replaceSeatCredential` checks for `agent` under
+     * `scope: 'forge-and-bound-plane'`, or `null` when this Fleet serves no plane for it.
+     * @param {Object|null} agent
+     * @returns {String|null}
+     */
+    boundPlaneEndpointFor(agent) {
+        return resolveBoundPlaneEndpoint(agent, this.planeBase)
+    }
+
+    /**
      * @summary Explicitly set or rebind a seat credential for the plane this Fleet serves, where its
      * Memory Core and Knowledge Base live ({@link Neo.ai.services.fleet.startAgentProvisioned}). The
      * caller names only the seat and credential: the plane is the one this Fleet serves, and the
@@ -1471,9 +1499,7 @@ class FleetManager extends Base {
             let tenantService = null, boundPlane = null;
 
             if (scope === 'forge-and-bound-plane') {
-                const
-                    placement     = resolveSeatPlaneTarget({target: agent.mcpTarget, harnessType: agent.harnessType, planeBase: this.planeBase}),
-                    planeEndpoint = placement?.kind === 'plane' ? placement.endpoint : this.planeBase;
+                const planeEndpoint = this.boundPlaneEndpointFor(agent);
 
                 if (!planeEndpoint) {
                     return {

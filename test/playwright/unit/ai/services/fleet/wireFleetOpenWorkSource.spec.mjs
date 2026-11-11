@@ -319,7 +319,7 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
     });
 
     test('captures GitHub-Authentication-Token-Expiration as ISO-8601 UTC and projects credentialRefusal and tokenExpiresAt per seat (#1601)', async () => {
-        // GitHub documented formats: 'YYYY-MM-DD HH:MM:SS UTC' and 'YYYY-MM-DD HH:MM:SS ±HHMM'
+        // Three formats accepted defensively ('YYYY-MM-DD HH:MM:SS UTC', '±HHMM', ISO-8601 UTC); anything else returns null
         expect(parseGithubTokenExpiration('2026-10-07 19:07:53 UTC')).toBe('2026-10-07T19:07:53.000Z');
         expect(parseGithubTokenExpiration('2026-12-01 15:44:24 -0700')).toBe('2026-12-01T22:44:24.000Z');
         expect(parseGithubTokenExpiration('2026-12-01T08:30:00Z')).toBe('2026-12-01T08:30:00.000Z');
@@ -329,14 +329,17 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             expect(parseGithubTokenExpiration(invalid), String(invalid)).toBeNull()
         }
 
+        let throttledMode = '403-secondary';
         const
-            dataDir   = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-1601-')),
-            PAT_ADA   = 'ghp_ADA_EXPIRING_SECRET_1601',
-            PAT_IDLE  = 'ghp_IDLE_REFUSED_SECRET_1601',
-            bridge    = {},
-            seats     = [
-                {id: 'ada',   githubUsername: 'neo-opus-ada', metadata: {repo: {repoSlug: 'acme/app', cloneUrl: 'https://github.com/acme/app.git'}}},
-                {id: 'empty', githubUsername: 'idle-seat',    metadata: {}}
+            dataDir       = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-1601-')),
+            PAT_ADA       = 'ghp_ADA_EXPIRING_SECRET_1601',
+            PAT_IDLE      = 'ghp_IDLE_REFUSED_SECRET_1601',
+            PAT_THROTTLED = 'ghp_THROTTLED_WORKING_SECRET_1601',
+            bridge        = {},
+            seats         = [
+                {id: 'ada',       githubUsername: 'neo-opus-ada',   metadata: {repo: {repoSlug: 'acme/app', cloneUrl: 'https://github.com/acme/app.git'}}},
+                {id: 'empty',     githubUsername: 'idle-seat',      metadata: {}},
+                {id: 'throttled', githubUsername: 'throttled-seat', metadata: {}}
             ],
             fetchImpl = async (url, {headers}) => {
                 if (headers.Authorization === `Bearer ${PAT_ADA}`) {
@@ -345,6 +348,22 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
                         status : 200,
                         headers: new Headers({'GitHub-Authentication-Token-Expiration': '2026-12-15 09:30:00 UTC'}),
                         json   : async () => ({data: {rateLimit: {cost: 1}, search: {pageInfo: {hasNextPage: false}, nodes: []}}})
+                    }
+                }
+                if (headers.Authorization === `Bearer ${PAT_THROTTLED}`) {
+                    if (throttledMode === '403-secondary') {
+                        return {
+                            ok     : false,
+                            status : 403,
+                            headers: new Headers({'retry-after': '60', 'x-ratelimit-remaining': '0'}),
+                            json   : async () => ({message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'})
+                        }
+                    }
+                    return {
+                        ok     : true,
+                        status : 200,
+                        headers: new Headers(),
+                        json   : async () => ({errors: [{type: 'RATE_LIMITED', message: 'API rate limit exceeded'}]})
                     }
                 }
                 return {
@@ -360,7 +379,7 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
                 registry   : {
                     listAgents       : () => seats,
                     getDataDir       : () => dataDir,
-                    resolveCredential: id => id === 'ada' ? PAT_ADA : PAT_IDLE
+                    resolveCredential: id => id === 'ada' ? PAT_ADA : (id === 'throttled' ? PAT_THROTTLED : PAT_IDLE)
                 },
                 bridge,
                 createQuery: token => createGithubGraphqlQuery({token, fetchImpl}),
@@ -368,7 +387,6 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             });
 
             await wired.producer.pulse();
-            await wired.stop();
 
             const projection = bridge.openWorkSource.readOpenWork();
 
@@ -390,9 +408,35 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
                 },
                 tokenExpiresAt: null
             });
+            expect(projection.seats['@throttled-seat']).toEqual({
+                authored         : [],
+                reviewing        : [],
+                credentialRefusal: {
+                    surface: 'forge',
+                    cause  : 'transport-unavailable',
+                    verdict: 'unanswered',
+                    status : 403,
+                    reason : 'GitHub GraphQL answered 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
+                },
+                tokenExpiresAt: null
+            });
             expect(Object.isFrozen(projection.seats['@idle-seat'].credentialRefusal)).toBe(true);
+            expect(Object.isFrozen(projection.seats['@throttled-seat'].credentialRefusal)).toBe(true);
+
+            throttledMode = '200-rate-limited';
+            await wired.producer.pulse();
+            await wired.stop();
+
+            expect(bridge.openWorkSource.readOpenWork().seats['@throttled-seat'].credentialRefusal).toEqual({
+                surface: 'forge',
+                cause  : 'transport-unavailable',
+                verdict: 'unanswered',
+                status : 200,
+                reason : 'GitHub GraphQL answered 200: API rate limit exceeded'
+            });
             expect(JSON.stringify(projection)).not.toContain(PAT_ADA);
-            expect(JSON.stringify(projection)).not.toContain(PAT_IDLE)
+            expect(JSON.stringify(projection)).not.toContain(PAT_IDLE);
+            expect(JSON.stringify(projection)).not.toContain(PAT_THROTTLED)
         } finally {
             fs.rmSync(dataDir, {recursive: true, force: true})
         }

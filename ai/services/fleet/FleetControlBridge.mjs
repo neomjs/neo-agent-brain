@@ -1,11 +1,10 @@
-import crypto                                 from 'node:crypto';
-import Base                                   from 'neo.mjs/src/core/Base.mjs';
-import FleetManager                           from './FleetManager.mjs';
-import FleetRegistryService                   from './FleetRegistryService.mjs';
-import FleetTenantService                     from './FleetTenantService.mjs';
-import {resolveIdentityDisplay}               from './resolveIdentityDisplay.mjs';
-import {resolveSeatPlaneTarget}               from './resolveSeatPlaneTarget.mjs';
-import {managedMemorySource, seatHoldsMemory} from './seatMemoryImport.mjs';
+import crypto                                    from 'node:crypto';
+import Base                                      from 'neo.mjs/src/core/Base.mjs';
+import FleetManager, {resolveBoundPlaneEndpoint} from './FleetManager.mjs';
+import FleetRegistryService                      from './FleetRegistryService.mjs';
+import FleetTenantService                        from './FleetTenantService.mjs';
+import {resolveIdentityDisplay}                  from './resolveIdentityDisplay.mjs';
+import {managedMemorySource, seatHoldsMemory}    from './seatMemoryImport.mjs';
 
 import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from './deriveHarnessLaunchSpec.mjs';
 import {launchRefusalOf}                              from '../../../src/fleet/contract/launchAuthority.mjs';
@@ -914,8 +913,9 @@ class FleetControlBridge extends Base {
 
     /**
      * @summary Get a single agent definition (no credential bytes) enriched with `planeCredential`
-     * (`'none' | 'same-as-forge' | 'distinct' | 'unreadable'`), informing the operator which bindings a
-     * credential replacement may touch without ever selecting a scope or exposing secret material.
+     * (`'none' | 'same-as-forge' | 'distinct' | 'unreadable'`) at the bound-plane endpoint shared with
+     * `FleetManager#replaceSeatCredential` (`scope: 'forge-and-bound-plane'`), informing the operator which
+     * bindings a credential replacement may touch without ever selecting a scope or exposing secret material.
      * Returns `null` when `id` is unknown.
      * @param {String} id
      * @returns {Object|null}
@@ -929,20 +929,20 @@ class FleetControlBridge extends Base {
             return null
         }
 
-        const placement = resolveSeatPlaneTarget({
-            target     : agent.mcpTarget ?? null,
-            harnessType: agent.harnessType,
-            planeBase  : this.getManager()?.planeBase ?? null
-        });
+        const
+            manager       = this.getManager(),
+            planeEndpoint = typeof manager?.boundPlaneEndpointFor === 'function'
+                ? manager.boundPlaneEndpointFor(agent)
+                : resolveBoundPlaneEndpoint(agent, manager?.planeBase ?? null);
 
-        if (placement?.kind !== 'plane') {
+        if (!planeEndpoint) {
             return {...agent, planeCredential: 'none'}
         }
 
         const
             tenantService = this.getTenantService(),
             planeRead     = typeof tenantService?.inspectBoundSeatPlaneCredential === 'function'
-                ? tenantService.inspectBoundSeatPlaneCredential({planeBase: placement.endpoint, agentId: id})
+                ? tenantService.inspectBoundSeatPlaneCredential({planeBase: planeEndpoint, agentId: id})
                 : null,
             forgeRead     = typeof registry.readCredentialStrict === 'function'
                 ? registry.readCredentialStrict(id)
