@@ -661,3 +661,22 @@ test.describe('wireFleetOpenWorkWakes — a repair-ci wake names the checks that
         } finally { fs.rmSync(directory, {recursive: true, force: true}) }
     });
 });
+
+test.describe('wireFleetOpenWorkWakes — every message the round sends wakes its seat (#1609)', () => {
+    test('a red head and then a green head both reach the seat as wakes, whatever sender class the plane stamps', async () => {
+        let   minute = 0;
+        const sends  = [],
+            round    = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute), sendMessage: async message => sends.push(message),
+                readFailedChecks: async () => ['unit']});
+
+        await round(state(0));
+        for (const [next, ci] of [[1, 'red'], [2, 'green']]) {
+            minute = next;
+            await round(state(next, ci))
+        }
+
+        // The plane stamps the viewer, a human sender, for whom an omitted flag defaults to quiet
+        expect(sends.map(({task, wakeSuppressed}) => [task.kind, wakeSuppressed])).toEqual([['repair-ci', false], ['route-review', false]]);
+        await round.stop()
+    })
+});
