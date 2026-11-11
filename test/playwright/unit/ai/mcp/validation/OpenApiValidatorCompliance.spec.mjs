@@ -269,6 +269,8 @@ const expectedMemoryCoreToolTiers = {
     get_nl_transaction                     : 'extended',
     mark_nl_transaction_replayed           : 'extended',
     admit_nl_actions                       : 'extended',
+    // The Fleet host's open-work intake, not an agent tool.
+    admit_open_work_wake                   : 'extended',
     healthcheck                            : 'read',
     get_community_source_health            : 'read',
     get_mcp_tool_handbook                  : 'read',
