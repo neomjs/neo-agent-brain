@@ -29,8 +29,8 @@ export const HARNESS_ACQUIRERS = Object.freeze({
 // Starts that run at boot finish first; a run copies, signs-checks and probes several hundred MB.
 const BOOT_DELAY_MS = 2 * 60 * 1000;
 
-// Node runs a timer longer than this after 1 ms instead, which would poll the vendor feeds in a tight loop.
-const MAX_TIMER_MS = 2 ** 31 - 1;
+// 2^31 - 1: Node runs a timer longer than this after 1 ms instead, which would poll the vendor feeds in a tight loop.
+const MAX_TIMER_MS = 2_147_483_647;
 
 /**
  * @summary Wire the acquisition job: one run per family soon after boot, then one every `intervalMs`.
