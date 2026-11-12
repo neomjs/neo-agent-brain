@@ -676,3 +676,25 @@ test.describe('wireFleetOpenWorkWakes — a merge wakes the seats whose tickets 
         expect(store.read().pendingMerges).toEqual({})
     });
 });
+
+test.describe('wireFleetOpenWorkWakes — escalations reach a rotation seat that is never the holder (#807)', () => {
+    test('a holder-unreachable escalation persists under its holder\'s slot, submits the holder token and survives a restart without a second send', async () => {
+        let   minute = 0;
+        const store  = memoryStore(), sends = [], ROTATION = '@neo-gpt-euclid',
+            options  = {store, gateOf: openGate, now: () => at(minute), rotationSeats: [SEAT, ROTATION],
+                readUndeliverable: async () => ({[SEAT]: null}), admitWake: async message => sends.push(message)},
+            round    = createOpenWorkWakeRound(options);
+
+        await round(state(0)); minute = 1;
+        // the author's repair-ci wake waits for its route; the rotation hears that it waits
+        await round(state(1, 'red'));
+        expect(sends).toEqual([{repo: 'acme/app', number: 7, head: HEAD, kind: 'holder-unreachable', episode: iso(1),
+            to: ROTATION, failedChecks: null, holder: SEAT}]);
+        expect(store.read().holding[JSON.stringify(['acme/app', 7, HEAD, 'rotation', 'holder-unreachable', SEAT])])
+            .toMatchObject({status: 'admitted', wake: {to: ROTATION, holder: SEAT}});
+
+        await round.stop(); minute = 2;
+        expect(await createOpenWorkWakeRound(options)(state(2, 'red'))).toMatchObject({admitted: 0});
+        expect(sends).toHaveLength(1)
+    });
+});

@@ -86,9 +86,10 @@ export function failedChecksOf(data) {
  * @private
  */
 function observationOf(wake, failedChecks) {
-    const {repo, number, head, kind, episode, to, unblocks} = wake;
+    const {repo, number, head, kind, episode, to, unblocks, holder} = wake;
 
-    return {repo, number, head, kind, episode, to, failedChecks, ...(kind === 'unblocked' ? {unblocks} : {})}
+    return {repo, number, head, kind, episode, to, failedChecks, ...(kind === 'unblocked' ? {unblocks} : {}),
+        ...(kind === 'holder-unreachable' ? {holder} : {})}
 }
 
 /**
@@ -145,11 +146,16 @@ function validateLedger(ledger, now) {
     const
         object = value => value && typeof value === 'object' && !Array.isArray(value),
         text   = value => typeof value === 'string' && value.length > 0,
+        // An escalation's holder is part of its identity, and never its recipient
+        holder = value => value.kind === 'holder-unreachable'
+            ? value.role === 'rotation' && text(value.holder) && value.holder.startsWith('@') && value.holder !== value.to
+            : !Object.hasOwn(value, 'holder'),
         wake   = value => object(value) && text(value.repo) && Number.isInteger(value.number) && value.number > 0 &&
             text(value.head) && text(value.to) && value.to.startsWith('@') && text(value.kind) &&
             text(value.episode) && text(value.reason) && ['author', 'reviewer', 'rotation', 'assignee'].includes(value.role) &&
-            value.pr === `${value.repo}#${value.number}` &&
-            value.key === JSON.stringify([value.repo, value.number, value.head, value.to, value.kind, value.episode]);
+            value.pr === `${value.repo}#${value.number}` && holder(value) &&
+            value.key === JSON.stringify([value.repo, value.number, value.head, value.to, value.kind, value.episode,
+                ...(value.holder ? [value.holder] : [])]);
 
     if (!object(ledger) || !text(ledger.pulse) || !Number.isFinite(Date.parse(ledger.pulse)) ||
         !object(ledger.holding) || !object(ledger.pendingMerges) || !object(ledger.baselines) ||
@@ -162,7 +168,8 @@ function validateLedger(ledger, now) {
         Object.entries(ledger.holding).some(([slot, entry]) => !object(entry) || !wake(entry.wake) ||
             !['baseline', 'pending', 'admitted'].includes(entry.status) ||
             slot !== JSON.stringify([entry.wake.repo, entry.wake.number, entry.wake.head,
-                entry.wake.role === 'rotation' ? 'rotation' : entry.wake.to, entry.wake.kind])) ||
+                entry.wake.role === 'rotation' ? 'rotation' : entry.wake.to, entry.wake.kind,
+                ...(entry.wake.holder ? [entry.wake.holder] : [])])) ||
         Object.entries(ledger.pendingMerges).some(([id, value]) => !wake(value) ||
             !(value.kind === 'post-merge' && id === value.episode || value.kind === 'unblocked' && id === value.key && text(value.unblocks))) ||
         Object.values(ledger.baselines).some(value => !text(value))) {

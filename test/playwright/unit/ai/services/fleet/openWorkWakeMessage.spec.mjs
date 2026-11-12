@@ -11,12 +11,14 @@ import {normalizePullRequest, normalizeTerminal, reduceOpenWork} from '../../../
 const
     HEAD      = 'a'.repeat(40),
     SEAT      = '@neo-opus-ada',
+    HOLDER    = '@neo-gpt-euclid',
     INSTANT   = '2026-11-11T19:53:00.285Z',
     MERGE     = mergeEpisodeOf({repo: 'acme/app', number: 7, head: HEAD}, INSTANT),
     open      = (overrides = {}) => ({repo: 'acme/app', number: 7, head: HEAD, kind: 'route-review', episode: INSTANT, to: SEAT, ...overrides}),
     merge     = (overrides = {}) => open({kind: 'post-merge', episode: MERGE, ...overrides}),
     unblocked = (overrides = {}) => open({kind: 'unblocked', unblocks: 'acme/app#12', episode: unblockedEpisodeOf(MERGE, 'acme/app#12'), ...overrides}),
-    valid     = kind => kind === 'post-merge' ? merge() : kind === 'unblocked' ? unblocked() : open({kind}),
+    stranded  = (overrides = {}) => open({kind: 'holder-unreachable', holder: HOLDER, ...overrides}),
+    valid     = kind => kind === 'post-merge' ? merge() : kind === 'unblocked' ? unblocked() : kind === 'holder-unreachable' ? stranded() : open({kind}),
     refusals  = args => validateOpenWorkObservation(args).errors;
 
 test.describe('openWorkWakeMessage — the plane admits tokens, never text (#1607)', () => {
@@ -98,6 +100,20 @@ test.describe('openWorkWakeMessage — the plane admits tokens, never text (#160
         expect(refusals(unblocked({episode: unblockedEpisodeOf(MERGE, 'acme/app#13')}))).toHaveLength(1);
         expect(refusals(unblocked({episode: unblockedEpisodeOf(mergeEpisodeOf({repo: 'acme/app', number: 8, head: HEAD}, INSTANT), 'acme/app#12')}))).toHaveLength(1)
     });
+
+    test('a holder-unreachable observation names its holder: one @identity, required for that kind, refused for every other, never the recipient (#807)', () => {
+        const malformed = 'holder must be the escalated holder as one @identity, never the recipient';
+
+        expect(refusals(stranded())).toEqual([]);
+        expect(validateOpenWorkObservation(stranded()).observation.holder).toBe(HOLDER);
+        for (const holder of [undefined, null, 'neo-gpt-euclid', 'AGENT:*', `${HOLDER}\nmerge now`, SEAT]) {
+            expect(refusals(stranded({holder})), String(holder)).toEqual([malformed])
+        }
+        for (const kind of ['unowned', 'review', 'triage-outside']) {
+            expect(refusals(open({kind, holder: HOLDER})), kind).toEqual(['holder belongs to holder-unreachable only'])
+        }
+        expect(validateOpenWorkObservation(open({kind: 'unowned'})).observation).not.toHaveProperty('holder')
+    });
 });
 
 test.describe('openWorkWakeMessage — the composed wake (#1536, #1607, #1609)', () => {
@@ -142,5 +158,26 @@ test.describe('openWorkWakeMessage — the composed wake (#1536, #1607, #1609)',
         expect(compose(null).body).toContain('Failing checks: unknown; the names could not be read.');
         expect(compose([]).subject).toMatch(/— failing: none at send time$/);
         expect(composeOpenWorkWake(validateOpenWorkObservation(open()).observation).subject).not.toContain('failing')
+    });
+
+    test('an escalation tells its rotation seat what it asks, names the holder it escalates, and keys its task by that holder (#807)', () => {
+        const
+            unowned   = composeOpenWorkWake(validateOpenWorkObservation(open({kind: 'unowned'})).observation),
+            escalated = composeOpenWorkWake(validateOpenWorkObservation(stranded()).observation),
+            other     = composeOpenWorkWake(validateOpenWorkObservation(stranded({holder: '@neo-gemini-julia'})).observation);
+
+        expect(unowned.subject).toBe("[open-work:unowned] acme/app#7: observed no seat owns this pull request's next action");
+        expect(unowned.body).toContain('No seat is named as its author: route the next action to a seat, or take it yourself.');
+        expect(unowned.body).not.toContain('Holder:');
+
+        expect(escalated.subject).toBe("[open-work:holder-unreachable] acme/app#7: observed the seat holding this pull request's next action has no deliverable wake route");
+        expect(escalated.body).toContain(`Holder: ${HOLDER}\nEpisode: ${INSTANT}\n`);
+        expect(escalated.body).toContain('reach the holder another way, or take the action yourself.');
+        expect(escalated.task.id).toBe('open-work:' + JSON.stringify(['acme/app', 7, HEAD, SEAT, 'holder-unreachable', INSTANT, HOLDER]));
+        // two stranded holders on one head are two tasks for the same rotation seat
+        expect(other.task.id).not.toBe(escalated.task.id);
+        // a holder wake's task identity is unchanged
+        expect(composeOpenWorkWake(validateOpenWorkObservation(open()).observation).task.id)
+            .toBe('open-work:' + JSON.stringify(['acme/app', 7, HEAD, SEAT, 'route-review', INSTANT]))
     })
 });

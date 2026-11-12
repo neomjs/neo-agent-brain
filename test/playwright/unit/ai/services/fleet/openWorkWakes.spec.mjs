@@ -1,6 +1,6 @@
-import {expect, test}                  from '@playwright/test';
-import {createHash}                    from 'node:crypto';
-import {planOpenWorkWakes, wakeGateOf} from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {expect, test}                                    from '@playwright/test';
+import {createHash}                                      from 'node:crypto';
+import {pickRotationSeat, planOpenWorkWakes, wakeGateOf} from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
 import {
     OPEN_WORK_QUERY_COSTS,
     OPEN_WORK_SNAPSHOT,
@@ -926,5 +926,135 @@ test.describe('openWorkWakes — a merge wakes the seats whose tickets it unbloc
         expect(journey().step(1, [], {transitions: [terminal]}).wakes).toEqual([]);
         run.step(0);
         expect(run.step(1, [], {transitions: [terminal]}, {quiet: true}).wakes).toEqual([])
+    });
+});
+
+test.describe('openWorkWakes — an action whose holder cannot act escalates to a rotation seat, never the holder (#807)', () => {
+    const
+        EUCLID  = '@neo-gpt-euclid',
+        JULIA   = '@neo-gemini-julia',
+        unowned = {kind: 'unowned', seat: null, login: 'neo-gpt'},
+        offset  = (kind, length) => createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, kind])).digest().readUInt32BE(0) % length,
+        only    = dead => seat => seat === dead ? 'unreachable' : 'reachable',
+        summary = result => result.wakes.map(({to, role, kind, holder = null}) => ({to, role, kind, holder}));
+
+    test('an unowned PR whose author owes the action wakes one rotation seat once per head, with no holder (AC-1)', () => {
+        const roster = [ADA, GPT, EUCLID], run = journey();
+
+        run.step(0, [{owner: unowned, ci: 'pending'}], {}, {rotationSeats: roster});
+        const red = run.step(1, [{owner: unowned, ci: 'red'}], {}, {rotationSeats: roster});
+
+        expect(summary(red)).toEqual([{to: roster[offset('unowned', roster.length)], role: 'rotation', kind: 'unowned', holder: null}]);
+        expect(red.wakes[0].episode).toBe(iso(1));
+        // the author's next action on the same head (green and unrouted) is the same escalation
+        expect(run.step(2, [{owner: unowned, ci: 'green'}], {}, {rotationSeats: roster}).wakes).toEqual([]);
+        // a new head is a new escalation
+        expect(summary(run.step(3, [{owner: unowned, ci: 'red', head: 'b'.repeat(40)}], {}, {rotationSeats: roster})))
+            .toEqual([expect.objectContaining({role: 'rotation', kind: 'unowned'})])
+    });
+
+    test('an unowned PR seen on the producer\'s first pulse escalates once, like any rotation action', () => {
+        const roster = [ADA, GPT], run = journey();
+
+        expect(summary(run.step(0, [{owner: unowned, ci: 'red'}], {}, {rotationSeats: roster})))
+            .toEqual([expect.objectContaining({kind: 'unowned'})]);
+        expect(run.step(1, [{owner: unowned, ci: 'red'}], {}, {rotationSeats: roster}).wakes).toEqual([])
+    });
+
+    test('a green, unrouted unowned PR escalates; one held by a reviewer or the operator, or owing nothing, does not; with no roster it stays pending', () => {
+        const roster = [ADA, EUCLID], run = journey();
+
+        run.step(0, [], {}, {rotationSeats: roster});
+        expect(summary(run.step(1, [
+            {number: 2, ci: 'green', owner: unowned},
+            {number: 3, ci: 'green', owner: unowned, requested: [GPT]},
+            {number: 4, ci: 'green', owner: unowned, ...judged('APPROVED')},
+            {number: 5, ci: 'pending', owner: unowned},
+            {number: 6, ci: 'green', owner: unowned, draft: true}
+        ], {}, {rotationSeats: roster}))).toEqual([
+            {to: expect.any(String), role: 'rotation', kind: 'unowned', holder: null},
+            {to: GPT, role: 'reviewer', kind: 'review', holder: null}
+        ]);
+
+        const lone = journey();
+        lone.step(0, []);
+        const parked = lone.step(1, [{owner: unowned, ci: 'red'}]);
+
+        expect(parked.wakes).toEqual([]);
+        expect(Object.values(parked.ledger.holding)).toEqual([expect.objectContaining({status: 'pending'})])
+    });
+
+    test('the pick never returns the escalated holder: at the hash offset the next eligible seat wakes; a roster of only the holder stays pending (AC-4)', () => {
+        const
+            k      = offset('holder-unreachable', 4),
+            others = [GPT, EUCLID, JULIA],
+            roster = [...others.slice(0, k), ADA, ...others.slice(k)],
+            run    = journey();
+
+        // the fixture's premise: the holder sits exactly where the hash lands
+        expect(roster[k]).toBe(ADA);
+
+        // the exclusion itself, with every route answering: a reachable holder is still never picked
+        const row = {repo: 'acme/app', number: 7, head: HEAD}, reachable = () => 'reachable';
+        expect(pickRotationSeat(row, 'holder-unreachable', roster, reachable)).toBe(ADA);
+        expect(pickRotationSeat(row, 'holder-unreachable', roster, reachable, [ADA])).toBe(roster[(k + 1) % 4]);
+        expect(pickRotationSeat(row, 'holder-unreachable', [ADA], reachable, [ADA])).toBe(null);
+
+        run.step(0, [{ci: 'pending'}], {}, {rotationSeats: roster});
+        expect(summary(run.step(1, [{ci: 'red'}], {}, {rotationSeats: roster, routeOf: only(ADA)})))
+            .toEqual([{to: roster[(k + 1) % 4], role: 'rotation', kind: 'holder-unreachable', holder: ADA}]);
+
+        const lone = journey();
+        lone.step(0, [{ci: 'pending'}], {}, {rotationSeats: [ADA]});
+        for (const minute of [1, 2]) {
+            const stuck = lone.step(minute, [{ci: 'red'}], {}, {rotationSeats: [ADA], routeOf: only(ADA)});
+            const escalation = Object.values(stuck.ledger.holding).find(entry => entry.wake.kind === 'holder-unreachable');
+
+            expect(stuck.wakes).toEqual([]);
+            expect(escalation).toMatchObject({status: 'pending', wake: {holder: ADA}});
+            expect(escalation.wake.to, 'not even the placeholder recipient is the holder').not.toBe(ADA)
+        }
+    });
+
+    test('a holder wake skipped for an unreachable route wakes one rotation seat with that holder, once; the route answering sends the holder\'s own wake and retires the escalation (AC-2)', () => {
+        const roster = [ADA, GPT, EUCLID], run = journey(), review = {ci: 'green', requested: [GPT]};
+
+        run.step(0, [{ci: 'pending'}], {}, {rotationSeats: roster});
+        const first = run.step(1, [review], {}, {rotationSeats: roster, routeOf: only(GPT)});
+
+        expect(summary(first)).toEqual([{to: expect.any(String), role: 'rotation', kind: 'holder-unreachable', holder: GPT}]);
+        expect([ADA, EUCLID]).toContain(first.wakes[0].to);
+        expect(first.wakes[0].episode).toBe(iso(1));
+        expect(Object.values(first.ledger.holding).find(entry => entry.wake.to === GPT))
+            .toMatchObject({status: 'pending', wake: {kind: 'review', role: 'reviewer'}});
+        expect(run.step(2, [review], {}, {rotationSeats: roster, routeOf: only(GPT)}).wakes).toEqual([]);
+
+        const recovered = run.step(3, [review], {}, {rotationSeats: roster, routeOf: () => 'reachable'});
+
+        expect(summary(recovered)).toEqual([{to: GPT, role: 'reviewer', kind: 'review', holder: null}]);
+        expect(Object.values(recovered.ledger.holding).map(entry => entry.wake.kind)).toEqual(['review'])
+    });
+
+    test('two unreachable holders are two escalations; an unknown route, a first observation or a quiet round escalates nothing', () => {
+        const roster = [ADA, GPT, EUCLID, JULIA], dead = seat => [GPT, EUCLID].includes(seat) ? 'unreachable' : 'reachable', run = journey();
+
+        run.step(0, [{ci: 'pending'}], {}, {rotationSeats: roster});
+        const both = run.step(1, [{ci: 'green', requested: [GPT, EUCLID]}], {}, {rotationSeats: roster, routeOf: dead});
+
+        expect(both.wakes.map(wake => wake.holder).sort()).toEqual([EUCLID, GPT].sort());
+        expect(both.wakes.every(wake => wake.kind === 'holder-unreachable' && [ADA, JULIA].includes(wake.to))).toBe(true);
+        expect(new Set(both.wakes.map(wake => wake.key)).size).toBe(2);
+
+        const unknown = journey();
+        unknown.step(0, [{ci: 'pending'}], {}, {rotationSeats: roster});
+        expect(summary(unknown.step(1, [{ci: 'green', requested: [GPT]}], {}, {rotationSeats: roster})))
+            .toEqual([{to: GPT, role: 'reviewer', kind: 'review', holder: null}]);
+
+        // a holder slot first seen is its baseline, so nobody escalates it either
+        expect(journey().step(0, [{ci: 'green', requested: [GPT]}], {}, {rotationSeats: roster, routeOf: only(GPT)}).wakes).toEqual([]);
+
+        const quiet = journey();
+        quiet.step(0, [{ci: 'pending'}], {}, {rotationSeats: roster});
+        expect(quiet.step(1, [{ci: 'green', requested: [GPT]}], {}, {rotationSeats: roster, routeOf: only(GPT), quiet: true}).wakes).toEqual([])
     });
 });

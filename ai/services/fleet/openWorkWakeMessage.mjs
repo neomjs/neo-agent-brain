@@ -5,8 +5,9 @@
  *
  * The producer runs host-side and decides which wakes to send. The plane decides what a wake says and sends it as
  * `@system`. The observation is made of tokens, never text: a repository, a number, a head, a kind, an episode, a
- * recipient, for `repair-ci` check names, and for `unblocked` the issue the merge unblocked. The plane composes the
- * subject and body from them, so no caller puts free text under the system sender.
+ * recipient, for `repair-ci` check names, for `unblocked` the issue the merge unblocked, and for `holder-unreachable`
+ * the holder it escalates. The plane composes the subject and body from them, so no caller puts free text under the
+ * system sender.
  */
 
 /**
@@ -14,15 +15,27 @@
  * @member {Object<String,String>} OPEN_WORK_WAKE_REASONS
  */
 export const OPEN_WORK_WAKE_REASONS = Object.freeze({
-    'repair-ci'      : 'CI is red on your head',
-    'address-changes': 'changes are requested on your head',
-    rebase           : 'your approved head has conflicts to rebase',
-    review           : 'your review is due on the current head',
-    'route-review'   : 'CI is green; request a reviewer for your head',
-    'triage-outside' : 'an untouched outside contributor pull request has finished CI',
-    'approve-runs'   : 'an outside contributor pull request has workflow runs awaiting approval',
-    'post-merge'     : 'your pull request was merged',
-    unblocked        : 'a merge unblocked your ticket'
+    'repair-ci'         : 'CI is red on your head',
+    'address-changes'   : 'changes are requested on your head',
+    rebase              : 'your approved head has conflicts to rebase',
+    review              : 'your review is due on the current head',
+    'route-review'      : 'CI is green; request a reviewer for your head',
+    'triage-outside'    : 'an untouched outside contributor pull request has finished CI',
+    'approve-runs'      : 'an outside contributor pull request has workflow runs awaiting approval',
+    'post-merge'        : 'your pull request was merged',
+    unblocked           : 'a merge unblocked your ticket',
+    unowned             : "no seat owns this pull request's next action",
+    'holder-unreachable': "the seat holding this pull request's next action has no deliverable wake route"
+});
+
+/**
+ * @summary What an escalation asks of its rotation seat, which holds nothing on the pull request itself.
+ * @member {Object<String,String>} ESCALATION_ASKS
+ * @private
+ */
+const ESCALATION_ASKS = Object.freeze({
+    unowned             : 'No seat is named as its author: route the next action to a seat, or take it yourself.',
+    'holder-unreachable': "The holder's own wake waits for its route: reach the holder another way, or take the action yourself."
 });
 
 const
@@ -84,12 +97,12 @@ function validEpisode({repo, number, head, kind, episode, unblocks}) {
 /**
  * @summary Validates the observation a producer submits, and answers it normalized, or every reason it is refused.
  * Unknown fields are the tool schema's to refuse; this checks the fields the message is composed from.
- * @param {Object} args `{repo, number, head, kind, episode, to, failedChecks, unblocks}`
+ * @param {Object} args `{repo, number, head, kind, episode, to, failedChecks, unblocks, holder}`
  * @returns {{observation: Object|null, errors: String[]}}
  */
 export function validateOpenWorkObservation(args) {
     const
-        {repo, number, head, kind, episode, to, failedChecks = null, unblocks = null} = args ?? {},
+        {repo, number, head, kind, episode, to, failedChecks = null, unblocks = null, holder = null} = args ?? {},
         errors = [];
 
     if (typeof repo !== 'string' || !REPO.test(repo)) errors.push('repo must be owner/name');
@@ -101,6 +114,11 @@ export function validateOpenWorkObservation(args) {
         errors.push('unblocks must be the unblocked issue as owner/name#N')
     } else if (kind !== 'unblocked' && unblocks !== null) {
         errors.push('unblocks belongs to unblocked only')
+    }
+    if (kind === 'holder-unreachable' && (typeof holder !== 'string' || !IDENTITY.test(holder) || holder === to)) {
+        errors.push('holder must be the escalated holder as one @identity, never the recipient')
+    } else if (kind !== 'holder-unreachable' && holder !== null) {
+        errors.push('holder belongs to holder-unreachable only')
     }
 
     if (!errors.length && !validEpisode({repo, number, head, kind, episode, unblocks})) {
@@ -123,7 +141,7 @@ export function validateOpenWorkObservation(args) {
     return errors.length
         ? {observation: null, errors}
         : {observation: {repo, number, head, kind, episode, to, failedChecks: kind === 'repair-ci' ? failedChecks : null,
-            ...(kind === 'unblocked' ? {unblocks} : {})}, errors}
+            ...(kind === 'unblocked' ? {unblocks} : {}), ...(kind === 'holder-unreachable' ? {holder} : {})}, errors}
 }
 
 /**
@@ -143,18 +161,20 @@ function failingOf(names) {
  * @summary Composes the wake a validated observation sends. It wakes its recipient at normal priority: a system
  * observation is neither operator steering nor drain-first. The task keeps the full identity a reader needs to
  * re-check the live pull request. An `unblocked` wake leads with the issue it unblocked, since that ticket is the
- * recipient's, and names the merge after it.
+ * recipient's, and names the merge after it. An escalation names its holder and says what it asks of the rotation
+ * seat; the holder is part of the task identity, so two escalated holders are two tasks.
  * @param {Object} observation A {@link validateOpenWorkObservation} result.
  * @returns {Object} An `addMessage` payload.
  */
 export function composeOpenWorkWake(observation) {
     const
-        {repo, number, head, kind, episode, to, failedChecks, unblocks} = observation,
-        pr                                                              = `${repo}#${number}`,
-        reason                                                          = OPEN_WORK_WAKE_REASONS[kind],
-        failing                                                         = kind === 'repair-ci' ? failingOf(failedChecks) : null,
-        issue                                                           = kind === 'unblocked' ? unblocks.split('#') : null,
-        lead                                                            = issue
+        {repo, number, head, kind, episode, to, failedChecks, unblocks, holder = null} = observation,
+        pr                                                                             = `${repo}#${number}`,
+        reason                                                                         = OPEN_WORK_WAKE_REASONS[kind],
+        failing                                                                        = kind === 'repair-ci' ? failingOf(failedChecks) : null,
+        issue                                                                          = kind === 'unblocked' ? unblocks.split('#') : null,
+        ask                                                                            = ESCALATION_ASKS[kind] ? `${ESCALATION_ASKS[kind]} ` : '',
+        lead                                                                           = issue
             ? `https://github.com/${issue[0]}/issues/${issue[1]}\nUnblocked by: https://github.com/${repo}/pull/${number} at ${head}\n`
             : `https://github.com/${repo}/pull/${number}\nHead: ${head}\n`;
 
@@ -162,7 +182,8 @@ export function composeOpenWorkWake(observation) {
         to,
         subject: `[open-work:${kind}] ${issue ? unblocks : pr}: observed ${reason}${failing ? ` — failing: ${failing.subject}` : ''}`,
         body   : lead +
-            `Observed action: ${kind} — ${reason}.\n${failing ? `Failing checks: ${failing.body}.\n` : ''}Episode: ${episode}\n\n` +
+            `Observed action: ${kind} — ${reason}.\n${failing ? `Failing checks: ${failing.body}.\n` : ''}` +
+            `${holder ? `Holder: ${holder}\n` : ''}Episode: ${episode}\n\n` + ask +
             (issue
                 ? 'Re-check the live issue and its remaining blockers before acting. '
                 : 'Re-check the live pull request, head, checks and review state before acting. ') +
@@ -171,7 +192,8 @@ export function composeOpenWorkWake(observation) {
         priority      : 'normal',
         wakeSuppressed: false,
         task          : {
-            id          : `open-work:${JSON.stringify([repo, number, head, to, kind, episode])}`, state: 'Submitted',
+            id          : `open-work:${JSON.stringify([repo, number, head, to, kind, episode, ...(holder ? [holder] : [])])}`,
+            state       : 'Submitted',
             producerRole: 'fleet-open-work', kind, head, episode
         }
     }

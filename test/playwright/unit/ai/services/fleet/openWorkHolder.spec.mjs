@@ -94,7 +94,7 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
         expect(holderOf(row({...conflict, partial: true}))).toEqual({role: 'unknown', kind: null, ids: []})
     });
 
-    test('review routing belongs only to a green non-draft seat-owned PR without an on-head opinion or request', () => {
+    test('review routing belongs to a green non-draft PR without an on-head opinion or request, owned by a seat or by no seat (#807)', () => {
         const routing = {role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']};
 
         expect(holderOf(row({}))).toEqual(routing);
@@ -104,7 +104,10 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
         }
 
         expect(holderOf(row({draft: true}))).toEqual({role: 'none', kind: null, ids: []});
+        // an unowned org PR owes the same routing, with nobody to hold it: the wake path escalates it
         expect(holderOf(row({owner: {kind: 'unowned', seat: null, login: 'neo-gpt'}})))
+            .toEqual({role: 'author', kind: 'route-review', ids: []});
+        expect(holderOf(row({owner: {kind: 'unowned', seat: null, login: 'neo-gpt'}, draft: true})))
             .toEqual({role: 'none', kind: null, ids: []});
         expect(holderOf(row({owner: {kind: 'seat', seat: null, login: 'neo-opus-ada'}})))
             .toEqual({role: 'none', kind: null, ids: []});

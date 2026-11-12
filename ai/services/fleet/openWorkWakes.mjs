@@ -15,23 +15,28 @@
  * transition leaves the producer's bounded history. Admitted merges need no permanent seen set: the
  * saved pulse excludes their original observations on the next round. A merge's `unblocked` wakes, one
  * per issue and assignee seat, follow the same rule, keyed by the pulse whose read resolved them.
+ *
+ * Two escalations ride the rotation when an action's holder cannot act. An `unowned` PR owes its author an action,
+ * but no seat is that author. A `holder-unreachable` slot is a holder wake that would be sent if the holder's route
+ * were not `unreachable`. Each wakes one rotation seat per head, and that seat is never the holder it escalates.
  */
-import {createHash}                                            from 'node:crypto';
+import {createHash}                                          from 'node:crypto';
 import {openWorkFreshness}                                     from './fleetOpenWorkSource.mjs';
 import {holderOf}                                              from './openWorkHolder.mjs';
 import {OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf} from './openWorkWakeMessage.mjs';
 import {OPEN_WORK_QUERY_COSTS}                                 from '../github-workflow/queries/openWorkQueries.mjs';
 
 /**
- * @summary Deterministic rotation seat selection from the participating roster, advancing to the first reachable seat.
+ * @summary Deterministic rotation seat selection from the participating roster, advancing to the first reachable seat
+ * that is not excluded. The offset hashes over the whole roster, so an excluded seat passes the pick to its successor.
  * @param {Object} row
  * @param {String} kind
  * @param {String[]} roster
  * @param {Function} routeOf
+ * @param {String[]} [exclude=[]] Seats never picked: an escalation's holder, even while its route answers.
  * @returns {String|null}
- * @private
  */
-function pickRotationSeat(row, kind, roster, routeOf) {
+export function pickRotationSeat(row, kind, roster, routeOf, exclude = []) {
     if (!roster.length) return null;
     const
         digest = createHash('sha256').update(JSON.stringify([row.repo, row.number, row.head, kind])).digest(),
@@ -39,7 +44,7 @@ function pickRotationSeat(row, kind, roster, routeOf) {
 
     for (let index = 0; index < roster.length; index++) {
         const seat = roster[(offset + index) % roster.length];
-        if (routeOf(seat) !== 'unreachable') return seat
+        if (!exclude.includes(seat) && routeOf(seat) !== 'unreachable') return seat
     }
 
     return null
@@ -64,14 +69,15 @@ function hasIdentity(row) {
  * @param {String} role
  * @param {String} kind
  * @param {String} episode The first observation of the open action, or the terminal observation id.
+ * @param {String|null} [holder=null] An escalation's holder, part of its identity: two holders are two tasks.
  * @returns {Object}
  * @private
  */
-function wakeOf(row, seat, role, kind, episode) {
+function wakeOf(row, seat, role, kind, episode, holder = null) {
     return {
-        key: JSON.stringify([row.repo, row.number, row.head, seat, kind, episode]),
+        key: JSON.stringify([row.repo, row.number, row.head, seat, kind, episode, ...(holder ? [holder] : [])]),
         to : seat, pr: row.key, repo: row.repo, number: row.number, head: row.head,
-        role, kind, episode, reason: REASONS[kind]
+        role, kind, episode, reason: REASONS[kind], ...(holder ? {holder} : {})
     }
 }
 
@@ -112,6 +118,30 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             .filter(item => typeof item === 'string' ? native(item) : !item?.benched && native(item?.seat))
             .map(item => typeof item === 'string' ? item : item.seat))];
 
+    /**
+     * Holds one rotation-routed slot: an outside PR's action, or an escalation naming the holder it never picks.
+     * An admitted slot stays admitted and a quiet round baselines. A pick without an eligible seat stays pending,
+     * under a placeholder recipient that is never the holder.
+     */
+    const rotate = (row, kind, holder = null) => {
+        const
+            slot    = JSON.stringify([row.repo, row.number, row.head, 'rotation', kind, ...(holder ? [holder] : [])]),
+            prior   = holding[slot],
+            episode = prior?.wake?.episode ?? state.observedAt,
+            hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder), status};
+
+        current.add(slot);
+        if (prior?.status === 'admitted') return;
+
+        const seat = pickRotationSeat(row, kind, roster, quiet ? () => 'unknown' : routeOf, holder ? [holder] : []);
+
+        if (seat && !quiet) {
+            wakes.push(hold(seat, 'admitted').wake)
+        } else {
+            hold(seat ?? [prior?.wake?.to, ...roster, '@rotation'].find(item => item && item !== holder), quiet ? 'baseline' : 'pending')
+        }
+    };
+
     for (const row of Object.values(state.snapshot.rows)) {
         if (!hasIdentity(row)) continue;
 
@@ -134,30 +164,13 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         decided.add(row.key);
 
         if (holder.role === 'rotation' && REASONS[holder.kind]) {
-            const
-                slot    = JSON.stringify([row.repo, row.number, row.head, 'rotation', holder.kind]),
-                prior   = holding[slot],
-                episode = prior?.wake?.episode ?? state.observedAt;
+            rotate(row, holder.kind);
+            continue
+        }
 
-            current.add(slot);
-            if (prior?.status === 'admitted') {
-                holding[slot] = prior;
-                continue
-            }
-            if (quiet) {
-                const seat = pickRotationSeat(row, holder.kind, roster, () => 'unknown') ?? prior?.wake?.to ?? roster[0] ?? '@rotation';
-                holding[slot] = {wake: wakeOf(row, seat, 'rotation', holder.kind, episode), status: 'baseline'};
-                continue
-            }
-            const seat = pickRotationSeat(row, holder.kind, roster, routeOf);
-            if (seat) {
-                const wake = wakeOf(row, seat, 'rotation', holder.kind, episode);
-                holding[slot] = {wake, status: 'admitted'};
-                wakes.push(wake)
-            } else {
-                const fallback = prior?.wake?.to ?? roster[0] ?? '@rotation';
-                holding[slot] = {wake: wakeOf(row, fallback, 'rotation', holder.kind, episode), status: 'pending'}
-            }
+        // The author owes the action, and no seat is the author: once per head, like any rotation action
+        if (holder.role === 'author' && row.owner?.kind === 'unowned' && REASONS[holder.kind]) {
+            rotate(row, 'unowned');
             continue
         }
 
@@ -176,9 +189,14 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             current.add(slot);
             holding[slot] = entry;
 
-            if (!rowBaseline && entry.status === 'pending' && routeOf(seat) !== 'unreachable') {
-                holding[slot] = {...entry, status: 'admitted'};
-                wakes.push(entry.wake)
+            if (!rowBaseline && entry.status === 'pending') {
+                if (routeOf(seat) !== 'unreachable') {
+                    holding[slot] = {...entry, status: 'admitted'};
+                    wakes.push(entry.wake)
+                } else {
+                    // The holder's wake waits for its route; meanwhile the rotation hears that it waits
+                    rotate(row, 'holder-unreachable', seat)
+                }
             }
         }
     }

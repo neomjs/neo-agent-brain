@@ -3368,6 +3368,10 @@ paths:
                   type: string
                   nullable: true
                   description: "`unblocked` only: the issue the merge unblocked, as `owner/name#N`."
+                holder:
+                  type: string
+                  nullable: true
+                  description: "`holder-unreachable` only: the escalated holder's `@identity`, never the recipient."
       responses:
         '200':
           description: The `add_message` receipt of the composed wake.
