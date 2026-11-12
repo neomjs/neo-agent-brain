@@ -458,6 +458,13 @@ class FleetControlBridge extends Base {
      */
     lastOperatorPresenceRecord = null
     /**
+     * How many presence writes this process has completed. A roster read during which this count moved publishes
+     * nothing, because the plane may have answered it before the write: an older reading never replaces a newer one.
+     * @member {Number} operatorPresenceWrites=0
+     * @protected
+     */
+    operatorPresenceWrites = 0
+    /**
      * Viewer-bound wake-routes source — an injected collaborator exposing `readWakeRoutes(params)`:
      * the DECOMPOSED per-seat wake-path envelope (subscription, arming, delivery lane, last
      * terminal failure, presence), every axis answering as itself under the fail-honest contract.
@@ -1585,6 +1592,8 @@ class FleetControlBridge extends Base {
 
         const result = await writer.setOperatorPresence(until === undefined ? {mode} : {mode, until});
 
+        this.operatorPresenceWrites++;
+
         if (!result?.changed) {
             return {...result, notice: null}
         }
@@ -2031,10 +2040,11 @@ class FleetControlBridge extends Base {
      */
     async fleetRoster() {
         const
-            me       = this,
-            registry = me.getRegistry(),
-            manager  = me.getManager(),
-            resolve  = me.getIdentityResolver();
+            me             = this,
+            registry       = me.getRegistry(),
+            manager        = me.getManager(),
+            resolve        = me.getIdentityResolver(),
+            presenceWrites = me.operatorPresenceWrites;
 
         // The S2 telltale axes join the roster here: each producer snapshot becomes per-row state +
         // one capability. Fail-honest end to end: an un-injected producer — or a manager seam
@@ -2047,8 +2057,11 @@ class FleetControlBridge extends Base {
             manager.fleetPresenceStatus?.() ?? null
         ]);
 
-        // A presence written elsewhere, an expired away or this process's restart reaches the host record here
-        me.syncOperatorPresenceRecord(presence?.operatorPresence ?? null);
+        // A presence written elsewhere, an expired away or this process's restart reaches the host record here,
+        // unless a presence write completed while this read was out: the next read publishes what it missed
+        if (me.operatorPresenceWrites === presenceWrites) {
+            me.syncOperatorPresenceRecord(presence?.operatorPresence ?? null)
+        }
 
         // A seat's participation is its identity node's, which the presence report carries; a report that never
         // answered leaves it unread rather than falling back to any local file
