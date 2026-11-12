@@ -19,7 +19,7 @@ import {
     resolveGuiInstancePid
 } from './instanceResolver.mjs';
 import {withOutboxLock}      from './outboxLock.mjs';
-import {WAKE_LANE_DIRECTIVE} from './wakeLaneDirective.mjs';
+import {selectWakeDirective} from './wakeLaneDirective.mjs';
 
 const LOOPBACK_HOSTS     = new Set(['127.0.0.1', 'localhost', '::1']);
 const ABORTABLE_ADAPTERS = new Set([
@@ -89,13 +89,14 @@ export function formatLocalWakeDigest(envelope = {}) {
         lines.push(`- ${breakdown.heartbeat_pulse.count} heartbeat pulses${extra}`);
     }
 
-    const isPureHeartbeat = breakdown.heartbeat_pulse?.count > 0 &&
-        !breakdown.sent_to_me?.count &&
-        !breakdown.task_state_changed?.count &&
-        !breakdown.permission_granted?.count;
+    const directive = selectWakeDirective({
+        content  : Boolean(breakdown.sent_to_me?.count || breakdown.task_state_changed?.count || breakdown.permission_granted?.count),
+        heartbeat: breakdown.heartbeat_pulse?.count > 0,
+        priority
+    });
 
-    if (isPureHeartbeat) {
-        lines.push('', WAKE_LANE_DIRECTIVE);
+    if (directive) {
+        lines.push('', directive);
     }
 
     return lines.join('\n');
