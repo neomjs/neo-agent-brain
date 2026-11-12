@@ -253,6 +253,7 @@
         "fleet.planeInternalHosts",
         "fleet.port",
         "fleet.rosterAxisTimeoutMs",
+        "fleet.rosterRetainedMaxAgeMs",
         "fleet.shutdownBudgetMs",
         "fleet.signingKey",
         "fleet.tenantProbeTimeoutMs",

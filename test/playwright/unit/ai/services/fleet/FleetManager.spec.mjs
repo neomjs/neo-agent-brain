@@ -2600,7 +2600,45 @@ test.describe('Neo.ai.services.fleet.FleetManager — the roster\'s plane axes a
         expect(late[0]).toMatch(/^\[fleet\] roster presence read answered after \d+ ms \(bound 50 ms\)$/);
     });
 
-    test('retains a late-settling presence report across bounded poll timeouts within 4 * timeoutMs and expires past the horizon', async () => {
+    const lateReport = {
+        generatedAt: '2026-11-11T02:00:00.075Z',
+        agents     : [
+            {
+                identity: '@neo-kimi-phoebe',
+                state   : 'benched',
+                signals : {
+                    participationStatus: 'operator_benched',
+                    statusReason       : 'paused for maintenance',
+                    participationSince : '2026-11-01T00:00:00.000Z'
+                }
+            },
+            {
+                identity: '@alice',
+                state   : 'online',
+                signals : {
+                    participationStatus: 'active',
+                    statusReason       : null,
+                    participationSince : null,
+                    turnPresence       : {
+                        fresh     : true,
+                        freshUntil: '2026-11-11T02:05:00.000Z',
+                        expiresAt : '2026-11-11T02:10:00.000Z'
+                    }
+                }
+            }
+        ]
+    };
+
+    /**
+     * Poll 1 times out at the bound, and its plane call settles 80 ms later with {@link lateReport}.
+     * @param {{ms: Number, now: Function}} clock The poll clock, advanced in place.
+     * @returns {Promise<Function[]>} The plane calls still open.
+     */
+    async function settleAfterTimeout(clock) {
+        const
+            pending  = [],
+            callTool = () => new Promise(resolve => pending.push(resolve));
+
         FleetManager.lifecycleService = {
             getRegistry: () => ({
                 listAgents: () => [
@@ -2610,64 +2648,36 @@ test.describe('Neo.ai.services.fleet.FleetManager — the roster\'s plane axes a
             })
         };
 
-        let currentMs = Date.parse('2026-11-11T02:00:00.000Z');
-        const
-            now      = () => currentMs,
-            pending  = [],
-            callTool = () => new Promise(resolve => pending.push(resolve));
+        FleetManager.presenceStateOptions = {readPresence: createPlaneWhoIsOnlineReader({callTool})};
 
-        FleetManager.presenceStateOptions = {
-            readPresence: createPlaneWhoIsOnlineReader({callTool})
-        };
-
-        const poll1 = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now});
+        const poll1 = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now: clock.now});
 
         expect(pending).toHaveLength(1);
         expect(poll1.capability).toMatchObject({state: 'degraded', reason: 'presence read still pending after 50 ms'});
         expect(poll1.states.every(row => row.presence === 'unknown' && row.participation === null && row.participationRead.state === 'unread')).toBe(true);
 
-        currentMs += 80;
-        const settledGeneratedAt = '2026-11-11T02:00:00.075Z';
-
-        pending.shift()({
-            generatedAt: settledGeneratedAt,
-            agents     : [
-                {
-                    identity: '@neo-kimi-phoebe',
-                    state   : 'benched',
-                    signals : {
-                        participationStatus: 'operator_benched',
-                        statusReason       : 'paused for maintenance',
-                        participationSince : '2026-11-01T00:00:00.000Z'
-                    }
-                },
-                {
-                    identity: '@alice',
-                    state   : 'online',
-                    signals : {
-                        participationStatus: 'active',
-                        statusReason       : null,
-                        participationSince : null,
-                        turnPresence       : {
-                            fresh     : true,
-                            freshUntil: '2026-11-11T02:05:00.000Z',
-                            expiresAt : '2026-11-11T02:10:00.000Z'
-                        }
-                    }
-                }
-            ]
-        });
+        clock.ms += 80;
+        pending.shift()(lateReport);
         await new Promise(resolve => setImmediate(resolve));
 
-        currentMs += 150;
-        const poll2 = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now});
+        return pending
+    }
+
+    test('a late answer still serves the roster read a minute later (#1622)', async () => {
+        const
+            clock   = {ms: Date.parse('2026-11-11T02:00:00.000Z'), now: () => clock.ms},
+            pending = await settleAfterTimeout(clock);
+
+        // the cockpit reads the roster once a minute (Institution LivenessCadence)
+        clock.ms += 60000;
+        const poll2 = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now: clock.now});
 
         expect(pending, 'settled plane reader dispatches a fresh plane call on the next poll').toHaveLength(1);
         expect(poll2.capability).toMatchObject({
             state     : 'wired',
             confidence: 'observed',
             reason    : null,
-            capturedAt: settledGeneratedAt
+            capturedAt: lateReport.generatedAt
         });
         expect(poll2.states.find(row => row.agentId === 'neo-kimi-phoebe')).toMatchObject({
             presence     : 'benched',
@@ -2684,12 +2694,19 @@ test.describe('Neo.ai.services.fleet.FleetManager — the roster\'s plane axes a
             participation    : {status: 'active', reason: null, since: null},
             participationRead: {state: 'read'}
         });
+    });
 
-        currentMs += 100;
-        const poll3 = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now});
+    test('a retained answer older than fleet.rosterRetainedMaxAgeMs reads unread again (#1622)', async () => {
+        const clock = {ms: Date.parse('2026-11-11T02:00:00.000Z'), now: () => clock.ms};
 
-        expect(poll3.capability).toMatchObject({state: 'degraded', reason: 'presence read still pending after 50 ms'});
-        expect(poll3.states.every(row => row.presence === 'unknown' && row.participation === null && row.participationRead.state === 'unread')).toBe(true);
+        await settleAfterTimeout(clock);
+
+        // one millisecond past the leaf's 120 s
+        clock.ms += 120001;
+        const poll2 = await FleetManager.fleetPresenceStatus({timeoutMs: 50, now: clock.now});
+
+        expect(poll2.capability).toMatchObject({state: 'degraded', reason: 'presence read still pending after 50 ms'});
+        expect(poll2.states.every(row => row.presence === 'unknown' && row.participation === null && row.participationRead.state === 'unread')).toBe(true);
     });
 
     test('replacing or clearing readPresence drops any retained snapshot from a prior reader', async () => {

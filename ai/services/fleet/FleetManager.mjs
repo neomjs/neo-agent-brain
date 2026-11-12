@@ -877,10 +877,10 @@ class FleetManager extends Base {
      * `unknown` under a `degraded/none` capability — "we cannot see presence" stays distinguishable
      * from "the fleet is dark"; a band is never invented. The roster reads this view, so its reader,
      * a plane call in plane mode, is bounded: a read still out at `timeoutMs` serves the active reader's
-     * latest settled observation while within `4 * timeoutMs` (`16 s` at the `4000 ms`
-     * `AiConfig.fleet.rosterAxisTimeoutMs` default, spanning `11–15 s` synchronized cockpit-poll stalls
-     * across up to three `5 s` roster ticks while bounding staleness; preserving `payload.generatedAt`),
-     * and past that horizon leaves every seat `unknown` and its participation unread, naming the wait.
+     * latest settled observation while it is younger than `AiConfig.fleet.rosterRetainedMaxAgeMs`
+     * (the cockpit reads the roster once a minute, so a late answer has to outlive the gap to the next
+     * read; preserving `payload.generatedAt`), and past that horizon leaves every seat `unknown` and its
+     * participation unread, naming the wait.
      * @param {Object} [options={}]
      * @param {Number} [options.timeoutMs=AiConfig.fleet.rosterAxisTimeoutMs]
      * @param {Function} [options.now] Clock seam returning epoch ms or an ISO/Date instant.
@@ -912,9 +912,8 @@ class FleetManager extends Base {
         return readFleetPresenceSnapshot({
             agents      : this.getLifecycleService().getRegistry().listAgents(),
             ...adapterOptions,
-            // 4 * timeoutMs (16 s at the 4000 ms default) spans 11-15 s synchronized-poll stalls across up to three 5 s ticks.
             readPresence: boundRosterRead(readPresence, 'presence', timeoutMs, {
-                maxRetainedAgeMs: 4 * timeoutMs,
+                maxRetainedAgeMs: AiConfig.fleet.rosterRetainedMaxAgeMs,
                 now             : clock,
                 readRetained    : () => this.retainedPresenceSnapshot?.reader === readPresence
                     ? this.retainedPresenceSnapshot
