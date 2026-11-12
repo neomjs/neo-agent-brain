@@ -93,6 +93,8 @@ export function readHookPayload({stdin = process.stdin} = {}) {
  * (`seatConfig.readTurnPresenceDeadlineMs`): the one budget for the whole MCP exchange. A hook projected
  * before its runtime moved the deadline to the entrypoint injects none, and gets a named skip.
  * @param {'start'|'progress'|'terminal'} [options.action='start'] Event kind.
+ * @param {Object} [options.capacity] The seat's plan-capacity reading, resolved by the calling hook's
+ * entrypoint like everything else here; forwarded as given.
  * @param {Object} [options.env=process.env] Environment source.
  * @param {*} [options.hookPayload] Raw hook payload, used for optional wake nonce extraction.
  * @param {String} [options.note] Bounded diagnostic note.
@@ -109,6 +111,7 @@ export async function recordTurnPresenceFromHook({
     plane,
     deadlineMs,
     action = 'start',
+    capacity,
     env = process.env,
     hookPayload,
     note,
@@ -161,6 +164,7 @@ export async function recordTurnPresenceFromHook({
         note,
         source,
         wakeSubmitNonce,
+        ...(capacity                    ? {capacity}      : {}),
         ...(now           !== undefined ? {now}           : {}),
         ...(turnId        !== undefined ? {turnId}        : {}),
         ...(action === 'terminal'       ? {terminalState} : {})

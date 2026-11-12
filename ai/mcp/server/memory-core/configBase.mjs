@@ -255,6 +255,10 @@ class ConfigBase extends ConfigProvider {
              * `ttlMs` is the hard expiry backstop, and `noteMaxChars` bounds hook diagnostics.
              * Consumers read resolved leaves at use sites through the AiConfig Provider SSOT.
              *
+             * `capacityStaleMs` bounds a seat's plan-capacity reading (`SEAT_CAPACITY`): past it, the
+             * reading or one of its windows reads `stale`, and nothing routes on it. The Desktop app
+             * samples usage every few hours, so the bound sits above that cadence.
+             *
              * The seat hook writer spends one budget for its whole MCP exchange (connect, initialize,
              * call), chosen by how the harness registered the hook:
              * - `hookWriteTimeoutMs` for a synchronous registration, which kills the hook at its own
@@ -268,15 +272,16 @@ class ConfigBase extends ConfigProvider {
              *   exchange; its cost is overlap: async runs are not deduplicated, so an unanswering
              *   plane holds up to tool-call rate × budget runs at once.
              *
-             * Both are `positiveInt`: an env value that is not a whole number of ms warns by name and
-             * the default stands.
+             * These two and `capacityStaleMs` are `positiveInt`: an env value that is not a whole
+             * number of ms warns by name and the default stands.
              */
             turnPresence: {
-                freshMs                : leaf(30 * 60 * 1000, 'NEO_TURN_PRESENCE_FRESH_MS',                    'number'),
-                ttlMs                  : leaf(60 * 60 * 1000, 'NEO_TURN_PRESENCE_TTL_MS',                      'number'),
-                noteMaxChars           : leaf(512,            'NEO_TURN_PRESENCE_NOTE_MAX_CHARS',              'number'),
-                hookWriteTimeoutMs     : leaf(1500,           'NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS',       'positiveInt'),
-                asyncHookWriteTimeoutMs: leaf(8000,           'NEO_TURN_PRESENCE_ASYNC_HOOK_WRITE_TIMEOUT_MS', 'positiveInt')
+                freshMs                : leaf(30 * 60 * 1000,     'NEO_TURN_PRESENCE_FRESH_MS',                    'number'),
+                ttlMs                  : leaf(60 * 60 * 1000,     'NEO_TURN_PRESENCE_TTL_MS',                      'number'),
+                noteMaxChars           : leaf(512,                'NEO_TURN_PRESENCE_NOTE_MAX_CHARS',              'number'),
+                hookWriteTimeoutMs     : leaf(1500,               'NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS',       'positiveInt'),
+                asyncHookWriteTimeoutMs: leaf(8000,               'NEO_TURN_PRESENCE_ASYNC_HOOK_WRITE_TIMEOUT_MS', 'positiveInt'),
+                capacityStaleMs        : leaf(6 * 60 * 60 * 1000, 'NEO_TURN_PRESENCE_CAPACITY_STALE_MS',           'positiveInt')
             },
             /**
              * `who_is_online` roster-projection windows.

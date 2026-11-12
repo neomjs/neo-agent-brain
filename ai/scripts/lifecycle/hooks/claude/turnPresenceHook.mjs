@@ -1,9 +1,66 @@
+import crypto from 'node:crypto';
+import fs     from 'node:fs';
+import path   from 'node:path';
 import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
 import {isEntryModule}                               from '../../../../services/shared/isEntryModule.mjs';
+import {resolveUserDataDir}                          from './seatModelGuardHook.mjs';
+
+/**
+ * @summary The actions that carry the seat's capacity reading: the turn's start only. Progress fires
+ * per tool call, the Desktop app samples usage every few hours, and `add_memory` closes the turn on
+ * the server, so no Claude hook sends a terminal event.
+ * @type {Set<String>}
+ */
+export const CAPACITY_ACTIONS = new Set(['start']);
+
+/**
+ * @summary Reads the Desktop app's newest plan-usage sample as this seat's capacity reading.
+ *
+ * The app keeps `<userData>/plan-usage-history.json`, `{version, samples: [{t, org, u: {fh, sd}}]}`:
+ * the 5-hour and weekly all-models percent, and the account they belong to. The account key never
+ * leaves the seat; it becomes an opaque hash, so seats on one plan share a `poolKey`. The file holds
+ * no reset instants: those arrive when the seat reports its usage tool's windows itself.
+ *
+ * @param {Object} [options]
+ * @param {Object} [options.env=process.env] Environment source; `CLAUDE_CODE_EXECPATH` locates the app.
+ * @returns {Object|null} The reading, or `null` outside the Desktop app or without a usable sample.
+ */
+export function readClaudeUsageCapacity({env = process.env} = {}) {
+    const userDataDir = resolveUserDataDir(env.CLAUDE_CODE_EXECPATH);
+
+    if (!userDataDir) return null;
+
+    let samples;
+
+    try {
+        samples = JSON.parse(fs.readFileSync(path.join(userDataDir, 'plan-usage-history.json'), 'utf8'))?.samples
+    } catch {
+        return null
+    }
+
+    const sample = Array.isArray(samples)
+        ? samples.reduce((newest, entry) => Number.isFinite(entry?.t) && (!newest || entry.t > newest.t) ? entry : newest, null)
+        : null;
+
+    const windows = [['five-hour', sample?.u?.fh], ['weekly', sample?.u?.sd]]
+        .filter(([, percentUsed]) => Number.isFinite(percentUsed))
+        .map(([kind, percentUsed]) => ({kind, percentUsed}));
+
+    if (!windows.length) return null;
+
+    return {
+        observedAt: new Date(sample.t).toISOString(),
+        source    : 'claude-desktop-usage-history',
+        windows,
+        ...(typeof sample.org === 'string' && sample.org
+            ? {poolKey: crypto.createHash('sha256').update(sample.org).digest('hex').slice(0, 32)}
+            : {})
+    }
+}
 
 /**
  * @summary The actions `events.manifest.json` registers asynchronously. Progress runs in the background,
@@ -68,8 +125,11 @@ function resolveNote({action, hookPayload} = {}) {
  * previous shape let the writer derive a filesystem path from its own module location, which is how
  * every beacon ended up in a private checkout that no reader queries.
  *
+ * The seat's capacity reading resolves here too, on {@link CAPACITY_ACTIONS} only.
+ *
  * @param {Object} options
  * @param {'start'|'progress'|'terminal'} [options.actionArg] Optional action override.
+ * @param {Object|null} [options.capacity] Injected reading; read from the Desktop profile when absent.
  * @param {Number} [options.deadlineMs] Injected deadline; read from the `turnPresence` leaf when absent.
  * @param {Object} [options.env=process.env] Environment source.
  * @param {*} [options.hookPayload] Parsed Claude Code hook payload.
@@ -80,6 +140,7 @@ function resolveNote({action, hookPayload} = {}) {
  */
 export async function recordClaudeTurnPresence({
     actionArg,
+    capacity,
     deadlineMs,
     env = process.env,
     hookPayload,
@@ -87,10 +148,12 @@ export async function recordClaudeTurnPresence({
     plane,
     record
 } = {}) {
-    const action = resolveAction({actionArg, hookPayload});
+    const action  = resolveAction({actionArg, hookPayload}),
+          reading = CAPACITY_ACTIONS.has(action) ? capacity === undefined ? readClaudeUsageCapacity({env}) : capacity : null;
 
     return recordTurnPresenceFromHook({
         action,
+        ...(reading ? {capacity: reading} : {}),
         deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(ASYNC_ACTIONS.has(action) ? {async: true} : {registrationMs: SYNC_REGISTRATION_MS}),
         env,
         hookPayload,

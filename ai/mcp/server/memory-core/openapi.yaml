@@ -5183,6 +5183,44 @@ components:
           type: string
           description: Per-submit correlation id linking this interval to the wake submit that caused it. The wake daemon's delivery proof matches on this exact value, so a malformed one is rejected rather than silently dropped.
           example: "7ac7f929-0e77-4f61-92d2-1f078e871fe4"
+        capacity:
+          type: object
+          description: Optional plan-capacity reading from the seat's harness, stored per seat apart from the turn interval. A report replaces only the windows it carries; a window without `resetsAt` keeps a stored reset that still lies ahead. A malformed reading refuses the call.
+          required: [windows]
+          properties:
+            observedAt:
+              description: When the harness sampled the reading; the call's clock when omitted.
+              oneOf:
+                - type: string
+                  format: date-time
+                - type: number
+            source:
+              type: string
+              description: Harness source of the reading.
+              example: "claude-desktop-usage-history"
+            model:
+              type: string
+              description: The model the seat runs. A weekly-model window binds only a seat running that model.
+            poolKey:
+              type: string
+              description: Opaque lowercase hex hash (16 to 64 characters) of the seat's account key; seats sharing one share a plan pool. Never the raw key.
+            windows:
+              type: array
+              items:
+                type: object
+                required: [kind, percentUsed]
+                properties:
+                  kind:
+                    type: string
+                    enum: [five-hour, weekly, weekly-model]
+                  model:
+                    type: string
+                    description: The capped model; required for `weekly-model`.
+                  percentUsed:
+                    type: number
+                  resetsAt:
+                    type: string
+                    format: date-time
         now:
           description: Optional clock override for tests.
           oneOf:
