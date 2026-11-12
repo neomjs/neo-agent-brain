@@ -131,10 +131,15 @@ test.describe('Neo.ai.services.memory-core.OperatorPresenceService', () => {
         });
     });
 
-    test('an agent is refused, and the record stays as it was', () => {
+    test('an agent, an external human, and a human marked operator: false are refused; the record stays as it was', () => {
         set(operator, {mode: 'away'});
 
-        expect(() => set(agent, {mode: 'present'})).toThrow(/'@agent' is not a human principal/);
+        GraphService.upsertNode({id: '@guest',  type: 'AgentIdentity', name: 'Guest',  properties: {accountType: 'human', trustTier: 'external'}});
+        GraphService.upsertNode({id: '@viewer', type: 'AgentIdentity', name: 'Viewer', properties: {accountType: 'human', operator: false}});
+
+        expect(() => set(agent, {mode: 'present'})).toThrow(/'@agent' is not the human operator/);
+        expect(() => set({userId: 'guest',  agentIdentityNodeId: '@guest'},  {mode: 'present'})).toThrow(/'@guest' is not the human operator/);
+        expect(() => set({userId: 'viewer', agentIdentityNodeId: '@viewer'}, {mode: 'present'})).toThrow(/'@viewer' is not the human operator/);
         expect(read(LATER)).toEqual({mode: 'away', since: T0, until: null, setBy: '@operator'});
     });
 

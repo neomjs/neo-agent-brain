@@ -1,14 +1,15 @@
-import Base                  from 'neo.mjs/src/core/Base.mjs';
-import GraphService          from './GraphService.mjs';
-import RequestContextService from '../../mcp/server/shared/services/RequestContextService.mjs';
+import Base                      from 'neo.mjs/src/core/Base.mjs';
+import GraphService              from './GraphService.mjs';
+import {isHumanOperatorIdentity} from './MailboxService.mjs';
+import RequestContextService     from '../../mcp/server/shared/services/RequestContextService.mjs';
 
 /**
  * @summary The plane-wide record of whether the operator is present or away.
  *
  * Peers drive in both modes. The mode answers one question: will an operator-only ask (org admin,
- * credentials, merges) get a quick answer? Only a `human` principal writes it, judged by the
- * server-stamped `accountType` that `senderPrincipalClass` also comes from. `who_is_online` carries the
- * read, so a seat that boots after a change still learns it.
+ * credentials, merges) get a quick answer? Only the Fleet's registered human operator writes it, judged by
+ * the same {@link isHumanOperatorIdentity} the open-work intake uses. `who_is_online` carries the read, so a
+ * seat that boots after a change still learns it.
  *
  * @class Neo.ai.services.memory-core.OperatorPresenceService
  * @extends Neo.core.Base
@@ -62,7 +63,7 @@ class OperatorPresenceService extends Base {
     }
 
     /**
-     * @summary Sets the operator's mode, refused unless the request-bound identity is a `human` principal.
+     * @summary Sets the operator's mode, refused unless the request-bound identity is the human operator.
      * `since` moves only when the mode does. `changed` says whether readers now see a different state, so a
      * caller broadcasts once per change without reading first.
      * @param {Object} options
@@ -80,8 +81,8 @@ class OperatorPresenceService extends Base {
             throw RequestContextService.unboundIdentityError('set operator presence')
         }
 
-        if (this._readNode(setBy)?.properties?.accountType !== 'human') {
-            throw new Error(`Refused: only the operator sets operator presence, and '${setBy}' is not a human principal.`)
+        if (!isHumanOperatorIdentity(GraphService.db, setBy)) {
+            throw new Error(`Refused: only the operator sets operator presence, and '${setBy}' is not the human operator.`)
         }
 
         if (!this.modes.includes(mode)) {
