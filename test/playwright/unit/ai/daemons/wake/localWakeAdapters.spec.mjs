@@ -5,6 +5,10 @@ import {
     formatLocalWakeDigest,
     probeSessionContext
 } from '../../../../../../ai/daemons/wake/localWakeAdapters.mjs';
+import {
+    WAKE_DEFER_DIRECTIVE,
+    WAKE_LANE_DIRECTIVE
+} from '../../../../../../ai/daemons/wake/wakeLaneDirective.mjs';
 
 test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
     const record = (adapter, overrides = {}) => ({
@@ -111,6 +115,37 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
             'idle-out nudge — idle: 34 min since the last known activity; next: run /post-review-pickup; ' +
             'your last lane-state: next-lane (#1380); sunset at or below 200k tokens of context; wakes defer above 250k'
         );
+    });
+
+    test('a normal or low content digest ends with the own-lane-first directive; high and pure heartbeats keep theirs (#1628)', () => {
+        const envelope  = breakdown => ({agentIdentity, payload: {totalEvents: 1, breakdown}}),
+              message   = priority => ({from: '@neo-opus-vega', priority, subject: 'review'}),
+              heartbeat = {count: 1, latest: {pulseId: 'HEARTBEAT:1'}};
+
+        const deferred = {
+            normal    : {sent_to_me: {count: 1, latest: message('normal')}},
+            low       : {sent_to_me: {count: 1, highestPriority: 'low', latest: message('low')}},
+            task      : {task_state_changed: {count: 1, latest: {taskId: 'TASK:1', newState: 'Working'}}},
+            permission: {permission_granted: {count: 1}},
+            mixed     : {sent_to_me: {count: 1, latest: message('normal')}, heartbeat_pulse: heartbeat}
+        };
+
+        for (const [name, breakdown] of Object.entries(deferred)) {
+            const digest = formatLocalWakeDigest(envelope(breakdown));
+
+            expect(digest.endsWith(`\n\n${WAKE_DEFER_DIRECTIVE}`), name).toBe(true);
+            expect(digest, name).not.toContain(WAKE_LANE_DIRECTIVE);
+        }
+
+        const high = formatLocalWakeDigest(envelope({sent_to_me: {count: 1, highestPriority: 'high', latest: message('high')}}));
+
+        expect(high).not.toContain(WAKE_DEFER_DIRECTIVE);
+        expect(high).not.toContain(WAKE_LANE_DIRECTIVE);
+
+        const pureHeartbeat = formatLocalWakeDigest(envelope({heartbeat_pulse: heartbeat}));
+
+        expect(pureHeartbeat.endsWith(`\n\n${WAKE_LANE_DIRECTIVE}`)).toBe(true);
+        expect(pureHeartbeat).not.toContain(WAKE_DEFER_DIRECTIVE);
     });
 
     test('test adapter returns delivered without host process effects', async () => {

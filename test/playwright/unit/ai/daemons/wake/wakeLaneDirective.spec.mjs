@@ -1,9 +1,13 @@
-import {test, expect}                          from '@playwright/test';
-import WAKE_LANE_DIRECTIVE, {WAKE_LANE_DIRECTIVE as named} from '../../../../../../ai/daemons/wake/wakeLaneDirective.mjs';
+import {test, expect} from '@playwright/test';
+import WAKE_LANE_DIRECTIVE, {
+    WAKE_DEFER_DIRECTIVE,
+    WAKE_LANE_DIRECTIVE as named,
+    selectWakeDirective
+} from '../../../../../../ai/daemons/wake/wakeLaneDirective.mjs';
 
 /**
- * @summary Coverage for the standing lifecycle-first wake-lane directive the wake daemon appends to every
- * digest.
+ * @summary Coverage for the standing lifecycle-first wake-lane directive the wake daemon appends to
+ * pure-heartbeat digests.
  *
  * Pins the lifecycle-first ordering so the discussion / ticket / source wording cannot silently drift
  * back to backlog-first. Asserts the three routing examples (own red/unstable PR · requested
@@ -55,5 +59,39 @@ test.describe('ai/daemons/wake/wakeLaneDirective (#13118)', () => {
 
     test('is harness-agnostic prose — no harness-specific names (AC6)', () => {
         expect(WAKE_LANE_DIRECTIVE).not.toMatch(/claude|codex|gemini|antigravity/i);
+    });
+});
+
+/**
+ * @summary The own-lane-first directive for content wakes, and the one rule that picks a digest's directive.
+ *
+ * A working seat reads a normal-priority wake as its next task. The directive keeps its lane first,
+ * names the release point that keeps a waiting lane from idling the seat out, and stays short because it
+ * rides every content wake.
+ */
+test.describe('ai/daemons/wake/wakeLaneDirective — own lane first (#1628)', () => {
+    test('keeps the current lane first, with its own next step and its release point named', () => {
+        expect(WAKE_DEFER_DIRECTIVE.startsWith('Directive — own lane first')).toBe(true);
+        expect(WAKE_DEFER_DIRECTIVE, 'a wake about the lane is its next step').toContain('unless one of them is that step');
+        expect(WAKE_DEFER_DIRECTIVE, 'nothing is lost by finishing first').toContain('they wait in your inbox');
+        expect(WAKE_DEFER_DIRECTIVE, 'a waiting lane releases the seat').toContain('waits on someone else');
+        expect(WAKE_DEFER_DIRECTIVE).toContain('lifecycle order');
+    });
+
+    test('is harness-agnostic and stays short: it rides every content wake', () => {
+        expect(WAKE_DEFER_DIRECTIVE).not.toMatch(/claude|codex|gemini|antigravity/i);
+        expect(WAKE_DEFER_DIRECTIVE.length).toBeLessThan(WAKE_LANE_DIRECTIVE.length / 2);
+    });
+
+    test('selectWakeDirective: content defers below high priority, a pure heartbeat gets the lifecycle directive', () => {
+        for (const priority of ['low', 'normal']) {
+            expect(selectWakeDirective({content: true, heartbeat: false, priority}), priority).toBe(WAKE_DEFER_DIRECTIVE);
+            expect(selectWakeDirective({content: true, heartbeat: true,  priority}), `${priority} + heartbeat`).toBe(WAKE_DEFER_DIRECTIVE);
+        }
+
+        expect(selectWakeDirective({content: true,  heartbeat: false, priority: 'high'})).toBeNull();
+        expect(selectWakeDirective({content: true,  heartbeat: true,  priority: 'high'})).toBeNull();
+        expect(selectWakeDirective({content: false, heartbeat: true,  priority: 'normal'})).toBe(WAKE_LANE_DIRECTIVE);
+        expect(selectWakeDirective({content: false, heartbeat: false, priority: 'normal'})).toBeNull();
     });
 });

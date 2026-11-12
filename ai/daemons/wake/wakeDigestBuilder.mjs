@@ -1,4 +1,4 @@
-import {WAKE_LANE_DIRECTIVE} from './wakeLaneDirective.mjs';
+import {selectWakeDirective} from './wakeLaneDirective.mjs';
 
 const WAKE_PRIORITY_RANKS = {
     low   : 0,
@@ -156,12 +156,11 @@ export function buildWakeDigest(identity, {messages = [], tasks = [], permission
         breakdown += `\n- ${heartbeats.length} heartbeat pulses (latest GraphLog: ${latest.logId}${extra})`;
     }
 
-    // The lifecycle-first lane directive is an IDLE-watchdog nudge — append it ONLY to pure-heartbeat
-    // digests (the watchdog pulse with no actionable A2A content). A digest carrying messages / tasks /
-    // permissions already has a specific event to act on, so the generic directive is noise + token waste
-    // there; and message wakes vastly outnumber the heartbeat, so this gate is the dominant token saving.
-    const isPureHeartbeat = heartbeats.length > 0 && messages.length === 0 && tasks.length === 0 && permissions.length === 0,
-          laneDirective   = isPureHeartbeat ? `\n\n${WAKE_LANE_DIRECTIVE}` : '';
+    const directive = selectWakeDirective({
+        content  : messages.length + tasks.length + permissions.length > 0,
+        heartbeat: heartbeats.length > 0,
+        priority : digestPriority
+    });
 
-    return `[WAKE][priority:${digestPriority}] ${N} events for ${identity}: ${breakdown}${laneDirective}`
+    return `[WAKE][priority:${digestPriority}] ${N} events for ${identity}: ${breakdown}${directive ? `\n\n${directive}` : ''}`
 }

@@ -1,6 +1,9 @@
-import {test, expect}        from '@playwright/test';
-import {buildWakeDigest}     from '../../../../../../ai/daemons/wake/wakeDigestBuilder.mjs';
-import {WAKE_LANE_DIRECTIVE} from '../../../../../../ai/daemons/wake/wakeLaneDirective.mjs';
+import {test, expect}    from '@playwright/test';
+import {buildWakeDigest} from '../../../../../../ai/daemons/wake/wakeDigestBuilder.mjs';
+import {
+    WAKE_DEFER_DIRECTIVE,
+    WAKE_LANE_DIRECTIVE
+} from '../../../../../../ai/daemons/wake/wakeLaneDirective.mjs';
 
 // Event shapes mirror the daemon's own mapper (`ai/daemons/wake/daemon.mjs` switch on `result.type`):
 // message carries `sentAt`, task carries `lastModifiedAt`, permission and heartbeat carry no clock.
@@ -125,6 +128,7 @@ test.describe('ai/daemons/wake/wakeDigestBuilder', () => {
         expect(mixed).toContain('[WAKE][priority:high]');
         expect(mixed).toContain('latest: "routine thing" from @bob, latest priority: low');
         expect(mixed).not.toContain(WAKE_LANE_DIRECTIVE);
+        expect(mixed).not.toContain(WAKE_DEFER_DIRECTIVE);
 
         const pureHeartbeat = buildWakeDigest('@alice', {heartbeats: [heartbeat(7)]});
 
@@ -146,5 +150,30 @@ test.describe('ai/daemons/wake/wakeDigestBuilder', () => {
 
         expect(rich).toContain('idle-out nudge — idle: 34 min since the last known activity; next: run /post-review-pickup; ' +
             'your last lane-state: next-lane (#1380); sunset at or below 200k tokens of context; wakes defer above 250k');
+    });
+
+    test('a normal or low content digest ends with the own-lane-first directive; high and pure heartbeats keep theirs (#1628)', () => {
+        const deferred = {
+            normal    : buildWakeDigest('@alice', {messages: [msg('review this', FRESH)]}),
+            low       : buildWakeDigest('@alice', {messages: [msg('fyi', FRESH, {priority: 'low'})]}),
+            task      : buildWakeDigest('@alice', {tasks: [task('Working', FRESH)]}),
+            permission: buildWakeDigest('@alice', {permissions: [permission('repo:write')]}),
+            mixed     : buildWakeDigest('@alice', {messages: [msg('review this', FRESH)], heartbeats: [heartbeat(3)]})
+        };
+
+        for (const [name, digest] of Object.entries(deferred)) {
+            expect(digest.endsWith(`\n\n${WAKE_DEFER_DIRECTIVE}`), name).toBe(true);
+            expect(digest, name).not.toContain(WAKE_LANE_DIRECTIVE);
+        }
+
+        const high = buildWakeDigest('@alice', {messages: [msg('stop and fix', FRESH, {priority: 'high'})]});
+
+        expect(high).not.toContain(WAKE_DEFER_DIRECTIVE);
+        expect(high).not.toContain(WAKE_LANE_DIRECTIVE);
+
+        const pureHeartbeat = buildWakeDigest('@alice', {heartbeats: [heartbeat(4)]});
+
+        expect(pureHeartbeat.endsWith(`\n\n${WAKE_LANE_DIRECTIVE}`)).toBe(true);
+        expect(pureHeartbeat).not.toContain(WAKE_DEFER_DIRECTIVE);
     });
 });

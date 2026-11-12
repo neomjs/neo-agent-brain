@@ -866,10 +866,9 @@ function logSuppressedMessageWakes({identity, subId, phase, suppressed, oldestAg
     );
 }
 
-// WAKE_LANE_DIRECTIVE — the standing lifecycle-first directive, appended in buildWakeDigest ONLY to
-// pure-heartbeat digests (the idle-watchdog nudge; message / task / permission wakes omit it — they
-// already carry actionable content). Its single canonical, testable authority is `./wakeLaneDirective.mjs`
-// (imported above); keep the wording there, not duplicated here, so the discussion / ticket / source cannot silently drift.
+// A digest ends with the directive `selectWakeDirective` picks: lifecycle-first on a pure heartbeat, own lane
+// first on a normal or low content wake, none at high priority. Its single canonical, testable authority is
+// `./wakeLaneDirective.mjs`; keep the wording there, not duplicated here, so the discussion / ticket / source cannot silently drift.
 
 /**
  * @summary Flushes the coalesced wake queue into a priority-tagged digest.
