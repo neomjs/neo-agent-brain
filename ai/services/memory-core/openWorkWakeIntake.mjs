@@ -1,9 +1,9 @@
-import RequestContextService                                          from '../../mcp/server/shared/services/RequestContextService.mjs';
-import GraphService                                                   from './GraphService.mjs';
+import RequestContextService                                            from '../../mcp/server/shared/services/RequestContextService.mjs';
+import GraphService                                                     from './GraphService.mjs';
 import MailboxService, {isHumanOperatorIdentity, resolvePrincipalClass} from './MailboxService.mjs';
-import {SYSTEM_SENDER}                                                from '../../graph/mailboxRoots.mjs';
-import {normalizeAgentIdentityNodeId}                                 from '../../graph/normalizeAgentIdentityNodeId.mjs';
-import {composeOpenWorkWake, validateOpenWorkObservation}             from '../fleet/openWorkWakeMessage.mjs';
+import {SYSTEM_SENDER}                                                  from '../../graph/mailboxRoots.mjs';
+import {normalizeAgentIdentityNodeId}                                   from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {composeOpenWorkWake, validateOpenWorkObservation}               from '../fleet/openWorkWakeMessage.mjs';
 
 /**
  * @module ai/services/memory-core/openWorkWakeIntake
@@ -17,7 +17,7 @@ import {composeOpenWorkWake, validateOpenWorkObservation}             from '../f
  * @summary Admits one open-work observation from the Fleet's human operator, composes its wake and sends it as
  * `@system`. The caller, the observation and the recipient are all checked before anything is written. The caller
  * is recorded as `task.observedBy`, read from the verified request identity, never from the arguments.
- * @param {Object} args `{repo, number, head, kind, episode, to, failedChecks}`, per `validateOpenWorkObservation`.
+ * @param {Object} args `{repo, number, head, kind, episode, to, failedChecks, unblocks}`, per `validateOpenWorkObservation`.
  * @returns {Promise<Object>} The `addMessage` receipt.
  */
 export async function admitOpenWorkWake(args) {

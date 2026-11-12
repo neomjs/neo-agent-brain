@@ -1,8 +1,8 @@
 import {setup} from '../../../../setup.mjs';
 setup({appConfig: {name: 'OpenWorkWakeIntakeTest'}, neoConfig: {unitTestMode: true}});
 
-import {test, expect}  from '@playwright/test';
-import Neo             from 'neo.mjs/src/Neo.mjs';
+import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
 import 'neo.mjs/src/core/_export.mjs';
 import 'neo.mjs/src/manager/Instance.mjs';
 import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
@@ -14,9 +14,9 @@ test.describe('openWorkWakeIntake', () => {
     let MailboxService, GraphService, admitOpenWorkWake, callTool, originalAutoSave, seededSystem = false;
 
     const
-        HEAD     = 'b'.repeat(40),
-        operator = '@intake-operator',
-        seat     = '@intake-seat',
+        HEAD       = 'b'.repeat(40),
+        operator   = '@intake-operator',
+        seat       = '@intake-seat',
         identities = [
             [operator, {accountType: 'human', trustTier: 'owner'}],
             [seat, {accountType: 'agent'}],
@@ -80,6 +80,22 @@ test.describe('openWorkWakeIntake', () => {
     test('the observer is read from the verified identity, never from the arguments', async () => {
         const stored = await admitted({...observation(), observedBy: '@intake-agent'});
         expect(stored.task.observedBy).toBe(operator)
+    });
+
+    test('an unblocked observation passes the tool\'s strict schema with its issue token, and is stored naming that issue (#1619)', async () => {
+        const
+            {mergeEpisodeOf, unblockedEpisodeOf} = await import('../../../../../../ai/services/fleet/openWorkWakeMessage.mjs'),
+            merge                                = mergeEpisodeOf({repo: 'acme/app', number: 7, head: HEAD}, '2026-11-11T19:53:00.285Z'),
+            args                                 = observation({kind: 'unblocked', failedChecks: null, unblocks: 'acme/app#12', episode: unblockedEpisodeOf(merge, 'acme/app#12')}),
+            {messageId}                          = await as(operator, () => callTool('admit_open_work_wake', args));
+
+        owned.add(messageId);
+        await MailboxService.drainPendingMessageGraphProjections({ids: [messageId]});
+        const stored = GraphService.db.nodes.get(messageId).properties;
+
+        expect(stored).toMatchObject({from: SYSTEM_SENDER.id, to: seat, senderPrincipalClass: 'system', priority: 'normal'});
+        expect(stored.subject).toBe('[open-work:unblocked] acme/app#12: observed a merge unblocked your ticket');
+        expect(stored.task).toMatchObject({kind: 'unblocked', episode: args.episode, observedBy: operator, assignee: seat})
     });
 
     test('a malformed token or a recipient that is not a registered agent or human is refused before anything is written', async () => {

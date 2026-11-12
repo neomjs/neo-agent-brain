@@ -3357,13 +3357,17 @@ paths:
                   description: The recipient `@identity`.
                 episode:
                   type: string
-                  description: "The ISO instant the action was first observed; for `post-merge`, the producer's merge transition id of this pull request and head."
+                  description: "The ISO instant the action was first observed; for `post-merge`, the producer's merge transition id of this pull request and head; for `unblocked`, that id, then `|` and the unblocked issue."
                 failedChecks:
                   type: array
                   nullable: true
                   items:
                     type: string
                   description: "`repair-ci` only: the failing check names, at most 50; null when they could not be read."
+                unblocks:
+                  type: string
+                  nullable: true
+                  description: "`unblocked` only: the issue the merge unblocked, as `owner/name#N`."
       responses:
         '200':
           description: The `add_message` receipt of the composed wake.
