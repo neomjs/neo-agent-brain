@@ -884,9 +884,9 @@ class FleetManager extends Base {
      * @param {Object} [options={}]
      * @param {Number} [options.timeoutMs=AiConfig.fleet.rosterAxisTimeoutMs]
      * @param {Function} [options.now] Clock seam returning epoch ms or an ISO/Date instant.
-     * @returns {Promise<{capability: Object, states: Object[]}>} Adapter snapshot: per-agent
-     * `{agentId, presence, lastSeenAt, confidence, source}` rows (+ `reason` on `unknown`) and the
-     * capability envelope.
+     * @returns {Promise<{capability: Object, states: Object[], operatorPresence: Object|null}>} Adapter snapshot: per-agent
+     * `{agentId, presence, lastSeenAt, confidence, source}` rows (+ `reason` on `unknown`), the
+     * capability envelope, and the operator's mode the same report carried.
      */
     fleetPresenceStatus({timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs, now} = {}) {
         const {

@@ -1064,6 +1064,7 @@ test.describe('Fleet S1 wire policy', () => {
             fleetOwnQuestions     : 'awaiting-s4',
             markOwnMessageRead    : 'awaiting-s4',
             transitionOwnTask     : 'awaiting-s4',
+            setOperatorPresence   : 'awaiting-s4',
             publish               : 'awaiting-s4',
             readMetrics           : 'awaiting-s4',
             reply                 : 'awaiting-s4',

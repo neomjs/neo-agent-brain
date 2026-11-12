@@ -216,7 +216,8 @@ export function participationOf(row) {
  * @param {Date|String} [options.capturedAt] Capture timestamp — the observation-time bound above.
  *     When omitted (`undefined`) and the resolved report carries a valid `payload.generatedAt`, that
  *     producer timestamp becomes the single snapshot bound for both `beaconFacetAtBound` and `capability.capturedAt`.
- * @returns {Promise<{capability: Object, states: Object[]}>} `states` rows:
+ * @returns {Promise<{capability: Object, states: Object[], operatorPresence: Object|null}>} `operatorPresence` is
+ *     {@link operatorPresenceOf} of an answered report, else `null`. `states` rows:
  *     `{agentId, presence, beacon, lastSeenAt, confidence, source, participation, participationRead}` (+ `reason`
  *     when `presence` is `unknown`, or `{validationState, since}` when the plane vouched stale validation);
  *     `beacon` is one of {@link PRESENCE_BEACON_FACETS}, evaluated at the same bound as the grade.
@@ -242,6 +243,7 @@ export async function readFleetPresenceSnapshot({
         capturedAtMs      = new Date(capturedAtIso).getTime(),
         byIdentity        = null,
         participationById = null,
+        operatorPresence  = null,
         readReasonCode    = null,
         readReason        = hasReader
             ? null
@@ -265,6 +267,7 @@ export async function readFleetPresenceSnapshot({
 
                 byIdentity        = new Map()
                 participationById = new Map()
+                operatorPresence  = operatorPresenceOf(payload)
 
                 for (const row of payload.agents) {
                     if (typeof row?.identity !== 'string') continue
@@ -380,7 +383,35 @@ export async function readFleetPresenceSnapshot({
             reason    : producerAnswered ? null : readReason,
             ...(readReasonCode ? {reasonCode: readReasonCode} : {})
         },
-        states
+        states,
+        operatorPresence
+    }
+}
+
+/**
+ * @summary The operator's mode from an answered report. A plane older than the record omits it, which
+ * its contract reads as `present`; a mode outside `present | away` reads `null`, the same unknown as a
+ * report that never answered.
+ * @param {Object} payload The answered `who_is_online` report.
+ * @returns {Object|null} `{mode, since, until, setBy, expired?}` or `null`.
+ */
+export function operatorPresenceOf(payload) {
+    const record = payload?.operatorPresence;
+
+    if (record == null) {
+        return {mode: 'present', since: null, until: null, setBy: null}
+    }
+
+    if (!['present', 'away'].includes(record.mode)) {
+        return null
+    }
+
+    return {
+        mode : record.mode,
+        since: record.since ?? null,
+        until: record.until ?? null,
+        setBy: record.setBy ?? null,
+        ...(record.expired === true ? {expired: true} : {})
     }
 }
 

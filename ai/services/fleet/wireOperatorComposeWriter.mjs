@@ -29,6 +29,7 @@ import FleetControlBridge from './FleetControlBridge.mjs';
  * @param {Function} [options.markRead]       The own-inbox receipt write; same rule.
  * @param {Function} [options.transitionTask] The own-Task move; same rule.
  * @param {Function} [options.observeMessages] Explicit observer listing; it does not request a seen receipt.
+ * @param {Function} [options.setOperatorPresence] The plane's `set_operator_presence`; absent → only its verb is `not-wired`.
  * @param {Object}   [options.bridge=FleetControlBridge] The control bridge to wire (a stub in specs).
  * @returns {Object|null} the installed writer, or `null` when no writer is available (left unwired).
  */
@@ -42,6 +43,7 @@ export function wireOperatorComposeWriter({
     approvePublishRevision,
     attestPublishRevision,
     editPublishRequest,
+    setOperatorPresence,
     bridge = FleetControlBridge
 } = {}) {
     if (typeof addMessage !== 'function') {
@@ -58,7 +60,8 @@ export function wireOperatorComposeWriter({
         transitionPublishState,
         approvePublishRevision,
         attestPublishRevision,
-        editPublishRequest
+        editPublishRequest,
+        setOperatorPresence
     }).forEach(([name, primitive]) => {
         if (typeof primitive === 'function') writer[name] = primitive
     });
