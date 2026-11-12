@@ -7,36 +7,93 @@
  * It is `unknown` when the reading is unobserved or stale, or when no binding window is still
  * current, because a percent observed before its window reset says nothing about now. The reading is
  * the one `who_is_online` projects per seat, with its pool's newest windows (`pools`), so the axis
- * needs no second source and no credential.
+ * needs no second source and no credential. The same windows say until when a rate-limited seat
+ * waits (`exhaustedUntil`), which the open-work rotation reads to pass the seat over until then.
  */
 import {presenceIdentityForAgent} from './fleetPresenceStateAdapter.mjs';
 
 /**
- * @summary Maps one seat's capacity reading onto the throttle taxonomy.
+ * @summary The windows of an observed reading that bind its seat now.
  *
  * A capped-model window binds a seat whose model names that model (`claude-fable-5-2` runs `fable`);
  * a seat with no reported model is bound by the all-models windows only, so a capped model's
- * exhaustion never takes out a seat that runs another one.
+ * exhaustion never takes out a seat that runs another one. A stale window, or one that has reset
+ * since it was observed, binds nobody.
  *
+ * @param {Object|undefined} capacity A `who_is_online` row's `capacity`.
+ * @param {Number|Date|String} now Clock source.
+ * @returns {Object[]|null} Null for an unobserved or stale reading.
+ * @private
+ */
+function bindingWindows(capacity, now) {
+    if (capacity?.state !== 'observed' || !Array.isArray(capacity.windows)) return null;
+
+    const
+        nowMs     = new Date(now).getTime(),
+        seatModel = String(capacity.model ?? '').toLowerCase();
+
+    return capacity.windows.filter(window =>
+        !window.stale &&
+        (!window.resetsAt || Date.parse(window.resetsAt) > nowMs) &&
+        (window.kind !== 'weekly-model' || (seatModel !== '' && seatModel.includes(String(window.model).toLowerCase())))
+    )
+}
+
+/**
+ * @summary Maps one seat's capacity reading onto the throttle taxonomy.
  * @param {Object|undefined} capacity A `who_is_online` row's `capacity`.
  * @param {Number|Date|String} [now=Date.now()] Clock source.
  * @returns {'rate-limited'|'none'|'unknown'}
  */
 export function throttleStateFromCapacity(capacity, now = Date.now()) {
-    if (capacity?.state !== 'observed' || !Array.isArray(capacity.windows)) return 'unknown';
+    const binding = bindingWindows(capacity, now);
 
-    const
-        nowMs     = new Date(now).getTime(),
-        seatModel = String(capacity.model ?? '').toLowerCase(),
-        binding   = capacity.windows.filter(window =>
-            !window.stale &&
-            (!window.resetsAt || Date.parse(window.resetsAt) > nowMs) &&
-            (window.kind !== 'weekly-model' || (seatModel !== '' && seatModel.includes(String(window.model).toLowerCase())))
-        );
-
-    if (!binding.length) return 'unknown';
+    if (!binding?.length) return 'unknown';
 
     return binding.some(window => window.percentUsed >= 100) ? 'rate-limited' : 'none'
+}
+
+/**
+ * @summary The instant a rate-limited seat can act again, as far as its reading can tell.
+ *
+ * The latest `resetsAt` among the binding windows at 100 %. A full window without a `resetsAt`
+ * names no end, so it never starts a wait, and neither does an unobserved or stale reading.
+ *
+ * @param {Object|undefined} capacity A `who_is_online` row's `capacity`.
+ * @param {Number|Date|String} [now=Date.now()] Clock source.
+ * @returns {Number|null} Epoch milliseconds, or null when the reading names no wait.
+ */
+export function exhaustedUntil(capacity, now = Date.now()) {
+    const resets = (bindingWindows(capacity, now) ?? [])
+        .filter(window => window.percentUsed >= 100 && window.resetsAt)
+        .map(window => Date.parse(window.resetsAt))
+        .filter(Number.isFinite);
+
+    return resets.length ? Math.max(...resets) : null
+}
+
+/**
+ * @summary Each seat of a verbose `who_is_online` answer that waits for a reset, with that instant.
+ *
+ * Seats key by their presence identity, as the route map does (`undeliverableOf`), and read their
+ * pool's newest windows. A seat that names no wait is absent.
+ *
+ * @param {Object|null} presence `{agents: [{identity, capacity}], pools}`.
+ * @param {Number|Date|String} [now=Date.now()] Clock source.
+ * @returns {Object<String, Number>} Seat identity to epoch milliseconds.
+ */
+export function exhaustedUntilOf(presence, now = Date.now()) {
+    const result = {};
+
+    for (const row of Array.isArray(presence?.agents) ? presence.agents : []) {
+        if (typeof row?.identity !== 'string') continue;
+
+        const until = exhaustedUntil(withPoolWindows(row.capacity, presence.pools?.[row.capacity?.poolKey]), now);
+
+        if (until !== null) result[row.identity] = until
+    }
+
+    return result
 }
 
 /**

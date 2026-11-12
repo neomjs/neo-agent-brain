@@ -2,6 +2,8 @@ import {test, expect} from '@playwright/test';
 
 import {
     createCapacityThrottleReader,
+    exhaustedUntil,
+    exhaustedUntilOf,
     throttleStateFromCapacity
 } from '../../../../../../ai/services/fleet/capacityThrottleState.mjs';
 import {readFleetThrottleStateSnapshot} from '../../../../../../ai/services/fleet/fleetThrottleStateAdapter.mjs';
@@ -33,6 +35,42 @@ test.describe('capacityThrottleState', () => {
         expect(throttleStateFromCapacity(reading([window('weekly', 100, {stale: true})]), NOW)).toBe('unknown');
         // The week reset at 11:00; a 100 % observed before it says nothing about now.
         expect(throttleStateFromCapacity(reading([window('weekly', 100, {resetsAt: PASSED})]), NOW)).toBe('unknown')
+    });
+
+    test('a rate-limited seat waits until the latest reset of its full binding windows, and only a named reset starts a wait (#1653)', () => {
+        const LATER = '2026-06-26T07:00:00.000Z';
+
+        expect(exhaustedUntil(reading([window('five-hour', 100, {resetsAt: AHEAD}), window('weekly', 100, {resetsAt: LATER})]), NOW)).toBe(Date.parse(LATER));
+        // A full window with a reset ahead binds; one that has reset since, or one below 100 %, says nothing
+        expect(exhaustedUntil(reading([window('weekly', 100, {resetsAt: AHEAD}), window('five-hour', 100, {resetsAt: PASSED})]), NOW)).toBe(Date.parse(AHEAD));
+        expect(exhaustedUntil(reading([window('weekly', 99, {resetsAt: AHEAD})]), NOW)).toBe(null);
+        // No resetsAt, a stale or unobserved reading: rate-limited perhaps, but no wait can start
+        expect(throttleStateFromCapacity(reading([window('weekly', 100)]), NOW)).toBe('rate-limited');
+        expect(exhaustedUntil(reading([window('weekly', 100)]), NOW)).toBe(null);
+        expect(exhaustedUntil(reading([window('weekly', 100, {resetsAt: AHEAD, stale: true})]), NOW)).toBe(null);
+        expect(exhaustedUntil({...reading([window('weekly', 100, {resetsAt: AHEAD})]), state: 'stale'}, NOW)).toBe(null);
+        expect(exhaustedUntil({state: 'unobserved'}, NOW)).toBe(null);
+        // A capped model makes only the seat that runs it wait
+        const fableOut = [window('weekly-model', 100, {model: 'fable', resetsAt: AHEAD})];
+        expect(exhaustedUntil(reading(fableOut, {model: 'claude-fable-5-2'}), NOW)).toBe(Date.parse(AHEAD));
+        expect(exhaustedUntil(reading(fableOut, {model: 'claude-opus-5-5'}), NOW)).toBe(null)
+    });
+
+    test('the presence answer maps each waiting seat by identity, reading its pool\'s newest windows (#1653)', () => {
+        const presence = {
+            agents: [
+                {identity: '@neo-out',    capacity: reading([window('weekly', 100, {resetsAt: AHEAD})])},
+                // its own sample is older, but the account it shares already reports the week exhausted
+                {identity: '@neo-pooled', capacity: reading([window('weekly', 60, {resetsAt: AHEAD})], {poolKey: 'team-1'})},
+                {identity: '@neo-fine',   capacity: reading([window('weekly', 40, {resetsAt: AHEAD})])},
+                {identity: '@neo-dark',   capacity: {state: 'unobserved'}},
+                {capacity: reading([window('weekly', 100, {resetsAt: AHEAD})])}
+            ],
+            pools: {'team-1': {windows: [window('weekly', 100, {resetsAt: AHEAD})]}}
+        };
+
+        expect(exhaustedUntilOf(presence, NOW)).toEqual({'@neo-out': Date.parse(AHEAD), '@neo-pooled': Date.parse(AHEAD)});
+        for (const answer of [null, {}, {agents: []}]) expect(exhaustedUntilOf(answer, NOW)).toEqual({})
     });
 
     test('the adapter gets one verdict per registered seat from a single presence read per snapshot', async () => {

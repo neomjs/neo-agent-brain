@@ -718,7 +718,7 @@ test.describe('wireFleetOpenWorkWakes — escalations reach a rotation seat that
 
     test('the wired round reads a verbose undeliverable row as a dead route: the holder waits and the rotation is woken (defect-note bbac5c73)', async () => {
         const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wake-routes-')), sends = [], ROTATION = '@neo-gpt-euclid';
-        let minute = 0;
+        let   minute    = 0;
         try {
             const round = wireFleetOpenWorkWakes({
                 registry    : {getDataDir: () => directory}, gateOf: openGate, now: () => at(minute), rotationSeats: [SEAT, ROTATION],
@@ -732,6 +732,34 @@ test.describe('wireFleetOpenWorkWakes — escalations reach a rotation seat that
             await round(state(0)); minute = 1;
             await round(state(1, 'red'));
             expect(sends.map(({kind, to, holder}) => ({kind, to, holder}))).toEqual([{kind: 'holder-unreachable', to: ROTATION, holder: SEAT}]);
+            await round.stop()
+        } finally { fs.rmSync(directory, {recursive: true, force: true}) }
+    });
+
+    test('the wired round reads plan resets from the same presence answer: the escalation passes a waiting seat over (#1653)', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wake-resets-')), sends = [],
+            WAITING     = '@neo-gpt-euclid', SPARE = '@neo-gemini-julia', full = {kind: 'weekly', model: null, percentUsed: 100,
+                resetsAt: iso(600), observedAt: iso(0), stale: false};
+        let minute = 0, reads = 0;
+        try {
+            const round = wireFleetOpenWorkWakes({
+                registry    : {getDataDir: () => directory}, gateOf: openGate, now: () => at(minute), rotationSeats: [SEAT, WAITING, SPARE],
+                admitWake   : async message => sends.push(message),
+                readPresence: async () => {
+                    reads++;
+                    return {agents: [
+                        {identity: SEAT,    wake: {state: 'undeliverable', reason: 'dispatch-failed'}},
+                        {identity: WAITING, wake: {state: 'reachable'}, capacity: {state: 'observed', model: null, windows: [full]}},
+                        {identity: SPARE,   wake: {state: 'reachable'}}
+                    ]}
+                }
+            });
+
+            await round(state(0)); minute = 1;
+            await round(state(1, 'red'));
+            // whichever seat the hash names, the holder is excluded and the waiting seat passes its pick on
+            expect(sends.map(({kind, to, holder}) => ({kind, to, holder}))).toEqual([{kind: 'holder-unreachable', to: SPARE, holder: SEAT}]);
+            expect(reads).toBe(1);
             await round.stop()
         } finally { fs.rmSync(directory, {recursive: true, force: true}) }
     });
