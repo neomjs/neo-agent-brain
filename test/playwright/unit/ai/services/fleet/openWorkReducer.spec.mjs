@@ -208,6 +208,22 @@ test.describe('openWorkReducer — transitions, never a holder-only diff (#760)'
             {reviewer: '@neo-gpt-emmy', state: 'CHANGES_REQUESTED', onHead: false}
         ])
     });
+
+    test('a bot\'s latest review is marked as a bot\'s, because the snapshot reads each latest review\'s author type (#1629)', () => {
+        const row = normalizePullRequest(node({head: 'b2', reviews: [
+            {state: 'COMMENTED', author: {__typename: 'Bot', login: 'copilot-pull-request-reviewer'}, commit: {oid: 'b2'}},
+            {state: 'COMMENTED', author: {__typename: 'User', login: 'neo-gpt'}, commit: {oid: 'b2'}}
+        ]}), identities);
+
+        expect(row.reviews).toEqual([
+            {reviewer: 'login:copilot-pull-request-reviewer', state: 'COMMENTED', onHead: true, bot: true},
+            {reviewer: '@neo-gpt', state: 'COMMENTED', onHead: true}
+        ]);
+
+        const latestReviews = OPEN_WORK_SNAPSHOT.slice(OPEN_WORK_SNAPSHOT.indexOf('latestReviews('), OPEN_WORK_SNAPSHOT.indexOf('latestOpinionatedReviews('));
+
+        expect(latestReviews).toMatch(/author\s*\{\s*__typename\s+login\s*\}/)
+    });
 });
 
 test.describe('openWorkReducer — merges come from the terminal read, never from absence (#760)', () => {

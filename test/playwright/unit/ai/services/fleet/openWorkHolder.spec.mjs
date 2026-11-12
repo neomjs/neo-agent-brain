@@ -31,6 +31,15 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
         }
     });
 
+    test('a bot\'s review is no touch: an outside row reviewed on its head only by a bot still goes to the rotation (#1629)', () => {
+        const bot = {reviewer: 'login:copilot-pull-request-reviewer', state: 'COMMENTED', onHead: true, bot: true};
+
+        expect(holderOf(row({owner: outside, reviews: [bot]}))).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(holderOf(row({owner: outside, ci: 'red', reviews: [bot]}))).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        // a seat's comment beside the bot's is still engagement
+        expect(holderOf(row({owner: outside, reviews: [bot, review('COMMENTED')]}))).toEqual({role: 'none', kind: null, ids: []})
+    });
+
     test('red CI takes precedence over every verdict and keeps the same action kind', () => {
         const repair = {role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']};
 

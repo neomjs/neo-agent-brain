@@ -6,7 +6,8 @@
  * An opinion counts only when it judged the current head: `reviewDecision` keeps a change request the
  * author has since pushed past, and an earlier head's approval. Opinions come from each reviewer's
  * standing approval or change request, never their latest review, which a comment can be; a comment
- * on the head is engagement only. `operator` and `rotation` are roles that name nobody; the reader
+ * on the head is engagement only. A bot's review is not even that: no seat has looked at the PR, so an
+ * outside row stays untouched. `operator` and `rotation` are roles that name nobody; the reader
  * that renders or wakes resolves them, so no operator's handle lives here.
  *
  * The kind distinguishes successive actions held by the same seat: fixing CI, addressing changes,
@@ -32,7 +33,7 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         incomplete = partial || !Array.isArray(opinions),
         onHead     = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
         finished   = ci === 'red' || ci === 'green',
-        untouched  = !requested.length && !reviews.some(review => review.onHead),
+        untouched  = !requested.length && !reviews.some(review => review.onHead && !review.bot),
         maintainer = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation),
         eligible   = owner?.kind === 'outside' && !draft && !bot && authorType !== 'Bot' && !maintainer;
 

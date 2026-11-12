@@ -85,6 +85,7 @@ export const OPEN_WORK_SNAPSHOT = `
             nodes {
               state
               author {
+                __typename
                 login
               }
               commit {
@@ -263,12 +264,18 @@ export const OPEN_WORK_FAILED_CHECKS = `
  * @summary Published GraphQL formula estimates for these two static documents, not timeout-cost bounds.
  * Snapshot has the search plus five connections for up to 50 PRs: round((1 + 50 * 5) / 100) = 3.
  * Terminal has one connection; the published minimum is one. The gate also uses measured maxima.
+ *
+ * The third entry prices the previous snapshot document. The wake gate looks up every retained pulse's
+ * hash over its 24-hour window, and refuses a failed call it cannot price, so an upgrade would otherwise
+ * hold a not-yet-activated producer for a day. It keeps one generation: the next change to the snapshot
+ * replaces this hash with the then-current one rather than adding another.
  * @see https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api
  * @type {Object[]}
  */
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 3}),
-    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1})
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
+    Object.freeze({queryHash: 'dd32c5ca7fac2494379b94fb28cfc37a1d2df150e15e832c031fb88316b46dad', formulaCost: 3})
 ]);
 
 /**

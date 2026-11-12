@@ -110,8 +110,9 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         opinions  = connectionOf(node.latestOpinionatedReviews),
         suites    = commit?.checkSuites === undefined ? {nodes: [], complete: true} : connectionOf(commit.checkSuites, 'hasPreviousPage'),
         requested = requests.nodes.map(item => reviewerOf(item?.requestedReviewer, identities)),
-        // whether each review judged the current head
-        judged    = item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head}),
+        // whether each review judged the current head, and whether a bot wrote it
+        judged    = item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head,
+            ...(item?.author?.__typename === 'Bot' ? {bot: true} : {})}),
         // each reviewer's latest review (a comment included), and their standing approval or change request
         reviewed  = reviews.nodes.map(judged),
         opined    = opinions.nodes.map(judged),
