@@ -203,6 +203,8 @@ test.describe('KnowledgeBase — fail-closed tenant isolation (#11632)', () => {
         SearchService.model                      = {
             generateContent: async () => ({response: {text: () => 'stub-synthesis'}})
         };
+        // The ask rate cap keeps its window on the singleton, which every spec file in this worker shares
+        SearchService.askCallTimestamps          = [];
         // A local operator overlay may predate the tenant keys — pin the value so the
         // suite is deterministic regardless of local config staleness.
         aiConfig.defaultTenantId = 'neo-shared';

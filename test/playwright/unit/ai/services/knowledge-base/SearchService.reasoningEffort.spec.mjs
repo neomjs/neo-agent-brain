@@ -33,7 +33,7 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
  * **Coverage boundary, stated rather than implied:** the `|| undefined` omission branch — an overlay
  * with no `reasoningEffort` leaf keeping the provider's own default — is NOT unit-covered here.
  * Reaching it requires an `askSynthesis` block without the leaf, and the only way to produce one in
- * this process is mutating the shared `AiConfig` singleton, which ADR-0019 B4 forbids outright — ticket-ref-ok: the prohibition is ADR authority, not a preference; without it this reads as an untested branch rather than an unreachable one (it is
+ * this process is mutating the shared `AiConfig` singleton, which ADR-0019 [not-ticket-ref: the prohibition is ADR authority, not a preference] B4 forbids outright; without that rule this reads as an untested branch rather than an unreachable one (it is
  * the mechanism that bled test state into live stores). The branch is one `||` at the call
  * site and is verified by reading; asserting it with a test that cannot vary the input would be
  * theatre. Every assertion below was mutation-proven: removing the call-site line reddens them.
@@ -55,6 +55,11 @@ test.describe('Neo.ai.services.knowledge-base.SearchService — ask reasoning-ef
         originalListNodeRecordsByType = GraphService.listNodeRecordsByType;
         originalReady                 = GraphService.ready;
         originalGetCollection         = ChromaManager.getKnowledgeBaseCollection;
+    });
+
+    // The ask rate cap keeps its window on the singleton, which every spec file in this worker shares
+    test.beforeEach(() => {
+        SearchService.askCallTimestamps = []
     });
 
     test.afterEach(() => {

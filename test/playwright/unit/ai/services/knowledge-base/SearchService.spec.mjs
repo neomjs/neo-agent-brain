@@ -66,6 +66,11 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
         if (tmpFilePath) await fs.remove(path.dirname(tmpFilePath)).catch(() => {});
     });
 
+    // The ask rate cap keeps its window on the singleton, which every spec file in this worker shares
+    test.beforeEach(() => {
+        SearchService.askCallTimestamps = []
+    });
+
     test('local hydration keeps Brain source and primary-repository corpus roots distinct', () => {
         expect(SearchService.resolveLocalReferenceRoot({
             source  : 'ai/services/knowledge-base/SearchService.mjs',
