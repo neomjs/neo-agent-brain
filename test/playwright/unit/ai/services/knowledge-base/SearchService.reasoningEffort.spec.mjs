@@ -57,6 +57,11 @@ test.describe('Neo.ai.services.knowledge-base.SearchService — ask reasoning-ef
         originalGetCollection         = ChromaManager.getKnowledgeBaseCollection;
     });
 
+    // The ask rate cap keeps its window on the singleton, which every spec file in this worker shares
+    test.beforeEach(() => {
+        SearchService.askCallTimestamps = []
+    });
+
     test.afterEach(() => {
         SearchService.model                      = originalModel;
         SearchService.modelUnavailable           = originalModelUnavailable;
