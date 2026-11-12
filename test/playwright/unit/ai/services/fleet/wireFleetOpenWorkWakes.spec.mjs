@@ -2,13 +2,13 @@ import {setup} from '../../../../setup.mjs';
 
 setup({neoConfig: {unitTestMode: true}, appConfig: {name: 'WireFleetOpenWorkWakesTest'}});
 
-import {expect, test}                                                    from '@playwright/test';
-import fs                                                                from 'fs';
-import os                                                                from 'os';
-import path                                                              from 'path';
-import Neo                                                               from 'neo.mjs/src/Neo.mjs';
-import * as core                                                         from 'neo.mjs/src/core/_export.mjs';
-import {createOpenWorkWakeRound, failedChecksOf, wireFleetOpenWorkWakes} from '../../../../../../ai/services/fleet/wireFleetOpenWorkWakes.mjs';
+import {expect, test}                                                                     from '@playwright/test';
+import fs                                                                                 from 'fs';
+import os                                                                                 from 'os';
+import path                                                                               from 'path';
+import Neo                                                                                from 'neo.mjs/src/Neo.mjs';
+import * as core                                                                          from 'neo.mjs/src/core/_export.mjs';
+import {createOpenWorkWakeRound, failedChecksOf, undeliverableOf, wireFleetOpenWorkWakes} from '../../../../../../ai/services/fleet/wireFleetOpenWorkWakes.mjs';
 
 const START  = Date.parse('2026-10-13T12:00:00.000Z'), HEAD = 'a'.repeat(40), SEAT = '@neo-opus-ada',
     at       = minute => START + minute * 60000,
@@ -674,5 +674,65 @@ test.describe('wireFleetOpenWorkWakes — a merge wakes the seats whose tickets 
         expect(sends[1]).toEqual({repo: 'acme/app', number: 7, head: HEAD, kind: 'unblocked', episode: 'merge-1|acme/app#9',
             to: '@neo-gpt', failedChecks: null, unblocks: 'acme/app#9'});
         expect(store.read().pendingMerges).toEqual({})
+    });
+});
+
+test.describe('wireFleetOpenWorkWakes — escalations reach a rotation seat that is never the holder (#807)', () => {
+    test('a holder-unreachable escalation persists under its holder\'s slot, submits the holder token and survives a restart without a second send', async () => {
+        let   minute = 0;
+        const store  = memoryStore(), sends = [], ROTATION = '@neo-gpt-euclid',
+            options  = {store, gateOf: openGate, now: () => at(minute), rotationSeats: [SEAT, ROTATION],
+                readUndeliverable: async () => ({[SEAT]: null}), admitWake: async message => sends.push(message)},
+            round    = createOpenWorkWakeRound(options);
+
+        await round(state(0)); minute = 1;
+        // the author's repair-ci wake waits for its route; the rotation hears that it waits
+        await round(state(1, 'red'));
+        expect(sends).toEqual([{repo: 'acme/app', number: 7, head: HEAD, kind: 'holder-unreachable', episode: iso(1),
+            to: ROTATION, failedChecks: null, holder: SEAT}]);
+        expect(store.read().holding[JSON.stringify(['acme/app', 7, HEAD, 'rotation', 'holder-unreachable', SEAT])])
+            .toMatchObject({status: 'admitted', wake: {to: ROTATION, holder: SEAT}});
+
+        await round.stop(); minute = 2;
+        expect(await createOpenWorkWakeRound(options)(state(2, 'red'))).toMatchObject({admitted: 0});
+        expect(sends).toHaveLength(1)
+    });
+
+    test('the route map comes from the verbose presence rows: only an undeliverable wake skips its seat, and an unreadable wake axis is unknown', () => {
+        const row = (identity, wake) => ({identity, wake});
+
+        expect(undeliverableOf({agents: [
+            row(SEAT, {state: 'undeliverable', reason: 'dispatch-failed', consecutiveFailures: 4}),
+            row('@neo-gpt', {state: 'undeliverable'}),
+            row('@neo-gpt-euclid', {state: 'reachable'}),
+            row('@neo-gemini-julia', {state: 'unsubscribed'}),
+            row('@neo-fable-clio', {state: 'withdrawn', reason: 'route-withdrawn'})
+        ]})).toEqual({[SEAT]: 'dispatch-failed', '@neo-gpt': null});
+        expect(undeliverableOf({agents: [row(SEAT, {state: 'reachable'})]})).toEqual({});
+        // the records could not be read: every row is unknown, so nobody is asserted unreachable or reachable
+        expect(undeliverableOf({agents: [row(SEAT, {state: 'unknown', reason: 'unreadable'})]})).toBe(null);
+        for (const presence of [null, {}, {agents: []}, {undeliverable: {[SEAT]: null}}]) {
+            expect(undeliverableOf(presence), JSON.stringify(presence)).toBe(null)
+        }
+    });
+
+    test('the wired round reads a verbose undeliverable row as a dead route: the holder waits and the rotation is woken (defect-note bbac5c73)', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wake-routes-')), sends = [], ROTATION = '@neo-gpt-euclid';
+        let minute = 0;
+        try {
+            const round = wireFleetOpenWorkWakes({
+                registry    : {getDataDir: () => directory}, gateOf: openGate, now: () => at(minute), rotationSeats: [SEAT, ROTATION],
+                admitWake   : async message => sends.push(message),
+                readPresence: async () => ({agents: [
+                    {identity: SEAT, wake: {state: 'undeliverable', reason: 'dispatch-failed'}},
+                    {identity: ROTATION, wake: {state: 'reachable'}}
+                ]})
+            });
+
+            await round(state(0)); minute = 1;
+            await round(state(1, 'red'));
+            expect(sends.map(({kind, to, holder}) => ({kind, to, holder}))).toEqual([{kind: 'holder-unreachable', to: ROTATION, holder: SEAT}]);
+            await round.stop()
+        } finally { fs.rmSync(directory, {recursive: true, force: true}) }
     });
 });

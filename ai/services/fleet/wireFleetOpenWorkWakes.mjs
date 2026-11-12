@@ -86,9 +86,10 @@ export function failedChecksOf(data) {
  * @private
  */
 function observationOf(wake, failedChecks) {
-    const {repo, number, head, kind, episode, to, unblocks} = wake;
+    const {repo, number, head, kind, episode, to, unblocks, holder} = wake;
 
-    return {repo, number, head, kind, episode, to, failedChecks, ...(kind === 'unblocked' ? {unblocks} : {})}
+    return {repo, number, head, kind, episode, to, failedChecks, ...(kind === 'unblocked' ? {unblocks} : {}),
+        ...(kind === 'holder-unreachable' ? {holder} : {})}
 }
 
 /**
@@ -145,11 +146,16 @@ function validateLedger(ledger, now) {
     const
         object = value => value && typeof value === 'object' && !Array.isArray(value),
         text   = value => typeof value === 'string' && value.length > 0,
+        // An escalation's holder is part of its identity, and never its recipient
+        holder = value => value.kind === 'holder-unreachable'
+            ? value.role === 'rotation' && text(value.holder) && value.holder.startsWith('@') && value.holder !== value.to
+            : !Object.hasOwn(value, 'holder'),
         wake   = value => object(value) && text(value.repo) && Number.isInteger(value.number) && value.number > 0 &&
             text(value.head) && text(value.to) && value.to.startsWith('@') && text(value.kind) &&
             text(value.episode) && text(value.reason) && ['author', 'reviewer', 'rotation', 'assignee'].includes(value.role) &&
-            value.pr === `${value.repo}#${value.number}` &&
-            value.key === JSON.stringify([value.repo, value.number, value.head, value.to, value.kind, value.episode]);
+            value.pr === `${value.repo}#${value.number}` && holder(value) &&
+            value.key === JSON.stringify([value.repo, value.number, value.head, value.to, value.kind, value.episode,
+                ...(value.holder ? [value.holder] : [])]);
 
     if (!object(ledger) || !text(ledger.pulse) || !Number.isFinite(Date.parse(ledger.pulse)) ||
         !object(ledger.holding) || !object(ledger.pendingMerges) || !object(ledger.baselines) ||
@@ -162,7 +168,8 @@ function validateLedger(ledger, now) {
         Object.entries(ledger.holding).some(([slot, entry]) => !object(entry) || !wake(entry.wake) ||
             !['baseline', 'pending', 'admitted'].includes(entry.status) ||
             slot !== JSON.stringify([entry.wake.repo, entry.wake.number, entry.wake.head,
-                entry.wake.role === 'rotation' ? 'rotation' : entry.wake.to, entry.wake.kind])) ||
+                entry.wake.role === 'rotation' ? 'rotation' : entry.wake.to, entry.wake.kind,
+                ...(entry.wake.holder ? [entry.wake.holder] : [])])) ||
         Object.entries(ledger.pendingMerges).some(([id, value]) => !wake(value) ||
             !(value.kind === 'post-merge' && id === value.episode || value.kind === 'unblocked' && id === value.key && text(value.unblocks))) ||
         Object.values(ledger.baselines).some(value => !text(value))) {
@@ -402,12 +409,29 @@ function failedChecksReader({listDefinitions, resolveCredential, createQuery}) {
 }
 
 /**
+ * @summary The round's route map from the Fleet's verbose presence answer: each seat whose wake reads `undeliverable`,
+ * with the receiver's last reason. The verbose answer carries the wake state per row, never the terse report's
+ * top-level map. Null when no row holds a readable wake state, so unreadable records read unknown, never reachable.
+ * @param {Object|null} presence A verbose `who_is_online` payload: `{agents: [{identity, wake: {state, reason}}]}`.
+ * @returns {Object<String,String|null>|null}
+ */
+export function undeliverableOf(presence) {
+    const rows = Array.isArray(presence?.agents) ? presence.agents : [];
+
+    if (!rows.some(row => typeof row?.wake?.state === 'string' && row.wake.state !== 'unknown')) return null;
+
+    return Object.fromEntries(rows
+        .filter(row => typeof row?.identity === 'string' && row.wake?.state === 'undeliverable')
+        .map(row => [row.identity, typeof row.wake.reason === 'string' ? row.wake.reason : null]))
+}
+
+/**
  * @summary Bind the existing producer callback to a ledger beside its state file; never start a poller.
  * @param {Object} options
  * @param {{getDataDir: Function, listAgents: Function, resolveCredential: Function}} options.registry Fleet-owned
  *     durable root, and the seats whose PATs read a `repair-ci` wake's failing checks.
  * @param {Function} options.admitWake The already verified plane's open-work intake.
- * @param {Function} [options.readUndeliverable]
+ * @param {Function} [options.readPresence] The Fleet's shared verbose presence read; its rows give the route map.
  * @param {Function} [options.now]
  * @param {Function} [options.gateOf] Test seam only.
  * @param {Function} [options.isEnabled] Live entrypoint enablement, checked at effect boundaries.
@@ -416,7 +440,7 @@ function failedChecksReader({listDefinitions, resolveCredential, createQuery}) {
  * @param {Object} [options.log]
  * @returns {Function|null} onPulse with stop(), or null without the required registry/intake.
  */
-export function wireFleetOpenWorkWakes({registry, admitWake, readUndeliverable, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
+export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
     if (typeof registry?.getDataDir !== 'function' || typeof admitWake !== 'function') return null;
     return createOpenWorkWakeRound({
         store           : fileStore(path.join(registry.getDataDir(), 'open-work-wakes.json')),
@@ -425,7 +449,8 @@ export function wireFleetOpenWorkWakes({registry, admitWake, readUndeliverable, 
             resolveCredential: id => registry.resolveCredential?.(id) ?? null,
             createQuery
         }),
-        admitWake, readUndeliverable, now, gateOf, isEnabled, rotationSeats, log
+        ...(typeof readPresence === 'function' ? {readUndeliverable: async () => undeliverableOf(await readPresence())} : {}),
+        admitWake, now, gateOf, isEnabled, rotationSeats, log
     })
 }
 

@@ -58,8 +58,10 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         return {role: 'reviewer', kind: 'review', ids: [...requested]}
     }
 
-    if (ci === 'green' && owner?.kind === 'seat' && owner.seat && !draft && !opinions.some(opinion => opinion.onHead)) {
-        return {role: 'author', kind: 'route-review', ids: [owner.seat]}
+    // An unowned org PR owes the same routing; with no seat to hold it, the wake path escalates it
+    if (ci === 'green' && (owner?.kind === 'seat' && owner.seat || owner?.kind === 'unowned') && !draft &&
+        !opinions.some(opinion => opinion.onHead)) {
+        return {role: 'author', kind: 'route-review', ids: owner.seat ? [owner.seat] : []}
     }
 
     if (ci === 'green' && onHead('APPROVED') && mergeable === 'MERGEABLE' && !draft) {
