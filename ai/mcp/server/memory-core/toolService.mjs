@@ -20,6 +20,7 @@ import MailboxService               from '../../../services/memory-core/MailboxS
 import PermissionService            from '../../../services/memory-core/PermissionService.mjs';
 import WakeSubscriptionService      from '../../../services/memory-core/WakeSubscriptionService.mjs';
 import TurnPresenceService          from '../../../services/memory-core/TurnPresenceService.mjs';
+import OperatorPresenceService      from '../../../services/memory-core/OperatorPresenceService.mjs';
 import MemoryCoreRecorderService    from '../../../services/memory-core/MemoryCoreRecorderService.mjs';
 import {
     readDeploymentStateSnapshot,
@@ -662,6 +663,7 @@ const serviceMapping = {
     claim_community_activity_task: claimCommunityActivityTask,
     mark_community_activity_seen : markCommunityActivitySeen,
     record_turn_presence         : TurnPresenceService    .recordTurnPresence      .bind(TurnPresenceService),
+    set_operator_presence        : OperatorPresenceService.setOperatorPresence     .bind(OperatorPresenceService),
     admit_community_batch        : admitCommunityBatch,
     who_is_online                : WakeSubscriptionService.whoIsOnline             .bind(WakeSubscriptionService),
     purge_session                : SessionService         .purgeSession            .bind(SessionService),

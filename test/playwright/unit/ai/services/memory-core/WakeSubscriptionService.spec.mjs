@@ -3726,6 +3726,23 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(res.idle).not.toContain('@neo-dispatch');
         });
 
+        test('the operator\'s mode crosses the dispatch: set_operator_presence writes it, both answers carry it (#1625)', async () => {
+            seedAgent('@neo-operator', {accountType: 'human'});
+
+            expect((await callTool('who_is_online', {})).operatorPresence).toEqual({mode: 'present', since: null, until: null, setBy: null});
+
+            const written = await RequestContextService.run(
+                {userId: 'neo-operator', agentIdentityNodeId: '@neo-operator'},
+                () => callTool('set_operator_presence', {mode: 'away'})
+            );
+
+            expect(written).toMatchObject({operatorPresence: {mode: 'away', until: null, setBy: '@neo-operator'}, changed: true});
+
+            for (const answer of [await callTool('who_is_online', {}), await callTool('who_is_online', {verbose: true})]) {
+                expect(answer.operatorPresence).toEqual(written.operatorPresence);
+            }
+        });
+
         test('#17225 AC2 — the inversion red-proof: a beaconless mid-turn peer and an idle-but-fresh-write peer carry identical unobservable axes', async () => {
             // The ticket's fixture, beaconless by construction (today's fleet-wide truth: nothing
             // emits turn-presence, so the mid-turn rescue cannot fire). One peer mid-turn with a

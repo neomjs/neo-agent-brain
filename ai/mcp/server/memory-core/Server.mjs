@@ -193,6 +193,8 @@ class Server extends BaseServer {
             'list_permissions',
             'manage_wake_subscription',
             'record_turn_presence',
+            // a one-node graph write: the operator can still say they are away during an embedder outage
+            'set_operator_presence',
             'get_session_memories',
             'query_recent_turns',
             'who_is_online',
