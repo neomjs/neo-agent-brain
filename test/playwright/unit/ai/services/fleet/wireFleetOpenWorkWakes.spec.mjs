@@ -81,11 +81,11 @@ function certification() {
 test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cadence (#761)', () => {
     test('default production gate accepts a measured day, baselines first and admits the next action', async () => {
         let   minute = 0;
-        const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), now: () => at(minute), sendMessage: async message => sends.push(message)});
+        const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), now: () => at(minute), admitWake: async message => sends.push(message)});
         expect(await round(measuredState(0, 'red'))).toMatchObject({admitted: 0, quiet: false});
         minute = 1;
         expect(await round(measuredState(1, 'green'))).toMatchObject({admitted: 1});
-        expect(sends[0].task.kind).toBe('route-review');
+        expect(sends[0].kind).toBe('route-review');
         await round.stop()
     });
 
@@ -93,7 +93,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         let   minute  = 0;
         const receipt = certification(), expected = structuredClone(receipt), store = memoryStore(), save = store.save,
             options = {store, now: () => at(minute), gateOf: () => ({holds: true, reason: null, certification: receipt}),
-                sendMessage: async () => {}};
+                admitWake: async () => {}};
         store.save = value => {
             // Mutation at the persistence boundary must not rewrite the newly accepted receipt.
             receipt.window.start = iso(-1);
@@ -128,7 +128,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
             const receipt = mutate(certification()), store = memoryStore(), sends = [];
             const round   = createOpenWorkWakeRound({store, now: () => at(0),
                 gateOf     : () => ({holds: true, reason: null, certification: receipt}),
-                sendMessage: async value => sends.push(value)});
+                admitWake: async value => sends.push(value)});
             await expect(round(state(0))).rejects.toThrow('Malformed open-work wake certification');
             expect(store.read()).toBeNull(); expect(sends).toEqual([])
         }
@@ -136,12 +136,12 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
 
     test('malformed persisted certification cannot be accepted as an activation or overwritten', async () => {
         const seed = memoryStore();
-        await createOpenWorkWakeRound({store: seed, gateOf: openGate, now: () => at(0), sendMessage: async () => {}})(state(0));
+        await createOpenWorkWakeRound({store: seed, gateOf: openGate, now: () => at(0), admitWake: async () => {}})(state(0));
         for (const receipt of [null, {...certification(), policy: 'unknown-policy'},
             {...certification(), buckets: [{...certification().buckets[0], measured: -1}]}]) {
             const before = {...seed.read(), activation: {...seed.read().activation, certification: receipt}},
                 store    = memoryStore(before), sends = [], round = createOpenWorkWakeRound({
-                    store, gateOf: openGate, now: () => at(1), sendMessage: async value => sends.push(value)
+                    store, gateOf: openGate, now: () => at(1), admitWake: async value => sends.push(value)
                 });
             await expect(round(state(1, 'red'))).rejects.toThrow('Malformed open-work wake ledger');
             expect(store.read()).toEqual(before); expect(sends).toEqual([])
@@ -151,12 +151,12 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('legacy activation or an explicit test gate without a receipt never gains invented certification evidence', async () => {
         let   minute = 0;
         const store  = memoryStore(), round = createOpenWorkWakeRound({store, gateOf: openGate,
-            now: () => at(minute), sendMessage: async () => {}});
+            now: () => at(minute), admitWake: async () => {}});
         await round(state(0));
         expect(store.read().activation).not.toHaveProperty('certification');
         minute = 1;
         await createOpenWorkWakeRound({store, gateOf: () => { throw new Error('legacy latch does not recertify') },
-            now: () => at(minute), sendMessage: async () => {}})(state(1, 'red'));
+            now: () => at(minute), admitWake: async () => {}})(state(1, 'red'));
         expect(store.read().activation).not.toHaveProperty('certification')
     });
 
@@ -166,11 +166,11 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
             store, now: () => at(minute), gateOf: () => {
                 gateCalls++;
                 return minute === 0 ? openGate() : {holds: false, reason: 'a pulse has unattributed or unknown query cost'}
-            }, sendMessage: async message => sends.push(message)
+            }, admitWake: async message => sends.push(message)
         });
         await round(state(0)); minute = 1;
         expect(await round(state(1, 'red'))).toMatchObject({admitted: 1, quiet: false});
-        expect(sends.map(message => message.task.kind)).toEqual(['repair-ci']);
+        expect(sends.map(observation => observation.kind)).toEqual(['repair-ci']);
         expect(store.read().activation).toEqual({version: 1, at: iso(0)});
         expect(gateCalls).toBe(1)
     });
@@ -178,7 +178,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('activation survives restart and history rollover without losing pending merges', async () => {
         let   minute = 0, routes = {[SEAT]: 'absent'};
         const store  = memoryStore(), sends = [], options = {store, gateOf: openGate, now: () => at(minute),
-            readUndeliverable: async () => routes, sendMessage: async message => sends.push(message)};
+            readUndeliverable: async () => routes, admitWake: async message => sends.push(message)};
         const first = createOpenWorkWakeRound(options);
         await first(state(0)); minute = 1;
         await first(state(1, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [merged(1)]}));
@@ -190,17 +190,17 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         await restarted(state(2000, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [],
             pulses: [{at: iso(500)}, {at: iso(2000)}]}));
         expect(sends).toHaveLength(1);
-        expect(sends[0].task.episode).toBe(pending.episode);
+        expect(sends[0].episode).toBe(pending.episode);
         expect(store.read().activation).toEqual({version: 1, at: iso(0)});
         expect(store.read().pendingMerges).toEqual({})
     });
 
     test('present malformed or unknown activation is never treated as a certified ledger', async () => {
         const seed = memoryStore();
-        await createOpenWorkWakeRound({store: seed, gateOf: openGate, now: () => at(0), sendMessage: async () => {}})(state(0));
+        await createOpenWorkWakeRound({store: seed, gateOf: openGate, now: () => at(0), admitWake: async () => {}})(state(0));
         for (const activation of [null, true, {}, {version: 2, at: iso(0)}, {version: 1, at: 'invalid'}, {version: 1, at: iso(2)}]) {
             const before = {...seed.read(), activation}, store = memoryStore(before), sends = [];
-            const round  = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(1), sendMessage: async value => sends.push(value)});
+            const round  = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(1), admitWake: async value => sends.push(value)});
             await expect(round(state(1, 'red'))).rejects.toThrow('Malformed open-work wake ledger');
             expect(store.read()).toEqual(before); expect(sends).toEqual([])
         }
@@ -209,7 +209,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('disabled callbacks do not create or change the ledger, while re-enabling retains activation', async () => {
         let   minute = 0, enabled = false;
         const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, gateOf: openGate,
-            isEnabled: () => enabled, now: () => at(minute), sendMessage: async value => sends.push(value)});
+            isEnabled: () => enabled, now: () => at(minute), admitWake: async value => sends.push(value)});
         expect(await round(state(0))).toMatchObject({admitted: 0, disabled: true});
         expect(store.read()).toBeNull();
         enabled = true; await round(state(0)); const activated = store.read();
@@ -224,7 +224,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         const store  = memoryStore(), entered = deferred(), release = deferred(), sends = [],
             round = createOpenWorkWakeRound({store, gateOf: openGate, isEnabled: () => enabled, now: () => at(minute),
                 readUndeliverable: async () => { entered.resolve(); await release.promise; return null },
-                sendMessage      : async value => sends.push(value)});
+                admitWake      : async value => sends.push(value)});
         await round(state(0)); const before = store.read(); minute = 1;
         const running = round(state(1, 'red')); await entered.promise;
         enabled = false; release.resolve();
@@ -237,7 +237,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         const store  = memoryStore(), save = store.save, entered = deferred(), release = deferred(), sends = [];
         store.save = async value => { save(value); if (pause) { entered.resolve(); await release.promise } };
         const round = createOpenWorkWakeRound({store, gateOf: openGate, isEnabled: () => enabled, now: () => at(minute),
-            sendMessage: async value => sends.push(value)});
+            admitWake: async value => sends.push(value)});
         await round(state(0)); minute = 1; pause = true;
         const running = round(state(1, 'red')); await entered.promise; enabled = false; release.resolve();
         expect(await running).toMatchObject({admitted: 1, disabled: true});
@@ -246,7 +246,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
 
         const otherStore = memoryStore(), laterSends = [], between = createOpenWorkWakeRound({
             store      : otherStore, gateOf: openGate, isEnabled: () => enabled, now: () => at(minute),
-            sendMessage: async value => { laterSends.push(value); enabled = false }
+            admitWake: async value => { laterSends.push(value); enabled = false }
         });
         minute = 3; await between(state(3)); minute = 4;
         const observed = state(4, 'green'); observed.snapshot.rows['acme/app#7'].requested = [SEAT, '@neo-gpt'];
@@ -259,7 +259,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         let   minute = 0, reason = 'less than 24 elapsed hours of version-one observations', active = false;
         const store  = memoryStore(), messages = [], options = {store, now: () => at(minute),
             gateOf     : () => active ? openGate() : {holds: false, reason},
-            sendMessage: async () => {}, log: {info: (...args) => messages.push(args)}};
+            admitWake: async () => {}, log: {info: (...args) => messages.push(args)}};
         const first = createOpenWorkWakeRound(options);
         await first(state(0)); minute = 1; await first(state(1));
         const restarted = createOpenWorkWakeRound(options); minute = 2; await restarted(state(2));
@@ -278,7 +278,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         let   minute = 0, hold = false;
         const store  = memoryStore(), saved = store.save, entered = deferred(), release = deferred(), sends = [];
         store.save = async value => { if (hold) { entered.resolve(); await release.promise } saved(value) };
-        const round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), sendMessage: async message => {
+        const round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), admitWake: async message => {
             expect(Object.values(store.read().holding)[0].status).toBe('admitted'); sends.push(message)
         }});
         await round(state(0)); minute = 1; hold = true;
@@ -292,7 +292,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('a save failure has zero sender effects and preserves the prior ledger', async () => {
         let   minute = 0;
         const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, gateOf: openGate,
-            now: () => at(minute), sendMessage: async message => sends.push(message)});
+            now: () => at(minute), admitWake: async message => sends.push(message)});
         await round(state(0)); const before = store.read();
         store.save = () => { throw new Error('disk unavailable') }; minute = 1;
         await expect(round(state(1, 'red'))).rejects.toThrow('disk unavailable');
@@ -304,7 +304,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         const store  = memoryStore(), sends = [], entered = deferred(), release = deferred(),
             round = createOpenWorkWakeRound({store, now: () => at(minute),
                 readUndeliverable: async () => { entered.resolve(); await release.promise; return null },
-                sendMessage      : async message => sends.push(message)});
+                admitWake      : async message => sends.push(message)});
         await round(measuredState(0)); const before = store.read(); minute = 1;
         const running = round(measuredState(1, 'red')); await entered.promise;
         minute = 7; release.resolve();
@@ -319,7 +319,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
             round = createOpenWorkWakeRound({store, now: () => at(minute),
                 gateOf           : (value, {now}) => { gateTimes.push(now); return {holds: now < at(2), reason: now < at(2) ? null : 'gate closed'} },
                 readUndeliverable: async () => { entered.resolve(); await release.promise; return null },
-                sendMessage      : async message => sends.push(message)});
+                admitWake      : async message => sends.push(message)});
         await round(state(0)); minute = 1; const running = round(state(1, 'red')); await entered.promise;
         minute = 2; release.resolve();
         expect(await running).toMatchObject({admitted: 1, quiet: false, reason: null});
@@ -336,7 +336,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
             let   minute = 0, pause = false;
             const store  = memoryStore(), save = store.save, sends = [], entered = deferred(), release = deferred();
             store.save = async ledger => { save(ledger); if (pause) { entered.resolve(); await release.promise } };
-            const round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), sendMessage: async message => sends.push(message)});
+            const round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), admitWake: async message => sends.push(message)});
             await round(state(0)); minute = scenario.minute; pause = true;
             const observed = scenario.terminal
                 ? state(minute, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [merged(minute)]})
@@ -354,7 +354,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('a delayed first sender cannot authorize the next send after observation expiry', async () => {
         let   minute = 0;
         const store  = memoryStore(), sends = [], entered = deferred(), release = deferred(),
-            round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), sendMessage: async message => {
+            round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), admitWake: async message => {
                 sends.push(message); if (sends.length === 1) { entered.resolve(); await release.promise }
             }});
         await round(state(0)); minute = 1; const observed = state(1, 'green');
@@ -370,7 +370,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('ambiguous send is admitted once across repeated observations and a restart; logging stays bounded', async () => {
         let   minute = 0, attempts = 0;
         const store  = memoryStore(), errors = [], options = {store, gateOf: openGate, now: () => at(minute),
-            sendMessage: async () => { attempts++; throw new Error('private-token:' + 'x'.repeat(10000)) },
+            admitWake: async () => { attempts++; throw new Error('private-token:' + 'x'.repeat(10000)) },
             log        : {error: (...args) => errors.push(args)}};
         const round = createOpenWorkWakeRound(options);
         await round(state(0)); minute = 1;
@@ -385,7 +385,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('only explicit unreachable routes defer open actions; cached routes retry on a later pulse', async () => {
         let   minute = 0, routes = {[SEAT]: 'receiver absent'}, reads = 0;
         const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute),
-            readUndeliverable: async () => { reads++; return routes }, sendMessage: async message => sends.push(message)});
+            readUndeliverable: async () => { reads++; return routes }, admitWake: async message => sends.push(message)});
         await round(state(0)); expect(reads).toBe(0); minute = 1; await round(state(1, 'red'));
         expect(Object.values(store.read().holding)[0].status).toBe('pending');
         routes = {}; minute = 2; await round(state(2, 'red'));
@@ -398,7 +398,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         for (const reason of [null, '']) {
             let   minute = 0, routes = {[SEAT]: reason};
             const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute),
-                readUndeliverable: async () => routes, sendMessage: async message => sends.push(message)});
+                readUndeliverable: async () => routes, admitWake: async message => sends.push(message)});
             await round(state(0)); minute = 1; await round(state(1, 'red'));
             expect(sends).toEqual([]); expect(Object.values(store.read().holding)[0].status).toBe('pending');
             routes = {}; minute = 6; await round(state(6, 'red')); minute = 7; await round(state(7, 'red'));
@@ -410,7 +410,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         let   minute = 0, routes = {[SEAT]: 'absent'};
         const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, now: () => at(minute),
             gateOf           : () => minute === 7 ? {holds: false, reason: 'stale observation'} : openGate(),
-            readUndeliverable: async () => routes, sendMessage: async message => sends.push(message)});
+            readUndeliverable: async () => routes, admitWake: async message => sends.push(message)});
         await round(state(0)); minute = 1; const observed = state(1, 'red'); await round(observed);
         const pending = store.read(); minute = 7; await round(observed);
         expect(store.read()).toEqual(pending); expect(sends).toEqual([]);
@@ -423,7 +423,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         store.save = value => { saves++; save(value) };
         const round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute),
             readUndeliverable: async () => { reads++; return unreachable ? {[SEAT]: 'absent'} : null },
-            sendMessage      : async message => sends.push(message)});
+            admitWake      : async message => sends.push(message)});
         await round(state(0)); minute = 1; const observed = state(1, 'red'); await round(observed);
         unreachable = false; minute = 6; await round(observed);
         expect(sends).toHaveLength(1); const writes = saves;
@@ -433,7 +433,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('unreadable route status skips nobody and is not a delivery guarantee', async () => {
         let   minute = 0;
         const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute),
-            readUndeliverable: async () => { throw new Error('unknown routes') }, sendMessage: async message => sends.push(message)});
+            readUndeliverable: async () => { throw new Error('unknown routes') }, admitWake: async message => sends.push(message)});
         await round(state(0)); minute = 1;
         expect(await round(state(1, 'red'))).toMatchObject({admitted: 1});
         expect(sends).toHaveLength(1)
@@ -442,45 +442,41 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('unreachable merged work remains retryable after its terminal transition leaves history', async () => {
         let   minute = 0, routes = {[SEAT]: 'unreachable'};
         const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute),
-            readUndeliverable: async () => routes, sendMessage: async message => sends.push(message)});
+            readUndeliverable: async () => routes, admitWake: async message => sends.push(message)});
         await round(state(0)); minute = 1;
         await round(state(1, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [merged(1)]}));
         expect(Object.keys(store.read().pendingMerges)).toEqual(['merge-1']);
         routes = {}; minute = 6;
         await round(state(6, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: []}));
-        expect(sends).toHaveLength(1); expect(sends[0].task).toMatchObject({kind: 'post-merge', episode: 'merge-1'});
+        expect(sends).toHaveLength(1); expect(sends[0]).toMatchObject({kind: 'post-merge', episode: 'merge-1'});
         expect(store.read().pendingMerges).toEqual({})
     });
 
-    test('full heads and episodes survive task mapping; the message names the observed action', async () => {
+    test('full heads and episodes survive into the observation; the round submits tokens, never text (#1607)', async () => {
         let   minute = 0;
         const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate,
-            now: () => at(minute), sendMessage: async message => sends.push(message)});
+            now: () => at(minute), admitWake: async observation => sends.push(observation)});
         await round(state(0)); minute = 1; await round(state(1, 'red'));
         minute = 2; const next = state(2, 'red'); next.snapshot.rows['acme/app#7'].head = 'a'.repeat(39) + 'b'; await round(next);
-        expect(sends[0].task.id).toBe('open-work:' + JSON.stringify(['acme/app', 7, HEAD, SEAT, 'repair-ci', iso(1)]));
-        expect(sends[1].task.id).not.toBe(sends[0].task.id);
-        expect(sends[0].task).toMatchObject({state: 'Submitted', producerRole: 'fleet-open-work', head: HEAD, episode: iso(1)});
-        expect(sends[0].task).not.toHaveProperty('assignee');
-        expect(sends[0].subject).toContain('repair-ci'); expect(sends[0].body).toContain(HEAD);
-        expect(sends[0].body).toContain('Re-check the live pull request')
+        expect(sends[0]).toEqual({repo: 'acme/app', number: 7, head: HEAD, kind: 'repair-ci', episode: iso(1), to: SEAT, failedChecks: null});
+        expect(sends[1]).toMatchObject({head: 'a'.repeat(39) + 'b', kind: 'repair-ci'})
     });
 
     test('a closed production gate quietly baselines; opening it does not wake that backlog', async () => {
         let   minute = 0, open = false;
         const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), now: () => at(minute),
             gateOf     : (value, args) => open ? openGate() : {holds: false, reason: 'insufficient observed day'},
-            sendMessage: async message => sends.push(message)});
+            admitWake: async message => sends.push(message)});
         await round(state(0, 'red')); open = true; minute = 1; await round(state(1, 'red'));
         expect(sends).toEqual([]); minute = 2; await round(state(2, 'green')); expect(sends).toHaveLength(1);
-        const unmeasured = createOpenWorkWakeRound({store: memoryStore(), now: () => at(2), sendMessage: async () => { throw new Error('must remain quiet') }});
+        const unmeasured = createOpenWorkWakeRound({store: memoryStore(), now: () => at(2), admitWake: async () => { throw new Error('must remain quiet') }});
         expect(await unmeasured(state(2, 'red'))).toMatchObject({admitted: 0, quiet: true})
     });
 
     test('an activated ledger survives retained-history rollover and still admits a new fresh action', async () => {
         let   minute = 0;
         const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, gateOf: openGate,
-            now: () => at(minute), sendMessage: async message => sends.push(message)});
+            now: () => at(minute), admitWake: async message => sends.push(message)});
         await round(state(0)); minute = 2000;
         await round(state(2000, 'red', {pulses: [{at: iso(500)}, {at: iso(2000)}]}));
         expect(sends).toHaveLength(1); expect(Object.values(store.read().holding)[0].status).toBe('admitted');
@@ -490,7 +486,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('corrupt or unreadable stored history rejects without overwrite or send', async () => {
         const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wake-invalid-')),
             file        = path.join(directory, 'open-work-wakes.json'), sends = [],
-            wire        = () => wireFleetOpenWorkWakes({registry: {getDataDir: () => directory}, sendMessage: async message => sends.push(message), gateOf: openGate, now: () => at(1)});
+            wire        = () => wireFleetOpenWorkWakes({registry: {getDataDir: () => directory}, admitWake: async message => sends.push(message), gateOf: openGate, now: () => at(1)});
         try {
             for (const contents of ['{"pulse":', '{}', '{"pulse":"2026-10-13T12:00:00Z","holding":[],"pendingMerges":{},"baselines":{}}']) {
                 fs.writeFileSync(file, contents);
@@ -506,7 +502,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('concurrent calls share one round and the latest queued snapshot retains terminal history', async () => {
         let   minute  = 0, active = 0, maximum = 0;
         const entered = deferred(), release = deferred(), store = memoryStore(), sends = [],
-            round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), sendMessage: async message => {
+            round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), admitWake: async message => {
                 active++; maximum = Math.max(maximum, active); sends.push(message);
                 if (sends.length === 1) { entered.resolve(); await release.promise } active--
             }});
@@ -514,14 +510,14 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         minute = 2; const second = round(state(2, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [merged(2)]}));
         minute = 3; const third = round(state(3, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: []}));
         expect(second).toBe(first); expect(third).toBe(first); release.resolve(); await first;
-        expect(maximum).toBe(1); expect(sends.map(message => message.task.kind)).toEqual(['repair-ci', 'post-merge']);
+        expect(maximum).toBe(1); expect(sends.map(observation => observation.kind)).toEqual(['repair-ci', 'post-merge']);
         expect(store.read().pulse).toBe(iso(3))
     });
 
     test('stop waits for the active sender, drops queued work and rejects no new round', async () => {
         let   minute  = 0, closed = false;
         const entered = deferred(), release = deferred(), sends = [], round = createOpenWorkWakeRound({store: memoryStore(),
-            gateOf: openGate, now: () => at(minute), sendMessage: async message => { sends.push(message); entered.resolve(); await release.promise; expect(closed).toBe(false) }});
+            gateOf: openGate, now: () => at(minute), admitWake: async message => { sends.push(message); entered.resolve(); await release.promise; expect(closed).toBe(false) }});
         await round(state(0)); minute = 1; const running = round(state(1, 'red')); await entered.promise;
         minute = 2; round(state(2, 'green'));
         const stopped = round.stop().then(() => { closed = true });
@@ -536,8 +532,8 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         try {
             expect(wireFleetOpenWorkWakes()).toBeNull();
             expect(wireFleetOpenWorkWakes({registry})).toBeNull();
-            expect(wireFleetOpenWorkWakes({sendMessage: () => {}})).toBeNull();
-            const round = wireFleetOpenWorkWakes({registry, sendMessage: async message => sends.push(message), gateOf: openGate, now: () => at(0)});
+            expect(wireFleetOpenWorkWakes({admitWake: () => {}})).toBeNull();
+            const round = wireFleetOpenWorkWakes({registry, admitWake: async message => sends.push(message), gateOf: openGate, now: () => at(0)});
             await Promise.resolve(); expect(fs.readdirSync(directory)).toEqual([]); expect(sends).toEqual([]);
             await round(state(0)); expect(fs.existsSync(path.join(directory, 'open-work-wakes.json'))).toBe(true);
             await round.stop()
@@ -547,7 +543,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('rotation episodes for outside PRs persist under the rotation slot and validate on the next round (#1008)', async () => {
         let   minute = 0;
         const store  = memoryStore(), sends = [],
-            round    = createOpenWorkWakeRound({store, gateOf: openGate, rotationSeats: [SEAT], now: () => at(minute), sendMessage: async message => sends.push(message)}),
+            round    = createOpenWorkWakeRound({store, gateOf: openGate, rotationSeats: [SEAT], now: () => at(minute), admitWake: async message => sends.push(message)}),
             outside  = (minute, ci, runApproval = null) => ({
                 observedAt: iso(minute), coverage: 'complete', transitions: [],
                 pulses    : [{at: iso(-1500)}, {at: iso(minute), seats: [{seat: SEAT, benched: false}]}],
@@ -562,7 +558,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         await round(outside(0, 'pending'));
         minute = 1;
         expect(await round(outside(1, 'green'))).toMatchObject({admitted: 1});
-        expect(sends[0]).toMatchObject({to: SEAT, subject: expect.stringContaining('[open-work:triage-outside] acme/app#42')});
+        expect(sends[0]).toMatchObject({to: SEAT, kind: 'triage-outside', repo: 'acme/app', number: 42});
         minute = 2;
         expect(await round(outside(2, 'green'))).toMatchObject({admitted: 0});
         await round.stop()
@@ -601,7 +597,7 @@ test.describe('wireFleetOpenWorkWakes — a repair-ci wake names the checks that
     test('a repair-ci wake carries its head\'s failing checks, read once per red episode and never per pulse or for another kind', async () => {
         let   minute = 0;
         const sends  = [], reads = [],
-            round    = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute), sendMessage: async message => sends.push(message),
+            round    = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute), admitWake: async message => sends.push(message),
                 readFailedChecks: async wake => { reads.push([wake.to, wake.repo, wake.head]); return ['unit', 'lint', 'e2e-brain', 'substrate'] }});
 
         await round(state(0));
@@ -612,30 +608,28 @@ test.describe('wireFleetOpenWorkWakes — a repair-ci wake names the checks that
 
         // two red episodes: two reads, both for the author's head; the green between them reads nothing
         expect(reads).toEqual([[SEAT, 'acme/app', HEAD], [SEAT, 'acme/app', HEAD]]);
-        expect(sends.map(message => message.task.kind)).toEqual(['repair-ci', 'route-review', 'repair-ci']);
-        expect(sends[0].subject).toBe('[open-work:repair-ci] acme/app#7: observed CI is red on your head — failing: unit, lint, e2e-brain +1');
-        expect(sends[0].body).toContain('Failing checks: unit, lint, e2e-brain, substrate.');
-        expect(sends[1].subject).not.toContain('failing');
+        expect(sends.map(observation => observation.kind)).toEqual(['repair-ci', 'route-review', 'repair-ci']);
+        expect(sends[0].failedChecks).toEqual(['unit', 'lint', 'e2e-brain', 'substrate']);
+        expect(sends[1].failedChecks).toBeNull();
         await round.stop()
     });
 
-    test('a failed, unreadable or missing names read still sends the wake, marked names-unknown; an empty list says so', async () => {
+    test('a failed, unreadable or missing names read still submits the wake with the names unknown; an empty list stays empty', async () => {
         const cases = [
-            [async () => { throw new Error('GitHub GraphQL answered 502: no data') }, 'unknown', 'unknown; the names could not be read'],
-            [async () => null, 'unknown', 'unknown; the names could not be read'],
-            [undefined, 'unknown', 'unknown; the names could not be read'],
-            [async () => [], 'none at send time', 'none when this wake was sent']
+            [async () => { throw new Error('GitHub GraphQL answered 502: no data') }, null],
+            [async () => null, null],
+            [undefined, null],
+            [async () => [], []]
         ];
 
-        for (const [readFailedChecks, subject, body] of cases) {
+        for (const [readFailedChecks, failedChecks] of cases) {
             let   minute = 0;
             const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute),
-                sendMessage: async message => sends.push(message), ...(readFailedChecks ? {readFailedChecks} : {})});
+                admitWake: async observation => sends.push(observation), ...(readFailedChecks ? {readFailedChecks} : {})});
 
             await round(state(0)); minute = 1; await round(state(1, 'red'));
             expect(sends).toHaveLength(1);
-            expect(sends[0].subject).toBe(`[open-work:repair-ci] acme/app#7: observed CI is red on your head — failing: ${subject}`);
-            expect(sends[0].body).toContain(`Failing checks: ${body}.`);
+            expect(sends[0]).toMatchObject({kind: 'repair-ci', failedChecks});
             await round.stop()
         }
     });
@@ -648,35 +642,16 @@ test.describe('wireFleetOpenWorkWakes — a repair-ci wake names the checks that
             createQuery = token => async (text, variables) => { calls.push([token, variables]); return contexts([{name: 'unit', conclusion: 'FAILURE'}]) };
 
         try {
-            for (const [credential, failing] of [[id => `pat-${id}`, 'unit'], [() => null, 'unknown']]) {
+            for (const [credential, failing] of [[id => `pat-${id}`, ['unit']], [() => null, null]]) {
                 let   minute = 0;
                 const sends  = [], registry = {getDataDir: () => fs.mkdtempSync(path.join(directory, 'r-')), listAgents: () => definitions, resolveCredential: credential},
-                    round    = wireFleetOpenWorkWakes({registry, createQuery, gateOf: openGate, now: () => at(minute), sendMessage: async message => sends.push(message)});
+                    round    = wireFleetOpenWorkWakes({registry, createQuery, gateOf: openGate, now: () => at(minute), admitWake: async message => sends.push(message)});
 
                 await round(state(0)); minute = 1; await round(state(1, 'red'));
-                expect(sends[0].subject).toContain(`— failing: ${failing}`);
+                expect(sends[0].failedChecks).toEqual(failing);
                 await round.stop()
             }
             expect(calls).toEqual([['pat-ada', {owner: 'acme', name: 'app', oid: HEAD}]])
         } finally { fs.rmSync(directory, {recursive: true, force: true}) }
     });
-});
-
-test.describe('wireFleetOpenWorkWakes — every message the round sends wakes its seat (#1609)', () => {
-    test('a red head and then a green head both reach the seat as wakes, whatever sender class the plane stamps', async () => {
-        let   minute = 0;
-        const sends  = [],
-            round    = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute), sendMessage: async message => sends.push(message),
-                readFailedChecks: async () => ['unit']});
-
-        await round(state(0));
-        for (const [next, ci] of [[1, 'red'], [2, 'green']]) {
-            minute = next;
-            await round(state(next, ci))
-        }
-
-        // The plane stamps the viewer, a human sender, for whom an omitted flag defaults to quiet
-        expect(sends.map(({task, wakeSuppressed}) => [task.kind, wakeSuppressed])).toEqual([['repair-ci', false], ['route-review', false]]);
-        await round.stop()
-    })
 });

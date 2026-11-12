@@ -26,6 +26,7 @@ import {
     selectLastServiceDeath
 } from '../../../services/memory-core/helpers/deploymentStateBridgeStore.mjs';
 import {admitNlActions}              from '../../../services/memory-core/helpers/nlActionTelemetryStore.mjs';
+import {admitOpenWorkWake}           from '../../../services/memory-core/openWorkWakeIntake.mjs';
 import {
     getNlTransaction,
     markNlTransactionReplayed,
@@ -635,6 +636,7 @@ const serviceMapping = {
     get_memory_core_tool_metrics:
                               MemoryCoreRecorderService.getMemoryCoreToolMetrics.bind(MemoryCoreRecorderService),
     add_message                            : addMessageTool,
+    admit_open_work_wake                   : admitOpenWorkWake,
     get_community_activity                 : getCommunityActivity,
     get_community_activity_attention_counts: getCommunityActivityAttentionCounts,
     get_community_activity_content         : getCommunityActivityContent,

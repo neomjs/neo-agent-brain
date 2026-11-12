@@ -1335,6 +1335,18 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
         }
     });
 
+    test('#1607: admit_open_work_wake is health-exempt, like the add_message write it ends in', async () => {
+        const serverInstance = await createServerWithoutBoot();
+
+        try {
+            // The intake reads the graph and writes the mailbox WAL, no embedder: an embed-canary outage must
+            // not refuse a wake the Fleet round has already admitted, since the round never replays a send.
+            expect(serverInstance.getHealthExemptTools()).toEqual(expect.arrayContaining(['add_message', 'admit_open_work_wake']));
+        } finally {
+            serverInstance.destroy();
+        }
+    });
+
     test('#13312: boot keeps MCP handlers available when graph startup tiers degrade', async () => {
         const SDK                   = await import('../../../../../../../ai/services.mjs');
         const HealthService         = (await import('../../../../../../../ai/services/memory-core/HealthService.mjs')).default;

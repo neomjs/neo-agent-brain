@@ -5253,6 +5253,20 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         })
     });
 
+    test('#1607 the plane\'s system sender reaches a fresh seat with no history under strict isolation', async () => {
+        GraphService.upsertNode({id: '@system', type: 'System', name: 'System Sender', properties: {accountType: 'system'}});
+        GraphService.upsertNode({id: '@fresh-seat', type: 'AgentIdentity', name: 'Fresh', properties: {accountType: 'agent'}});
+
+        // control: an agent with no history is still refused under the same policy
+        await expect(RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+            MailboxService.addMessage({to: '@fresh-seat', subject: 'Hi', body: 'body'}))).rejects.toThrow(/Unauthorized/);
+
+        const sent = await RequestContextService.run({agentIdentityNodeId: '@system', principalClass: 'system'}, () =>
+            MailboxService.addMessage({to: '@fresh-seat', subject: '[open-work:repair-ci] acme/app#7: observed CI is red on your head', body: 'body', wakeSuppressed: false}));
+
+        expect(GraphService.db.nodes.get(sent.messageId).properties).toMatchObject({from: '@system', senderPrincipalClass: 'system'})
+    });
+
     test('#10179 broadcast recipient can DM-reply to broadcaster without explicit grant', async () => {
         // Bob broadcasts (always-permitted — broadcast bypasses the CAN_REPLY_TO gate).
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {

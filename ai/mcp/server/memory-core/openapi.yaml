@@ -3315,6 +3315,62 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  # The Fleet host's intake, not an agent tool: `extended`, so it stays off the default loaded surface.
+  /mailbox/open-work/admit:
+    post:
+      summary: "Admit one Fleet open-work observation and send its wake as @system; use when the Fleet host submits a holder action."
+      operationId: admit_open_work_wake
+      x-neo-tool-tier: extended
+      x-pass-as-object: true
+      description: "Admitted only from the Fleet's human operator. Takes tokens, never text: the plane composes the subject and body from them and sends the wake as `@system` at normal priority with its wake on. The caller is recorded as `task.observedBy`. Unknown fields, a malformed token, or a recipient that is not a registered agent or human identity is refused."
+      tags: [Mailbox]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [repo, number, head, kind, episode, to]
+              properties:
+                repo:
+                  type: string
+                  description: "`owner/name`."
+                number:
+                  type: integer
+                  description: The pull request number.
+                head:
+                  type: string
+                  description: The full 40-character head commit id.
+                kind:
+                  type: string
+                  description: "The producer's action kind, such as `repair-ci` or `post-merge`; `openWorkWakeMessage.mjs` lists them."
+                to:
+                  type: string
+                  description: The recipient `@identity`.
+                episode:
+                  type: string
+                  description: "The ISO instant the action was first observed; for `post-merge`, the producer's merge transition id of this pull request and head."
+                failedChecks:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
+                  description: "`repair-ci` only: the failing check names, at most 50; null when they could not be read."
+      responses:
+        '200':
+          description: The `add_message` receipt of the composed wake.
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /turn-presence/record:
     post:
       summary: "Write a start, progress, or terminal turn-presence heartbeat; use when hooks or seats report active session liveness."
