@@ -22,6 +22,7 @@ import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import {execFileSync}  from 'child_process';
 import fs              from 'fs';
 import fsExtra         from 'fs-extra';
+import os              from 'os';
 import path            from 'path';
 import {createRequire} from 'node:module';
 
@@ -1629,6 +1630,42 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         expect(written.autoMode).toEqual(project.autoMode);
         expect(written.hooks.PreToolUse[0].hooks[0].command).toContain('rgReplaceGuardHook.mjs');
         expect(await run()).toMatchObject({action: 'silent', permissions: 'tracked'})
+    });
+
+    test('initClaudeSettings: a settings.json whose custody git cannot report keeps its permission policy (#1615)', async () => {
+        const
+            policy   = {permissions: {allow: ['Read'], deny: ['Bash(rm:*)'], ask: ['Write'], defaultMode: 'plan'}},
+            template = {...TEMPLATE, permissions: {allow: ['Read', 'Write', 'Bash(rm:*)']}},
+            run      = dir => initClaudeSettings({claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')}),
+            read     = dir => JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf-8'));
+
+        // No git on the writer's PATH
+        const hidden = buildClaudeDir('git-unavailable', {template, settings: policy}),
+              PATH   = process.env.PATH;
+
+        process.env.PATH = path.join(claudeRoot, 'no-git-here');
+
+        try {
+            expect(await run(hidden)).toMatchObject({action: 'wired', permissions: 'unknown'})
+        } finally {
+            process.env.PATH = PATH
+        }
+
+        expect(read(hidden).permissions).toEqual(policy.permissions);
+        expect(read(hidden).hooks.PreToolUse[0].hooks[0].command).toContain('rgReplaceGuardHook.mjs');
+
+        // No work tree around the file
+        const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-settings-no-work-tree-'));
+
+        try {
+            fs.writeFileSync(path.join(outside, 'settings.json'), JSON.stringify(policy));
+            fs.writeFileSync(path.join(outside, 'settings.template.json'), JSON.stringify(template));
+
+            expect(await run(outside)).toMatchObject({action: 'wired', permissions: 'unknown'});
+            expect(read(outside).permissions).toEqual(policy.permissions)
+        } finally {
+            fs.rmSync(outside, {recursive: true, force: true})
+        }
     });
 
     test('initClaudeSettings: no template → skip-no-template (no settings.json written)', async () => {

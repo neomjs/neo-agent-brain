@@ -1200,18 +1200,19 @@ async function readPackageName(repoRoot) {
 }
 
 /**
- * @summary Whether git tracks a file, so its repository owns the content. Outside a work tree, or
- * without git, nothing is tracked.
+ * @summary Whether git tracks a file, so its repository owns the content: `true`, `false`, or `null`
+ * when git cannot tell (no git, or no work tree). Only exit status 1 of `ls-files --error-unmatch`
+ * means untracked.
  * @param {String} filePath
- * @returns {Boolean}
+ * @returns {Boolean|null}
  * @private
  */
 function isTrackedByGit(filePath) {
     try {
         execFileSync('git', ['ls-files', '--error-unmatch', '--', path.basename(filePath)], {cwd: path.dirname(filePath), stdio: 'ignore'});
         return true
-    } catch {
-        return false
+    } catch (error) {
+        return error.status === 1 ? false : null
     }
 }
 
@@ -1225,11 +1226,11 @@ function isTrackedByGit(filePath) {
  * (`node_modules/neo.mjs`). A missing active file is cloned whole. An existing one is synced only while
  * the witness declares the same hook events and permissions as the source; until then it stays as it
  * is (`deferred`), so an older installed Engine never rolls a seat back. A sync takes the template's
- * hook events and, unless git tracks the file, its `permissions` ({@link mergeClaudeSettings}); a
- * repository's tracked settings keep their own policy. Every other key stays, `autoMode` included. So a
- * rule a merged template adds or withdraws reaches a seat at its next hydration (`npm prepare`, or a
- * seat Start) once the installed Engine carries it. A rule local to one checkout belongs in
- * `.claude/settings.local.json`.
+ * hook events and, only where git reports the file untracked, its `permissions` ({@link mergeClaudeSettings});
+ * a repository's tracked settings, and a file whose custody git cannot report, keep their own policy.
+ * Every other key stays, `autoMode` included. So a rule a merged template adds or withdraws reaches a
+ * seat at its next hydration (`npm prepare`, or a seat Start) once the installed Engine carries it. A
+ * rule local to one checkout belongs in `.claude/settings.local.json`.
  * The target directory is created here because `npm prepare` also runs after `npm ci --ignore-scripts`,
  * where the Skills postinstall has not yet created `.claude/skills`; config materialization cannot
  * depend on that unrelated lifecycle side effect. Idempotent: a settings file that already agrees with
@@ -1247,7 +1248,8 @@ function isTrackedByGit(filePath) {
  * @returns {Promise<{action: String, templatePath?: String, witnessPath?: String, permissions?: String}>}
  *     `action` is one of `clone` / `wired` / `silent` / `deferred` / `skip-no-template`. `templatePath`
  *     names the template read, `witnessPath` the target's own one compared with it, and `permissions`
- *     whose the file's are: `template`, or `tracked` (its repository's).
+ *     whose the file's are: `template`, `tracked` (its repository's), or `unknown` (git could not tell,
+ *     so they stay).
  */
 export async function initClaudeSettings({
     claudeDir          = path.join(cwd, '.claude'),
@@ -1291,7 +1293,8 @@ export async function initClaudeSettings({
     }
 
     const
-        permissions         = isTrackedByGit(activePath) ? 'tracked' : 'template',
+        tracked             = isTrackedByGit(activePath),
+        permissions         = tracked === false ? 'template' : tracked ? 'tracked' : 'unknown',
         activeSettings      = JSON.parse(await fs.readFile(activePath, 'utf-8')),
         {settings, changed} = mergeClaudeSettings(activeSettings, templateSettings, {permissions: permissions === 'template'}),
         result              = {templatePath: source, ...(witnessPath ? {witnessPath} : {}), permissions};
