@@ -1556,6 +1556,52 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @summary LIFECYCLE-WRITE: sets the operator's present/away mode on the plane and tells the fleet once.
+     *
+     * The plane refuses any caller that is not a human principal, and answers `changed`. Only a write that
+     * changed what readers see sends the one non-wake `AGENT:*` notice, so a repeated click announces
+     * nothing. A failed notice never undoes the write: the record is the truth, the notice a courtesy.
+     * @param {Object} params
+     * @param {'present'|'away'} params.mode
+     * @param {String} [params.until] ISO time an `away` ends by itself.
+     * @returns {Promise<Object>} the plane's `{operatorPresence, changed}` plus `notice` (`{messageId}`,
+     *     `{error}`, or `null` when nothing changed), or `{status:'not-wired'}` when no writer is installed.
+     */
+    async setOperatorPresence({mode, until} = {}) {
+        const writer = this.composeWriter;
+
+        if (typeof writer?.setOperatorPresence !== 'function' || typeof writer.addMessage !== 'function') {
+            return {status: 'not-wired', reason: 'fleet: operator presence writer not wired'}
+        }
+
+        const result = await writer.setOperatorPresence(until === undefined ? {mode} : {mode, until});
+
+        if (!result?.changed) {
+            return {...result, notice: null}
+        }
+
+        const {mode: current, until: end} = result.operatorPresence,
+              away                        = current === 'away',
+              time                        = end ? ` until ${end.slice(0, 16).replace('T', ' ')} UTC` : '';
+
+        try {
+            const sent = await writer.addMessage({
+                to     : 'AGENT:*',
+                subject: `[operator-presence] ${away ? `away${time}` : 'present'}`,
+                body   : away
+                    ? `The operator is away${time}. Keep driving; an operator-only ask (org admin, credentials, merges) waits for the return in one digest.`
+                    : 'The operator is back: an operator-only ask gets a quick answer again.',
+                taggedConcepts: ['operator-presence'],
+                wakeSuppressed: true
+            });
+
+            return {...result, notice: {messageId: sent?.messageId ?? null}}
+        } catch (error) {
+            return {...result, notice: {error: error?.message ?? String(error)}}
+        }
+    }
+
+    /**
      * @summary READ-OBSERVE: one message in full, read under the TRANSPORT-STAMPED request
      * identity. `MailboxService.getMessage` enforces its own read-path gate and writes no receipt;
      * this verb only routes. An optional `observer` selects the explicit non-stamping observer
@@ -1955,7 +2001,7 @@ class FleetControlBridge extends Base {
      * root can use its declared harness family; unknown families remain unclassified. Activity
      * stays on its own {@link #fleetActivity} verb. Lane stamps read the lanes that source holds
      * (`readHeldLaneSnapshot`) synchronously; this read never requests another page of its own.
-     * @returns {Object} the serializable cockpit DTO `{sources, capabilities, startGate, rows, events}`.
+     * @returns {Object} the serializable cockpit DTO `{sources, capabilities, startGate, operatorPresence, rows, events}`.
      */
     async fleetRoster() {
         const
@@ -1999,14 +2045,15 @@ class FleetControlBridge extends Base {
 
         return createFleetCockpitStatus({
             agents,
-            fleetStatus   : manager.fleetRepoStatus() ?? [],
-            runtimeStatus : manager.fleetRuntimeStatus() ?? [],
-            wakeStatus    : wake?.states ?? [],
-            throttleStatus: throttle?.states ?? [],
-            presenceStatus: presence?.states ?? [],
-            laneStatus    : me.activitySource?.readHeldLaneSnapshot?.() ?? null,
+            fleetStatus     : manager.fleetRepoStatus() ?? [],
+            runtimeStatus   : manager.fleetRuntimeStatus() ?? [],
+            wakeStatus      : wake?.states ?? [],
+            throttleStatus  : throttle?.states ?? [],
+            presenceStatus  : presence?.states ?? [],
+            operatorPresence: presence?.operatorPresence ?? null,
+            laneStatus      : me.activitySource?.readHeldLaneSnapshot?.() ?? null,
             startGate,
-            capabilities  : {
+            capabilities    : {
                 activity: createNotWiredCapability(FLEET_COCKPIT_SOURCES.activity, 'activity rides the dedicated fleetActivity verb'),
                 runtime : {
                     source    : FLEET_COCKPIT_SOURCES.runtime,

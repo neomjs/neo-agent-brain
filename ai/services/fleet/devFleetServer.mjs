@@ -534,13 +534,15 @@ async function boot() {
             transitionTask: args => planeClient.transitionTask(args),
             // Observer mode is explicit and non-stamping. A Fleet mirror invocation without a scope
             // is this process's own inbox, never an implicit broad read on the plane.
-            observeMessages: args => planeClient.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
+            observeMessages    : args => planeClient.listMessages({...args, observer: args.observer ?? {scope: 'own'}}),
+            setOperatorPresence: args => planeClient.callTool('set_operator_presence', args)
         })
     } else {
         Promise.all([
             import('../memory-core/MailboxService.mjs'),
-            import('../memory-core/GraphService.mjs')
-        ]).then(([{default: MailboxService}, {default: GraphService}]) => {
+            import('../memory-core/GraphService.mjs'),
+            import('../memory-core/OperatorPresenceService.mjs')
+        ]).then(([{default: MailboxService}, {default: GraphService}, {default: OperatorPresenceService}]) => {
             wireFleetActivityReadSource({
                 contentRoot          : AiConfig.fleet.contentRoot,
                 listMessages         : MailboxService.listMessages.bind(MailboxService),
@@ -564,7 +566,8 @@ async function boot() {
                 approvePublishRevision: MailboxService.approvePublishRevision.bind(MailboxService),
                 attestPublishRevision : MailboxService.attestPublishRevision.bind(MailboxService),
                 editPublishRequest    : MailboxService.editPublishRequest.bind(MailboxService),
-                observeMessages       : args => MailboxService.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
+                observeMessages       : args => MailboxService.listMessages({...args, observer: args.observer ?? {scope: 'own'}}),
+                setOperatorPresence   : OperatorPresenceService.setOperatorPresence.bind(OperatorPresenceService)
             })
         }).catch(error => console.warn('[fleet] activity source not wired:', error?.message ?? error))
     }

@@ -45,9 +45,11 @@ function githubAvatarUrl(githubUsername) {
  *     Start (`'booting'` until verification and recovery finish, `'refused'` until something changes), or `null`
  *     when it may start seats. A row's `launchRefusal` folds the reason under the seat's own refusal; this says it
  *     once for the whole Fleet, so a booting Fleet can be named as such.
- * @returns {Object} serializable cockpit DTO `{sources, capabilities, startGate, rows, events}`.
+ * @param {Object|null} [options.operatorPresence=null] The operator's present/away record the presence report carried,
+ *     or `null` when that report did not answer: the product bar's toggle shows unknown, never present.
+ * @returns {Object} serializable cockpit DTO `{sources, capabilities, startGate, operatorPresence, rows, events}`.
  */
-export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtimeStatus = [], wakeStatus = [], throttleStatus = [], presenceStatus = [], laneStatus = null, events = [], capabilities = {}, startGate = null} = {}) {
+export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtimeStatus = [], wakeStatus = [], throttleStatus = [], presenceStatus = [], operatorPresence = null, laneStatus = null, events = [], capabilities = {}, startGate = null} = {}) {
     const suppliedCapabilities = capabilities || {}
 
     const statusByAgentId = new Map(
@@ -97,11 +99,12 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
     }
 
     return {
-        sources     : FLEET_COCKPIT_SOURCES,
-        startGate   : ['booting', 'refused'].includes(startGate?.state) && typeof startGate.reason === 'string'
+        sources  : FLEET_COCKPIT_SOURCES,
+        startGate: ['booting', 'refused'].includes(startGate?.state) && typeof startGate.reason === 'string'
             ? {state: startGate.state, reason: startGate.reason}
             : null,
-        capabilities: {
+        operatorPresence: operatorPresence ? sanitizePayload(operatorPresence) : null,
+        capabilities    : {
             activity: suppliedCapabilities.activity || createNotWiredCapability(FLEET_COCKPIT_SOURCES.activity, 'A2A / PR / lane activity adapter not wired'),
             runtime : suppliedCapabilities.runtime || createNotWiredCapability(FLEET_COCKPIT_SOURCES.runtime, 'runtime process status is pending the Fleet runtime-status wire method'),
             // The wake telltale axis (S2): four-state observation (`on | off | suppressed |

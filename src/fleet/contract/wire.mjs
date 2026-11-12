@@ -12,7 +12,7 @@ export const FLEET_WIRE_METHODS = Object.freeze([
     'defineAgent', 'configureAgent', 'setRepo', 'setRepos', 'prepareRepos', 'removeRepoCheckout', 'setAvatar', 'setPlaneCredential', 'replaceSeatCredential', 'adoptAgent', 'releaseAgent', 'listAgents', 'getAgent',
     'startAgent', 'stopAgent', 'skipAgentDependencies', 'restartAgent', 'removeAgent', 'fleetStatus', 'fleetRuntimeStatus',
     'getBootIdentity', 'fleetActivity', 'fleetHistory', 'fleetMemories', 'fleetSessionMemories', 'fleetRecentTurns', 'fleetMemoryCandidates', 'fleetRoster', 'fleetMailboxMirror', 'connectTenant', 'listTenants',
-    'composeOperatorMessage', 'fleetOwnMessage', 'fleetOwnQuestions', 'markOwnMessageRead', 'transitionOwnTask',
+    'composeOperatorMessage', 'fleetOwnMessage', 'fleetOwnQuestions', 'markOwnMessageRead', 'transitionOwnTask', 'setOperatorPresence',
     'publish', 'readMetrics', 'reply',
     'approvePublishRevision', 'editPublishRequest', 'readPublishSwitches', 'setPublishSwitch',
     'markFleetCaughtUp', 'resolveViewerIdentity', 'fleetWakeRoutes', 'fleetTasks',
