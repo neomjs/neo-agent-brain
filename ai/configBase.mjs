@@ -166,6 +166,13 @@ class ConfigBase extends ConfigProvider {
                  */
                 laneContinuation: leaf(false, 'NEO_STOP_HOOK_LANE_CONTINUATION', 'boolean'),
                 /**
+                 * How long after the operator switches Nightshift on his own messages still count as the
+                 * handoff ("good night" typed right after the switch). A later operator message ends the
+                 * `away` reading for the turn it prompts. The record itself is `seat.operatorPresencePath`.
+                 * @type {Number}
+                 */
+                operatorPresenceGraceMs: leaf(600000, null, 'number'),
+                /**
                  * Optional typed live-lane-awareness projection consumed by Claude/Codex Stop
                  * entrypoints. The path and categorical attestation are injected by the trusted
                  * seat boot boundary; the hook reader never derives them from cwd, session, title,
@@ -228,7 +235,7 @@ class ConfigBase extends ConfigProvider {
                 }
             },
             /**
-             * The plane a seat's hooks reach as the seat, both slots injected by the Fleet's `start`.
+             * What a seat's hooks read as the seat, every slot injected by the Fleet's `start`.
              * Never `fleet.planeBase` / `fleet.planeBearer`: those configure the Fleet transport, whose
              * bearer belongs to the single viewer.
              * @member {Object} data.seat
@@ -243,7 +250,14 @@ class ConfigBase extends ConfigProvider {
                  * The seat's own plane credential: the seat-side slot its remote MC/KB servers read.
                  * @type {string}
                  */
-                planeBearer: leaf('', 'NEO_MCP_REMOTE_TOKEN', 'string')
+                planeBearer: leaf('', 'NEO_MCP_REMOTE_TOKEN', 'string'),
+                /**
+                 * The Fleet's host record of the operator's presence (`{mode, since, until, writtenAt}`), which
+                 * the Stop hook reads with one local file read instead of a plane call. Empty: no record, and
+                 * the hook keeps its prompting classifier.
+                 * @type {string}
+                 */
+                operatorPresencePath: leaf('', 'NEO_OPERATOR_PRESENCE_PATH', 'string')
             },
             /**
              * The current in-flight release version whose milestone / epic work counts as "current

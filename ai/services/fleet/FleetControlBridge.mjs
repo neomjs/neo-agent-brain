@@ -18,6 +18,7 @@ import {
 import {normalizeMailboxObserver} from '../memory-core/helpers/mailboxObservation.mjs';
 
 import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpitStatus.mjs';
+import {sameOperatorPresence, writeOperatorPresenceRecord}  from './operatorPresenceRecord.mjs';
 import {createPublishExecutor, createPublishSwitchStore}    from './publishExecutor.mjs';
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
 
@@ -449,6 +450,13 @@ class FleetControlBridge extends Base {
      * @member {Object|null} memoryCandidatesSource=null
      */
     memoryCandidatesSource = null
+    /**
+     * The operator presence this process last wrote to the host record, so a roster read that agrees with it
+     * writes nothing. `null` until the first write, so a fresh process mirrors its first reading.
+     * @member {Object|null} lastOperatorPresenceRecord=null
+     * @protected
+     */
+    lastOperatorPresenceRecord = null
     /**
      * Viewer-bound wake-routes source — an injected collaborator exposing `readWakeRoutes(params)`:
      * the DECOMPOSED per-seat wake-path envelope (subscription, arming, delivery lane, last
@@ -1559,8 +1567,9 @@ class FleetControlBridge extends Base {
      * @summary LIFECYCLE-WRITE: sets the operator's present/away mode on the plane and tells the fleet once.
      *
      * The plane refuses any caller that is not a human principal, and answers `changed`. Only a write that
-     * changed what readers see sends the one non-wake `AGENT:*` notice, so a repeated click announces
-     * nothing. A failed notice never undoes the write: the record is the truth, the notice a courtesy.
+     * changed what readers see updates the host record the seats' Stop hooks read and sends the one non-wake
+     * `AGENT:*` notice, so a repeated click announces nothing. A failed notice never undoes the write: the
+     * record is the truth, the notice a courtesy.
      * @param {Object} params
      * @param {'present'|'away'} params.mode
      * @param {String} [params.until] ISO time an `away` ends by itself.
@@ -1580,6 +1589,8 @@ class FleetControlBridge extends Base {
             return {...result, notice: null}
         }
 
+        this.syncOperatorPresenceRecord(result.operatorPresence);
+
         const {mode: current, until: end} = result.operatorPresence,
               away                        = current === 'away',
               time                        = end ? ` until ${end.slice(0, 16).replace('T', ' ')} UTC` : '';
@@ -1598,6 +1609,21 @@ class FleetControlBridge extends Base {
             return {...result, notice: {messageId: sent?.messageId ?? null}}
         } catch (error) {
             return {...result, notice: {error: error?.message ?? String(error)}}
+        }
+    }
+
+    /**
+     * @summary Mirrors the plane's operator presence into the host record the seats' Stop hooks read, when it
+     * differs from the last one this process wrote. A reading that did not answer leaves the record alone, and
+     * a failed write is retried by the next reading.
+     * @param {Object|null} presence `{mode, since, until}` as the plane reads it.
+     * @protected
+     */
+    syncOperatorPresenceRecord(presence) {
+        if (!presence || sameOperatorPresence(presence, this.lastOperatorPresenceRecord)) return;
+
+        if (writeOperatorPresenceRecord(presence)) {
+            this.lastOperatorPresenceRecord = presence
         }
     }
 
@@ -2020,6 +2046,9 @@ class FleetControlBridge extends Base {
             manager.fleetThrottleStatus?.() ?? null,
             manager.fleetPresenceStatus?.() ?? null
         ]);
+
+        // A presence written elsewhere, an expired away or this process's restart reaches the host record here
+        me.syncOperatorPresenceRecord(presence?.operatorPresence ?? null);
 
         // A seat's participation is its identity node's, which the presence report carries; a report that never
         // answered leaves it unread rather than falling back to any local file

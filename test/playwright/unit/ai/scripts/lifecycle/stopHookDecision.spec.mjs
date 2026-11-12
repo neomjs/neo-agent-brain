@@ -3,6 +3,7 @@ import {
     buildDeferenceStopHookDirective,
     classifyPromptingContext,
     decideDeferenceStopHookAction,
+    decideOperatorAway,
     decideStopHookAction,
     DEFAULT_MIN_COMPLIANT_DRIVES,
     detectAutonomousHandoffPrompt,
@@ -268,6 +269,59 @@ test.describe('ai/scripts/lifecycle/stopHookDecision — shared no-hold decision
         expect(decision.reason).toContain(WRAP_UP_ASK_TEST);
         expect(decision.reason).toContain(`the wrap-up ask "${ask}"`);
         expect(decision.reason).not.toContain('helpful assistant');
+    });
+
+    test('decideOperatorAway: no record, the never-set reading and an unknown mode read null (#1640)', () => {
+        const now = Date.parse('2026-11-12T23:00:00Z');
+
+        expect(decideOperatorAway(null, {now})).toBe(null);
+        expect(decideOperatorAway({mode: 'present', since: null, until: null}, {now})).toBe(null);
+        expect(decideOperatorAway({mode: 'away', since: 'not a date'}, {now})).toBe(null);
+        expect(decideOperatorAway({mode: 'asleep', since: '2026-11-12T22:00:00.000Z'}, {now})).toBe(null);
+    });
+
+    test('decideOperatorAway: away holds until its until passes; a present record reads false (#1640)', () => {
+        const away = {mode: 'away', since: '2026-11-12T22:00:00.000Z', until: '2026-11-13T06:00:00.000Z'};
+
+        expect(decideOperatorAway(away, {now: Date.parse('2026-11-12T23:00:00Z')})).toBe(true);
+        expect(decideOperatorAway({...away, until: null}, {now: Date.parse('2026-11-13T09:00:00Z')})).toBe(true);
+        expect(decideOperatorAway(away, {now: Date.parse('2026-11-13T06:00:00Z')})).toBe(false);
+        expect(decideOperatorAway({mode: 'present', since: '2026-11-13T07:00:00.000Z', until: null}, {now: Date.parse('2026-11-13T08:00:00Z')})).toBe(false);
+    });
+
+    test('decideOperatorAway: an operator message past the grace ends away; one inside it is the handoff (#1640)', () => {
+        const away    = {mode: 'away', since: '2026-11-12T22:00:00.000Z', until: null},
+              options = {now: Date.parse('2026-11-12T23:00:00Z'), graceMs: 600000};
+
+        expect(decideOperatorAway(away, {...options, lastOperatorMessageAt: '2026-11-12T22:05:00.000Z'})).toBe(true);
+        expect(decideOperatorAway(away, {...options, lastOperatorMessageAt: '2026-11-12T22:30:00.000Z'})).toBe(false);
+        expect(decideOperatorAway(away, {...options, lastOperatorMessageAt: '2026-11-12T21:00:00.000Z'})).toBe(true);
+        expect(decideOperatorAway(away, {...options, lastOperatorMessageAt: null})).toBe(true);
+    });
+
+    test('decideDeferenceStopHookAction: an away record blocks an ask in a turn the operator prompted, and names the switch (#1640)', () => {
+        const ask      = 'Merge #20603 now?',
+              decision = decideDeferenceStopHookAction('Approved and green.', {
+                  operatorInLoop: true,
+                  operatorAway  : true,
+                  awaySince     : '2026-11-12T22:00:00.000Z',
+                  enforcing     : true,
+                  wrapUpAsk     : {ask, actions: [{action: 'merge', label: 'Merge #20603'}]}
+              });
+
+        expect(decision.action).toBe('block');
+        expect(decision.ask).toBe(ask);
+        expect(decision.reason).toContain('The operator switched Nightshift on at 2026-11-12 22:00 UTC');
+        expect(decision.reason).toContain('Take your stated pick and continue');
+        expect(decision.reason).not.toContain('did not prompt this turn');
+    });
+
+    test('decideDeferenceStopHookAction: a present record silences the unattended arm; no record keeps it (#1640)', () => {
+        const unprompted = {operatorInLoop: false, enforcing: true, wrapUpAsk: {ask: 'Merge #20603 now?', actions: [{action: 'merge', label: 'Merge #20603'}]}};
+
+        expect(decideDeferenceStopHookAction('Approved and green.', {...unprompted, operatorAway: false})).toBe(null);
+        expect(decideDeferenceStopHookAction('Approved and green.', {...unprompted, operatorAway: null}).reason)
+            .toContain('The operator did not prompt this turn');
     });
 
     test('decideDeferenceStopHookAction: no box, an empty one or a mirror switched off blocks nothing in an unprompted turn (#1618)', () => {

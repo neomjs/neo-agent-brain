@@ -8,6 +8,7 @@ import Base                                                                     
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}                                     from '../../../src/fleet/contract/mcpServers.mjs';
 import {listHarnessTypes, resolveHarnessSeatSettings}                                     from '../../../src/fleet/contract/harnessTypes.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}                           from './mcpServers.mjs';
+import {OPERATOR_PRESENCE_PATH_ENV_VAR, operatorPresenceRecordPath}                       from './operatorPresenceRecord.mjs';
 import {deriveAgentInstanceHome}                                                          from './deriveAgentInstanceHome.mjs';
 import {deriveCodexHome, deriveHarnessLaunchSpec, guiProfileDir}                          from './deriveHarnessLaunchSpec.mjs';
 import {readCodexSeatSettings}                                                            from './codexConfigToml.mjs';
@@ -431,7 +432,7 @@ function runsSeatLaunch(command, {launchCommand, launchInterpreter, profileArg})
  * process-runtime vars — never a full parent-env copy, so ambient operator secrets cannot leak into
  * a peer — plus the launch spec's own env (its isolation home var), plus the reserved injections.
  * A `launch.env` key naming a reserved slot (`credentialEnvVar`, `NEO_MCP_REMOTE_TOKEN`, `NEO_SEAT_PLANE_BASE`,
- * `bridgeTokenEnvVar`, `NEO_NL_TOOL_PROJECTION_MODE`, `NEO_AGENT_IDENTITY`, the GitLab seat slots, the four
+ * `NEO_OPERATOR_PRESENCE_PATH`, `bridgeTokenEnvVar`, `NEO_NL_TOOL_PROJECTION_MODE`, `NEO_AGENT_IDENTITY`, the GitLab seat slots, the four
  * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identity slots) or a prototype-mutating key
  * (`__proto__` / `constructor` / `prototype`) is rejected fail-fast, naming the offending key.
  *
@@ -1035,6 +1036,7 @@ class FleetLifecycleService extends Base {
             this.credentialEnvVar,
             REMOTE_MCP_CREDENTIAL_ENV_VAR,
             SEAT_PLANE_BASE_ENV_VAR,
+            OPERATOR_PRESENCE_PATH_ENV_VAR,
             this.bridgeTokenEnvVar,
             TOOL_PROJECTION_MODE_ENV_VAR,
             AGENT_IDENTITY_ENV_VAR,
@@ -1042,7 +1044,7 @@ class FleetLifecycleService extends Base {
             ...GIT_IDENTITY_ENV
         ];
         if (envKeys.some(key => !key) || new Set(envKeys).size !== envKeys.length) {
-            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential and seat plane-base slots, bridgeTokenEnvVar, the NL-policy var, the agent-identity var, the GitLab seat slots and the Git identity slots must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
+            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential, seat plane-base and operator-presence slots, bridgeTokenEnvVar, the NL-policy var, the agent-identity var, the GitLab seat slots and the Git identity slots must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
         }
 
         // The launch env may not name a reserved slot: allowing it would either let registry-authored
@@ -1179,6 +1181,10 @@ class FleetLifecycleService extends Base {
             env[REMOTE_MCP_CREDENTIAL_ENV_VAR] = remoteMcpCredential;
             if (opts.resolvedMcpEndpoint) env[SEAT_PLANE_BASE_ENV_VAR] = opts.resolvedMcpEndpoint
         }
+
+        // The Fleet's host record of the operator's presence: the seat's Stop hook reads it with one local file
+        // read. The path, never its content, so a seat always reads the Fleet's current record.
+        env[OPERATOR_PRESENCE_PATH_ENV_VAR] = operatorPresenceRecordPath();
 
         // Bridge token: a credential class DISTINCT from the PAT. Mint one + inject it under
         // bridgeTokenEnvVar (never credentialEnvVar). The raw token enters the child env only — the

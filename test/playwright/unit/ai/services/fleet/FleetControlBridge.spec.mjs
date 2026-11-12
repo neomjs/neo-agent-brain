@@ -27,6 +27,7 @@ import SeatOperatorRegistryService from '../../../../../../ai/services/fleet/Sea
 import {dispatchFleetRequest}      from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
 
 import {readFleetPresenceSnapshot}        from '../../../../../../ai/services/fleet/fleetPresenceStateAdapter.mjs';
+import {operatorPresenceRecordPath}       from '../../../../../../ai/services/fleet/operatorPresenceRecord.mjs';
 import {ManagedWorkspacePreparationError} from '../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs';
 
 import {createFleetWireRequest, FLEET_WIRE_RESPONSE_STATES} from '../../../../../../src/fleet/contract/wire.mjs';
@@ -1148,6 +1149,63 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(await modeWith(async () => ({agents: [], operatorPresence: {mode: 'gone'}}))).toBe(null);
 
         delete managerStub.fleetPresenceStatus;
+    });
+
+    test('a changed presence write and a disagreeing roster read keep the seats\' host record current (#1640)', async () => {
+        const oldWriter = FleetControlBridge.composeWriter,
+              file      = operatorPresenceRecordPath(),
+              away      = {mode: 'away', since: '2026-11-12T22:00:00.000Z', until: '2026-11-13T08:00:00.000Z', setBy: '@tobiu'},
+              expired   = {mode: 'present', since: away.until, until: null, setBy: '@tobiu', expired: true},
+              read      = () => JSON.parse(fs.readFileSync(file, 'utf8'));
+
+        let changed = false,
+            report  = {agents: [], operatorPresence: away};
+
+        registryStub.listAgents         = () => [];
+        managerStub.fleetRepoStatus     = () => [];
+        managerStub.fleetRuntimeStatus  = () => [];
+        managerStub.fleetPresenceStatus = () => readFleetPresenceSnapshot({agents: [], readPresence: async () => {
+            if (report instanceof Error) throw report;
+            return report
+        }});
+        FleetControlBridge.lastOperatorPresenceRecord = null;
+        fs.rmSync(file, {force: true});
+
+        try {
+            FleetControlBridge.composeWriter = {
+                setOperatorPresence: () => ({operatorPresence: away, changed}),
+                addMessage         : () => ({messageId: 'MESSAGE:notice'})
+            };
+
+            // a click that changed nothing writes nothing
+            await FleetControlBridge.setOperatorPresence({mode: 'away', until: away.until});
+            expect(fs.existsSync(file)).toBe(false);
+
+            changed = true;
+            await FleetControlBridge.setOperatorPresence({mode: 'away', until: away.until});
+            expect(read()).toEqual({mode: 'away', since: away.since, until: away.until, writtenAt: expect.any(String)});
+
+            // a roster read that agrees leaves the record alone
+            fs.rmSync(file);
+            await FleetControlBridge.fleetRoster();
+            expect(fs.existsSync(file)).toBe(false);
+
+            // an away that expired on the plane reaches the record through the next roster read
+            report = {agents: [], operatorPresence: expired};
+            await FleetControlBridge.fleetRoster();
+            expect(read()).toEqual({mode: 'present', since: away.until, until: null, writtenAt: expect.any(String)});
+
+            // a read that did not answer is no evidence: the record stays
+            report = new Error('plane unreachable');
+            fs.rmSync(file);
+            await FleetControlBridge.fleetRoster();
+            expect(fs.existsSync(file)).toBe(false);
+        } finally {
+            FleetControlBridge.composeWriter               = oldWriter;
+            FleetControlBridge.lastOperatorPresenceRecord = null;
+            delete managerStub.fleetPresenceStatus;
+            fs.rmSync(file, {force: true})
+        }
     });
 
     test('fleetRoster answers while the plane\'s wake and presence reads are still out, naming the wait on every row (#1468)', async () => {
