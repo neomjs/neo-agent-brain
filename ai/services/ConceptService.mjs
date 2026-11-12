@@ -1,6 +1,111 @@
-import fs   from 'fs';
-import path from 'path';
-import Base from 'neo.mjs/src/core/Base.mjs';
+import fs                                                                             from 'fs';
+import path                                                                           from 'path';
+import Base                                                                           from 'neo.mjs/src/core/Base.mjs';
+import kbConfig                                                                       from '../mcp/server/knowledge-base/config.mjs';
+import {writeFileAtomicSync}                                                          from './shared/atomicFileWrite.mjs';
+import {isValidDecisionReference, resolveBrainRootVersion, validateConceptEdgeTarget} from './shared/conceptEdgeValidation.mjs';
+import {assertTestWriteIsolated}                                                      from './shared/storeWriteGuard.mjs';
+
+/**
+ * @summary Builds the NUL-delimited identity key for a concept edge `(source, target, type)` tuple.
+ * @param {String} source
+ * @param {String} target
+ * @param {String} type
+ * @returns {String}
+ */
+function buildEdgeTupleKey(source, target, type) {
+    return `${source}\u0000${target}\u0000${type}`;
+}
+
+/**
+ * @summary Constructs a fail-closed empty `importEdges` report when pre-flight store or argument checks fail.
+ * @param {Object} options
+ * @param {Boolean} options.dryRun
+ * @param {String|null} options.tenant
+ * @param {String} options.code
+ * @param {String} options.reason
+ * @param {Number} [options.total=0]
+ * @returns {Object}
+ */
+function buildEmptyEdgeImportReport({dryRun, tenant, code, reason, total = 0}) {
+    return {
+        ok     : false,
+        written: false,
+        dryRun : Boolean(dryRun),
+        tenant,
+        code,
+        reason,
+        counts : {total, added: 0, equal: 0, differs: 0, removed: 0, absent: 0, refused: 0},
+        added  : [],
+        equal  : [],
+        differs: [],
+        removed: [],
+        absent : [],
+        refused: []
+    };
+}
+
+/**
+ * @summary Reads `edges.jsonl` into ordered raw line slots and a per-tuple lookup map without dropping unparsed lines.
+ * @param {String} edgesPath
+ * @returns {{storeLines: Array<Object>, linesByTuple: Map<String, Array<Object>>}}
+ */
+function readStoreEdgeLines(edgesPath) {
+    const
+        storeLines   = [],
+        linesByTuple = new Map();
+
+    if (!fs.existsSync(edgesPath)) {
+        return {storeLines, linesByTuple};
+    }
+
+    const lines = fs.readFileSync(edgesPath, 'utf8').split(/\r?\n/);
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+
+        if (!trimmed) {
+            continue;
+        }
+
+        let parsed = null;
+
+        try {
+            parsed = JSON.parse(trimmed);
+        } catch {
+            parsed = null;
+        }
+
+        if (
+            parsed
+            && typeof parsed === 'object'
+            && !Array.isArray(parsed)
+            && typeof parsed.source === 'string'
+            && typeof parsed.target === 'string'
+            && typeof parsed.type   === 'string'
+            && parsed.source.trim().length > 0
+            && parsed.target.trim().length > 0
+            && parsed.type.trim().length > 0
+        ) {
+            const
+                tupleKey = buildEdgeTupleKey(parsed.source.trim(), parsed.target.trim(), parsed.type.trim()),
+                entry    = {rawLine: trimmed, edge: parsed, tupleKey, removed: false},
+                bucket   = linesByTuple.get(tupleKey);
+
+            storeLines.push(entry);
+
+            if (bucket) {
+                bucket.push(entry);
+            } else {
+                linesByTuple.set(tupleKey, [entry]);
+            }
+        } else {
+            storeLines.push({rawLine: trimmed, edge: null, tupleKey: null, removed: false});
+        }
+    }
+
+    return {storeLines, linesByTuple};
+}
 
 /**
  * @class Neo.ai.services.ConceptService
@@ -647,6 +752,366 @@ class ConceptService extends Base {
                 : 100,
             criticalGaps: guideGaps.filter(g => g.severity === 'CRITICAL'),
             highGaps    : guideGaps.filter(g => g.severity === 'HIGH')
+        };
+    }
+
+    /**
+     * @summary Classifies curated concept edge additions and decision-backed removals and atomically updates `edges.jsonl`.
+     *
+     * Every input row resolves into one of six classes without aborting subsequent rows in the batch:
+     * - `added`: valid `{source, target, type, note?}` whose `(source, target, type)` tuple is absent from the store;
+     * - `equal`: tuple exists with the same `note` (no-op);
+     * - `differs`: tuple exists with a different `note` (not applied; changing a note requires a decision-backed removal first);
+     * - `removed`: `op: "remove"` with a valid issue, pull request, or ADR `decision` matching a unique tuple in the store;
+     * - `absent`: `op: "remove"` with a valid `decision` whose tuple is not present in the store (no-op);
+     * - `refused`: invalid row shape, candidate/missing concept endpoint, invalid target/type, missing/invalid removal `decision`,
+     *   or a removal targeting a duplicated store tuple.
+     *
+     * Because row evaluation is non-aborting, valid `added` and `removed` rows still apply when other rows land in
+     * `refused` or `differs` (`ok: false` with `written: true`). Store lines that the input does not remove—including
+     * legacy untyped rows, duplicate tuples, or unparseable lines—survive the rewrite verbatim in order.
+     *
+     * `tenant` is required and echoed in the report; only the shared core corpus tenant (`kbConfig.defaultTenantId`) is
+     * admitted until per-tenant concept row keys and repository roots exist. Every non-dry-run write passes two guards:
+     * `assertTestWriteIsolated` (blocking production-store writes under test runners) and `writeFileAtomicSync` (fsynced
+     * whole-file replacement when at least one row is `added` or `removed`).
+     *
+     * @param {Object} [options={}]
+     * @param {Object[]} options.rows Curated addition or `{op: "remove", decision}` row objects.
+     * @param {String} options.tenant Required tenant identifier for the imported rows.
+     * @param {Boolean} [options.dryRun=false] When `true`, classifies rows without modifying `edges.jsonl`.
+     * @param {Function} [options.resolveSplitTree] Optional split-tree file resolver seam for isolated tests.
+     * @returns {{ok: Boolean, written: Boolean, dryRun: Boolean, tenant: (String|null), code?: String, reason?: String, counts: {total: Number, added: Number, equal: Number, differs: Number, removed: Number, absent: Number, refused: Number}, added: Object[], equal: Object[], differs: Object[], removed: Object[], absent: Object[], refused: Object[]}}
+     */
+    importEdges({rows, tenant, dryRun = false, resolveSplitTree} = {}) {
+        const
+            totalRows        = Array.isArray(rows) ? rows.length : 0,
+            normalizedTenant = typeof tenant === 'string' ? tenant.trim() : '';
+
+        if (!normalizedTenant) {
+            return buildEmptyEdgeImportReport({
+                dryRun,
+                tenant: null,
+                code  : 'MISSING_TENANT',
+                reason: 'A non-empty tenant identifier is required.',
+                total : totalRows
+            });
+        }
+
+        const sharedCoreTenant = kbConfig.defaultTenantId;
+
+        if (normalizedTenant !== sharedCoreTenant) {
+            return buildEmptyEdgeImportReport({
+                dryRun,
+                tenant: normalizedTenant,
+                code  : 'UNSUPPORTED_TENANT',
+                reason: `Tenant '${normalizedTenant}' is not supported yet; only the shared core corpus tenant ('${sharedCoreTenant}') is admitted until #473 adds tenant-keyed concept rows and per-tenant file roots.`,
+                total : totalRows
+            });
+        }
+
+        if (!Array.isArray(rows)) {
+            return buildEmptyEdgeImportReport({
+                dryRun,
+                tenant: normalizedTenant,
+                code  : 'INVALID_ROWS',
+                reason: 'rows must be an array of concept edge records.',
+                total : 0
+            });
+        }
+
+        let conceptsDir;
+
+        try {
+            conceptsDir = this.getConceptsDir();
+        } catch (error) {
+            return buildEmptyEdgeImportReport({
+                dryRun,
+                tenant: normalizedTenant,
+                code  : 'STORE_UNCONFIGURED',
+                reason: error.message,
+                total : rows.length
+            });
+        }
+
+        if (!dryRun) {
+            assertTestWriteIsolated({
+                storePath: conceptsDir,
+                subsystem: 'concept-ontology'
+            });
+        }
+
+        if (!fs.existsSync(conceptsDir)) {
+            return buildEmptyEdgeImportReport({
+                dryRun,
+                tenant: normalizedTenant,
+                code  : 'STORE_NOT_FOUND',
+                reason: `Concepts store directory does not exist: ${conceptsDir}`,
+                total : rows.length
+            });
+        }
+
+        const nodesPath = path.join(conceptsDir, 'nodes.jsonl');
+
+        if (!fs.existsSync(nodesPath)) {
+            return buildEmptyEdgeImportReport({
+                dryRun,
+                tenant: normalizedTenant,
+                code  : 'STORE_NOT_FOUND',
+                reason: `Concepts store is missing nodes.jsonl: ${nodesPath}`,
+                total : rows.length
+            });
+        }
+
+        const
+            edgesPath                  = path.join(conceptsDir, 'edges.jsonl'),
+            rawNodes                   = this.parseJsonl(nodesPath),
+            {storeLines, linesByTuple} = readStoreEdgeLines(edgesPath),
+            nodesById                  = new Map(),
+            added                      = [],
+            equal                      = [],
+            differs                    = [],
+            removed                    = [],
+            absent                     = [],
+            refused                    = [];
+
+        for (const node of rawNodes) {
+            if (node && typeof node.id === 'string' && node.id.length > 0) {
+                nodesById.set(node.id, node);
+            }
+        }
+
+        const validationOptions = resolveSplitTree ? {resolveSplitTree} : undefined;
+
+        for (let index = 0; index < rows.length; index++) {
+            const row = rows[index];
+
+            if (!row || typeof row !== 'object' || Array.isArray(row)) {
+                refused.push({index, row, code: 'INVALID_ROW', reason: 'Row must be a JSON object.'});
+                continue;
+            }
+
+            if (row.op !== undefined && row.op !== 'remove') {
+                refused.push({index, row, code: 'UNSUPPORTED_OP', reason: `Unsupported edge import operation: ${String(row.op)}`});
+                continue;
+            }
+
+            if (row.note !== undefined && typeof row.note !== 'string') {
+                refused.push({index, row, code: 'INVALID_NOTE', reason: 'Optional edge note must be a string when provided.'});
+                continue;
+            }
+
+            if (row.op === 'remove') {
+                const
+                    source = typeof row.source === 'string' ? row.source.trim() : '',
+                    target = typeof row.target === 'string' ? row.target.trim() : '',
+                    type   = typeof row.type   === 'string' ? row.type.trim()   : '';
+
+                if (!source || !target || !type) {
+                    refused.push({
+                        index,
+                        row,
+                        code  : 'INVALID_REMOVE_TUPLE',
+                        reason: 'Removal rows require non-empty string source, target, and type fields.'
+                    });
+                    continue;
+                }
+
+                if (typeof row.decision !== 'string' || row.decision.trim().length === 0) {
+                    refused.push({
+                        index,
+                        row,
+                        code  : 'MISSING_DECISION',
+                        reason: 'Removal rows require a decision reference naming an issue, pull request, or ADR.'
+                    });
+                    continue;
+                }
+
+                if (!isValidDecisionReference(row.decision)) {
+                    refused.push({
+                        index,
+                        row,
+                        code  : 'INVALID_DECISION',
+                        reason: 'Removal decision must name an issue, pull request, or ADR.'
+                    });
+                    continue;
+                }
+
+                const
+                    decision      = row.decision.trim(),
+                    key           = buildEdgeTupleKey(source, target, type),
+                    activeEntries = (linesByTuple.get(key) || []).filter(entry => !entry.removed);
+
+                if (activeEntries.length === 0) {
+                    absent.push({index, source, target, type, decision});
+                } else if (activeEntries.length > 1) {
+                    refused.push({
+                        index,
+                        row,
+                        code  : 'DUPLICATE_STORE_TUPLE',
+                        reason: `Store holds ${activeEntries.length} rows for tuple (${source}, ${target}, ${type}); resolve duplicate store lines before tuple-keyed removal.`
+                    });
+                } else {
+                    const targetEntry = activeEntries[0];
+
+                    targetEntry.removed = true;
+                    removed.push({
+                        index,
+                        source,
+                        target,
+                        type,
+                        decision,
+                        ...(typeof targetEntry.edge.note === 'string' && targetEntry.edge.note.length > 0 ? {note: targetEntry.edge.note} : {})
+                    });
+                }
+
+                continue;
+            }
+
+            const source = typeof row.source === 'string' ? row.source.trim() : '';
+
+            if (!source) {
+                refused.push({index, row, code: 'MISSING_SOURCE_CONCEPT', reason: 'Concept edge source must be a non-empty concept ID.'});
+                continue;
+            }
+
+            const sourceNode = nodesById.get(source);
+
+            if (!sourceNode) {
+                refused.push({index, row, code: 'MISSING_SOURCE_CONCEPT', reason: `Source concept '${source}' does not exist in nodes.jsonl.`});
+                continue;
+            }
+
+            if (sourceNode.validated === false) {
+                refused.push({index, row, code: 'UNVALIDATED_SOURCE_CONCEPT', reason: `Source concept '${source}' is an unvalidated candidate (validated: false).`});
+                continue;
+            }
+
+            const targetCheck = validateConceptEdgeTarget({type: row.type, target: row.target}, validationOptions);
+
+            if (!targetCheck.valid) {
+                refused.push({index, row, code: targetCheck.code, reason: targetCheck.reason});
+                continue;
+            }
+
+            if (targetCheck.kind === 'concept') {
+                const targetNode = nodesById.get(targetCheck.storedTarget);
+
+                if (!targetNode) {
+                    refused.push({index, row, code: 'MISSING_TARGET_CONCEPT', reason: `Target concept '${targetCheck.storedTarget}' does not exist in nodes.jsonl.`});
+                    continue;
+                }
+
+                if (targetNode.validated === false) {
+                    refused.push({index, row, code: 'UNVALIDATED_TARGET_CONCEPT', reason: `Target concept '${targetCheck.storedTarget}' is an unvalidated candidate (validated: false).`});
+                    continue;
+                }
+            }
+
+            const
+                storedTarget  = targetCheck.storedTarget,
+                edgeType      = targetCheck.type,
+                key           = buildEdgeTupleKey(source, storedTarget, edgeType),
+                activeEntries = (linesByTuple.get(key) || []).filter(entry => !entry.removed),
+                incomingNote  = typeof row.note === 'string' && row.note.length > 0 ? row.note : undefined,
+                fileMeta      = targetCheck.kind === 'file' ? {
+                    root       : targetCheck.root,
+                    rootVersion: targetCheck.rootVersion ?? (targetCheck.root === 'neo-agent-brain' ? resolveBrainRootVersion() : null)
+                } : {};
+
+            if (activeEntries.length === 0) {
+                const
+                    record   = {
+                        source,
+                        target: storedTarget,
+                        type  : edgeType,
+                        ...(incomingNote !== undefined ? {note: incomingNote} : {})
+                    },
+                    newEntry = {rawLine: JSON.stringify(record), edge: record, tupleKey: key, removed: false},
+                    bucket   = linesByTuple.get(key);
+
+                storeLines.push(newEntry);
+
+                if (bucket) {
+                    bucket.push(newEntry);
+                } else {
+                    linesByTuple.set(key, [newEntry]);
+                }
+
+                added.push({index, ...record, ...fileMeta});
+            } else {
+                const mismatchEntry = activeEntries.find(entry => {
+                    const existingNote = typeof entry.edge.note === 'string' && entry.edge.note.length > 0 ? entry.edge.note : undefined;
+                    return existingNote !== incomingNote;
+                });
+
+                if (!mismatchEntry) {
+                    equal.push({
+                        index,
+                        source,
+                        target: storedTarget,
+                        type  : edgeType,
+                        ...(incomingNote !== undefined ? {note: incomingNote} : {}),
+                        ...fileMeta
+                    });
+                } else {
+                    const existingNote = typeof mismatchEntry.edge.note === 'string' && mismatchEntry.edge.note.length > 0
+                        ? mismatchEntry.edge.note
+                        : null;
+
+                    differs.push({
+                        index,
+                        source,
+                        target: storedTarget,
+                        type  : edgeType,
+                        existingNote,
+                        note  : incomingNote ?? null,
+                        reason: 'Edge tuple already exists with a different note; remove with a decision reference before replacing.',
+                        ...fileMeta
+                    });
+                }
+            }
+        }
+
+        let written = false;
+
+        if (!dryRun && (added.length > 0 || removed.length > 0)) {
+            const
+                survivingLines = storeLines.filter(entry => !entry.removed).map(entry => entry.rawLine),
+                serialized     = survivingLines.length > 0 ? `${survivingLines.join('\n')}\n` : '';
+
+            writeFileAtomicSync(edgesPath, serialized, {
+                fsync       : true,
+                mode        : 0o644,
+                preserveMode: true
+            });
+            written = true;
+
+            if (this.loaded) {
+                this.loadGraph();
+            }
+        }
+
+        return {
+            ok    : refused.length === 0 && differs.length === 0,
+            written,
+            dryRun: Boolean(dryRun),
+            tenant: normalizedTenant,
+            counts: {
+                total  : rows.length,
+                added  : added.length,
+                equal  : equal.length,
+                differs: differs.length,
+                removed: removed.length,
+                absent : absent.length,
+                refused: refused.length
+            },
+            added,
+            equal,
+            differs,
+            removed,
+            absent,
+            refused
         };
     }
 

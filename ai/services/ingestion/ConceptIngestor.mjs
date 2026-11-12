@@ -4,25 +4,13 @@ import ConceptService                        from '../../services/ConceptService
 import {Memory_GraphService as GraphService} from '../../services.mjs';
 import FileSystemIngestor                    from '../memory-core/FileSystemIngestor.mjs';
 import logger                                from '../../mcp/server/memory-core/logger.mjs';
-
-/**
- * Canonical concept edge types. Enforced at ingestion time so downstream consumers
- * (GapInferenceEngine, GoldenPathSynthesizer) can filter by type with exact string
- * comparison — no case-normalization ambiguity.
- * @type {Object}
- * @private
- */
-const CONCEPT_EDGE_TYPES = Object.freeze({
-    ANALOGOUS_TO  : 'ANALOGOUS_TO',
-    EXEMPLIFIED_BY: 'EXEMPLIFIED_BY',
-    EXPLAINED_BY  : 'EXPLAINED_BY',
-    IMPLEMENTED_BY: 'IMPLEMENTED_BY',
-    PARENT_CONCEPT: 'PARENT_CONCEPT',
-    REQUIRES      : 'REQUIRES'
-});
+import {
+    CONCEPT_EDGE_TYPES,
+    CONCEPT_EDGE_TYPE_SET,
+    validateConceptEdgeTarget
+} from '../shared/conceptEdgeValidation.mjs';
 
 const
-    CONCEPT_EDGE_TYPE_SET      = new Set(Object.values(CONCEPT_EDGE_TYPES)),
     CONCEPT_PROJECTION_SOURCE  = 'concept-ontology-jsonl',
     CONCEPT_PROJECTION_VERSION = 1;
 
@@ -181,78 +169,52 @@ class ConceptIngestor extends Base {
             seen     = new Set();
 
         for (const edge of outboundEdges) {
-            const type = CONCEPT_EDGE_TYPES[edge.type];
+            const checked = validateConceptEdgeTarget(edge, {
+                resolveSplitTree: relPath => FileSystemIngestor.resolveSplitTreeReference(relPath)
+            });
 
-            if (!type) {
-                findings.push(this.createIntegrityFinding(
-                    conceptId,
-                    edge,
-                    'UNSUPPORTED_EDGE_TYPE',
-                    `Unsupported Concept Ontology edge type: ${String(edge.type)}`
-                ));
+            if (!checked.valid) {
+                findings.push(this.createIntegrityFinding(conceptId, edge, checked.code, checked.reason));
                 continue;
             }
 
-            let target     = edge.target,
-                rootFields = null,
+            const
+                type   = checked.type,
+                target = checked.runtimeTarget;
+            let rootFields = null,
                 targetSpec = null;
 
-            if (typeof target !== 'string' || target.length === 0) {
-                findings.push(this.createIntegrityFinding(
-                    conceptId,
-                    edge,
-                    'INVALID_EDGE_TARGET',
-                    'Concept Ontology edge targets must be non-empty strings.'
-                ));
-                continue;
-            }
-
-            if (target.startsWith('file:')) {
-                const resolution = FileSystemIngestor.resolveSplitTreeReference(target.slice(5));
-
-                if (!resolution.valid) {
-                    findings.push(this.createIntegrityFinding(conceptId, edge, resolution.code, resolution.reason));
-                    continue;
-                }
-
+            if (checked.kind === 'file') {
                 // The root the file resolved in (and its pinned version) is data on the edge and the stub.
-                rootFields = {targetRoot: resolution.root, ...(resolution.rootVersion ? {targetRootVersion: resolution.rootVersion} : {})};
-                target     = resolution.nodeId;
+                rootFields = {
+                    targetRoot: checked.root,
+                    ...(checked.rootVersion ? {targetRootVersion: checked.rootVersion} : {})
+                };
                 targetSpec = {
                     id        : target,
-                    name      : resolution.relativePath,
+                    name      : checked.resolution.relativePath,
                     type      : 'FILE',
                     properties: {
                         isConceptEdgeStub: true,
-                        path             : resolution.relativePath,
-                        root             : resolution.root,
-                        ...(resolution.rootVersion ? {rootVersion: resolution.rootVersion} : {})
+                        path             : checked.resolution.relativePath,
+                        root             : checked.root,
+                        ...(checked.rootVersion ? {rootVersion: checked.rootVersion} : {})
                     }
-                }
-            } else if (target.startsWith('ext:')) {
-                if (target.length === 4) {
-                    findings.push(this.createIntegrityFinding(
-                        conceptId,
-                        edge,
-                        'INVALID_EDGE_TARGET',
-                        'External Concept Ontology targets require a non-empty ext: identifier.'
-                    ));
-                    continue;
-                }
-
+                };
+            } else if (checked.kind === 'ext') {
                 targetSpec = {
                     id        : target,
                     name      : target,
                     type      : 'EXT',
                     properties: {isConceptEdgeStub: true}
-                }
+                };
             } else {
                 targetSpec = {
                     id        : target,
                     name      : target,
                     type      : 'CONCEPT',
                     properties: {isConceptEdgeStub: true}
-                }
+                };
             }
 
             const tupleKey = `${conceptId}\u0000${target}\u0000${type}`;

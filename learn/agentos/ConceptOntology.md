@@ -163,7 +163,7 @@ historical search population into the small, deliberate ontology.
 | Path | Current trigger | Runtime / review signal |
 |------|-----------------|-------------------------|
 | **Manual message tag** | `addMessage({taggedConcepts: [...]})` with explicit IDs | Synchronous `TAGGED_CONCEPT` edge at weight `1.0` |
-| **Seeded ontology (optional)** | A deployment may seed its store; `ConceptIngestor` reads `<dataRoot>/concepts/*.jsonl` during REM | Source-owned projected edges plus `validated`, tier, and projection axes |
+| **Seeded ontology & curated edge import** | A deployment may seed its store, and maintainers import curated edge additions or decision-backed removals via `ConceptService.importEdges()` (`ai/scripts/maintenance/importConceptEdges.mjs`); `ConceptIngestor` reads `<dataRoot>/concepts/*.jsonl` during REM | Source-owned projected edges plus `validated`, tier, and projection axes |
 | **Scheduled candidate discovery** | The orchestrator runs `message-concept-harvest`; `ConceptDiscoveryService` reads a bounded batch of unharvested MESSAGE nodes, frequency-filters them, and sends one bounded Teaching-Test prompt. Its separate `runDiscoveryCycle()` mines epics and a capped recent-PR set on explicit invocation. | Candidate rows append to `nodes.jsonl` as `validated: false`, tier 3; they remain silent until curator promotion and enter SQLite only on a later ConceptIngestor sync |
 | **Historical inline extraction** | Retired runtime path; `SemanticGraphExtractor.extractMessageConcepts()` remains only as a direct/test helper and has no production caller | Existing `auto_extracted: true` nodes and `TAGGED_CONCEPT` edges at weight `0.8` can remain as legacy provenance |
 
@@ -312,6 +312,20 @@ mindmap
   concept search until they are promoted.
 - **A seed**, which is optional, writes rows into a new plane's store, for example from a guide
   index. A plane may also start empty.
+- **Curated edge import** (`ConceptService.importEdges()` and
+  `ai/scripts/maintenance/importConceptEdges.mjs`) is the sanctioned entry and removal path for
+  curated `edges.jsonl` rows on a plane's store:
+  - Input rows are `{source, target, type, note?}`, or `{source, target, type, op: "remove", decision}`
+    where `decision` names an issue, pull request, or ADR.
+  - `--tenant <id>` is required and recorded in the report. Today only the shared core corpus
+    tenant (`kbConfig.defaultTenantId`) is admitted; other tenants are refused until tenant-keyed
+    concept rows and per-tenant file roots land (`#473`).
+  - Each row is classified as `added`, `equal`, `differs`, `removed`, `absent`, or `refused`
+    (sharing target validation with `ConceptIngestor.normalizeOutboundEdges()` and refusing
+    unvalidated `validated: false` candidate endpoints). `differs` rows are never overwritten
+    silently; changing a `note` requires a decision-backed `op: "remove"` followed by the new row.
+  - The CLI reads JSONL from `--file <path>` or `stdin`, supports `--dry-run`, accepts no store
+    path argument, and replaces `edges.jsonl` atomically only when `added` or `removed` rows apply.
 - **Promotion has no surface yet.** Evaluating and validating candidates is an open design
   question (neomjs/neo#19096 OQ9). Until it is answered, a seedless plane has no validated
   concepts, and therefore no Knowledge Base concepts. That is by design.
@@ -324,7 +338,7 @@ enters: its `PARENT_CONCEPT` edges place it in the hierarchy, and its `EXPLAINED
 
 - **One JSON object per line** — no multi-line JSON
 - **No trailing commas** — strict JSON per line
-- **Append-only preferred** — add new lines rather than reordering existing ones
+- **Append-only nodes, atomic whole-file updates for edges** — Discovery appends candidate lines to `nodes.jsonl`; `ConceptService.importEdges()` preserves untouched `edges.jsonl` lines verbatim, applies decision-backed removals and additions, and swaps `edges.jsonl` atomically while `ConceptIngestor` remains strictly read-only on the store
 
 ## Integration Architecture
 
@@ -332,6 +346,7 @@ enters: its `PARENT_CONCEPT` edges place it in the hierarchy, and its `EXPLAINED
 flowchart TD
     CuratedSource["Concept store JSONL\nplane data, per deployment"] --> CS["ConceptService\nloads + validates source"]
     Discovery["ConceptDiscoveryService\nbounded candidate mining"] -->|validated: false proposals| CuratedSource
+    EdgeImport["importConceptEdges.mjs\nConceptService.importEdges"] -->|curated edges + removals| CuratedSource
     CS --> CI["ConceptIngestor\nsource-owned reconciliation"]
     FileIdentity["FileSystemIngestor\ncanonical file identity"] --> CI
     CI --> RuntimeGraph["Native Edge Graph\nSQLite runtime projection"]
