@@ -37,10 +37,8 @@ tags:
     description: Knowledge Graph operations
   - name: Permissions
     description: Agent permission operations
-  - name: TurnPresence
-    description: Agent active-turn liveness interval operations
-  - name: OperatorPresence
-    description: The operator's present/away mode, set by the operator only
+  - name: Presence
+    description: Agent active-turn liveness intervals, and the operator's present/away mode (set by the operator only)
   - name: Diagnostics
     description: On-demand operational diagnostics
   - name: Community Sources
@@ -3400,7 +3398,7 @@ paths:
         itself: in a containerized deployment the graph lives on a Docker named volume with no
         host-visible path, so a path-based write silently lands in the caller's checkout and
         succeeds, producing beacons that no reader ever sees.
-      tags: [TurnPresence]
+      tags: [Presence]
       requestBody:
         required: false
         content:
@@ -3443,7 +3441,7 @@ paths:
         and must lie in the future; past it, the record reads `present` with `expired: true`.
         `since` moves only when the mode does. `changed` is true when readers now see a different
         state, so the caller broadcasts once per change without reading first.
-      tags: [OperatorPresence]
+      tags: [Presence]
       requestBody:
         required: true
         content:
