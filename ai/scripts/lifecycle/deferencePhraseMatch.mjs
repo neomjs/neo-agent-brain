@@ -107,6 +107,18 @@ function isClauseTerminal(text, endIndex) {
 export const DEFERENCE_REMINDER = 'It looks like you slipped into the "helpful assistant" bias. You are a neo repo maintainer and an equal peer. If you need validation or input, you can A2A message with peers or use the ideation-sandbox skill. And friction->gold applies to this hook itself: if it fired wrong - a false positive, or it reads as a leash not a mirror - open a ticket to sharpen it rather than silently absorbing it. The hook is mutable substrate, not a command.';
 
 /**
+ * The test a question-box reminder states, so the agent can tell whose question it asked.
+ * @type {String}
+ */
+export const WRAP_UP_ASK_TEST = 'A question is the human\'s only when no gate of his will see the change before it takes effect.';
+
+/**
+ * The reminder for a question box in a turn the operator did not prompt, whoever the question belongs to.
+ * @type {String}
+ */
+export const UNATTENDED_ASK_REMINDER = 'The operator did not prompt this turn, so its question box may wait hours for a click that no ticket records. Take your stated pick and continue, or record the question on its ticket and continue with another lane.';
+
+/**
  * @summary Replaces markdown code spans and fences before deference phrase matching.
  * @param {String} text Assistant final-turn text.
  * @returns {String}
@@ -342,6 +354,13 @@ export function matchDeferencePhrase(text = '', phrases = DEFERENCE_PHRASES, {fr
 const STATED_PICK = /\b(?:i\s+would|i['’]d|i\s+will|i['’]ll|i\s+(?:recommend|suggest)|my\s+(?:pick|plan|recommendation|suggestion)\s+is|that['’]s\s+next|next\s+(?:is|up))\b/i;
 
 /**
+ * The half of {@link STATED_PICK} that prefers one option to another, so it answers whatever the box asks;
+ * an "I'll" commits to some step of the agent's own.
+ * @type {RegExp}
+ */
+const RECOMMENDED_PICK = /\b(?:i\s+would|i['’]d|i\s+(?:recommend|suggest)|my\s+(?:pick|recommendation|suggestion)\s+is)\b/i;
+
+/**
  * Cases 1 and 2 of the same ruling stay the operator's: a deadlock between peers leaves no agent decision
  * to hand back, and human-only work is his to do or decide. That covers a merge, human eyes, money and
  * taste, and the steps the team's own rules reserve for his yes: the live plane, his machine or display,
@@ -355,11 +374,19 @@ const OPERATOR_OWNED = /\b(?:(?:could|did)\s+not\s+agree|(?:could|did)n['’]t\s
 
 /**
  * The shapes of a question box that asks to go ahead with the agent's own next step: a first-person
- * permission question, or an imperative naming repository work the agent does itself. A box in no such
- * shape ("When is your next slot?", "How should these close?") is not read as a handback.
+ * permission question, or an imperative naming repository work the agent does itself. A bare "I'll"
+ * arms only these; a recommendation arms any ask.
  * @type {RegExp}
  */
 const AGENT_STEP_ASK = /^\s*(?:(?:should|shall)\s+i|(?:do\s+you\s+)?want\s+me\s+to|would\s+you\s+like\s+me\s+to|(?:fix|run|file|open|reopen|build|take|start|review|post|push|apply|draft|write|close|move|retire|delete)\b)/i;
+
+/**
+ * A question box whose answer only the human has: what he saw, or a step only he takes ("Will you
+ * dispatch the publish workflow?"). An account, a merge and his display are {@link OPERATOR_OWNED}
+ * already. Read on the ask alone.
+ * @type {RegExp}
+ */
+const HUMAN_ANSWER_ASK = /^\s*(?:did|have|will|can|could)\s+you\b|^\s*would\s+you\b(?!\s+(?:like|prefer|rather|want|mind)\b)|\byou\s+(?:see|saw|seen|notice[ds]?|hear[ds]?|heard)\b|\bshow(?:s|ed|n)?\s+you\b/i;
 
 /**
  * @summary Applies the operator-dialogue carve before phrase matching.
@@ -396,10 +423,11 @@ export function detectDeferencePhrase(text = '', {
 /**
  * @summary Reads a harness question box as a deference hedge (the Claude desktop wrap-up `ask`).
  *
- * Case 3 needs both halves: the turn's text states the agent's pick, and the box asks to go ahead with
- * the agent's own step, so its first button executes a decision already made. Both contexts read it the
- * same way. A box that asks for anything else, names operator-owned work, or starts with a `merge` app
- * action stays the human's.
+ * Case 3: the box's first button is the agent's pick, so once the turn's text or the ask recommends an
+ * option, the box hands back a decision already made, whatever verb opens it. A bare "I'll" arms only a
+ * box that asks to go ahead with the agent's own step. Both contexts read it the same way. A box whose
+ * answer only the human has stays his: it names operator-owned work, asks what he saw or a step only he
+ * takes, or starts with a `merge` app action.
  * @param {Object|null} wrapUpAsk
  * @param {String} wrapUpAsk.ask The question shown to the user.
  * @param {Object[]|null} [wrapUpAsk.actions] Its buttons, the agent's pick first.
@@ -409,24 +437,27 @@ export function detectDeferencePhrase(text = '', {
 export function matchWrapUpAskDeference(wrapUpAsk = null, text = '') {
     const ask = wrapUpAsk?.ask;
 
-    if (typeof ask !== 'string' || !AGENT_STEP_ASK.test(ask) || OPERATOR_OWNED.test(ask)) return null;
+    if (typeof ask !== 'string' || !ask.trim() || OPERATOR_OWNED.test(ask) || HUMAN_ANSWER_ASK.test(ask)) return null;
     if (wrapUpAsk.actions?.[0]?.action === 'merge') return null;
 
-    const statedIn = typeof text === 'string' ? stripMentions(text) : '';
+    const statedIn = typeof text === 'string' ? stripMentions(text) : '',
+          stated   = pick => (pick.test(statedIn) && !OPERATOR_OWNED.test(statedIn)) || pick.test(stripMentions(ask));
 
-    return (STATED_PICK.test(statedIn) && !OPERATOR_OWNED.test(statedIn)) || STATED_PICK.test(stripMentions(ask)) ? ask : null;
+    return stated(RECOMMENDED_PICK) || (AGENT_STEP_ASK.test(ask) && stated(STATED_PICK)) ? ask : null;
 }
 
 /**
  * @summary Builds the Stop-hook directive for a deference-register block.
  * @param {String|null} phrase Matched deference phrase, if known.
  * @param {Object} [options]
- * @param {String|null} [options.ask=null] The wrap-up ask that hands back the agent's pick, if that fired.
+ * @param {String|null} [options.ask=null] The wrap-up ask that fired, if one did.
+ * @param {Boolean} [options.unattended=false] It fired because the operator did not prompt the turn.
  * @returns {String}
  */
-export function buildDeferenceReminder(phrase = null, {ask = null} = {}) {
-    const trigger = ask    ? `\n\n(Stop-hook trigger: the wrap-up ask "${ask}" at turn-terminal)` :
-                    phrase ? `\n\n(Stop-hook trigger: deference phrase "${phrase}" at turn-terminal)` : '';
+export function buildDeferenceReminder(phrase = null, {ask = null, unattended = false} = {}) {
+    if (ask) {
+        return `${unattended ? UNATTENDED_ASK_REMINDER : DEFERENCE_REMINDER} ${WRAP_UP_ASK_TEST}\n\n(Stop-hook trigger: the wrap-up ask "${ask}" at turn-terminal)`;
+    }
 
-    return `${DEFERENCE_REMINDER}${trigger}`;
+    return phrase ? `${DEFERENCE_REMINDER}\n\n(Stop-hook trigger: deference phrase "${phrase}" at turn-terminal)` : DEFERENCE_REMINDER;
 }

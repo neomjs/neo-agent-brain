@@ -16,6 +16,7 @@ import {
     scanHoldLexicon,
     STOP_HOOK_TURN_OPTIONS_HINT
 }                        from '../../../../../../ai/scripts/lifecycle/stopHookDecision.mjs';
+import {WRAP_UP_ASK_TEST} from '../../../../../../ai/scripts/lifecycle/deferencePhraseMatch.mjs';
 
 /**
  * Direct coverage for the shared no-hold Stop-hook decision primitives — the cross-harness
@@ -240,6 +241,8 @@ test.describe('ai/scripts/lifecycle/stopHookDecision — shared no-hold decision
         expect(decision.action).toBe('block');
         expect(decision.ask).toBe(ask);
         expect(decision.reason).toContain(`the wrap-up ask "${ask}"`);
+        expect(decision.reason).toContain('helpful assistant');
+        expect(decision.reason).toContain(WRAP_UP_ASK_TEST);
     });
 
     test('decideDeferenceStopHookAction: a wrap-up ask for human-only work stays allowed (#78)', () => {
@@ -247,6 +250,36 @@ test.describe('ai/scripts/lifecycle/stopHookDecision — shared no-hold decision
             operatorInLoop: true,
             enforcing     : true,
             wrapUpAsk     : {ask: 'Merge #20603 now?', actions: [{action: 'merge', label: 'Merge #20603'}]}
+        })).toBe(null);
+    });
+
+    test('decideDeferenceStopHookAction: in a turn the operator did not prompt, any ask blocks and names both exits (#1618)', () => {
+        const ask      = 'Merge #20603 now?',
+              decision = decideDeferenceStopHookAction('Approved and green.', {
+                  operatorInLoop: false,
+                  enforcing     : true,
+                  wrapUpAsk     : {ask, actions: [{action: 'merge', label: 'Merge #20603'}]}
+              });
+
+        expect(decision.action).toBe('block');
+        expect(decision.ask).toBe(ask);
+        expect(decision.reason).toContain('Take your stated pick and continue');
+        expect(decision.reason).toContain('record the question on its ticket and continue with another lane');
+        expect(decision.reason).toContain(WRAP_UP_ASK_TEST);
+        expect(decision.reason).toContain(`the wrap-up ask "${ask}"`);
+        expect(decision.reason).not.toContain('helpful assistant');
+    });
+
+    test('decideDeferenceStopHookAction: no box, an empty one or a mirror switched off blocks nothing in an unprompted turn (#1618)', () => {
+        const unprompted = {operatorInLoop: false, enforcing: true};
+
+        expect(decideDeferenceStopHookAction('Approved and green.', unprompted)).toBe(null);
+        expect(decideDeferenceStopHookAction('Approved and green.', {...unprompted, wrapUpAsk: {ask: '   '}})).toBe(null);
+        expect(decideDeferenceStopHookAction('Approved and green.', {...unprompted, wrapUpAsk: {ask: 42}})).toBe(null);
+        expect(decideDeferenceStopHookAction('Approved and green.', {
+            ...unprompted,
+            deferenceMirrorEnabled: false,
+            wrapUpAsk             : {ask: 'Merge #20603 now?'}
         })).toBe(null);
     });
 

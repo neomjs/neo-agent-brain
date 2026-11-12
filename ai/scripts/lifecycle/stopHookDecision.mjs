@@ -346,17 +346,20 @@ export function decideStopHookAction(verdict, {
  * @param {String|null} phrase Matched deference phrase, if known.
  * @param {Object} [options]
  * @param {String|null} [options.ask=null] The wrap-up ask that fired, if any.
+ * @param {Boolean} [options.unattended=false] It fired because the operator did not prompt the turn.
  * @returns {String}
  */
-export function buildDeferenceStopHookDirective(phrase = null, {ask = null} = {}) {
-    return buildDeferenceReminder(phrase, {ask});
+export function buildDeferenceStopHookDirective(phrase = null, {ask = null, unattended = false} = {}) {
+    return buildDeferenceReminder(phrase, {ask, unattended});
 }
 
 /**
  * @summary Shared deference-register Stop-hook decision. Returns `null` when no deference slip exists;
  * otherwise maps it to the same non-enforcing/enforcing action for every Stop-hook adapter. The
- * operator-dialogue carve and the question-box rule live in `deferencePhraseMatch`, so adapters cannot
- * drift on that business rule; an adapter only supplies what its harness shows.
+ * operator-dialogue carve and the question-box carves live in `deferencePhraseMatch`, so adapters cannot
+ * drift on that business rule; an adapter only supplies what its harness shows. In a turn the operator
+ * did not prompt, any ask blocks: its box may wait for a click nobody gives, whoever the question belongs
+ * to. The Claude adapter reads a box only up to the hook's own feedback, so each ask blocks once.
  * @param {String} text Assistant final-turn text.
  * @param {Object} [options]
  * @param {Boolean} [options.enforcing=false]
@@ -378,14 +381,15 @@ export function decideDeferenceStopHookAction(text = '', {
 } = {}) {
     if (!deferenceMirrorEnabled) return null;
 
-    const phrase = detectDeferencePhrase(text, {operatorInLoop}),
-          ask    = phrase ? null : matchWrapUpAskDeference(wrapUpAsk, text);
+    const phrase     = detectDeferencePhrase(text, {operatorInLoop}),
+          unattended = !phrase && !operatorInLoop && typeof wrapUpAsk?.ask === 'string' && !!wrapUpAsk.ask.trim(),
+          ask        = phrase ? null : unattended ? wrapUpAsk.ask : matchWrapUpAskDeference(wrapUpAsk, text);
 
     if (!phrase && !ask) return null;
 
     return {
         action: enforcing ? 'block' : 'would-block',
-        reason: buildDeferenceStopHookDirective(phrase, {ask}),
+        reason: buildDeferenceStopHookDirective(phrase, {ask, unattended}),
         phrase,
         ask
     };
