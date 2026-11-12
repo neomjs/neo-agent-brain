@@ -19,7 +19,7 @@ import net                                                from 'net';
 import {once}                                             from 'node:events';
 import os                                                 from 'os';
 import path                                               from 'path';
-import {fileURLToPath}                                    from 'url';
+import {fileURLToPath, pathToFileURL}                     from 'url';
 import {WebSocketServer}                                  from 'ws';
 import Neo                                                from 'neo.mjs/src/Neo.mjs';
 import * as core                                          from 'neo.mjs/src/core/_export.mjs';
@@ -1128,6 +1128,43 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         } finally {
             try { child.kill('SIGKILL') } catch {}
             fs.rmSync(logDir, {force: true, recursive: true})
+        }
+    });
+
+    test('run-bridge.mjs exits 0 on a SIGTERM that lands the instant its port listens (#1647)', async () => {
+        const
+            runBridgePath = fileURLToPath(new URL('../../../../../../ai/mcp/server/neural-link/run-bridge.mjs', import.meta.url)),
+            root          = fs.mkdtempSync(path.join(os.tmpdir(), 'nl-run-bridge-sigterm-at-listen-')),
+            preloadPath   = path.join(root, 'sigterm-at-listening.mjs'),
+            port          = await getFreeLoopbackPort();
+
+        // The earliest SIGTERM a supervisor can send: the bridge's server signals its own process
+        // before any 'listening' listener runs, so `Bridge.startServer()` has not resolved yet.
+        fs.writeFileSync(preloadPath, [
+            "import net from 'node:net';",
+            'const emit = net.Server.prototype.emit;',
+            'net.Server.prototype.emit = function(event, ...args) {',
+            `    if (event === 'listening' && this.address()?.port === ${port}) process.kill(process.pid, 'SIGTERM');`,
+            '    return emit.call(this, event, ...args)',
+            '};'
+        ].join('\n'));
+
+        const child = spawn(process.execPath, ['--import', pathToFileURL(preloadPath).href, runBridgePath], {
+            env  : {...process.env, NEO_NL_LOG_PATH: root, NEO_NL_PORT: String(port), UNIT_TEST_MODE: 'true'},
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+
+        let stderr = '';
+        child.stderr.on('data', chunk => stderr += chunk);
+
+        try {
+            const [code, signal] = await once(child, 'exit');
+
+            expect({code, signal}, stderr).toEqual({code: 0, signal: null});
+            expect(await ConnectionService.isBridgePortListening({port})).toBe(false);
+        } finally {
+            try { child.kill('SIGKILL') } catch {}
+            fs.rmSync(root, {force: true, recursive: true})
         }
     });
 });
