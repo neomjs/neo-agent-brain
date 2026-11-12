@@ -625,6 +625,61 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         }
     });
 
+    test('setOperatorPresence writes through the plane and tells the fleet once per change (#1627)', async () => {
+        const oldWriter = FleetControlBridge.composeWriter,
+              record    = {mode: 'away', since: '2026-11-12T22:00:00.000Z', until: '2026-11-13T08:00:00.000Z', setBy: '@tobiu'},
+              writes    = [],
+              sent      = [];
+
+        let changed = true;
+
+        try {
+            FleetControlBridge.composeWriter = {
+                setOperatorPresence: args => { writes.push(args); return {operatorPresence: record, changed} },
+                addMessage         : args => { sent.push(args); return {messageId: 'MESSAGE:notice'} }
+            };
+
+            expect(await FleetControlBridge.setOperatorPresence({mode: 'away', until: record.until}))
+                .toEqual({operatorPresence: record, changed: true, notice: {messageId: 'MESSAGE:notice'}});
+            expect(sent).toEqual([{
+                to            : 'AGENT:*',
+                subject       : '[operator-presence] away until 2026-11-13 08:00 UTC',
+                body          : 'The operator is away until 2026-11-13 08:00 UTC. Keep driving; an operator-only ask (org admin, credentials, merges) waits for the return in one digest.',
+                taggedConcepts: ['operator-presence'],
+                wakeSuppressed: true
+            }]);
+
+            // the same click again changes nothing a reader sees, so nothing is announced
+            changed = false;
+            expect((await FleetControlBridge.setOperatorPresence({mode: 'away', until: record.until})).notice).toBe(null);
+            expect(sent).toHaveLength(1);
+            expect(writes).toEqual([{mode: 'away', until: record.until}, {mode: 'away', until: record.until}])
+        } finally {
+            FleetControlBridge.composeWriter = oldWriter
+        }
+    });
+
+    test('a failed notice never undoes the presence write, and an unwired writer answers not-wired (#1627)', async () => {
+        const oldWriter = FleetControlBridge.composeWriter,
+              record    = {mode: 'present', since: '2026-11-13T07:00:00.000Z', until: null, setBy: '@tobiu'};
+
+        try {
+            FleetControlBridge.composeWriter = {
+                setOperatorPresence: () => ({operatorPresence: record, changed: true}),
+                addMessage         : () => { throw new Error('plane unreachable') }
+            };
+
+            expect(await FleetControlBridge.setOperatorPresence({mode: 'present'}))
+                .toEqual({operatorPresence: record, changed: true, notice: {error: 'plane unreachable'}});
+
+            FleetControlBridge.composeWriter = {addMessage: () => ({})};
+            expect(await FleetControlBridge.setOperatorPresence({mode: 'away'}))
+                .toEqual({status: 'not-wired', reason: 'fleet: operator presence writer not wired'})
+        } finally {
+            FleetControlBridge.composeWriter = oldWriter
+        }
+    });
+
     // ---- delegation: the lifecycle (start / stop / restart / remove / status) half ----
 
     test('startAgent delegates to the manager and resolves its lifecycle status', async () => {
@@ -1072,6 +1127,27 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect((await FleetControlBridge.fleetRoster()).rows[0]).toMatchObject({
             participationStatus: null, participationRead: {state: 'unread', reason: 'presence producer not wired'}
         });
+    });
+
+    test('fleetRoster carries the operator\'s mode the presence report read, and null when it did not answer (#1627)', async () => {
+        registryStub.listAgents        = () => [{id: 'iris', githubUsername: 'neo-kimi-iris', harnessType: 'opencode'}];
+        managerStub.fleetRepoStatus    = () => [];
+        managerStub.fleetRuntimeStatus = () => [];
+
+        const away     = {mode: 'away', since: '2026-11-12T22:00:00.000Z', until: null, setBy: '@tobiu'},
+              modeWith = async readPresence => {
+                  managerStub.fleetPresenceStatus = () => readFleetPresenceSnapshot({agents: registryStub.listAgents(), readPresence});
+                  return (await FleetControlBridge.fleetRoster()).operatorPresence
+              };
+
+        expect(await modeWith(async () => ({agents: [], operatorPresence: away}))).toEqual(away);
+        // a plane older than the record omits it, which its contract reads as present
+        expect(await modeWith(async () => ({agents: []}))).toEqual({mode: 'present', since: null, until: null, setBy: null});
+        // an unanswered read, or a mode outside the vocabulary, is unknown: never present
+        expect(await modeWith(async () => { throw new Error('plane unreachable') })).toBe(null);
+        expect(await modeWith(async () => ({agents: [], operatorPresence: {mode: 'gone'}}))).toBe(null);
+
+        delete managerStub.fleetPresenceStatus;
     });
 
     test('fleetRoster answers while the plane\'s wake and presence reads are still out, naming the wait on every row (#1468)', async () => {
