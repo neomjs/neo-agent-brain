@@ -875,3 +875,56 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         expect(wakeGateOf(history(), {now: at(1446)}).holds).toBe(false)
     });
 });
+
+test.describe('openWorkWakes — a merge wakes the seats whose tickets it unblocked (#1619)', () => {
+    const
+        ISSUE    = 'acme/app#9',
+        resolved = (minute, issues) => merged(minute, {unblock: {at: iso(minute), issues}}),
+        kinds    = result => result.wakes.map(wake => [wake.kind, wake.to]);
+
+    test('a merge that closed the last open blocker of an assigned issue plans one unblocked wake to the assignee seat', () => {
+        const run = journey(), terminal = resolved(1, [{issue: ISSUE, seats: [GPT]}]);
+        run.step(0);
+        const result = run.step(1, [], {transitions: [terminal]}), wake = result.wakes.find(item => item.kind === 'unblocked');
+
+        expect(kinds(result)).toEqual([['post-merge', ADA], ['unblocked', GPT]]);
+        expect(wake).toMatchObject({to: GPT, role: 'assignee', pr: 'acme/app#7', unblocks: ISSUE, episode: `${terminal.id}|${ISSUE}`});
+        expect(JSON.parse(wake.key)).toEqual(['acme/app', 7, HEAD, GPT, 'unblocked', `${terminal.id}|${ISSUE}`])
+    });
+
+    test('a merge that unblocked nothing, or an issue with no seat among its assignees, plans no unblocked wake', () => {
+        const run = journey();
+        run.step(0);
+        expect(kinds(run.step(1, [], {transitions: [resolved(1, [])]}))).toEqual([['post-merge', ADA]]);
+        expect(kinds(run.step(2, [], {transitions: [resolved(2, [{issue: ISSUE, seats: ['login:outsider', null]}])]}))).toEqual([['post-merge', ADA]])
+    });
+
+    test('re-observing the same merge plans nothing new, and a read resolved on a later pulse wakes once', () => {
+        const run = journey(), unread = merged(1), late = {...unread, unblock: {at: iso(3), issues: [{issue: ISSUE, seats: [GPT]}]}};
+        run.step(0);
+        expect(kinds(run.step(1, [], {transitions: [unread]}))).toEqual([['post-merge', ADA]]);
+        expect(run.step(2, [], {transitions: [{...unread, unblock: {failures: 1}}]}).wakes).toEqual([]);
+        expect(kinds(run.step(3, [], {transitions: [late]}))).toEqual([['unblocked', GPT]]);
+        expect(run.step(4, [], {transitions: [late]}).wakes).toEqual([]);
+        expect(run.step(5, [], {transitions: [late]}).wakes).toEqual([])
+    });
+
+    test('an unreachable assignee keeps its unblocked wake under its key until its route answers', () => {
+        const run = journey(), terminal = resolved(1, [{issue: ISSUE, seats: [GPT]}]);
+        run.step(0);
+        const skipped = run.step(1, [], {transitions: [terminal]}, {routeOf: seat => seat === GPT ? 'unreachable' : 'unknown'});
+
+        expect(kinds(skipped)).toEqual([['post-merge', ADA]]);
+        expect(Object.values(skipped.ledger.pendingMerges).map(wake => [JSON.parse(wake.key), wake.unblocks]))
+            .toEqual([[['acme/app', 7, HEAD, GPT, 'unblocked', `${terminal.id}|${ISSUE}`], ISSUE]]);
+        expect(kinds(run.step(2, []))).toEqual([['unblocked', GPT]]);
+        expect(run.ledger().pendingMerges).toEqual({})
+    });
+
+    test('a first or quiet round plans no unblocked wake', () => {
+        const terminal = resolved(1, [{issue: ISSUE, seats: [GPT]}]), run = journey();
+        expect(journey().step(1, [], {transitions: [terminal]}).wakes).toEqual([]);
+        run.step(0);
+        expect(run.step(1, [], {transitions: [terminal]}, {quiet: true}).wakes).toEqual([])
+    });
+});

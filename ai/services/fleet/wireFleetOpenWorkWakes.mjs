@@ -86,9 +86,9 @@ export function failedChecksOf(data) {
  * @private
  */
 function observationOf(wake, failedChecks) {
-    const {repo, number, head, kind, episode, to} = wake;
+    const {repo, number, head, kind, episode, to, unblocks} = wake;
 
-    return {repo, number, head, kind, episode, to, failedChecks}
+    return {repo, number, head, kind, episode, to, failedChecks, ...(kind === 'unblocked' ? {unblocks} : {})}
 }
 
 /**
@@ -147,7 +147,7 @@ function validateLedger(ledger, now) {
         text   = value => typeof value === 'string' && value.length > 0,
         wake   = value => object(value) && text(value.repo) && Number.isInteger(value.number) && value.number > 0 &&
             text(value.head) && text(value.to) && value.to.startsWith('@') && text(value.kind) &&
-            text(value.episode) && text(value.reason) && ['author', 'reviewer', 'rotation'].includes(value.role) &&
+            text(value.episode) && text(value.reason) && ['author', 'reviewer', 'rotation', 'assignee'].includes(value.role) &&
             value.pr === `${value.repo}#${value.number}` &&
             value.key === JSON.stringify([value.repo, value.number, value.head, value.to, value.kind, value.episode]);
 
@@ -163,7 +163,8 @@ function validateLedger(ledger, now) {
             !['baseline', 'pending', 'admitted'].includes(entry.status) ||
             slot !== JSON.stringify([entry.wake.repo, entry.wake.number, entry.wake.head,
                 entry.wake.role === 'rotation' ? 'rotation' : entry.wake.to, entry.wake.kind])) ||
-        Object.entries(ledger.pendingMerges).some(([id, value]) => !wake(value) || value.kind !== 'post-merge' || id !== value.episode) ||
+        Object.entries(ledger.pendingMerges).some(([id, value]) => !wake(value) ||
+            !(value.kind === 'post-merge' && id === value.episode || value.kind === 'unblocked' && id === value.key && text(value.unblocks))) ||
         Object.values(ledger.baselines).some(value => !text(value))) {
         throw new Error('Malformed open-work wake ledger; existing history preserved')
     }
@@ -201,7 +202,7 @@ function freshObservation(state, now) {
 }
 
 /**
- * @summary An open action also needs its own row's fresh evidence; a terminal action needs the producer.
+ * @summary An open action also needs its own row's fresh evidence; a merge's action needs the producer.
  * @param {Object} wake
  * @param {Object} state
  * @param {Number} now
@@ -209,7 +210,7 @@ function freshObservation(state, now) {
  * @private
  */
 function freshWake(wake, state, now) {
-    return freshObservation(state, now) && (wake.kind === 'post-merge' ||
+    return freshObservation(state, now) && (wake.kind === 'post-merge' || wake.kind === 'unblocked' ||
         openWorkFreshness(state.snapshot.rows[wake.pr]?.observedAt, {now}) === 'ok')
 }
 

@@ -11,7 +11,8 @@
  *
  * Variables: `$query` (a search string with `is:pr` and the `repo:` qualifiers), `$cursor`.
  *
- * A third read belongs to a `repair-ci` wake, not to the pulse: its head's checks, read once at the
+ * A merged pull request adds one read, once: what its merge unblocked ({@link OPEN_WORK_UNBLOCKED}).
+ * A `repair-ci` wake's read belongs to the wake, not to the pulse: its head's checks, read once at the
  * wake's send (`ai/services/fleet/wireFleetOpenWorkWakes.mjs`).
  */
 import {createHash} from 'node:crypto';
@@ -218,6 +219,61 @@ export const OPEN_WORK_TERMINAL = `
 `;
 
 /**
+ * A merged pull request's unblock read: the issues it closes, the open issues each one blocks, and for those
+ * their assignees and every issue still blocking them. `totalCount` makes a blocker list past its first page
+ * visible, because an unread blocker may still be open.
+ * Variables: `$owner`, `$name`, `$number`.
+ * @type {String}
+ */
+export const OPEN_WORK_UNBLOCKED = `
+  query OpenWorkUnblocked($owner: String!, $name: String!, $number: Int!) {
+    viewer { id }
+    rateLimit {
+      cost
+      limit
+      remaining
+      resetAt
+    }
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        closingIssuesReferences(first: 10) {
+          nodes {
+            number
+            repository {
+              nameWithOwner
+            }
+            blocking(first: 10) {
+              nodes {
+                number
+                state
+                repository {
+                  nameWithOwner
+                }
+                assignees(first: 10) {
+                  nodes {
+                    login
+                  }
+                }
+                blockedBy(first: 10) {
+                  totalCount
+                  nodes {
+                    number
+                    state
+                    repository {
+                      nameWithOwner
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
  * A `repair-ci` wake's read: each check on one head, a check run by name, conclusion, start and workflow
  * (a re-run check keeps every run), a commit status by context and state. A head with more than one page
  * of checks is not a complete list.
@@ -261,9 +317,11 @@ export const OPEN_WORK_FAILED_CHECKS = `
 `;
 
 /**
- * @summary Published GraphQL formula estimates for these two static documents, not timeout-cost bounds.
+ * @summary Published GraphQL formula estimates for the static pulse documents, not timeout-cost bounds.
  * Snapshot has the search plus five connections for up to 50 PRs: round((1 + 50 * 5) / 100) = 3.
- * Terminal has one connection; the published minimum is one. The gate also uses measured maxima.
+ * Terminal has one connection; the published minimum is one. Unblocked reads 10 closing issues, 10
+ * blocked issues each, and two lists on each of those: round((1 + 10 + 100 + 100) / 100) = 2, which a
+ * live read measured too. The gate also uses measured maxima.
  *
  * The third entry prices the previous snapshot document. The wake gate looks up every retained pulse's
  * hash over its 24-hour window, and refuses a failed call it cannot price, so an upgrade would otherwise
@@ -275,7 +333,8 @@ export const OPEN_WORK_FAILED_CHECKS = `
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 3}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
-    Object.freeze({queryHash: 'dd32c5ca7fac2494379b94fb28cfc37a1d2df150e15e832c031fb88316b46dad', formulaCost: 3})
+    Object.freeze({queryHash: 'dd32c5ca7fac2494379b94fb28cfc37a1d2df150e15e832c031fb88316b46dad', formulaCost: 3}),
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 2})
 ]);
 
 /**
@@ -284,5 +343,7 @@ export const OPEN_WORK_QUERY_COSTS = Object.freeze([
  * @returns {Object|null} Its declared operational estimate, or null for an unsupported document.
  */
 export function openWorkQueryCost(query) {
-    return query === OPEN_WORK_SNAPSHOT ? OPEN_WORK_QUERY_COSTS[0] : query === OPEN_WORK_TERMINAL ? OPEN_WORK_QUERY_COSTS[1] : null
+    return query === OPEN_WORK_SNAPSHOT ? OPEN_WORK_QUERY_COSTS[0]
+        : query === OPEN_WORK_TERMINAL ? OPEN_WORK_QUERY_COSTS[1]
+        : query === OPEN_WORK_UNBLOCKED ? OPEN_WORK_QUERY_COSTS[3] : null
 }

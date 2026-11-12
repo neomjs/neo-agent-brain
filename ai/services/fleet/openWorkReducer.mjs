@@ -7,7 +7,8 @@
  * A transition's identity is its observation: the PR, its head, the kind of change, from and to,
  * and the pulse that saw it. So a head that goes red, then green, then red again yields two red
  * episodes, and an identical poll yields nothing. A merge or a close comes only from the terminal
- * read, once per close (its time is the episode); a PR leaving the open snapshot is never one.
+ * read, once per close (its time is the episode); a PR leaving the open snapshot is never one. A merge's
+ * unblock read becomes the open issues it closed the last open blocker of.
  *
  * Coverage is part of the baseline. A truncated or missing review-request list adds what it shows to
  * the last complete list and removes nothing, and a row no pulse observed keeps the time it was last
@@ -166,6 +167,42 @@ export function normalizeTerminal(node, identities) {
         state : node.state,
         at    : node.mergedAt ?? node.closedAt ?? null
     }
+}
+
+/**
+ * @summary What one merge unblocked: each open issue it closed the last open blocker of, with the seats among
+ * its assignees. A blocker that is another issue this merge closes counts as closed, because GitHub closes it
+ * just after the merge. An issue whose blocker list runs past its page stays blocked, because the unread
+ * blocker may be open. An issue with no assignee seat names nobody to wake, so it is left out.
+ * @param {Object} pullRequest The `OPEN_WORK_UNBLOCKED` answer's pull request.
+ * @param {{byLogin: Function}} identities
+ * @returns {{issue: String, seats: String[]}[]} Each issue as `owner/name#N`, once.
+ */
+export function normalizeUnblocked(pullRequest, identities) {
+    const
+        keyOf   = node => typeof node?.repository?.nameWithOwner === 'string' && Number.isInteger(node.number)
+            ? `${node.repository.nameWithOwner}#${node.number}` : null,
+        closers = pullRequest?.closingIssuesReferences?.nodes ?? [],
+        closing = new Set(closers.map(keyOf)),
+        issues  = new Map();
+
+    for (const blocked of closers.flatMap(closer => closer?.blocking?.nodes ?? [])) {
+        const
+            issue    = keyOf(blocked),
+            blockers = blocked?.blockedBy;
+
+        if (!issue || issues.has(issue) || blocked.state !== 'OPEN' || !Array.isArray(blockers?.nodes) ||
+            blockers.totalCount !== blockers.nodes.length ||
+            blockers.nodes.some(blocker => blocker?.state !== 'CLOSED' && !closing.has(keyOf(blocker)))) continue;
+
+        const seats = [...new Set((blocked.assignees?.nodes ?? [])
+            .map(user => user?.login ? identities.byLogin(user.login) : null)
+            .filter(seat => typeof seat === 'string' && seat.startsWith('@')))];
+
+        seats.length && issues.set(issue, seats)
+    }
+
+    return [...issues].map(([issue, seats]) => ({issue, seats}))
 }
 
 /**
