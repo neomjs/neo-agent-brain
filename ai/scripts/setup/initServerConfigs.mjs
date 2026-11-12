@@ -1108,30 +1108,37 @@ export async function assertConfigFresh({
 }
 
 /**
- * @summary Pure merge that ensures the template's `hooks` block is present in the active Claude
- * settings object, preserving every other key (permissions, autoMode, operator-local edits) and any
- * non-`Stop` hook events. Template hook events overwrite same-named active events (the template owns
- * the canonical hook wiring); other active events are kept. Returns the merged settings plus a
- * `changed` flag so an idempotent re-run is a no-op write.
+ * @summary Pure merge of the settings template into the active Claude settings, so a rule the
+ * template adds or withdraws reaches every existing seat.
+ *
+ * The template owns two keys. Its hook events replace same-named active events, and its
+ * `permissions` replace the active ones whole. Everything else stays: hook events the template does
+ * not carry, `autoMode` (a seat's own, which no template carries) and every other key. A rule local to
+ * one checkout belongs in `.claude/settings.local.json`, which Claude Code merges over this file.
+ * Returns the merged settings plus a `changed` flag, so an idempotent re-run writes nothing.
  *
  * @param {Object} [activeSettings={}]   Parsed `.claude/settings.json` (or `{}` when absent).
  * @param {Object} [templateSettings={}] Parsed `.claude/settings.template.json`.
  * @returns {{settings: Object, changed: Boolean}}
  */
-export function mergeClaudeHooks(activeSettings = {}, templateSettings = {}) {
-    const templateHooks = templateSettings.hooks;
+export function mergeClaudeSettings(activeSettings = {}, templateSettings = {}) {
+    const
+        settings      = {...activeSettings},
+        templateHooks = templateSettings.hooks;
 
-    if (!templateHooks || Object.keys(templateHooks).length === 0) {
-        return {settings: activeSettings, changed: false};
+    if (templateHooks && Object.keys(templateHooks).length > 0) {
+        settings.hooks = {...(activeSettings.hooks || {}), ...templateHooks}
     }
 
-    const mergedHooks = {...(activeSettings.hooks || {}), ...templateHooks};
-
-    if (JSON.stringify(activeSettings.hooks || {}) === JSON.stringify(mergedHooks)) {
-        return {settings: activeSettings, changed: false};
+    if (templateSettings.permissions) {
+        settings.permissions = structuredClone(templateSettings.permissions)
     }
 
-    return {settings: {...activeSettings, hooks: mergedHooks}, changed: true};
+    if (JSON.stringify(activeSettings) === JSON.stringify(settings)) {
+        return {settings: activeSettings, changed: false}
+    }
+
+    return {settings, changed: true}
 }
 
 /**
@@ -1191,21 +1198,19 @@ async function readPackageName(repoRoot) {
 
 /**
  * @summary Materializes the installed Engine `.claude/settings.template.json` into the gitignored
- * `.claude/settings.json` so every clone self-wires the Claude Stop hook (no-hold lane-state
- * enforcement) without per-repo manual management — the Claude analog of {@link initConfigs} /
- * {@link initTier1Config}. A missing active file is cloned whole from the template; an existing one
- * gets only its `hooks` block ensured ({@link mergeClaudeHooks}), preserving operator-local keys.
+ * `.claude/settings.json`, the Claude analog of {@link initConfigs} / {@link initTier1Config}. A
+ * missing active file is cloned whole from the template. An existing one takes the template's hook
+ * events and `permissions` ({@link mergeClaudeSettings}) and keeps every other key, `autoMode`
+ * included, so a rule a merged template adds or withdraws reaches the seat the next time it is
+ * hydrated (`npm prepare`, or a seat Start). A rule local to one checkout belongs in
+ * `.claude/settings.local.json`.
  * The target directory is created here because `npm prepare` also runs after `npm ci --ignore-scripts`,
  * where the Skills postinstall has not yet created `.claude/skills`; config materialization cannot
- * depend on that unrelated lifecycle side effect. Idempotent: an already-wired settings file is a
- * silent no-op. Runs at `npm prepare`. The tracked
- * template carries `NEO_LANE_STATE_ENFORCE=1` in the Stop-hook command — the operator-directed enforce
- * default (the forcing-function rollout: the hook blocks + injects the no-hold directive at an
- * invalid idle-out turn-terminal, rather than only audit-logging it). Enforce is opted OUT locally by
- * dropping that env prefix in the gitignored `.claude/settings.json`, not by changing the default.
+ * depend on that unrelated lifecycle side effect. Idempotent: a settings file that already agrees with
+ * its template is a silent no-op.
  *
  * Distinct from the server/Tier-1 config path: Claude settings are JSON (not `.mjs`), so the regex
- * shape-drift detector does not apply — a structural `hooks`-key merge is the right primitive.
+ * shape-drift detector does not apply — a structural key merge is the right primitive.
  *
  * @param {Object} [options]
  * @param {String} [options.claudeDir] `.claude/` dir; defaults to `<repo>/.claude`. Override for tests.
@@ -1235,19 +1240,19 @@ export async function initClaudeSettings({
 
     if (!fs.existsSync(activePath)) {
         await fs.writeFile(activePath, JSON.stringify(templateSettings, null, 2) + '\n', 'utf-8');
-        logger.log('[Neo AI] .claude/settings.json missing. Materialized from template (Stop hook wired).');
+        logger.log('[Neo AI] .claude/settings.json missing. Materialized from template.');
         return {action: 'clone'};
     }
 
     const activeSettings      = JSON.parse(await fs.readFile(activePath, 'utf-8'));
-    const {settings, changed} = mergeClaudeHooks(activeSettings, templateSettings);
+    const {settings, changed} = mergeClaudeSettings(activeSettings, templateSettings);
 
     if (!changed) {
         return {action: 'silent'};
     }
 
     await fs.writeFile(activePath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
-    logger.log('[Neo AI] Wired the Claude Stop hook into .claude/settings.json (auto-materialized from template).');
+    logger.log('[Neo AI] Synced .claude/settings.json with its template (hook events, permissions).');
     return {action: 'wired'};
 }
 
