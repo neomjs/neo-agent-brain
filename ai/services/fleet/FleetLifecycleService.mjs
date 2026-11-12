@@ -2604,7 +2604,8 @@ class FleetLifecycleService extends Base {
      *
      * Pins are proved by their record, never by re-hashing the payload: the successor's recovery re-verifies the
      * bytes before any generation is active again, while a re-hash costs seconds per runtime inside the handoff's
-     * one deadline. Each survivor's outcome reaches the stage witness, so an overrun names the last seat it finished.
+     * one deadline. For the same reason every survivor proves at once: the stage costs its slowest seat, never the
+     * sum. Each outcome reaches the stage witness as it settles, so an overrun names the seats that finished.
      * @param {Object} options Existing tenant owner, with isolated-test seams for runtime/profile reads.
      * @param {Number} [options.deadlineMs] Remaining whole-quit budget in milliseconds.
      * @returns {Promise<Object>} The admission owner's terminal handoff disposition.
@@ -2614,12 +2615,15 @@ class FleetLifecycleService extends Base {
         return admission.handoff({onStage, deadlineMs, verifySeats: async witness => {
             if (this.pendingStarts.size) throw new Error('a Start is pending');
             this.adoptLeasedSeats();
-            const verified = new Map();
+            const verified = new Map(), survivors = [];
             for (const record of this.processes.values()) {
                 if (record.state === 'stopped' && !record.ownershipUnresolved && !record.cleanupUnresolved) continue;
                 const start = record.runtimeStart;
                 if (!start && record.pid == null && !record.child && !record.adopted && !record.ownershipUnresolved && !record.cleanupUnresolved) continue;
                 if (!start) throw new Error(`seat ${record.id} is not a live original Start`);
+                survivors.push([record, start])
+            }
+            const outcomes = await Promise.allSettled(survivors.map(async ([record, start]) => {
                 const verdict = await this.verifySurvivor(record, start, {admission, verified, tenantService, verifyRuntime, readGrants})
                     .catch(error => ({unproved: error?.message || 'unproved'}));
                 // The revocations sit outside the verdict, so a failed durable write still refuses the handoff.
@@ -2627,13 +2631,15 @@ class FleetLifecycleService extends Base {
                     record.runtimeUnresolved = true;
                     if (start.admissionGeneration) admission.revoke(start.agentId, LAUNCH_ADMISSION_REASONS.RECOVERY_UNVERIFIED, {generation: start.admissionGeneration});
                     witness(`survivor ${start.agentId}: unresolved (${verdict.unproved})`);
-                    continue
+                    return
                 }
                 for (const [key, reason] of verdict.unprovedServers) {
                     admission.revokeServerGrant(start.agentId, key, reason, {generation: start.admissionGeneration})
                 }
                 witness(`survivor ${start.agentId}: ${verdict.unprovedServers.length ? verdict.unprovedServers.map(([key]) => key).join(', ') + ' revoked' : 'verified'}`)
-            }
+            }));
+            const failed = outcomes.find(outcome => outcome.status === 'rejected');
+            if (failed) throw failed.reason
         }});
     }
 

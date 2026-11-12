@@ -3013,8 +3013,9 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
      * the right one once the queue is empty; a seat's `birth` overrides what its pid reads as. With `sealed`, each
      * seat pins its own real sealed generation, read by the default verifiers; otherwise `runtime` stands in for them.
      * With `remote`, each seat plans every server and the issuer admits Neural Link alone: the Codex Desktop shape.
+     * With `answerDelayMs`, the Bridge holds each answer that long, the way a slow credential owner holds a proof.
      */
-    async function admittedDesktopSeats(ids, {sealed = false, remote = false} = {}) {
+    async function admittedDesktopSeats(ids, {sealed = false, remote = false, answerDelayMs = 0} = {}) {
         const
             initialRoot       = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-handoff-per-seat-')),
             spawn             = install({agents: Object.fromEntries(ids.map(id => [id, curatedAgent(id, 'claude-desktop')]))}),
@@ -3034,7 +3035,10 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             bridge            = new WebSocketServer({host: '127.0.0.1', port: 0}),
             seats             = {};
 
-        bridge.on('connection', socket => { socket.send(JSON.stringify(createBridgeVerifierPayload(answers.shift() ?? 'e'.repeat(64)))); socket.close() });
+        bridge.on('connection', socket => {
+            const answer = () => { socket.send(JSON.stringify(createBridgeVerifierPayload(answers.shift() ?? 'e'.repeat(64)))); socket.close() };
+            answerDelayMs ? setTimeout(answer, answerDelayMs) : answer()
+        });
         await once(bridge, 'listening');
         FleetLifecycleService.instanceRoot         = root;
         FleetLifecycleService.harnessBinaryPaths   = {'claude-desktop': process.execPath};
@@ -3127,7 +3131,9 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             try {
                 if (damage) await damage(fixture.sealedGenerations.seat);
                 expect(await FleetLifecycleService.handoffRuntimeCustody({onStage: stage => stages.push(stage)})).toEqual({state: 'handed-off'});
-                expect(stages.slice(0, 4)).toEqual(['survivor-validation', 'survivor seat: verified', 'survivor peer: verified', 'proof-drain']);
+                // the seats prove at once, so their witness lines arrive in the order their proofs settle
+                expect([stages[0], ...stages.slice(1, 3).sort(), stages[3]])
+                    .toEqual(['survivor-validation', 'survivor peer: verified', 'survivor seat: verified', 'proof-drain']);
                 expect(dispositions(fixture.sealed())).toEqual({seat: ['active', {'neural-link': 'active'}], peer: ['active', {'neural-link': 'active'}]});
                 expect((await fixture.reboot({})).map(row => [row.agentId, row.state, row.detail])).toEqual([
                     ['seat', damage ? 'stale' : 'active', damage ? 'runtime pin unverified' : null], ['peer', 'active', null]]);
@@ -3277,16 +3283,32 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
     test('one seat whose Neural Link proof fails loses only that grant; the handoff seals and the successor recovers both seats', async () => {
         const fixture = await admittedDesktopSeats(['seat', 'peer']), stages = [];
         try {
-            // the handoff proves the seats in Start order: the first answer proves `seat`, the second refuses `peer`
+            // the seats prove at once: the first connection is proved and the second refused, whichever seat made it
             fixture.answers.push('e'.repeat(64), 'f'.repeat(64));
             expect(await FleetLifecycleService.handoffRuntimeCustody({verifyRuntime: fixture.runtime, onStage: stage => stages.push(stage)})).toEqual({state: 'handed-off'});
-            expect(stages).toContain('survivor peer: neural-link revoked');
-            expect(dispositions(fixture.sealed())).toEqual({seat: ['active', {'neural-link': 'active'}], peer: ['active', {'neural-link': 'revoked'}]});
+            const [refused, proved] = stages.includes('survivor peer: neural-link revoked') ? ['peer', 'seat'] : ['seat', 'peer'];
+            expect(stages).toEqual(expect.arrayContaining([`survivor ${refused}: neural-link revoked`, `survivor ${proved}: verified`]));
+            expect(dispositions(fixture.sealed())).toEqual({[proved]: ['active', {'neural-link': 'active'}], [refused]: ['active', {'neural-link': 'revoked'}]});
 
             expect((await fixture.reboot()).map(row => [row.agentId, row.state])).toEqual([['seat', 'active'], ['peer', 'active']]);
-            expect(await fixture.redeem('seat')).toMatchObject({outcome: 'admitted', env: {NEO_FLEET_BRIDGE_TOKEN: 'renewed-fixture-token'}});
-            expect(await fixture.redeem('peer'), 'the revoked server waits for the seat\'s next Start').toMatchObject({outcome: 'refused', code: 'revoked', reason: 'recovery-unverified'});
+            expect(await fixture.redeem(proved)).toMatchObject({outcome: 'admitted', env: {NEO_FLEET_BRIDGE_TOKEN: 'renewed-fixture-token'}});
+            expect(await fixture.redeem(refused), 'the revoked server waits for the seat\'s next Start').toMatchObject({outcome: 'refused', code: 'revoked', reason: 'recovery-unverified'});
             expect(fixture.spawn.calls).toHaveLength(2) // neither seat was started again
+        } finally {
+            await fixture.teardown()
+        }
+    });
+
+    // a refused handoff strands every running seat, so the survivor stage may cost the slowest seat, never the sum
+    test('three survivors whose proofs each take 400 ms seal inside a 1000 ms deadline, on one runtime verify', async () => {
+        const fixture = await admittedDesktopSeats(['seat', 'peer', 'third'], {answerDelayMs: 400}), stages = [], runtimeReads = [];
+        try {
+            const verifyRuntime = options => (runtimeReads.push(options.directory), fixture.runtime(options));
+            expect(await FleetLifecycleService.handoffRuntimeCustody({verifyRuntime, deadlineMs: 1000, onStage: stage => stages.push(stage)}))
+                .toEqual({state: 'handed-off'});
+            expect(stages.filter(stage => stage.startsWith('survivor ')).sort())
+                .toEqual(['survivor peer: verified', 'survivor seat: verified', 'survivor third: verified']);
+            expect(runtimeReads, 'seats on one pin share its verify').toHaveLength(1)
         } finally {
             await fixture.teardown()
         }
