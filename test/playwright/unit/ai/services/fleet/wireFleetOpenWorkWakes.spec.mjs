@@ -2,12 +2,12 @@ import {setup} from '../../../../setup.mjs';
 
 setup({neoConfig: {unitTestMode: true}, appConfig: {name: 'WireFleetOpenWorkWakesTest'}});
 
-import {expect, test}                                    from '@playwright/test';
-import fs                                                from 'fs';
-import os                                                from 'os';
-import path                                              from 'path';
-import Neo                                               from 'neo.mjs/src/Neo.mjs';
-import * as core                                         from 'neo.mjs/src/core/_export.mjs';
+import {expect, test}                                                    from '@playwright/test';
+import fs                                                                from 'fs';
+import os                                                                from 'os';
+import path                                                              from 'path';
+import Neo                                                               from 'neo.mjs/src/Neo.mjs';
+import * as core                                                         from 'neo.mjs/src/core/_export.mjs';
 import {createOpenWorkWakeRound, failedChecksOf, wireFleetOpenWorkWakes} from '../../../../../../ai/services/fleet/wireFleetOpenWorkWakes.mjs';
 
 const START  = Date.parse('2026-10-13T12:00:00.000Z'), HEAD = 'a'.repeat(40), SEAT = '@neo-opus-ada',
@@ -53,7 +53,7 @@ function measuredState(minute, ci = 'pending') {
             seats: [{seat: SEAT, benched: false, outcome: 'complete', authored: {complete: true, rows: 1},
                 held: {complete: true, rows: 0}, terminal: {required: false, complete: true, rows: 0}}],
             outside: {complete: true, rows: 0},
-            quota: [{apiBase: 'https://api.github.com', viewerId: 'issuer-1', limit: 1000, remaining: 900,
+            quota  : [{apiBase: 'https://api.github.com', viewerId: 'issuer-1', limit: 1000, remaining: 900,
                 cost   : 2, calls: 2, failed: 0, unknown: false, firstAt: stamp, lastAt: stamp,
                 resetAt: new Date(Math.floor(time / 3600000) * 3600000 + 3600000).toISOString()}]}
     });
@@ -127,7 +127,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         for (const mutate of mutations) {
             const receipt = mutate(certification()), store = memoryStore(), sends = [];
             const round   = createOpenWorkWakeRound({store, now: () => at(0),
-                gateOf     : () => ({holds: true, reason: null, certification: receipt}),
+                gateOf   : () => ({holds: true, reason: null, certification: receipt}),
                 admitWake: async value => sends.push(value)});
             await expect(round(state(0))).rejects.toThrow('Malformed open-work wake certification');
             expect(store.read()).toBeNull(); expect(sends).toEqual([])
@@ -224,7 +224,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         const store  = memoryStore(), entered = deferred(), release = deferred(), sends = [],
             round = createOpenWorkWakeRound({store, gateOf: openGate, isEnabled: () => enabled, now: () => at(minute),
                 readUndeliverable: async () => { entered.resolve(); await release.promise; return null },
-                admitWake      : async value => sends.push(value)});
+                admitWake        : async value => sends.push(value)});
         await round(state(0)); const before = store.read(); minute = 1;
         const running = round(state(1, 'red')); await entered.promise;
         enabled = false; release.resolve();
@@ -245,7 +245,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         expect(sends).toEqual([]);
 
         const otherStore = memoryStore(), laterSends = [], between = createOpenWorkWakeRound({
-            store      : otherStore, gateOf: openGate, isEnabled: () => enabled, now: () => at(minute),
+            store    : otherStore, gateOf: openGate, isEnabled: () => enabled, now: () => at(minute),
             admitWake: async value => { laterSends.push(value); enabled = false }
         });
         minute = 3; await between(state(3)); minute = 4;
@@ -258,7 +258,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('refusal changes and activation are logged once across restart with no raw reason data', async () => {
         let   minute = 0, reason = 'less than 24 elapsed hours of version-one observations', active = false;
         const store  = memoryStore(), messages = [], options = {store, now: () => at(minute),
-            gateOf     : () => active ? openGate() : {holds: false, reason},
+            gateOf   : () => active ? openGate() : {holds: false, reason},
             admitWake: async () => {}, log: {info: (...args) => messages.push(args)}};
         const first = createOpenWorkWakeRound(options);
         await first(state(0)); minute = 1; await first(state(1));
@@ -304,7 +304,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         const store  = memoryStore(), sends = [], entered = deferred(), release = deferred(),
             round = createOpenWorkWakeRound({store, now: () => at(minute),
                 readUndeliverable: async () => { entered.resolve(); await release.promise; return null },
-                admitWake      : async message => sends.push(message)});
+                admitWake        : async message => sends.push(message)});
         await round(measuredState(0)); const before = store.read(); minute = 1;
         const running = round(measuredState(1, 'red')); await entered.promise;
         minute = 7; release.resolve();
@@ -319,7 +319,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
             round = createOpenWorkWakeRound({store, now: () => at(minute),
                 gateOf           : (value, {now}) => { gateTimes.push(now); return {holds: now < at(2), reason: now < at(2) ? null : 'gate closed'} },
                 readUndeliverable: async () => { entered.resolve(); await release.promise; return null },
-                admitWake      : async message => sends.push(message)});
+                admitWake        : async message => sends.push(message)});
         await round(state(0)); minute = 1; const running = round(state(1, 'red')); await entered.promise;
         minute = 2; release.resolve();
         expect(await running).toMatchObject({admitted: 1, quiet: false, reason: null});
@@ -371,7 +371,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         let   minute = 0, attempts = 0;
         const store  = memoryStore(), errors = [], options = {store, gateOf: openGate, now: () => at(minute),
             admitWake: async () => { attempts++; throw new Error('private-token:' + 'x'.repeat(10000)) },
-            log        : {error: (...args) => errors.push(args)}};
+            log      : {error: (...args) => errors.push(args)}};
         const round = createOpenWorkWakeRound(options);
         await round(state(0)); minute = 1;
         expect(await round(state(1, 'red'))).toMatchObject({admitted: 1, sendErrors: 1});
@@ -423,7 +423,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         store.save = value => { saves++; save(value) };
         const round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute),
             readUndeliverable: async () => { reads++; return unreachable ? {[SEAT]: 'absent'} : null },
-            admitWake      : async message => sends.push(message)});
+            admitWake        : async message => sends.push(message)});
         await round(state(0)); minute = 1; const observed = state(1, 'red'); await round(observed);
         unreachable = false; minute = 6; await round(observed);
         expect(sends).toHaveLength(1); const writes = saves;
@@ -465,7 +465,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
     test('a closed production gate quietly baselines; opening it does not wake that backlog', async () => {
         let   minute = 0, open = false;
         const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), now: () => at(minute),
-            gateOf     : (value, args) => open ? openGate() : {holds: false, reason: 'insufficient observed day'},
+            gateOf   : (value, args) => open ? openGate() : {holds: false, reason: 'insufficient observed day'},
             admitWake: async message => sends.push(message)});
         await round(state(0, 'red')); open = true; minute = 1; await round(state(1, 'red'));
         expect(sends).toEqual([]); minute = 2; await round(state(2, 'green')); expect(sends).toHaveLength(1);
@@ -653,5 +653,26 @@ test.describe('wireFleetOpenWorkWakes — a repair-ci wake names the checks that
             }
             expect(calls).toEqual([['pat-ada', {owner: 'acme', name: 'app', oid: HEAD}]])
         } finally { fs.rmSync(directory, {recursive: true, force: true}) }
+    });
+});
+
+test.describe('wireFleetOpenWorkWakes — a merge wakes the seats whose tickets it unblocked (#1619)', () => {
+    test('a skipped unblocked wake survives a restart in the ledger, then submits its issue token after its merge left the snapshot', async () => {
+        let   minute = 0, routes = {'@neo-gpt': 'unreachable'};
+        const store  = memoryStore(), sends = [], options = {store, gateOf: openGate, now: () => at(minute),
+                readUndeliverable: async () => routes, admitWake: async message => sends.push(message)},
+            round    = createOpenWorkWakeRound(options),
+            terminal = {...merged(1), unblock: {at: iso(1), issues: [{issue: 'acme/app#9', seats: ['@neo-gpt']}]}};
+
+        await round(state(0)); minute = 1;
+        await round(state(1, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [terminal]}));
+        expect(sends.map(observation => observation.kind)).toEqual(['post-merge']);
+        expect(Object.values(store.read().pendingMerges)).toMatchObject([{kind: 'unblocked', role: 'assignee', to: '@neo-gpt', unblocks: 'acme/app#9'}]);
+
+        await round.stop(); routes = {}; minute = 2;
+        await createOpenWorkWakeRound(options)(state(2, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: []}));
+        expect(sends[1]).toEqual({repo: 'acme/app', number: 7, head: HEAD, kind: 'unblocked', episode: 'merge-1|acme/app#9',
+            to: '@neo-gpt', failedChecks: null, unblocks: 'acme/app#9'});
+        expect(store.read().pendingMerges).toEqual({})
     });
 });

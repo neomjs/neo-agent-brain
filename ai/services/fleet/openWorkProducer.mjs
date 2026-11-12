@@ -16,16 +16,22 @@
  * - a PR that leaves complete reads with no terminal row is recorded as `vanished` on its pulse. The
  *   `closed:` qualifier cannot reach some PRs closed without merging;
  * - a failed read keeps the snapshot under `stale` (`unavailable` without one), under a constant
- *   reason and a `redactReadFailure` detail, and its pulse records what the answered requests cost.
+ *   reason and a `redactReadFailure` detail, and its pulse records what the answered requests cost;
+ * - a merge observed in the last few pulses also reads what it unblocked, and its transition keeps the
+ *   answer as `unblock`, so the planner can wake those issues' assignees.
  *
  * Saved state that exists but cannot be read leaves the producer `unavailable`, and nothing is saved
  * over it until it reads again.
  */
 
-import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, openWorkQueryCost} from '../github-workflow/queries/openWorkQueries.mjs';
-import {normalizePullRequest, normalizeTerminal, reduceOpenWork}   from './openWorkReducer.mjs';
-import {redactReadFailure}                                         from './redactReadFailure.mjs';
-import {classifyHttpCredentialRefusal, credentialRefusalOf}        from './seatGitIdentity.mjs';
+import {
+    OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
+} from '../github-workflow/queries/openWorkQueries.mjs';
+import {
+    normalizePullRequest, normalizeTerminal, normalizeUnblocked, reduceOpenWork
+} from './openWorkReducer.mjs';
+import {redactReadFailure}                                  from './redactReadFailure.mjs';
+import {classifyHttpCredentialRefusal, credentialRefusalOf} from './seatGitIdentity.mjs';
 
 const
     /** @summary Search pages per read and pulse. */
@@ -37,6 +43,12 @@ const
     PULSE_HISTORY_MS  = 25 * 60 * 60 * 1000,
     /** @summary How far each terminal window reaches back past the previous one's end. */
     OVERLAP_MS        = 10 * 60 * 1000,
+    /** @summary Unblock reads per pulse; the merges past it wait for the next pulse. */
+    UNBLOCK_READS     = 10,
+    /** @summary Failed unblock reads after which a merge wakes nobody it unblocked. */
+    UNBLOCK_ATTEMPTS  = 3,
+    /** @summary How long after its observation a merge is still read, so retained history is never read. */
+    UNBLOCK_RECENT_MS = 10 * 60 * 1000,
     /** @summary A producer that has never pulsed. */
     FRESH             = Object.freeze({
         snapshot: null, observedAt: null, coverage: 'unavailable', watermark: null, window: null, reason: null, detail: null, seatReads: {}, transitions: [], pulses: []
@@ -155,6 +167,61 @@ async function readSearch({query, text, search, cursor = null, pageBudget, tally
     }
 
     return {nodes, complete: false, cursor}
+}
+
+/**
+ * @summary Reads what each recent merge unblocked, oldest first and at most {@link UNBLOCK_READS} per pulse, with
+ * its author seat's reader, or the outside reader when that seat did not read this pulse. A whole answer becomes
+ * `unblock: {at, issues}`. A failure, or an answer with a dependency list past its page, counts in
+ * `unblock.failures` and the next pulse reads again, up to {@link UNBLOCK_ATTEMPTS}: a truncated answer is never
+ * kept as the merge's result. Each attempt is recorded in the pulse's quota like any search page.
+ * @param {Object}   options
+ * @param {Object[]} options.transitions The retained transitions with this pulse's appended.
+ * @param {Map<String,Object>} options.readers Each seat that read this pulse to its `{query, apiBase}`.
+ * @param {Object|null} options.fallback The outside reader.
+ * @param {{byLogin: Function}} options.identities
+ * @param {Object}   options.tally
+ * @param {Function} options.stamp
+ * @param {String}   options.at This pulse.
+ * @returns {Promise<Object[]>} The transitions, each read one replaced by an annotated copy.
+ * @private
+ */
+async function readUnblocked({transitions, readers, fallback, identities, tally, stamp, at}) {
+    const queryHash = openWorkQueryCost(OPEN_WORK_UNBLOCKED).queryHash, result = [];
+    let   budget    = UNBLOCK_READS;
+
+    for (const transition of transitions) {
+        const
+            failures      = transition.unblock?.failures ?? 0,
+            reader        = readers.get(transition.owner?.seat) ?? fallback,
+            [owner, name] = typeof transition.repo === 'string' ? transition.repo.split('/') : [];
+
+        if (transition.kind !== 'merged' || transition.unblock?.issues || failures >= UNBLOCK_ATTEMPTS || budget < 1 ||
+            !(Date.parse(at) - Date.parse(transition.pulse) <= UNBLOCK_RECENT_MS) || !reader?.query || !owner || !name ||
+            !Number.isInteger(transition.number)) {
+            result.push(transition);
+            continue
+        }
+
+        const attemptAt = stamp();
+        let data, failed = true;
+        budget--;
+
+        try {
+            data = await reader.query(OPEN_WORK_UNBLOCKED, {owner, name, number: transition.number});
+            const issues = normalizeUnblocked(data?.repository?.pullRequest, identities);
+            if (!issues) throw new Error('the unblock read answered no pull request, or a dependency list past its page');
+            result.push({...transition, unblock: {at, issues}});
+            failed = false
+        } catch (error) {
+            data ??= error?.quota;
+            result.push({...transition, unblock: {failures: failures + 1}})
+        } finally {
+            recordQuota(tally, reader.apiBase ?? null, data, failed, queryHash, attemptAt, stamp())
+        }
+    }
+
+    return result
 }
 
 /**
@@ -450,7 +517,12 @@ export function createOpenWorkProducer({
             // the earliest seat's watermark bounds what is still closing, and seeds a seat that joins later
             watermark = Object.values(marks).map(mark => mark.watermark).filter(Boolean).sort()[0] ?? null,
             next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed}, terminal, since: state.watermark ?? null, id: at}),
-            coverage  = complete && outside.complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial';
+            coverage  = complete && outside.complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial',
+            readerOf  = new Map(seats.filter(seat => seat.query && answered.some(read => read.seat === seat.seat)).map(seat => [seat.seat, seat])),
+            retained  = await readUnblocked({
+                transitions: [...state.transitions, ...next.transitions].slice(-transitionWindow),
+                readers    : readerOf, fallback: outsideReader?.query ? outsideReader : null, identities, tally, stamp, at
+            });
 
         return finish({
             snapshot   : {rows: next.rows, closed: next.closed, complete: next.complete, missed: next.missed},
@@ -462,7 +534,7 @@ export function createOpenWorkProducer({
             window     : null,
             reason     : unreadReason(unread.filter(owes), failed.filter(read => owes(read.seat))),
             detail     : failed[0]?.failure ?? null,
-            transitions: [...state.transitions, ...next.transitions].slice(-transitionWindow)
+            transitions: retained
         }, {at, ...tally, seats: coverageSeats, outside, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
     }
 

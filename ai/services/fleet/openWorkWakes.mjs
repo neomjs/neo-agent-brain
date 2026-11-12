@@ -13,13 +13,14 @@
  *
  * A skipped merge keeps its original observation and payload until its route answers, even after the
  * transition leaves the producer's bounded history. Admitted merges need no permanent seen set: the
- * saved pulse excludes their original observations on the next round.
+ * saved pulse excludes their original observations on the next round. A merge's `unblocked` wakes, one
+ * per issue and assignee seat, follow the same rule, keyed by the pulse whose read resolved them.
  */
-import {createHash}                        from 'node:crypto';
-import {openWorkFreshness}                 from './fleetOpenWorkSource.mjs';
-import {holderOf}                          from './openWorkHolder.mjs';
-import {OPEN_WORK_WAKE_REASONS as REASONS} from './openWorkWakeMessage.mjs';
-import {OPEN_WORK_QUERY_COSTS}             from '../github-workflow/queries/openWorkQueries.mjs';
+import {createHash}                                            from 'node:crypto';
+import {openWorkFreshness}                                     from './fleetOpenWorkSource.mjs';
+import {holderOf}                                              from './openWorkHolder.mjs';
+import {OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf} from './openWorkWakeMessage.mjs';
+import {OPEN_WORK_QUERY_COSTS}                                 from '../github-workflow/queries/openWorkQueries.mjs';
 
 /**
  * @summary Deterministic rotation seat selection from the participating roster, advancing to the first reachable seat.
@@ -79,6 +80,7 @@ function wakeOf(row, seat, role, kind, episode) {
  * @param {Object} options
  * @param {Object} options.state The producer state, including snapshot, observation and transitions.
  * @param {Object|null} options.ledger Previous {pulse, holding, pendingMerges, baselines}; null starts a quiet baseline.
+ *     `pendingMerges` holds a merge's skipped wakes: the author's `post-merge` under its episode, each `unblocked` under its key.
  * @param {Number} options.now Epoch milliseconds.
  * @param {Function} [options.routeOf] Native seat to reachable, unreachable or unknown; only unreachable skips.
  * @param {Array<String|Object>} [options.rotationSeats] Participating native seats (or pulse seat records) for rotation actions.
@@ -196,6 +198,21 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             !native(transition.owner.seat) || typeof transition.id !== 'string' || !transition.id) continue;
 
         pendingMerges[transition.id] ??= wakeOf(transition, transition.owner.seat, 'author', 'post-merge', transition.id)
+    }
+
+    for (const transition of state.transitions ?? []) {
+        const resolved = Date.parse(transition.unblock?.at);
+
+        if (baseline || transition.kind !== 'merged' || !Array.isArray(transition.unblock?.issues) || !hasIdentity(transition) ||
+            !(resolved > previousPulse && resolved <= pulse) || typeof transition.id !== 'string' || !transition.id) continue;
+
+        for (const {issue, seats} of transition.unblock.issues) {
+            for (const seat of (Array.isArray(seats) ? seats : []).filter(native)) {
+                const wake = {...wakeOf(transition, seat, 'assignee', 'unblocked', unblockedEpisodeOf(transition.id, issue)), unblocks: issue};
+
+                pendingMerges[wake.key] ??= wake
+            }
+        }
     }
 
     for (const [slot, entry] of Object.entries(holding)) {

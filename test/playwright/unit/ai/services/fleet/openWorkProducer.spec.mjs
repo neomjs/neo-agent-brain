@@ -1,10 +1,13 @@
-import {expect, test}                           from '@playwright/test';
-import fs                                       from 'fs';
-import {createHash}                             from 'node:crypto';
-import {createFleetOpenWorkSource}              from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
-import {createOpenWorkProducer}                 from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
-import {planOpenWorkWakes}                      from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
-import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
+import {expect, test}              from '@playwright/test';
+import fs                          from 'fs';
+import {createHash}                from 'node:crypto';
+import {createFleetOpenWorkSource} from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
+import {createOpenWorkProducer}    from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
+import {normalizeUnblocked}        from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
+import {planOpenWorkWakes}         from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {
+    OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
+} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const identities = {
     byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt'})[login] ?? null,
@@ -906,4 +909,121 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             }
         })
     })
+});
+
+test.describe('openWorkProducer — what a merge unblocked (#1619)', () => {
+    const
+        issue   = (number, state = 'OPEN', extra = {}) => ({number, state, repository: {nameWithOwner: 'acme/app'}, ...extra}),
+        blocked = (number, {assignees = ['neo-gpt'], blockers = [issue(5, 'CLOSED')], totalCount = blockers.length} = {}) =>
+            issue(number, 'OPEN', {assignees: {nodes: assignees.map(login => ({login}))}, blockedBy: {totalCount, nodes: blockers}}),
+        pullRequest = (...closers) => ({closingIssuesReferences: {totalCount: closers.length, nodes: closers.map(([number, blocking]) =>
+            ({...issue(number, 'CLOSED'), blocking: {totalCount: blocking.length, nodes: blocking}}))}}),
+        // GitHub's answer to the production document: each dependent list holds at most the document's own page
+        paged       = (text, answer) => {
+            const first = Number(/blocking\(first: (\d+)\)/.exec(text)[1]);
+
+            answer.closingIssuesReferences.nodes.forEach(closer => { closer.blocking.nodes = closer.blocking.nodes.slice(0, first) });
+            return answer
+        },
+        UNBLOCKED   = [{issue: 'acme/app#9', seats: ['@neo-gpt']}];
+
+    /**
+     * @summary A producer whose one pull request merges on its third pulse; unblock reads answer through
+     * `answer(attempt, document)`.
+     * @param {Function} answer
+     * @param {Function} [step] Milliseconds between pulses, by pulse index.
+     * @returns {{producer: Object, reads: Object[], merge: Function}}
+     */
+    const merging = (answer, step = () => 60000) => {
+        let script = {open: [[pr()]]}, ms = Date.parse('2026-10-02T10:00:00Z'), pulses = 0;
+        const
+            search = github({get open() { return script.open }, get terminal() { return script.terminal }}),
+            reads  = [],
+            query  = async (text, variables) => {
+                if (text !== OPEN_WORK_UNBLOCKED) return search.query(text, variables);
+                reads.push(variables);
+                return answer(reads.length, text)
+            },
+            producer = createOpenWorkProducer({readers: ada(query), repos: async () => ['acme/app'], identities,
+                now: () => new Date(ms += step(++pulses))});
+
+        return {producer, reads, merge: () => { script = {open: [[]], terminal: [[closed(7, '2026-10-02T10:01:50Z', 'MERGED')]]} }}
+    };
+
+    test('a merge that closes the last open blocker of an assigned issue unblocks it for the assignee seat', () => {
+        expect(normalizeUnblocked(pullRequest([5, [blocked(9)]]), identities)).toEqual(UNBLOCKED)
+    });
+
+    test('another open blocker keeps an issue blocked; a blocker or dependent list past its page makes the read incomplete', () => {
+        const truncated = pullRequest([5, [blocked(9)]]);
+
+        truncated.closingIssuesReferences.nodes[0].blocking.totalCount = 2;
+
+        expect(normalizeUnblocked(pullRequest([5, [blocked(9, {blockers: [issue(5, 'CLOSED'), issue(6)]})]]), identities)).toEqual([]);
+        expect(normalizeUnblocked(pullRequest([5, [blocked(9, {totalCount: 11})]]), identities)).toBeNull();
+        expect(normalizeUnblocked(truncated, identities)).toBeNull()
+    });
+
+    test('a dependent past the tenth is read and woken, and past the document\'s page the read is incomplete, never kept', async () => {
+        const
+            eleven  = seatOn => Array.from({length: 11}, (_, index) => blocked(20 + index, {assignees: [index === seatOn ? 'neo-gpt' : 'outsider']})),
+            resolve = async dependents => {
+                const {producer, merge} = merging((attempt, text) => ({rateLimit: {cost: 10}, repository: {pullRequest: paged(text, pullRequest([5, dependents]))}}));
+
+                await producer.pulse();
+                await producer.pulse();
+                merge();
+                return (await producer.pulse()).transitions[0].unblock
+            };
+
+        expect((await resolve(eleven(10))).issues).toEqual([{issue: 'acme/app#30', seats: ['@neo-gpt']}]);
+        expect((await resolve(eleven(0))).issues).toEqual([{issue: 'acme/app#20', seats: ['@neo-gpt']}]);
+        expect(await resolve(Array.from({length: 51}, (_, index) => blocked(20 + index)))).toEqual({failures: 1})
+    });
+
+    test('a blocker that is another issue the same merge closes counts as closed before GitHub closes it', () => {
+        expect(normalizeUnblocked(pullRequest([5, [blocked(9, {blockers: [issue(5), issue(6)]})]], [6, []]), identities)).toEqual(UNBLOCKED)
+    });
+
+    test('an unassigned issue, or one whose assignees map to no seat, names nobody to wake', () => {
+        expect(normalizeUnblocked(pullRequest([5, [blocked(9, {assignees: []}), blocked(10, {assignees: ['outsider']})]]), identities)).toEqual([])
+    });
+
+    test('a merge is read once with its author\'s reader, and the read is priced in its pulse', async () => {
+        const {producer, reads, merge} = merging(() => ({rateLimit: {cost: 2}, repository: {pullRequest: pullRequest([5, [blocked(9)]])}}));
+
+        await producer.pulse();
+        await producer.pulse();
+        merge();
+        const state = await producer.pulse();
+
+        expect(reads).toEqual([{owner: 'acme', name: 'app', number: 7}]);
+        expect(state.transitions.map(({kind, unblock}) => [kind, unblock])).toEqual([['merged', {at: '2026-10-02T10:03:00.000Z', issues: UNBLOCKED}]]);
+        expect(state.pulses.at(-1).quota.filter(bucket => bucket.queryHash === openWorkQueryCost(OPEN_WORK_UNBLOCKED).queryHash))
+            .toMatchObject([{calls: 1, cost: 2, failed: 0}]);
+
+        await producer.pulse();
+        expect(reads).toHaveLength(1)
+    });
+
+    test('a failed read retries on the next pulses, three attempts at most, and a merge past its recent window is never read', async () => {
+        const failing = merging(() => { throw new Error('GitHub answered 502') });
+
+        await failing.producer.pulse();
+        await failing.producer.pulse();
+        failing.merge();
+        for (let pulse = 0; pulse < 5; pulse++) await failing.producer.pulse();
+        expect(failing.reads).toHaveLength(3);
+        expect(failing.producer.getState().transitions[0].unblock).toEqual({failures: 3});
+
+        const late = merging(() => { throw new Error('GitHub answered 502') }, pulse => pulse === 4 ? 11 * 60000 : 60000);
+
+        await late.producer.pulse();
+        await late.producer.pulse();
+        late.merge();
+        await late.producer.pulse();
+        await late.producer.pulse();
+        expect(late.reads).toHaveLength(1);
+        expect(late.producer.getState().transitions[0].unblock).toEqual({failures: 1})
+    });
 });
