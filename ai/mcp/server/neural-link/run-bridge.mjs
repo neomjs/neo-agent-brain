@@ -28,6 +28,22 @@ if (options.debug) {
 }
 
 (async () => {
+    let shuttingDown = false;
+
+    const shutdown = async signal => {
+        if (shuttingDown) return;
+
+        shuttingDown = true;
+        logger.info(`Received ${signal}. Shutting down...`);
+        await Bridge.stopServer();
+        process.exit(0);
+    };
+
+    // Registered before the first await: the port answers a tick before startServer() resolves, and a
+    // SIGTERM that meets no handler ends the process by signal instead of exit 0.
+    process.on('SIGINT',  () => void shutdown('SIGINT'));
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
     try {
         // Boot guard: read this bridge's required-env findings at the use site (the entrypoint reads the
         // SSOT; assertConfigFresh is a non-entrypoint that never does), then fail fast on
@@ -53,22 +69,6 @@ if (options.debug) {
 
         await Bridge.ready();
         await Bridge.startServer({host: '127.0.0.1', port: aiConfig.port});
-
-        let shuttingDown = false;
-
-        const shutdown = async signal => {
-            if (shuttingDown) return;
-
-            shuttingDown = true;
-            logger.info(`Received ${signal}. Shutting down...`);
-            await Bridge.stopServer();
-            process.exit(0);
-        };
-
-        // Keep process alive and shut down cleanly on either interactive or process-group termination.
-        process.on('SIGINT',  () => void shutdown('SIGINT'));
-        process.on('SIGTERM', () => void shutdown('SIGTERM'));
-
     } catch (error) {
         console.error('Fatal error starting Bridge:', error);
         process.exit(1);
