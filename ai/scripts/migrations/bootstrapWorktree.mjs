@@ -1593,7 +1593,7 @@ if (isMain) {
         // deterministically rather than via the npm prepare that runBuildAll's installDependencies
         // skips when node_modules already exists.
         const claudeSettings = await initClaudeSettings({claudeDir: path.join(projectRoot, '.claude')});
-        console.log(`✓ Claude settings: ${claudeSettings.action}`);
+        console.log(`✓ Claude settings: ${claudeSettings.action} (${claudeSettings.permissions ?? 'no'} permissions, from ${claudeSettings.templatePath ?? 'no template'})`);
 
         // Authority 2 of the ADR 0040 [not-ticket-ref: decision record] §2.7 split, on the arm an operator actually types. This is the
         // same projection {@link hydrateCurrentWorktree} performs; both surfaces bootstrap a seat, so

@@ -19,6 +19,7 @@ import {test, expect}  from '@playwright/test';
 import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
+import {execFileSync}  from 'child_process';
 import fs              from 'fs';
 import fsExtra         from 'fs-extra';
 import path            from 'path';
@@ -1557,6 +1558,77 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         expect((await initClaudeSettings({
             claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')
         })).action).toBe('silent')
+    });
+
+    test('initClaudeSettings: an installed Engine that disagrees with the target\'s own template never rolls a seat back (#1615)', async () => {
+        const
+            current     = {permissions: {allow: ['current-rule'], ask: []}, hooks: {PreToolUse: [{matcher: '^(Agent|Task)$', hooks: [{type: 'command', command: 'guard'}]}]}},
+            older       = {permissions: {allow: ['current-rule'], ask: ['Agent', 'Task']}, hooks: {}},
+            install     = (name, template) => {
+                const file = path.join(claudeRoot, `${name}.settings.template.json`);
+                fs.writeFileSync(file, JSON.stringify(template));
+                return file
+            },
+            olderPath   = install('installed-older', older),
+            currentPath = install('installed-current', current),
+            read        = dir => JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf-8')),
+            run         = (dir, engineTemplatePath) => initClaudeSettings({claudeDir: dir, logger: recordingLogger(), engineTemplatePath});
+
+        // A seat whose file carries its revision's ask and guard keeps both while the installed Engine is older
+        const seat = buildClaudeDir('seat-ahead-of-install', {template: current, settings: current});
+
+        expect(await run(seat, olderPath)).toEqual({action: 'deferred', templatePath: olderPath, witnessPath: path.join(seat, 'settings.template.json')});
+        expect(read(seat)).toEqual(current);
+
+        // Once the installed Engine declares the target's rules, the seat syncs and a stale rule is withdrawn
+        const behind = buildClaudeDir('seat-behind-install', {template: current, settings: {...current, permissions: {allow: ['stale-rule'], ask: ['Agent']}}});
+
+        expect(await run(behind, currentPath)).toEqual({
+            action: 'wired', templatePath: currentPath, witnessPath: path.join(behind, 'settings.template.json'), permissions: 'template'
+        });
+        expect(read(behind).permissions).toEqual(current.permissions);
+
+        // A consumer's witness is the Engine it installed
+        const consumer  = path.join(claudeRoot, 'consumer-with-installed-engine'),
+              installed = path.join(consumer, 'node_modules/neo.mjs/.claude/settings.template.json');
+
+        fs.mkdirSync(path.dirname(installed), {recursive: true});
+        fs.writeFileSync(installed, JSON.stringify(current));
+        fs.mkdirSync(path.join(consumer, '.claude'));
+        fs.writeFileSync(path.join(consumer, '.claude/settings.json'), JSON.stringify(current));
+
+        expect(await run(path.join(consumer, '.claude'), olderPath)).toEqual({action: 'deferred', templatePath: olderPath, witnessPath: installed});
+
+        // A fresh target takes the installed template whole: one consistent set, never a mix
+        const fresh = buildClaudeDir('fresh-target', {template: current});
+
+        expect(await run(fresh, olderPath)).toEqual({action: 'clone', templatePath: olderPath, permissions: 'template'});
+        expect(read(fresh)).toEqual(older)
+    });
+
+    test('initClaudeSettings: a settings.json git tracks keeps its permission policy, and still takes the template\'s hook events (#1615)', async () => {
+        const
+            root     = path.join(claudeRoot, 'tracked-checkout'),
+            dir      = path.join(root, '.claude'),
+            project  = {permissions: {allow: ['Read'], deny: ['Bash(rm:*)'], ask: ['Write'], defaultMode: 'plan'}, autoMode: {enabled: true}},
+            template = {...TEMPLATE, permissions: {allow: ['Read', 'Write', 'Bash(rm:*)']}};
+
+        fs.mkdirSync(dir, {recursive: true});
+        fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(project, null, 2));
+        fs.writeFileSync(path.join(dir, 'settings.template.json'), JSON.stringify(template, null, 2));
+        execFileSync('git', ['init', '-q'], {cwd: root});
+        execFileSync('git', ['add', '.claude/settings.json'], {cwd: root});
+
+        const run = () => initClaudeSettings({claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')});
+
+        await run();
+
+        const written = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf-8'));
+
+        expect(written.permissions).toEqual(project.permissions);
+        expect(written.autoMode).toEqual(project.autoMode);
+        expect(written.hooks.PreToolUse[0].hooks[0].command).toContain('rgReplaceGuardHook.mjs');
+        expect(await run()).toMatchObject({action: 'silent', permissions: 'tracked'})
     });
 
     test('initClaudeSettings: no template → skip-no-template (no settings.json written)', async () => {

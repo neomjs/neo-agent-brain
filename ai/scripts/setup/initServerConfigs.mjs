@@ -1115,13 +1115,16 @@ export async function assertConfigFresh({
  * `permissions` replace the active ones whole. Everything else stays: hook events the template does
  * not carry, `autoMode` (a seat's own, which no template carries) and every other key. A rule local to
  * one checkout belongs in `.claude/settings.local.json`, which Claude Code merges over this file.
+ * With `permissions: false` the active permissions stay, for a file that is not the template's to set.
  * Returns the merged settings plus a `changed` flag, so an idempotent re-run writes nothing.
  *
  * @param {Object} [activeSettings={}]   Parsed `.claude/settings.json` (or `{}` when absent).
  * @param {Object} [templateSettings={}] Parsed `.claude/settings.template.json`.
+ * @param {Object} [options]
+ * @param {Boolean} [options.permissions=true] Whether the template's `permissions` replace the active ones.
  * @returns {{settings: Object, changed: Boolean}}
  */
-export function mergeClaudeSettings(activeSettings = {}, templateSettings = {}) {
+export function mergeClaudeSettings(activeSettings = {}, templateSettings = {}, {permissions = true} = {}) {
     const
         settings      = {...activeSettings},
         templateHooks = templateSettings.hooks;
@@ -1130,7 +1133,7 @@ export function mergeClaudeSettings(activeSettings = {}, templateSettings = {}) 
         settings.hooks = {...(activeSettings.hooks || {}), ...templateHooks}
     }
 
-    if (templateSettings.permissions) {
+    if (permissions && templateSettings.permissions) {
         settings.permissions = structuredClone(templateSettings.permissions)
     }
 
@@ -1197,12 +1200,35 @@ async function readPackageName(repoRoot) {
 }
 
 /**
- * @summary Materializes the installed Engine `.claude/settings.template.json` into the gitignored
- * `.claude/settings.json`, the Claude analog of {@link initConfigs} / {@link initTier1Config}. A
- * missing active file is cloned whole from the template. An existing one takes the template's hook
- * events and `permissions` ({@link mergeClaudeSettings}) and keeps every other key, `autoMode`
- * included, so a rule a merged template adds or withdraws reaches the seat the next time it is
- * hydrated (`npm prepare`, or a seat Start). A rule local to one checkout belongs in
+ * @summary Whether git tracks a file, so its repository owns the content. Outside a work tree, or
+ * without git, nothing is tracked.
+ * @param {String} filePath
+ * @returns {Boolean}
+ * @private
+ */
+function isTrackedByGit(filePath) {
+    try {
+        execFileSync('git', ['ls-files', '--error-unmatch', '--', path.basename(filePath)], {cwd: path.dirname(filePath), stdio: 'ignore'});
+        return true
+    } catch {
+        return false
+    }
+}
+
+/**
+ * @summary Materializes the installed Engine `.claude/settings.template.json` into the target's
+ * `.claude/settings.json`, the Claude analog of {@link initConfigs} / {@link initTier1Config}.
+ *
+ * The installed Engine (or a template the caller names) is the only source: a checked-out branch
+ * never writes its own policy. The target's own revision is the witness that the source is current:
+ * its tracked `.claude/settings.template.json`, else the template of the Engine it installed
+ * (`node_modules/neo.mjs`). A missing active file is cloned whole. An existing one is synced only while
+ * the witness declares the same hook events and permissions as the source; until then it stays as it
+ * is (`deferred`), so an older installed Engine never rolls a seat back. A sync takes the template's
+ * hook events and, unless git tracks the file, its `permissions` ({@link mergeClaudeSettings}); a
+ * repository's tracked settings keep their own policy. Every other key stays, `autoMode` included. So a
+ * rule a merged template adds or withdraws reaches a seat at its next hydration (`npm prepare`, or a
+ * seat Start) once the installed Engine carries it. A rule local to one checkout belongs in
  * `.claude/settings.local.json`.
  * The target directory is created here because `npm prepare` also runs after `npm ci --ignore-scripts`,
  * where the Skills postinstall has not yet created `.claude/skills`; config materialization cannot
@@ -1215,45 +1241,68 @@ async function readPackageName(repoRoot) {
  * @param {Object} [options]
  * @param {String} [options.claudeDir] `.claude/` dir; defaults to `<repo>/.claude`. Override for tests.
  *     Its parent is the target repository, whose package name decides {@link retargetClaudeHookCommands}.
- * @param {String} [options.templatePath] Installed Engine template; override for tests.
+ * @param {String} [options.templatePath] A template the caller names, which needs no witness.
+ * @param {String} [options.engineTemplatePath] The installed Engine template; override for tests.
  * @param {Object} [options.logger=console] Log sink; injectable for tests.
- * @returns {Promise<{action: String}>} `action` is one of `clone` / `wired` / `silent` / `skip-no-template`.
+ * @returns {Promise<{action: String, templatePath?: String, witnessPath?: String, permissions?: String}>}
+ *     `action` is one of `clone` / `wired` / `silent` / `deferred` / `skip-no-template`. `templatePath`
+ *     names the template read, `witnessPath` the target's own one compared with it, and `permissions`
+ *     whose the file's are: `template`, or `tracked` (its repository's).
  */
 export async function initClaudeSettings({
-    claudeDir   = path.join(cwd, '.claude'),
-    templatePath = defaultClaudeSettingsTemplate,
-    logger      = console
+    claudeDir          = path.join(cwd, '.claude'),
+    templatePath       = null,
+    engineTemplatePath = defaultClaudeSettingsTemplate,
+    logger             = console
 } = {}) {
-    const activePath = path.join(claudeDir, 'settings.json');
+    const
+        activePath = path.join(claudeDir, 'settings.json'),
+        targetRoot = path.dirname(claudeDir),
+        source     = templatePath ?? engineTemplatePath;
 
-    if (!fs.existsSync(templatePath)) {
-        logger.warn(`[Neo AI] Claude settings template not found at ${templatePath}; skipping initialization.`);
+    if (!fs.existsSync(source)) {
+        logger.warn(`[Neo AI] Claude settings template not found at ${source}; skipping initialization.`);
         return {action: 'skip-no-template'};
     }
 
     await fs.mkdir(claudeDir, {recursive: true});
 
-    const templateSettings = retargetClaudeHookCommands(
-        JSON.parse(await fs.readFile(templatePath, 'utf-8')),
-        {targetPackageName: await readPackageName(path.dirname(claudeDir))}
-    );
+    const
+        targetPackageName = await readPackageName(targetRoot),
+        readTemplate      = async file => retargetClaudeHookCommands(JSON.parse(await fs.readFile(file, 'utf-8')), {targetPackageName}),
+        templateSettings  = await readTemplate(source);
 
     if (!fs.existsSync(activePath)) {
         await fs.writeFile(activePath, JSON.stringify(templateSettings, null, 2) + '\n', 'utf-8');
-        logger.log('[Neo AI] .claude/settings.json missing. Materialized from template.');
-        return {action: 'clone'};
+        logger.log(`[Neo AI] .claude/settings.json missing. Materialized from ${source}.`);
+        return {action: 'clone', templatePath: source, permissions: 'template'};
     }
 
-    const activeSettings      = JSON.parse(await fs.readFile(activePath, 'utf-8'));
-    const {settings, changed} = mergeClaudeSettings(activeSettings, templateSettings);
+    const
+        witnessPath = templatePath ? undefined : [
+            path.join(claudeDir, 'settings.template.json'),
+            path.join(targetRoot, 'node_modules', ENGINE_PACKAGE_NAME, '.claude/settings.template.json')
+        ].find(file => fs.existsSync(file) && path.resolve(file) !== path.resolve(source)),
+        rules       = ({hooks = null, permissions = null}) => JSON.stringify({hooks, permissions});
+
+    if (witnessPath && rules(await readTemplate(witnessPath)) !== rules(templateSettings)) {
+        logger.log(`[Neo AI] Kept .claude/settings.json: ${source} and the target's ${witnessPath} declare different rules.`);
+        return {action: 'deferred', templatePath: source, witnessPath};
+    }
+
+    const
+        permissions         = isTrackedByGit(activePath) ? 'tracked' : 'template',
+        activeSettings      = JSON.parse(await fs.readFile(activePath, 'utf-8')),
+        {settings, changed} = mergeClaudeSettings(activeSettings, templateSettings, {permissions: permissions === 'template'}),
+        result              = {templatePath: source, ...(witnessPath ? {witnessPath} : {}), permissions};
 
     if (!changed) {
-        return {action: 'silent'};
+        return {action: 'silent', ...result};
     }
 
     await fs.writeFile(activePath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
-    logger.log('[Neo AI] Synced .claude/settings.json with its template (hook events, permissions).');
-    return {action: 'wired'};
+    logger.log(`[Neo AI] Synced .claude/settings.json with ${source} (hook events${permissions === 'template' ? ', permissions' : ''}).`);
+    return {action: 'wired', ...result};
 }
 
 /**
