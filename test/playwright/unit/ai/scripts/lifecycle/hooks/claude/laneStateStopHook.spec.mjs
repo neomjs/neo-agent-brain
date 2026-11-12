@@ -5,11 +5,16 @@ import {test, expect} from '@playwright/test';
 
 import {
     WRAP_UP_TOOL_NAME,
+    decideTurnOperatorAway,
     extractLatestHumanUserMessageFromJsonl,
     extractTurnWrapUpAskFromJsonl,
     readOperatorPresenceRecord
 } from '../../../../../../../../ai/scripts/lifecycle/hooks/claude/laneStateStopHook.mjs';
-import {decideDeferenceStopHookAction, decideOperatorAway} from '../../../../../../../../ai/scripts/lifecycle/stopHookDecision.mjs';
+import {
+    classifyPromptingContext,
+    decideDeferenceStopHookAction,
+    decideOperatorAway
+} from '../../../../../../../../ai/scripts/lifecycle/stopHookDecision.mjs';
 
 const prompt     = text => ({type: 'user', message: {role: 'user', content: text}}),
       reply      = text => ({type: 'assistant', message: {role: 'assistant', content: [{type: 'text', text}]}}),
@@ -139,5 +144,35 @@ test.describe('the operator presence record at the adapter seam (#1640)', () => 
         // Without a record the same operator-prompted turn is dialogue, and its ask asks nothing of him
         fs.rmSync(file);
         expect(decide(handoff)).toBeNull();
+    });
+
+    test('an operator message past the grace ends the away whatever it says; a [WAKE] or a task notification never does', () => {
+        const record = awayFrom('2026-11-12T22:00:00.000Z'),
+              back   = 'Nightshift is over; I am back, show me the result',
+              queued = (text, timestamp) => ({type: 'attachment', timestamp, attachment: {
+                  type: 'queued_command', commandMode: 'prompt', prompt: text, source_uuid: 'uuid-1', origin: {kind: 'human'}
+              }}),
+              notice = timestamp => ({type: 'attachment', timestamp, attachment: {
+                  type: 'queued_command', commandMode: 'task-notification', prompt: '<task-notification>done</task-notification>'
+              }}),
+              away   = (records, stopHookActive = false) => {
+                  const message = extractLatestHumanUserMessageFromJsonl(jsonl(records)),
+                        context = classifyPromptingContext({stopHookActive, promptingText: message.text, promptingTextHumanFiltered: true});
+
+                  return decideTurnOperatorAway(record, message, context, {graceMs: 600000, now: Date.parse('2026-11-12T22:40:00Z')})
+              };
+
+        // the return, typed as a prompt, queued mid-turn, or reaching a chained stop
+        expect(away([at(prompt(back), '2026-11-12T22:30:00.000Z'), reply('Here it is.')])).toBe(false);
+        expect(away([prompt('[WAKE] route-review'), reply('Routing.'), queued(back, '2026-11-12T22:30:00.000Z')])).toBe(false);
+        expect(away([at(prompt(back), '2026-11-12T22:30:00.000Z'), reply('Here it is.'), feedback(), reply('Done.')], true)).toBe(false);
+        expect(away([at(prompt('I am back, show me the result'), '2026-11-12T22:30:00.000Z')])).toBe(false);
+
+        // the good-night message inside the grace is the handoff, not a return
+        expect(away([at(prompt('good night, Nightshift on'), '2026-11-12T22:05:00.000Z')])).toBe(true);
+
+        // a turn the operator did not prompt never ends the away
+        expect(away([at(prompt('[WAKE] route-review · Brain #1648'), '2026-11-12T22:30:00.000Z')])).toBe(true);
+        expect(away([at(prompt(back), '2026-11-12T22:30:00.000Z'), reply('Done.'), notice('2026-11-12T22:35:00.000Z')])).toBe(true);
     });
 });

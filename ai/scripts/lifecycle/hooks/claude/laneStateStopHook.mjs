@@ -791,6 +791,24 @@ export function readOperatorPresenceRecord(filePath) {
 }
 
 /**
+ * @summary This turn-end's "away" reading by the Fleet's record. The record decides when there is one, and the
+ * prompting message ends an away when the operator wrote it, whatever it says: "Nightshift is over, I am back"
+ * is a return although its wording reads as a handoff. A `[WAKE]` delivery, synthetic noise or an unattested
+ * chain never ends one, and the grace keeps the good-night message sent with the switch from ending it.
+ * @param {Object|null} record The host record ({@link readOperatorPresenceRecord}).
+ * @param {{timestamp: (String|null)}} promptingMessage From {@link extractLatestHumanUserMessageFromJsonl}.
+ * @param {{operatorAuthored: Boolean}} promptContext From `classifyPromptingContext`.
+ * @param {Object} [options]
+ * @param {Number} [options.graceMs=0] `stopHook.operatorPresenceGraceMs`.
+ * @param {Number} [options.now=Date.now()]
+ * @returns {Boolean|null} `null` without a record.
+ * @protected
+ */
+export function decideTurnOperatorAway(record, promptingMessage, {operatorAuthored}, {graceMs = 0, now = Date.now()} = {}) {
+    return decideOperatorAway(record, {graceMs, now, lastOperatorMessageAt: operatorAuthored ? promptingMessage.timestamp : null})
+}
+
+/**
  * @summary Resolves the agent's FINAL assistant message text — the surface the lane-state block is
  * emitted into. Prefers the Stop payload's `last_assistant_message` (already-decoded; a string or a
  * message object); falls back to JSONL-parsing `transcript_path` for the last assistant text. Raw
@@ -892,10 +910,7 @@ async function main() {
     // The Fleet's record of the operator's presence decides "away" when there is one; the prompting
     // classifier above stays the reading without one. Only an operator message can end an away.
     const presenceRecord = readOperatorPresenceRecord(OPERATOR_PRESENCE_PATH),
-          operatorAway   = decideOperatorAway(presenceRecord, {
-              graceMs              : OPERATOR_PRESENCE_GRACE_MS,
-              lastOperatorMessageAt: operatorInLoop ? promptingMessage.timestamp : null
-          });
+          operatorAway   = decideTurnOperatorAway(presenceRecord, promptingMessage, promptContext, {graceMs: OPERATOR_PRESENCE_GRACE_MS});
 
     const deferenceDecision = decideDeferenceStopHookAction(finalText, {
         operatorInLoop,

@@ -93,18 +93,29 @@ export function isSyntheticPromptingText(text = '') {
 }
 
 /**
- * @summary The shared operator-dialogue text gates — non-empty, not a `[WAKE]` autonomous injection,
- * not synthetic lifecycle noise, and not an autonomous-handoff delegation. This is the single
+ * @summary Whether the operator wrote the prompting text: non-empty, not a `[WAKE]` autonomous injection
+ * and not synthetic lifecycle noise. Its wording is not read, so a handoff ("Nightshift is over") counts:
+ * this answers who wrote it, {@link isOperatorDialogueText} what it asks for. Pure + total; a non-string
+ * fails closed.
+ * @param {String} text Prompting-text candidate.
+ * @returns {Boolean}
+ */
+export function isOperatorAuthoredText(text = '') {
+    return typeof text === 'string' && !!text.trim() &&
+        !/^\s*\[WAKE\]/.test(text) &&
+        !isSyntheticPromptingText(text);
+}
+
+/**
+ * @summary The shared operator-dialogue text gates — an operator-authored text
+ * ({@link isOperatorAuthoredText}) that is not an autonomous-handoff delegation. This is the single
  * authority both the turn-prompt path and the mid-chain path classify against, so the two
  * paths cannot drift on what counts as dialogue. Pure + total; a non-string fails closed.
  * @param {String} text Prompting-text candidate.
  * @returns {Boolean}
  */
 export function isOperatorDialogueText(text = '') {
-    return typeof text === 'string' && !!text.trim() &&
-        !/^\s*\[WAKE\]/.test(text) &&
-        !isSyntheticPromptingText(text) &&
-        !detectAutonomousHandoffPrompt(text).active;
+    return isOperatorAuthoredText(text) && !detectAutonomousHandoffPrompt(text).active;
 }
 
 /**
@@ -123,15 +134,19 @@ export function isOperatorDialogueText(text = '') {
  * @param {String} [signals.promptingText=''] Newest prompting-boundary candidate text.
  * @param {Boolean} [signals.promptingTextHumanFiltered=false] Adapter attestation that `promptingText`
  * came from a mechanically human-filtered walk (non-meta, non-marker records only). Fail-closed default.
- * @returns {{operatorInLoop: Boolean, midChainOperator: Boolean, autonomousHandoff: Boolean, handoffReason: String|null, handoffWindowMs: Number|null}}
+ * @returns {{operatorInLoop: Boolean, operatorAuthored: Boolean, midChainOperator: Boolean, autonomousHandoff: Boolean, handoffReason: String|null, handoffWindowMs: Number|null}}
+ * `operatorAuthored` says the operator wrote the prompting text, whatever it asks for, under the same
+ * chain attestation; an away ends on it.
  */
 export function classifyPromptingContext({stopHookActive, promptingText = '', promptingTextHumanFiltered = false}) {
     const handoff          = detectAutonomousHandoffPrompt(promptingText),
           dialogueText     = isOperatorDialogueText(promptingText),
+          attested         = !stopHookActive || promptingTextHumanFiltered,
           midChainOperator = !!stopHookActive && promptingTextHumanFiltered && dialogueText;
 
     return {
         operatorInLoop   : (!stopHookActive && dialogueText) || midChainOperator,
+        operatorAuthored : attested && isOperatorAuthoredText(promptingText),
         midChainOperator,
         autonomousHandoff: handoff.active,
         handoffReason    : handoff.reason,

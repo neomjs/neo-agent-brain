@@ -9,6 +9,7 @@ import {
     detectAutonomousHandoffPrompt,
     evaluateCleanTerminalAcceptance,
     extractAutonomousHandoffWindowMs,
+    isOperatorAuthoredText,
     isOperatorDialogueText,
     isOperatorInLoop,
     isSyntheticPromptingText,
@@ -378,6 +379,25 @@ test.describe('ai/scripts/lifecycle/stopHookDecision — #14440 mid-chain operat
         expect(isOperatorDialogueText('nightshift mode for the next 5h, freely choose')).toBe(false);
         expect(isOperatorDialogueText(null)).toBe(false);
         expect(isOperatorDialogueText(undefined)).toBe(false);
+    });
+
+    test('isOperatorAuthoredText and operatorAuthored: who wrote it, never what it asks for (#1640)', () => {
+        const back = 'Nightshift is over; I am back, show me the result';
+
+        expect(isOperatorAuthoredText(back)).toBe(true);
+        expect(isOperatorAuthoredText('nightshift mode for the next 5h, freely choose')).toBe(true);
+        expect(isOperatorAuthoredText('[WAKE][priority:high] 2 events')).toBe(false);
+        expect(isOperatorAuthoredText('<hook_prompt hook_run_id="stop:1">noise</hook_prompt>')).toBe(false);
+        expect(isOperatorAuthoredText('   ')).toBe(false);
+        expect(isOperatorAuthoredText(null)).toBe(false);
+
+        // a handoff-worded return is authored but not dialogue, so the handoff classifier keeps its scope
+        expect(classifyPromptingContext({stopHookActive: false, promptingText: back}))
+            .toMatchObject({operatorAuthored: true, operatorInLoop: false, autonomousHandoff: true});
+        expect(classifyPromptingContext({stopHookActive: true, promptingText: back, promptingTextHumanFiltered: true}).operatorAuthored)
+            .toBe(true);
+        // a chain without the human-filter attestation stays fail-closed
+        expect(classifyPromptingContext({stopHookActive: true, promptingText: back}).operatorAuthored).toBe(false);
     });
 
     test('chained + attested + genuine operator text → live dialogue (the Defect-B AC)', () => {
