@@ -3313,6 +3313,40 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             }
         });
 
+        test('verbose rows carry each seat\'s capacity reading, and a pool reads its newest windows across the seats that share it', async () => {
+            const TurnPresenceService = (await import('../../../../../../ai/services/memory-core/TurnPresenceService.mjs')).default,
+                  asSeat              = (id, fn) => RequestContextService.run({userId: normalizeUserId(id), agentIdentityNodeId: id}, fn),
+                  poolKey             = 'c'.repeat(32),
+                  resetsAt            = iso(T0ms + 24 * 60 * 60 * 1000),
+                  report              = (id, observedAt, windows) => asSeat(id, () => TurnPresenceService.recordTurnPresence({
+                      action  : 'progress',
+                      capacity: {observedAt, source: 'spec', poolKey, windows},
+                      now     : observedAt
+                  }));
+
+            seedAgent('@neo-pool-a');
+            seedAgent('@neo-pool-b');
+            seedAgent('@neo-no-reading');
+            // A reported the week's reset an hour ago; B's newer hook sample carries percentages only.
+            await report('@neo-pool-a', iso(T0ms - 60 * 60 * 1000), [{kind: 'weekly', percentUsed: 80, resetsAt}]);
+            await report('@neo-pool-b', iso(T0ms - 10 * 60 * 1000), [{kind: 'weekly', percentUsed: 91}, {kind: 'five-hour', percentUsed: 30}]);
+
+            const {agents, pools} = await WakeSubscriptionService.whoIsOnline({verbose: true, now: new Date(T0)}),
+                  row             = identity => agents.find(agent => agent.identity === identity),
+                  byKind          = Object.fromEntries(pools[poolKey].windows.map(window => [window.kind, window]));
+
+            expect(row('@neo-pool-a').capacity).toMatchObject({state: 'observed', poolKey});
+            expect(row('@neo-no-reading').capacity).toEqual({state: 'unobserved'});
+            expect([...pools[poolKey].members].sort()).toEqual(['@neo-pool-a', '@neo-pool-b']);
+            // The pool reads the week from B's newer 91 %, and keeps the reset A supplied.
+            expect(byKind.weekly).toMatchObject({percentUsed: 91, resetsAt, observedAt: iso(T0ms - 10 * 60 * 1000)});
+            expect(byKind['five-hour']).toMatchObject({percentUsed: 30});
+
+            // The terse answer does not pay for the read.
+            const terse = await WakeSubscriptionService.whoIsOnline({now: new Date(T0)});
+            expect(terse.pools).toBeUndefined();
+        });
+
         test('fresh add_memory + fresh beacon → activity speaks the verdict, and the beacon OBSERVATION still reaches the row (verbose)', async () => {
             // The coexistence case the band vocabulary needs: observation and verdict precedence
             // are DIFFERENT concerns. An actively-working agent (fresh add_memory AND a fresh
