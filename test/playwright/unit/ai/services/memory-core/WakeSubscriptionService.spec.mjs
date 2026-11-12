@@ -3347,6 +3347,42 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(terse.pools).toBeUndefined();
         });
 
+        test('the throttle reader gives each member its pool\'s newest windows: one exhausted week binds the plan, nothing crosses a pool or a capped model', async () => {
+            const TurnPresenceService            = (await import('../../../../../../ai/services/memory-core/TurnPresenceService.mjs')).default,
+                  {createCapacityThrottleReader} = await import('../../../../../../ai/services/fleet/capacityThrottleState.mjs'),
+                  asSeat                         = (id, fn) => RequestContextService.run({userId: normalizeUserId(id), agentIdentityNodeId: id}, fn),
+                  planA                          = 'd'.repeat(32),
+                  planB                          = 'e'.repeat(32),
+                  // The reader judges at call time, so the reset lies ahead of the real clock.
+                  resetsAt                       = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                  report                         = (id, minutesAgo, capacity) => asSeat(id, () => TurnPresenceService.recordTurnPresence({
+                      action  : 'progress',
+                      capacity: {observedAt: iso(T0ms - minutesAgo * 60 * 1000), source: 'spec', ...capacity},
+                      now     : iso(T0ms - minutesAgo * 60 * 1000)
+                  }));
+
+            ['@neo-plan-a1', '@neo-plan-a2', '@neo-plan-b1', '@neo-plan-b2', '@neo-plan-none'].forEach(id => seedAgent(id));
+
+            // a1 saw the shared week at 20 % an hour ago; a2's newer sample finds it exhausted.
+            await report('@neo-plan-a1', 60, {poolKey: planA, model: 'claude-opus-5-5',  windows: [{kind: 'weekly', percentUsed: 20}]});
+            await report('@neo-plan-a2', 10, {poolKey: planA, model: 'claude-fable-5-2', windows: [{kind: 'weekly', percentUsed: 100, resetsAt}]});
+            // Plan B: Fable is capped, the week is not.
+            await report('@neo-plan-b1', 10, {poolKey: planB, model: 'claude-opus-5-5',  windows: [{kind: 'weekly', percentUsed: 40}]});
+            await report('@neo-plan-b2', 5,  {poolKey: planB, model: 'claude-fable-5-2', windows: [{kind: 'weekly', percentUsed: 45}, {kind: 'weekly-model', model: 'fable', percentUsed: 100, resetsAt}]});
+
+            const payload = await WakeSubscriptionService.whoIsOnline({verbose: true, now: new Date(T0)}),
+                  verdict = createCapacityThrottleReader(async () => payload),
+                  seats   = ['neo-plan-a1', 'neo-plan-a2', 'neo-plan-b1', 'neo-plan-b2', 'neo-plan-none'];
+
+            expect(Object.fromEntries(await Promise.all(seats.map(async id => [id, await verdict({id})])))).toEqual({
+                'neo-plan-a1'  : 'rate-limited',
+                'neo-plan-a2'  : 'rate-limited',
+                'neo-plan-b1'  : 'none',
+                'neo-plan-b2'  : 'rate-limited',
+                'neo-plan-none': 'unknown'
+            });
+        });
+
         test('fresh add_memory + fresh beacon → activity speaks the verdict, and the beacon OBSERVATION still reaches the row (verbose)', async () => {
             // The coexistence case the band vocabulary needs: observation and verdict precedence
             // are DIFFERENT concerns. An actively-working agent (fresh add_memory AND a fresh

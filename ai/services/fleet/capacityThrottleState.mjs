@@ -6,7 +6,8 @@
  * all-models window, or a weekly window that caps the model the seat runs. It is `none` below that.
  * It is `unknown` when the reading is unobserved or stale, or when no binding window is still
  * current, because a percent observed before its window reset says nothing about now. The reading is
- * the one `who_is_online` projects per seat, so the axis needs no second source and no credential.
+ * the one `who_is_online` projects per seat, with its pool's newest windows (`pools`), so the axis
+ * needs no second source and no credential.
  */
 import {presenceIdentityForAgent} from './fleetPresenceStateAdapter.mjs';
 
@@ -39,6 +40,29 @@ export function throttleStateFromCapacity(capacity, now = Date.now()) {
 }
 
 /**
+ * @summary A seat's observed reading with its pool's newest windows in place of its own: every window
+ * is the account's, so a member that sampled an hour ago reads the week another member found exhausted.
+ *
+ * The pool's windows are the newest fresh ones any member reported, the seat's own included. The seat
+ * keeps its model, so a capped model still binds only the seats that run it. A stale or unobserved
+ * reading stays as it is: the seat may have left the pool since.
+ *
+ * @param {Object|undefined} capacity A `who_is_online` row's `capacity`.
+ * @param {Object|undefined} pool The answer's `pools` entry for that reading's `poolKey`.
+ * @returns {Object|undefined}
+ */
+export function withPoolWindows(capacity, pool) {
+    if (capacity?.state !== 'observed' || !pool?.windows?.length) return capacity;
+
+    const key     = window => `${window.kind}:${window.model ?? ''}`,
+          windows = new Map(capacity.windows.map(window => [key(window), window]));
+
+    pool.windows.forEach(window => windows.set(key(window), window));
+
+    return {...capacity, windows: [...windows.values()]}
+}
+
+/**
  * @summary Builds the `resolveThrottleState` reader the throttle adapter injects, over the Fleet's
  * presence reader.
  *
@@ -53,7 +77,10 @@ export function createCapacityThrottleReader(readPresence) {
     let rows = null;
 
     const read = () => rows ??= readPresence()
-        .then(payload => new Map((payload?.agents ?? []).map(row => [row.identity, row.capacity])))
+        .then(payload => new Map((payload?.agents ?? []).map(row => [
+            row.identity,
+            withPoolWindows(row.capacity, payload.pools?.[row.capacity?.poolKey])
+        ])))
         .finally(() => setTimeout(() => { rows = null }, 0));
 
     return async agent => throttleStateFromCapacity((await read()).get(presenceIdentityForAgent(agent)))

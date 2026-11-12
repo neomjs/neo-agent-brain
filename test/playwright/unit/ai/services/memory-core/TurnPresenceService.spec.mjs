@@ -419,6 +419,43 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
         expect(weekly('2026-06-25T20:30:00.000Z')).toMatchObject({percentUsed: 3, resetsAt: null});
     });
 
+    test('two pool keys are two accounts: a newer report from another pool starts the windows afresh, an older one changes nothing', async () => {
+        const poolA  = 'a'.repeat(32),
+              poolB  = 'b'.repeat(32),
+              report = (observedAt, windows, extra = {}) => asAgent(() => TurnPresenceService.recordTurnPresence({
+                  action  : 'progress',
+                  capacity: {observedAt, source: 'spec', windows, ...extra},
+                  now     : observedAt
+              })),
+              read   = () => TurnPresenceService.getCapacity('@agent-turn', '2026-06-19T10:30:00.000Z'),
+              shown  = () => read().windows.map(window => [window.kind, window.percentUsed, window.resetsAt]);
+
+        await report('2026-06-19T06:00:00.000Z', [
+            {kind: 'weekly',       percentUsed: 70,  resetsAt: '2026-06-25T19:00:00.000Z'},
+            {kind: 'weekly-model', percentUsed: 100, resetsAt: '2026-06-25T19:00:00.000Z', model: 'fable'}
+        ], {poolKey: poolA, model: 'claude-fable-5-2'});
+
+        // The seat moves to pool B: neither pool A's capped model nor its reset comes along.
+        await report('2026-06-19T10:00:00.000Z', [{kind: 'weekly', percentUsed: 10}], {poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(read()).toMatchObject({observedAt: '2026-06-19T10:00:00.000Z', poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(shown()).toEqual([['weekly', 10, null]]);
+
+        // A pool-A report delivered late describes an account the seat has left.
+        await report('2026-06-19T08:00:00.000Z', [{kind: 'five-hour', percentUsed: 50}, {kind: 'weekly', percentUsed: 80}], {poolKey: poolA, model: 'claude-fable-5-2'});
+        expect(read()).toMatchObject({observedAt: '2026-06-19T10:00:00.000Z', poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(shown()).toEqual([['weekly', 10, null]]);
+
+        // A late report from the same pool still adds a window the newer one lacks, and leaves the newer metadata.
+        await report('2026-06-19T09:00:00.000Z', [{kind: 'five-hour', percentUsed: 40}], {poolKey: poolB, model: 'claude-haiku-5-5'});
+        expect(read()).toMatchObject({observedAt: '2026-06-19T10:00:00.000Z', poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(shown()).toEqual([['weekly', 10, null], ['five-hour', 40, null]]);
+
+        // The seat's own usage report names no pool: the same seat on the same account, so it merges.
+        await report('2026-06-19T10:15:00.000Z', [{kind: 'weekly', percentUsed: 12, resetsAt: '2026-06-25T19:00:00.000Z'}]);
+        expect(read()).toMatchObject({observedAt: '2026-06-19T10:15:00.000Z', poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(shown()).toEqual([['weekly', 12, '2026-06-25T19:00:00.000Z'], ['five-hour', 40, null]]);
+    });
+
     test('a malformed reading refuses the call before anything is written, and an account key never passes as a pool key', async () => {
         const attempt = capacity => () => asAgent(() => TurnPresenceService.recordTurnPresence({
             action: 'start',

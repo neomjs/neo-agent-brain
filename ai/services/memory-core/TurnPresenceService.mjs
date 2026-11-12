@@ -357,7 +357,11 @@ class TurnPresenceService extends Base {
      * never with an older observation than the one stored. A window reported without `resetsAt` keeps
      * the stored reset while that reset still lies ahead of the new observation: the hook's samples
      * carry no reset instants, so without the carry-over every sample would erase what the seat's own
-     * usage report supplied.
+     * usage report supplied. The node's model, pool and source are the newest observation's.
+     *
+     * Two different pool keys are two accounts, whose windows never mix: a newer report from another
+     * pool replaces every window, and an older one is dropped. A report without a pool key is the
+     * seat's own and merges.
      *
      * @param {String} agentIdentity AgentIdentity node id.
      * @param {Object} reading A reading from {@link #_normalizeCapacity}.
@@ -365,9 +369,14 @@ class TurnPresenceService extends Base {
      * @protected
      */
     _writeCapacity(agentIdentity, reading, nowDate) {
-        const current = this._findCapacity(agentIdentity) || {},
-              key     = window => `${window.kind}:${window.model ?? ''}`,
-              merged  = new Map((current.windows || []).map(window => [key(window), window]));
+        const current  = this._findCapacity(agentIdentity) || {},
+              newer    = !current.observedAt || Date.parse(reading.observedAt) >= Date.parse(current.observedAt),
+              samePool = !reading.poolKey || !current.poolKey || reading.poolKey === current.poolKey;
+
+        if (!samePool && !newer) return;
+
+        const key    = window => `${window.kind}:${window.model ?? ''}`,
+              merged = new Map(samePool ? (current.windows || []).map(window => [key(window), window]) : []);
 
         for (const window of reading.windows) {
             const previous = merged.get(key(window));
@@ -379,7 +388,7 @@ class TurnPresenceService extends Base {
             merged.set(key(window), carriesReset ? {...window, resetsAt: previous.resetsAt} : window);
         }
 
-        const newest = current.observedAt && Date.parse(current.observedAt) > Date.parse(reading.observedAt) ? current : reading;
+        const [newest, older] = newer ? [reading, current] : [current, reading];
 
         GraphService.upsertNode({
             id         : this._buildCapacityId(agentIdentity),
@@ -390,8 +399,8 @@ class TurnPresenceService extends Base {
                 agentIdentity,
                 observedAt  : newest.observedAt,
                 source      : newest.source,
-                model       : reading.model   ?? current.model   ?? null,
-                poolKey     : reading.poolKey ?? current.poolKey ?? null,
+                model       : newest.model   ?? older.model   ?? null,
+                poolKey     : newest.poolKey ?? older.poolKey ?? null,
                 windows     : [...merged.values()],
                 updatedAt   : nowDate.toISOString(),
                 userId      : normalizeUserId(agentIdentity),
