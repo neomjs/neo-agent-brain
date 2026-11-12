@@ -19,8 +19,10 @@ import {test, expect}  from '@playwright/test';
 import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
+import {execFileSync}  from 'child_process';
 import fs              from 'fs';
 import fsExtra         from 'fs-extra';
+import os              from 'os';
 import path            from 'path';
 import {createRequire} from 'node:module';
 
@@ -1337,7 +1339,7 @@ test.describe('assertConfigFresh — boot freshness guard (#13560)', () => {
 });
 
 test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () => {
-    let initClaudeSettings, mergeClaudeHooks, retargetClaudeHookCommands;
+    let initClaudeSettings, mergeClaudeSettings, retargetClaudeHookCommands;
     let claudeRoot;
 
     const recordingLogger = () => {
@@ -1354,7 +1356,7 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
     // So a reader took this fixture's Stop entry as proof the Engine still owned no-hold wiring, and
     // every assertion here stayed green through the cut that removed it.
     //
-    // The merge tests are legitimate as they stand — `mergeClaudeHooks` is a pure function and this
+    // The merge tests are legitimate as they stand — `mergeClaudeSettings` is a pure function and this
     // is its input. What was missing is anything reading the real file, which the final describe in
     // this suite now does.
     const TEMPLATE = {
@@ -1401,7 +1403,7 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
     const readTargetSettings = root => JSON.parse(fs.readFileSync(path.join(root, '.claude/settings.json'), 'utf-8'));
 
     test.beforeAll(async () => {
-        ({initClaudeSettings, mergeClaudeHooks, retargetClaudeHookCommands} =
+        ({initClaudeSettings, mergeClaudeSettings, retargetClaudeHookCommands} =
             await import('../../../../../../ai/scripts/setup/initServerConfigs.mjs'));
         claudeRoot = path.resolve(process.cwd(), 'tmp', `init-claude-settings-${process.pid}-${Date.now()}`);
         fs.mkdirSync(claudeRoot, {recursive: true});
@@ -1411,25 +1413,46 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         if (claudeRoot && fs.existsSync(claudeRoot)) fs.rmSync(claudeRoot, {recursive: true, force: true});
     });
 
-    test('mergeClaudeHooks: ensures template hooks, preserves other keys + local-only events', () => {
-        const active              = {permissions: {allow: ['local-perm']}, hooks: {PostToolUse: [{hooks: []}]}};
-        const {settings, changed} = mergeClaudeHooks(active, TEMPLATE);
+    test('mergeClaudeSettings: wires template hook events and keeps an event and a key the template does not own', () => {
+        const active              = {env: {SEAT: '1'}, hooks: {PostToolUse: [{hooks: []}]}};
+        const {settings, changed} = mergeClaudeSettings(active, TEMPLATE);
 
         expect(changed).toBe(true);
-        expect(settings.permissions.allow).toEqual(['local-perm']);             // operator-local key preserved
-        expect(settings.hooks.PostToolUse).toEqual([{hooks: []}]);              // local-only event preserved
+        expect(settings.env).toEqual({SEAT: '1'});                              // a key the template never owned
+        expect(settings.hooks.PostToolUse).toEqual([{hooks: []}]);              // an event the template does not carry
         expect(settings.hooks.PreToolUse).toEqual(TEMPLATE.hooks.PreToolUse);   // PreToolUse wired from template
         expect(settings.hooks.Stop).toEqual(TEMPLATE.hooks.Stop);               // Stop wired from template
     });
 
-    test('mergeClaudeHooks: idempotent — already-wired hooks report changed=false', () => {
-        const {changed} = mergeClaudeHooks({hooks: TEMPLATE.hooks}, TEMPLATE);
-        expect(changed).toBe(false);
+    test('mergeClaudeSettings: the template owns permissions, so older arrays end as its own and a dropped rule is gone (#1615)', () => {
+        const
+            template            = {...TEMPLATE, permissions: {allow: ['Bash(git rebase *)'], ask: [], deny: ['Workflow']}},
+            active              = {permissions: {allow: ['Bash(git push --force-with-lease origin agent/*)'], ask: ['Agent', 'Task']}},
+            {settings, changed} = mergeClaudeSettings(active, template);
+
+        expect(changed).toBe(true);
+        expect(settings.permissions).toEqual(template.permissions);
+        expect(settings.permissions.allow).not.toContain('Bash(git push --force-with-lease origin agent/*)');
+        expect(settings.permissions).not.toBe(template.permissions)
     });
 
-    test('mergeClaudeHooks: a template without hooks is a no-op', () => {
+    test('mergeClaudeSettings: autoMode stays the seat\'s, the one block only a generated file carries (#1615)', () => {
+        const active = {autoMode: {environment: ['$defaults']}, hooks: TEMPLATE.hooks, permissions: {allow: ['old']}};
+
+        expect(mergeClaudeSettings(active, TEMPLATE).settings.autoMode).toEqual({environment: ['$defaults']});
+        expect(mergeClaudeSettings({hooks: TEMPLATE.hooks, permissions: TEMPLATE.permissions}, TEMPLATE).settings)
+            .not.toHaveProperty('autoMode')
+    });
+
+    test('mergeClaudeSettings: idempotent, so a settings file that agrees with its template reports changed=false', () => {
+        const {settings} = mergeClaudeSettings({autoMode: {}, env: {SEAT: '1'}, permissions: {allow: ['local']}}, TEMPLATE);
+
+        expect(mergeClaudeSettings(settings, TEMPLATE)).toEqual({settings, changed: false})
+    });
+
+    test('mergeClaudeSettings: a template without hooks or permissions leaves the settings alone', () => {
         const active              = {permissions: {allow: ['x']}};
-        const {settings, changed} = mergeClaudeHooks(active, {permissions: {}});
+        const {settings, changed} = mergeClaudeSettings(active, {});
         expect(changed).toBe(false);
         expect(settings).toBe(active);
     });
@@ -1477,7 +1500,7 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         const written = readTargetSettings(root);
 
         expect(written.hooks.PreToolUse).toEqual(TEMPLATE.hooks.PreToolUse);
-        expect(written.permissions.allow).toEqual(['seat-perm'])
+        expect(written.permissions).toEqual(TEMPLATE.permissions)
     });
 
     test('initClaudeSettings: missing settings.json → clone (full template, enforce=1 command wired)', async () => {
@@ -1519,17 +1542,130 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         expect(r2.action).toBe('silent');
     });
 
-    test('initClaudeSettings: existing settings.json (perms only) → wired, local keys preserved', async () => {
-        const dir = buildClaudeDir('wired', {template: TEMPLATE, settings: {permissions: {allow: ['my-local-perm']}}});
+    test('initClaudeSettings: an existing settings.json takes the template\'s permissions and keeps a key it never owned (#1615)', async () => {
+        const dir = buildClaudeDir('wired', {template: TEMPLATE, settings: {env: {SEAT: '1'}, permissions: {allow: ['my-local-perm']}}});
         const r   = await initClaudeSettings({
             claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')
         });
         expect(r.action).toBe('wired');
 
         const written = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf-8'));
-        expect(written.permissions.allow).toEqual(['my-local-perm']);                      // preserved
+        expect(written.permissions).toEqual(TEMPLATE.permissions);
+        expect(written.env).toEqual({SEAT: '1'});
         expect(written.hooks.Stop[0].hooks[0].command).toContain('NEO_LANE_STATE_ENFORCE=1');
         expect(written.hooks.PreToolUse[0].hooks[0].command).toContain('rgReplaceGuardHook.mjs');
+
+        // the second run writes nothing
+        expect((await initClaudeSettings({
+            claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')
+        })).action).toBe('silent')
+    });
+
+    test('initClaudeSettings: an installed Engine that disagrees with the target\'s own template never rolls a seat back (#1615)', async () => {
+        const
+            current     = {permissions: {allow: ['current-rule'], ask: []}, hooks: {PreToolUse: [{matcher: '^(Agent|Task)$', hooks: [{type: 'command', command: 'guard'}]}]}},
+            older       = {permissions: {allow: ['current-rule'], ask: ['Agent', 'Task']}, hooks: {}},
+            install     = (name, template) => {
+                const file = path.join(claudeRoot, `${name}.settings.template.json`);
+                fs.writeFileSync(file, JSON.stringify(template));
+                return file
+            },
+            olderPath   = install('installed-older', older),
+            currentPath = install('installed-current', current),
+            read        = dir => JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf-8')),
+            run         = (dir, engineTemplatePath) => initClaudeSettings({claudeDir: dir, logger: recordingLogger(), engineTemplatePath});
+
+        // A seat whose file carries its revision's ask and guard keeps both while the installed Engine is older
+        const seat = buildClaudeDir('seat-ahead-of-install', {template: current, settings: current});
+
+        expect(await run(seat, olderPath)).toEqual({action: 'deferred', templatePath: olderPath, witnessPath: path.join(seat, 'settings.template.json')});
+        expect(read(seat)).toEqual(current);
+
+        // Once the installed Engine declares the target's rules, the seat syncs and a stale rule is withdrawn
+        const behind = buildClaudeDir('seat-behind-install', {template: current, settings: {...current, permissions: {allow: ['stale-rule'], ask: ['Agent']}}});
+
+        expect(await run(behind, currentPath)).toEqual({
+            action: 'wired', templatePath: currentPath, witnessPath: path.join(behind, 'settings.template.json'), permissions: 'template'
+        });
+        expect(read(behind).permissions).toEqual(current.permissions);
+
+        // A consumer's witness is the Engine it installed
+        const consumer  = path.join(claudeRoot, 'consumer-with-installed-engine'),
+              installed = path.join(consumer, 'node_modules/neo.mjs/.claude/settings.template.json');
+
+        fs.mkdirSync(path.dirname(installed), {recursive: true});
+        fs.writeFileSync(installed, JSON.stringify(current));
+        fs.mkdirSync(path.join(consumer, '.claude'));
+        fs.writeFileSync(path.join(consumer, '.claude/settings.json'), JSON.stringify(current));
+
+        expect(await run(path.join(consumer, '.claude'), olderPath)).toEqual({action: 'deferred', templatePath: olderPath, witnessPath: installed});
+
+        // A fresh target takes the installed template whole: one consistent set, never a mix
+        const fresh = buildClaudeDir('fresh-target', {template: current});
+
+        expect(await run(fresh, olderPath)).toEqual({action: 'clone', templatePath: olderPath, permissions: 'template'});
+        expect(read(fresh)).toEqual(older)
+    });
+
+    test('initClaudeSettings: a settings.json git tracks keeps its permission policy, and still takes the template\'s hook events (#1615)', async () => {
+        const
+            root     = path.join(claudeRoot, 'tracked-checkout'),
+            dir      = path.join(root, '.claude'),
+            project  = {permissions: {allow: ['Read'], deny: ['Bash(rm:*)'], ask: ['Write'], defaultMode: 'plan'}, autoMode: {enabled: true}},
+            template = {...TEMPLATE, permissions: {allow: ['Read', 'Write', 'Bash(rm:*)']}};
+
+        fs.mkdirSync(dir, {recursive: true});
+        fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(project, null, 2));
+        fs.writeFileSync(path.join(dir, 'settings.template.json'), JSON.stringify(template, null, 2));
+        execFileSync('git', ['init', '-q'], {cwd: root});
+        execFileSync('git', ['add', '.claude/settings.json'], {cwd: root});
+
+        const run = () => initClaudeSettings({claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')});
+
+        await run();
+
+        const written = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf-8'));
+
+        expect(written.permissions).toEqual(project.permissions);
+        expect(written.autoMode).toEqual(project.autoMode);
+        expect(written.hooks.PreToolUse[0].hooks[0].command).toContain('rgReplaceGuardHook.mjs');
+        expect(await run()).toMatchObject({action: 'silent', permissions: 'tracked'})
+    });
+
+    test('initClaudeSettings: a settings.json whose custody git cannot report keeps its permission policy (#1615)', async () => {
+        const
+            policy   = {permissions: {allow: ['Read'], deny: ['Bash(rm:*)'], ask: ['Write'], defaultMode: 'plan'}},
+            template = {...TEMPLATE, permissions: {allow: ['Read', 'Write', 'Bash(rm:*)']}},
+            run      = dir => initClaudeSettings({claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')}),
+            read     = dir => JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf-8'));
+
+        // No git on the writer's PATH
+        const hidden = buildClaudeDir('git-unavailable', {template, settings: policy}),
+              PATH   = process.env.PATH;
+
+        process.env.PATH = path.join(claudeRoot, 'no-git-here');
+
+        try {
+            expect(await run(hidden)).toMatchObject({action: 'wired', permissions: 'unknown'})
+        } finally {
+            process.env.PATH = PATH
+        }
+
+        expect(read(hidden).permissions).toEqual(policy.permissions);
+        expect(read(hidden).hooks.PreToolUse[0].hooks[0].command).toContain('rgReplaceGuardHook.mjs');
+
+        // No work tree around the file
+        const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-settings-no-work-tree-'));
+
+        try {
+            fs.writeFileSync(path.join(outside, 'settings.json'), JSON.stringify(policy));
+            fs.writeFileSync(path.join(outside, 'settings.template.json'), JSON.stringify(template));
+
+            expect(await run(outside)).toMatchObject({action: 'wired', permissions: 'unknown'});
+            expect(read(outside).permissions).toEqual(policy.permissions)
+        } finally {
+            fs.rmSync(outside, {recursive: true, force: true})
+        }
     });
 
     test('initClaudeSettings: no template → skip-no-template (no settings.json written)', async () => {
@@ -1545,7 +1681,7 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
 /**
  * The template the materializer ACTUALLY reads — not a fixture standing in for it.
  *
- * Everything above drives `mergeClaudeHooks` and `initClaudeSettings` with controlled inputs, which
+ * Everything above drives `mergeClaudeSettings` and `initClaudeSettings` with controlled inputs, which
  * is correct for testing those functions and tells you nothing about the real file. The gap was
  * invisible: a hand-written `TEMPLATE` declaring `Stop -> laneStateStopHook` read
  * as evidence that the Engine wires the no-hold hook, and stayed green straight through the leaf-11
