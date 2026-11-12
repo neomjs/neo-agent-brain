@@ -807,9 +807,10 @@ class WakeSubscriptionService extends Base {
      *   diagnostics live behind `verbose`, never bloat the context window): the full `presence`
      *   and `load` capability envelopes with their plane declarations, and a compact `unobserved`
      *   marker naming the host-originated axes — declared, never fabricated.
-     *   Verbose: `{generatedAt, operatorPresence, axes, signalStatus, agents}` — `axes` serves every host-originated
-     *   axis as its full `degraded/none` envelope, and each agent row is
-     *   `{identity, name, family, participationStatus, online, state, reason, signals, axes, reviewLoad}` —
+     *   Verbose: `{generatedAt, operatorPresence, axes, signalStatus, pools, agents}` — `axes` serves every host-originated
+     *   axis as its full `degraded/none` envelope, `pools` groups the seats' plan-capacity readings
+     *   ({@link WakeSubscriptionService#_capacityPools}), and each agent row is
+     *   `{identity, name, family, participationStatus, online, state, reason, signals, axes, reviewLoad, wake, capacity}` —
      *   the per-row `axes` holds every host-originated axis as `unknown` until the fleet publishes,
      *   and the per-row `reviewLoad` is `{open, returned, loops[]}` (loops oldest-first, so the
      *   stalest obligation surfaces at the head). A row whose GitHub identity is currently admitted
@@ -838,10 +839,14 @@ class WakeSubscriptionService extends Base {
             .map(node => this._projectAgentLiveness(node, nowMs, validationByLogin));
 
         if (verbose) {
+            // Read here, not in the row projection: the terse answer never pays for it.
+            const capacityByIdentity = new Map(projected.map(row => [row.identity, TurnPresenceService.getCapacity(row.identity, nowMs)]));
+
             return {
                 generatedAt,
                 operatorPresence,
                 axes,
+                pools: this._capacityPools(capacityByIdentity),
                 signalStatus: 'Precedence: (1) participationStatus hard gate; (2) a fresh turn-presence beacon, ' +
                               'which decides online before any absence verdict — add_memory lands at turn ' +
                               'boundaries, so a first or long turn is present without a recent write; (3) ' +
@@ -865,7 +870,8 @@ class WakeSubscriptionService extends Base {
                     // unreadable records read `unknown`, never reachable; the wake envelope names why
                     wake: wake.available
                         ? (wake.byIdentity.get(row.identity) ?? {state: 'unsubscribed'})
-                        : {state: 'unknown', reason: wake.reason}
+                        : {state: 'unknown', reason: wake.reason},
+                    capacity: capacityByIdentity.get(row.identity)
                 }))
             };
         }
@@ -920,6 +926,53 @@ class WakeSubscriptionService extends Base {
             )])) : {}),
             ...buckets
         };
+    }
+
+    /**
+     * @summary Groups the seats' plan-capacity readings by pool: each pool's members and, per window,
+     * the newest observation any member reported.
+     *
+     * Every window is the account's, so two seats on one plan cross-check each other, and a seat that
+     * last reported hours ago still reads its pool's current week. A newer window without a reset
+     * keeps a member's reset that still lies ahead of it, the rule the seat's own node applies. A stale
+     * reading keeps its seat among the members but supplies no window.
+     *
+     * @param {Map<String, Object>} capacityByIdentity identity → {@link TurnPresenceService#getCapacity}.
+     * @returns {Object} poolKey → `{members: String[], windows: Object[]}`; empty when no seat reported a pool.
+     * @protected
+     */
+    _capacityPools(capacityByIdentity) {
+        const pools = {};
+
+        for (const [identity, capacity] of capacityByIdentity) {
+            if (!capacity.poolKey) continue;
+
+            const pool = pools[capacity.poolKey] ??= {members: [], windows: []};
+
+            pool.members.push(identity);
+
+            for (const window of capacity.windows) {
+                if (window.stale) continue;
+
+                const index = pool.windows.findIndex(known => known.kind === window.kind && known.model === window.model);
+
+                if (index === -1) {
+                    pool.windows.push({...window});
+                    continue
+                }
+
+                const known = pool.windows[index],
+                      newer = Date.parse(window.observedAt) > Date.parse(known.observedAt) ? window : known,
+                      older = newer === window ? known : window;
+
+                pool.windows[index] = {
+                    ...newer,
+                    resetsAt: newer.resetsAt ?? (older.resetsAt && Date.parse(older.resetsAt) > Date.parse(newer.observedAt) ? older.resetsAt : null)
+                }
+            }
+        }
+
+        return pools
     }
 
     /**

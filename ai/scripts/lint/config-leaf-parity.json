@@ -849,6 +849,7 @@
         "transport",
         "turnPresence",
         "turnPresence.asyncHookWriteTimeoutMs",
+        "turnPresence.capacityStaleMs",
         "turnPresence.freshMs",
         "turnPresence.hookWriteTimeoutMs",
         "turnPresence.noteMaxChars",

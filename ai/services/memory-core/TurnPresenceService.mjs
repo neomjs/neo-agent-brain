@@ -53,6 +53,22 @@ class TurnPresenceService extends Base {
     wakeSubmitNoncePattern = /^[0-9a-fA-F-]{36}$/
 
     /**
+     * The plan windows a capacity reading may carry: the rolling 5-hour window, the weekly all-models
+     * window, and a weekly window that caps one model (it then names that model).
+     * @member {String[]} capacityWindowKinds
+     * @protected
+     */
+    capacityWindowKinds = ['five-hour', 'weekly', 'weekly-model']
+
+    /**
+     * Shape of a capacity reading's `poolKey`: an opaque lowercase hex hash. Matching the shape is what
+     * keeps a raw account key off the plane: a UUID carries hyphens, so it cannot pass as a pool key.
+     * @member {RegExp} capacityPoolKeyPattern
+     * @protected
+     */
+    capacityPoolKeyPattern = /^[0-9a-f]{16,64}$/
+
+    /**
      * Records a turn-presence event for the request-bound AgentIdentity.
      *
      * The caller may provide `turnId` on progress/terminal updates. When it is omitted, the newest
@@ -79,6 +95,9 @@ class TurnPresenceService extends Base {
      * malformed one is rejected rather than dropped — a silently discarded nonce degrades every
      * subsequent proof to `wake-submit-unknown`, which reads as "delivery unverifiable" rather than
      * "correlation key was malformed".
+     * @param {Object} [options.capacity] The seat's plan-capacity reading, stored apart from the turn
+     * interval ({@link TurnPresenceService#getCapacity}): it lands even when the event itself is a
+     * no-op, and a malformed reading refuses the whole call before anything is written.
      * @param {String|Date|Number} [options.now=new Date()] Clock override for tests.
      * @returns {Object} Persisted turn-presence payload.
      */
@@ -89,6 +108,7 @@ class TurnPresenceService extends Base {
         source = 'mcp-client',
         note,
         wakeSubmitNonce,
+        capacity,
         now = new Date()
     } = {}) {
         GraphService.requireDb('TurnPresenceService.recordTurnPresence');
@@ -119,6 +139,12 @@ class TurnPresenceService extends Base {
         }
         if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
             throw new Error(`turnPresence.ttlMs must be a positive finite number, got ${ttlMs}`);
+        }
+
+        // Validated before any write, stored before the no-op exit: a reading describes the seat's plan,
+        // not this turn, so a progress or terminal event that finds no open interval still delivers it.
+        if (capacity !== undefined && capacity !== null) {
+            this._writeCapacity(agentIdentity, this._normalizeCapacity(capacity, nowDate), nowDate);
         }
 
         // `start` mints an interval; everything else joins the newest open one. A null result here is the
@@ -224,6 +250,189 @@ class TurnPresenceService extends Base {
             freshUntil    : props.freshUntil ?? null,
             expiresAt     : props.expiresAt  ?? null
         };
+    }
+
+    /**
+     * @summary Public capacity read — a seat's newest plan-capacity reading, graded for freshness.
+     *
+     * One node per seat holds the newest value of each window the seat has reported, each with the
+     * instant it was observed. The whole reading is `stale` once its newest observation is older than
+     * `turnPresence.capacityStaleMs`, and each window carries its own `stale` flag, because a window the
+     * seat reported once (a model window from its usage tool) ages while hook samples keep the rest
+     * fresh. Like {@link #getFreshTurnPresence}, this is the finder's own row: the node is private to
+     * its writer, and the roster read serves every reader.
+     *
+     * @param {String} agentIdentity AgentIdentity node id.
+     * @param {String|Date|Number} [now=new Date()] Clock source.
+     * @returns {{state: 'observed'|'stale'|'unobserved', observedAt?: String, source?: String, model?: String|null, poolKey?: String|null, windows?: Object[]}}
+     */
+    getCapacity(agentIdentity, now = new Date()) {
+        const props = agentIdentity ? this._findCapacity(agentIdentity) : null;
+        if (!props?.windows?.length) return {state: 'unobserved'};
+
+        const nowMs   = this._coerceDate(now).getTime(),
+              staleMs = aiConfig.turnPresence.capacityStaleMs,
+              isStale = observedAt => nowMs - Date.parse(observedAt) > staleMs;
+
+        return {
+            state     : isStale(props.observedAt) ? 'stale' : 'observed',
+            observedAt: props.observedAt,
+            source    : props.source,
+            model     : props.model   ?? null,
+            poolKey   : props.poolKey ?? null,
+            windows   : props.windows.map(window => ({...window, stale: isStale(window.observedAt)}))
+        };
+    }
+
+    /**
+     * @summary Builds the graph node id holding one seat's capacity reading.
+     * @param {String} agentIdentity AgentIdentity node id.
+     * @returns {String}
+     * @protected
+     */
+    _buildCapacityId(agentIdentity) {
+        return `SEAT_CAPACITY:${agentIdentity}`;
+    }
+
+    /**
+     * @summary Validates one capacity reading into its stored shape, refusing a malformed one by name.
+     *
+     * A refusal beats a drop: a discarded reading would read as `unobserved`, which hides a broken
+     * producer behind an honest-looking state. Percentages above 100 clamp to 100, the exhausted value.
+     *
+     * @param {Object} capacity The reading the seat sent.
+     * @param {Date} nowDate The call's clock, used when the reading names no `observedAt`.
+     * @returns {{observedAt: String, source: String, model: String|null, poolKey: String|null, windows: Object[]}}
+     * @protected
+     */
+    _normalizeCapacity(capacity, nowDate) {
+        if (typeof capacity !== 'object' || Array.isArray(capacity)) {
+            throw new Error('Invalid capacity: must be an object.');
+        }
+
+        const {model, poolKey = null, source = 'unknown', windows} = capacity,
+              observedAt = this._coerceDate(capacity.observedAt ?? nowDate).toISOString();
+
+        if (poolKey !== null && !this.capacityPoolKeyPattern.test(String(poolKey))) {
+            throw new Error('Invalid capacity.poolKey: must be an opaque lowercase hex hash of 16 to 64 characters, never a raw account key.');
+        }
+
+        if (!Array.isArray(windows) || windows.length < 1 || windows.length > 8) {
+            throw new Error('Invalid capacity.windows: must hold 1 to 8 windows.');
+        }
+
+        return {
+            observedAt,
+            source : String(source).slice(0, 64),
+            model  : typeof model === 'string' && model.trim() ? model.trim() : null,
+            poolKey,
+            windows: windows.map(window => {
+                const percentUsed = Number(window?.percentUsed);
+
+                if (!this.capacityWindowKinds.includes(window?.kind)) {
+                    throw new Error(`Invalid capacity window kind '${window?.kind}'. Must be one of: ${this.capacityWindowKinds.join(', ')}.`);
+                }
+                if (!Number.isFinite(percentUsed) || percentUsed < 0) {
+                    throw new Error(`Invalid capacity window percentUsed '${window.percentUsed}': must be a finite number >= 0.`);
+                }
+                if (window.kind === 'weekly-model' && !(typeof window.model === 'string' && window.model.trim())) {
+                    throw new Error('Invalid capacity window: a weekly-model window must name its model.');
+                }
+
+                return {
+                    kind       : window.kind,
+                    model      : window.kind === 'weekly-model' ? window.model.trim() : null,
+                    percentUsed: Math.min(100, percentUsed),
+                    resetsAt   : window.resetsAt === undefined || window.resetsAt === null ? null : this._coerceDate(window.resetsAt).toISOString(),
+                    observedAt
+                };
+            })
+        };
+    }
+
+    /**
+     * @summary Merges one normalized reading into the seat's capacity node.
+     *
+     * Each window is keyed by its kind and model. A report replaces only the windows it carries, and
+     * never with an older observation than the one stored. A window reported without `resetsAt` keeps
+     * the stored reset while that reset still lies ahead of the new observation: the hook's samples
+     * carry no reset instants, so without the carry-over every sample would erase what the seat's own
+     * usage report supplied. The node's model, pool and source are the newest observation's.
+     *
+     * Two different pool keys are two accounts, whose windows never mix: a newer report from another
+     * pool replaces every window, and an older one is dropped. A report without a pool key is the
+     * seat's own and merges.
+     *
+     * @param {String} agentIdentity AgentIdentity node id.
+     * @param {Object} reading A reading from {@link #_normalizeCapacity}.
+     * @param {Date} nowDate Clock source.
+     * @protected
+     */
+    _writeCapacity(agentIdentity, reading, nowDate) {
+        const current  = this._findCapacity(agentIdentity) || {},
+              newer    = !current.observedAt || Date.parse(reading.observedAt) >= Date.parse(current.observedAt),
+              samePool = !reading.poolKey || !current.poolKey || reading.poolKey === current.poolKey;
+
+        if (!samePool && !newer) return;
+
+        const key    = window => `${window.kind}:${window.model ?? ''}`,
+              merged = new Map(samePool ? (current.windows || []).map(window => [key(window), window]) : []);
+
+        for (const window of reading.windows) {
+            const previous = merged.get(key(window));
+
+            if (previous && Date.parse(previous.observedAt) > Date.parse(window.observedAt)) continue;
+
+            const carriesReset = !window.resetsAt && previous?.resetsAt && Date.parse(previous.resetsAt) > Date.parse(window.observedAt);
+
+            merged.set(key(window), carriesReset ? {...window, resetsAt: previous.resetsAt} : window);
+        }
+
+        const [newest, older] = newer ? [reading, current] : [current, reading];
+
+        GraphService.upsertNode({
+            id         : this._buildCapacityId(agentIdentity),
+            type       : 'SEAT_CAPACITY',
+            name       : `SeatCapacity ${agentIdentity}`,
+            description: 'Newest plan-capacity windows a seat reported: percent used, reset instant, observation time.',
+            properties : {
+                agentIdentity,
+                observedAt  : newest.observedAt,
+                source      : newest.source,
+                model       : newest.model   ?? older.model   ?? null,
+                poolKey     : newest.poolKey ?? older.poolKey ?? null,
+                windows     : [...merged.values()],
+                updatedAt   : nowDate.toISOString(),
+                userId      : normalizeUserId(agentIdentity),
+                sharedEntity: false
+            }
+        });
+    }
+
+    /**
+     * @summary Reads a seat's stored capacity properties, or null.
+     * @param {String} agentIdentity AgentIdentity node id.
+     * @returns {Object|null}
+     * @protected
+     */
+    _findCapacity(agentIdentity) {
+        const sqlite = GraphService.db?.storage?.db;
+        if (!sqlite) return null;
+
+        const row = sqlite.prepare(`
+            SELECT data FROM Nodes
+            WHERE json_extract(data, '$.label') = 'SEAT_CAPACITY'
+              AND json_extract(data, '$.properties.agentIdentity') = ?
+            LIMIT 1
+        `).get(agentIdentity);
+
+        if (!row?.data) return null;
+
+        try {
+            return JSON.parse(row.data).properties || null;
+        } catch {
+            return null;
+        }
     }
 
     /**

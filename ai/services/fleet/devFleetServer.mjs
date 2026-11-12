@@ -76,6 +76,7 @@ import {createPlaneFleetClient}                            from './planeFleetCli
 import {createPlaneMailboxClient}                          from './planeMailboxClient.mjs';
 import {createPlaneWakeIdentitiesReader,
         createPlaneWakeObservationsReader}                               from './planeWakeIdentitiesReader.mjs';
+import {createCapacityThrottleReader}     from './capacityThrottleState.mjs';
 import {createFleetWakeSseConsumer}       from './fleetWakeSseConsumer.mjs';
 import {createHostWhoIsOnlineReader}      from './hostWhoIsOnlineReader.mjs';
 import {createPlaneWhoIsOnlineReader}     from './planeWhoIsOnlineReader.mjs';
@@ -464,6 +465,9 @@ async function boot() {
         });
 
     FleetManager.presenceStateOptions = {readPresence};
+
+    // The throttle axis rides the same answer: each row's plan-capacity reading, joined like presence.
+    FleetManager.throttleStateOptions = {resolveThrottleState: createCapacityThrottleReader(readPresence)};
 
     // The decomposed wake-routes verb rides the SAME per-mode truth the fused wake axis was bound
     // to above — one authority per axis, never a second source. Presence joins over the roster's

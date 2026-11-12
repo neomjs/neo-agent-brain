@@ -82,6 +82,15 @@ test.describe('recordTurnPresenceOverMcp', () => {
         expect(state.headers.Authorization).toBeUndefined()
     });
 
+    test('forwards a capacity reading as the tool\'s capacity argument', async () => {
+        const {state, ClientClass, TransportClass} = createClientSeam(),
+              capacity                             = {source: 'spec', windows: [{kind: 'weekly', percentUsed: 90}]};
+
+        await recordTurnPresenceOverMcp({baseUrl: BASE_URL, identity: '@test-seat', capacity, ClientClass, TransportClass});
+
+        expect(state.calls[0].arguments).toEqual({action: 'start', capacity})
+    });
+
     test('refuses to resolve its own endpoint or identity', async () => {
         const {ClientClass, TransportClass} = createClientSeam();
 

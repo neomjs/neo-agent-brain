@@ -30,6 +30,11 @@ import {z}                                       from 'zod';
 import {reconcileClaudeEvents, renderProjection} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
 import {HOOK_PROCESS_SHARE_MS}                   from '../../../../../../../ai/scripts/lifecycle/hooks/seatConfig.mjs';
 import {generateKimiSeatConfig}                  from '../../../../../../../ai/services/fleet/generateKimiSeatConfig.mjs';
+import {
+    CAPACITY_ACTIONS,
+    readClaudeUsageCapacity,
+    recordClaudeTurnPresence
+} from '../../../../../../../ai/scripts/lifecycle/hooks/claude/turnPresenceHook.mjs';
 
 const
     REPO_ROOT   = path.resolve(process.cwd()),
@@ -536,5 +541,74 @@ test.describe('codex-context — the prompt\'s context loads whatever presence d
         } finally {
             await plane.close()
         }
+    })
+});
+
+test.describe('the Claude hook\'s capacity reading', () => {
+    const profiles = [];
+
+    /**
+     * @summary A throwaway Desktop user-data directory, located the way the hook locates the real one.
+     * @param {Object[]|String} [samples] The usage samples, raw file text, or nothing for no file.
+     * @returns {{env: Object}}
+     */
+    const makeProfile = samples => {
+        const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-capacity-'));
+
+        profiles.push(userData);
+
+        if (samples !== undefined) {
+            fs.writeFileSync(path.join(userData, 'plan-usage-history.json'), typeof samples === 'string' ? samples : JSON.stringify({version: 2, samples}))
+        }
+
+        return {env: {CLAUDE_CODE_EXECPATH: path.join(userData, 'claude-code', '2.1.0', 'build', 'claude.app', 'Contents', 'MacOS', 'claude')}}
+    };
+
+    test.afterAll(() => profiles.forEach(dir => fs.rmSync(dir, {recursive: true, force: true})));
+
+    test('the newest Desktop usage sample becomes a reading whose pool key is an opaque hash of the account', () => {
+        const
+            account = '00000000-0000-4000-8000-00000000c0de',
+            {env}   = makeProfile([
+                {t: Date.parse('2026-06-19T05:00:00.000Z'), org: account, u: {fh: 19, sd: 90}},
+                {t: Date.parse('2026-06-19T01:00:00.000Z'), org: account, u: {fh: 5,  sd: 70}}
+            ]),
+            reading = readClaudeUsageCapacity({env});
+
+        expect(reading).toEqual({
+            observedAt: '2026-06-19T05:00:00.000Z',
+            source    : 'claude-desktop-usage-history',
+            windows   : [{kind: 'five-hour', percentUsed: 19}, {kind: 'weekly', percentUsed: 90}],
+            poolKey   : crypto.createHash('sha256').update(account).digest('hex').slice(0, 32)
+        });
+        // The account key never leaves the seat.
+        expect(JSON.stringify(reading)).not.toContain(account)
+    });
+
+    test('outside the Desktop app, or without a usable sample, the seat sends no reading', () => {
+        expect(readClaudeUsageCapacity({env: {}})).toBeNull();
+        expect(readClaudeUsageCapacity(makeProfile())).toBeNull();
+        expect(readClaudeUsageCapacity(makeProfile('{not json'))).toBeNull();
+        expect(readClaudeUsageCapacity(makeProfile([]))).toBeNull();
+        expect(readClaudeUsageCapacity(makeProfile([{t: Date.parse('2026-06-19T05:00:00.000Z'), u: {}}]))).toBeNull()
+    });
+
+    test('the reading rides on the turn\'s start only', async () => {
+        const
+            calls    = [],
+            capacity = {source: 'spec', windows: [{kind: 'weekly', percentUsed: 1}]},
+            common   = {
+                capacity,
+                deadlineMs: 500,
+                env       : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
+                plane     : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+                record    : async args => {calls.push(args); return {status: 'recorded'}}
+            };
+
+        await recordClaudeTurnPresence({...common, actionArg: 'start'});
+        await recordClaudeTurnPresence({...common, actionArg: 'progress'});
+
+        expect([...CAPACITY_ACTIONS]).toEqual(['start']);
+        expect(calls.map(call => [call.action, call.capacity])).toEqual([['start', capacity], ['progress', undefined]])
     })
 });

@@ -21,7 +21,7 @@ import fs                     from 'fs';
 import path                   from 'path';
 import * as yaml              from 'js-yaml';
 import {fileURLToPath}        from 'url';
-import {buildOutputZodSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
+import {buildOutputZodSchema, buildZodSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 
 // Stub Neo.get to keep data-record boot behavior from masking turn-presence coverage.
 // The setup regression is outside this spec's delivery contract.
@@ -355,6 +355,130 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
         // And nothing was persisted for the rejected call — the validation runs BEFORE the upsert, so a
         // malformed nonce cannot leave a half-written interval behind.
         expect(getNode('turn-bad-nonce')).toBeFalsy();
+    });
+
+    test('a capacity reading lands per seat, reads observed, then stale past capacityStaleMs; a seat that never reported reads unobserved', async () => {
+        const poolKey = 'a'.repeat(32);
+
+        await asAgent(() => TurnPresenceService.recordTurnPresence({
+            action  : 'start',
+            turnId  : 'turn-capacity',
+            capacity: {
+                observedAt: '2026-06-19T05:00:00.000Z',
+                source    : 'spec',
+                poolKey,
+                windows   : [{kind: 'five-hour', percentUsed: 19}, {kind: 'weekly', percentUsed: 90}]
+            },
+            now: '2026-06-19T05:00:30.000Z'
+        }));
+
+        const observed = TurnPresenceService.getCapacity('@agent-turn', '2026-06-19T06:00:00.000Z');
+
+        expect(observed).toMatchObject({state: 'observed', observedAt: '2026-06-19T05:00:00.000Z', source: 'spec', poolKey, model: null});
+        expect(observed.windows).toEqual([
+            {kind: 'five-hour', model: null, percentUsed: 19, resetsAt: null, observedAt: '2026-06-19T05:00:00.000Z', stale: false},
+            {kind: 'weekly',    model: null, percentUsed: 90, resetsAt: null, observedAt: '2026-06-19T05:00:00.000Z', stale: false}
+        ]);
+
+        // The default bound is six hours: one millisecond past it, the reading stops routing anything.
+        expect(TurnPresenceService.getCapacity('@agent-turn', '2026-06-19T11:00:00.001Z').state).toBe('stale');
+        expect(TurnPresenceService.getCapacity('@another-seat', '2026-06-19T06:00:00.000Z')).toEqual({state: 'unobserved'});
+    });
+
+    test('a report replaces only its own windows, never with an older observation; a reset carries over only while it lies ahead', async () => {
+        const report = (observedAt, windows, extra = {}) => asAgent(() => TurnPresenceService.recordTurnPresence({
+            action  : 'progress',
+            capacity: {observedAt, source: 'spec', windows, ...extra},
+            now     : observedAt
+        }));
+        const weekly = now => TurnPresenceService.getCapacity('@agent-turn', now).windows.find(window => window.kind === 'weekly');
+
+        // The seat's own usage report: reset instants and the window that caps one model. No turn is open,
+        // so the event is a no-op, and the reading lands anyway: it describes the plan, not the turn.
+        const noop = await report('2026-06-19T05:00:00.000Z', [
+            {kind: 'weekly',       percentUsed: 88, resetsAt: '2026-06-25T19:00:00.000Z'},
+            {kind: 'weekly-model', percentUsed: 58, resetsAt: '2026-06-25T19:00:00.000Z', model: 'fable'}
+        ], {model: 'opus'});
+        expect(noop.status).toBe('noop');
+
+        // A later hook sample carries no reset instants and no model window.
+        await report('2026-06-19T07:00:00.000Z', [{kind: 'five-hour', percentUsed: 24}, {kind: 'weekly', percentUsed: 90}]);
+        // An older sample delivered late must not roll a window back.
+        await report('2026-06-19T04:00:00.000Z', [{kind: 'weekly', percentUsed: 80}]);
+
+        const capacity = TurnPresenceService.getCapacity('@agent-turn', '2026-06-19T07:30:00.000Z'),
+              byKind   = Object.fromEntries(capacity.windows.map(window => [window.kind, window]));
+
+        expect(capacity).toMatchObject({state: 'observed', observedAt: '2026-06-19T07:00:00.000Z', model: 'opus'});
+        expect(byKind.weekly).toMatchObject({percentUsed: 90, resetsAt: '2026-06-25T19:00:00.000Z', observedAt: '2026-06-19T07:00:00.000Z'});
+        expect(byKind['weekly-model']).toMatchObject({model: 'fable', percentUsed: 58, resetsAt: '2026-06-25T19:00:00.000Z'});
+        expect(byKind['five-hour']).toMatchObject({percentUsed: 24, resetsAt: null});
+
+        // Once the stored reset has passed, a sample without one leaves the window without a reset.
+        await report('2026-06-25T20:00:00.000Z', [{kind: 'weekly', percentUsed: 3}]);
+        expect(weekly('2026-06-25T20:30:00.000Z')).toMatchObject({percentUsed: 3, resetsAt: null});
+    });
+
+    test('two pool keys are two accounts: a newer report from another pool starts the windows afresh, an older one changes nothing', async () => {
+        const poolA  = 'a'.repeat(32),
+              poolB  = 'b'.repeat(32),
+              report = (observedAt, windows, extra = {}) => asAgent(() => TurnPresenceService.recordTurnPresence({
+                  action  : 'progress',
+                  capacity: {observedAt, source: 'spec', windows, ...extra},
+                  now     : observedAt
+              })),
+              read   = () => TurnPresenceService.getCapacity('@agent-turn', '2026-06-19T10:30:00.000Z'),
+              shown  = () => read().windows.map(window => [window.kind, window.percentUsed, window.resetsAt]);
+
+        await report('2026-06-19T06:00:00.000Z', [
+            {kind: 'weekly',       percentUsed: 70,  resetsAt: '2026-06-25T19:00:00.000Z'},
+            {kind: 'weekly-model', percentUsed: 100, resetsAt: '2026-06-25T19:00:00.000Z', model: 'fable'}
+        ], {poolKey: poolA, model: 'claude-fable-5-2'});
+
+        // The seat moves to pool B: neither pool A's capped model nor its reset comes along.
+        await report('2026-06-19T10:00:00.000Z', [{kind: 'weekly', percentUsed: 10}], {poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(read()).toMatchObject({observedAt: '2026-06-19T10:00:00.000Z', poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(shown()).toEqual([['weekly', 10, null]]);
+
+        // A pool-A report delivered late describes an account the seat has left.
+        await report('2026-06-19T08:00:00.000Z', [{kind: 'five-hour', percentUsed: 50}, {kind: 'weekly', percentUsed: 80}], {poolKey: poolA, model: 'claude-fable-5-2'});
+        expect(read()).toMatchObject({observedAt: '2026-06-19T10:00:00.000Z', poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(shown()).toEqual([['weekly', 10, null]]);
+
+        // A late report from the same pool still adds a window the newer one lacks, and leaves the newer metadata.
+        await report('2026-06-19T09:00:00.000Z', [{kind: 'five-hour', percentUsed: 40}], {poolKey: poolB, model: 'claude-haiku-5-5'});
+        expect(read()).toMatchObject({observedAt: '2026-06-19T10:00:00.000Z', poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(shown()).toEqual([['weekly', 10, null], ['five-hour', 40, null]]);
+
+        // The seat's own usage report names no pool: the same seat on the same account, so it merges.
+        await report('2026-06-19T10:15:00.000Z', [{kind: 'weekly', percentUsed: 12, resetsAt: '2026-06-25T19:00:00.000Z'}]);
+        expect(read()).toMatchObject({observedAt: '2026-06-19T10:15:00.000Z', poolKey: poolB, model: 'claude-opus-5-5'});
+        expect(shown()).toEqual([['weekly', 12, '2026-06-25T19:00:00.000Z'], ['five-hour', 40, null]]);
+    });
+
+    test('a malformed reading refuses the call before anything is written, and an account key never passes as a pool key', async () => {
+        const attempt = capacity => () => asAgent(() => TurnPresenceService.recordTurnPresence({
+            action: 'start',
+            turnId: 'turn-refused',
+            capacity,
+            now   : '2026-06-19T08:00:00.000Z'
+        }));
+
+        expect(attempt({poolKey: '00000000-0000-4000-8000-000000000000', windows: [{kind: 'weekly', percentUsed: 1}]})).toThrow(/capacity\.poolKey/);
+        expect(attempt({windows: [{kind: 'monthly', percentUsed: 1}]})).toThrow(/window kind 'monthly'/);
+        expect(attempt({windows: [{kind: 'weekly-model', percentUsed: 1}]})).toThrow(/must name its model/);
+        expect(attempt({windows: [{kind: 'weekly', percentUsed: -1}]})).toThrow(/percentUsed/);
+        expect(attempt({windows: []})).toThrow(/1 to 8 windows/);
+
+        expect(getNode('turn-refused')).toBeFalsy();
+        expect(TurnPresenceService.getCapacity('@agent-turn')).toEqual({state: 'unobserved'});
+    });
+
+    test('the declared request schema keeps a capacity reading: the non-strict root strips what it does not declare', () => {
+        const inputSchema = buildZodSchema(memoryCoreOpenApi, recordTurnPresenceOp),
+              capacity    = {observedAt: '2026-06-19T05:00:00.000Z', poolKey: 'b'.repeat(32), windows: [{kind: 'weekly', percentUsed: 90, resetsAt: '2026-06-25T19:00:00.000Z'}]};
+
+        expect(inputSchema.parse({action: 'start', capacity}).capacity).toEqual(capacity);
     });
 
     test('successful add_memory terminalizes the active turn interval', async () => {
