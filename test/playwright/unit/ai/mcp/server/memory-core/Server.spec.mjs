@@ -1327,6 +1327,8 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             // recency read (no embedder), so it must serve while the embed-canary is down — gating it
             // only denied a read the outage never touched.
             expect(exemptTools).toContain('who_is_online');
+            // ...and its writer: an operator going away during an embedder outage must still be heard.
+            expect(exemptTools).toContain('set_operator_presence');
             // The must-embed reads stay NON-exempt (exempting them trades a clean reject for a timeout).
             expect(exemptTools).not.toContain('query_raw_memories');
             expect(exemptTools).not.toContain('query_summaries');

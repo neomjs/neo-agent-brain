@@ -123,6 +123,7 @@ export const PARITY_BASELINE = Object.freeze({
     'memory-core.save_nl_transaction.now'         : 'Injected clock (test seam) with a working default; agent-settable time would let a caller backdate an archive stamp a reader trusts. Deliberately internal.',
     'memory-core.mark_nl_transaction_replayed.now': 'Injected clock (test seam) with a working default; agent-settable time would let a caller backdate a replay mark. Deliberately internal.',
     'memory-core.admit_nl_actions.now'            : 'Injected clock (test seam) with a working default; agent-settable time would let a caller place telemetry outside the window an aggregate is computed over. Deliberately internal.',
+    'memory-core.set_operator_presence.now'       : 'Injected clock (test seam) with a working default; caller-supplied time would backdate the `since` readers trust and move the `until` check. Deliberately internal.',
 
     // DEBT — genuine contract gaps awaiting individual disposition; each row's reason names the
     // tracking ticket, which is where a decay-prone reference belongs. Not suppressed: the capability

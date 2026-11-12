@@ -320,11 +320,12 @@ const expectedMemoryCoreToolTiers = {
     delete_message                         : 'admin',
     transition_task                        : 'extended',
     record_turn_presence                   : 'write',
+    set_operator_presence                  : 'admin',
     manage_wake_subscription               : 'extended'
 };
 
-// Every mutating mc op must NOT be tiered `read`. The destructive ops (purge_session, delete_message,
-// grant/revoke_permission) are `admin`; the constant maintainer-writes (add_message/add_memory/mark_read/
+// Every mutating mc op must NOT be tiered `read`. The destructive and operator-only ops (purge_session,
+// delete_message, grant/revoke_permission, set_operator_presence) are `admin`; the constant maintainer-writes (add_message/add_memory/mark_read/
 // record_turn_presence) are visible `write`; the rest of the mutations are withheld `extended`.
 const memoryCoreDangerousReadForbidden = [
     'admit_community_batch',
@@ -333,6 +334,7 @@ const memoryCoreDangerousReadForbidden = [
     'add_message',
     'mark_read',
     'record_turn_presence',
+    'set_operator_presence',
     'mutate_frontier',
     'resume_session',
     'set_session_id',

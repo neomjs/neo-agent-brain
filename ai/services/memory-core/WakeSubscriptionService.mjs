@@ -8,6 +8,7 @@ import {getAuthValidationStaleness}                                             
 import RequestContextService, {normalizeUserId}                                                 from '../../mcp/server/shared/services/RequestContextService.mjs';
 import logger                                                                                   from '../../mcp/server/memory-core/logger.mjs';
 import CoalescingEngineService                                                                  from './CoalescingEngineService.mjs';
+import OperatorPresenceService                                                                  from './OperatorPresenceService.mjs';
 import TurnPresenceService                                                                      from './TurnPresenceService.mjs';
 import WebhookDeliveryService                                                                   from './WebhookDeliveryService.mjs';
 import {DELIVERABLE_HARNESS_TARGET, PULL_HARNESS_TARGET, wakeRouteWithdrawalReasonFor}          from '../../daemons/wake/buildReceiverManifest.mjs';
@@ -794,8 +795,9 @@ class WakeSubscriptionService extends Base {
      *   per-call token cost is proportional to the question.
      * @param {Date|String|Number} [opts.now=new Date()] Clock source (unit-test seam).
      * @returns {Promise<Object>} Terse (default):
-     *   `{generatedAt, axes, summary, windows, reviewLoad, online[], idle[], dark[], neverConnected[], benched[]}`
-     *   (identity arrays). The five buckets separate LIVENESS from MEMBERSHIP: `online` (acting
+     *   `{generatedAt, operatorPresence, axes, summary, windows, reviewLoad, online[], idle[], dark[], neverConnected[], benched[]}`
+     *   (identity arrays). Both shapes carry `operatorPresence`, the operator's mode
+     *   ({@link OperatorPresenceService#getOperatorPresence}). The five buckets separate LIVENESS from MEMBERSHIP: `online` (acting
      *   now), `idle` (stale but inside the idle cutoff), `dark` (stale beyond it), `neverConnected`
      *   (rostered but never observed on THIS deployment), `benched` (participationStatus gate).
      *   `windows` carries the resolved `{activityFreshMs, idleCutoffMs}` so the counts are
@@ -805,7 +807,7 @@ class WakeSubscriptionService extends Base {
      *   diagnostics live behind `verbose`, never bloat the context window): the full `presence`
      *   and `load` capability envelopes with their plane declarations, and a compact `unobserved`
      *   marker naming the host-originated axes — declared, never fabricated.
-     *   Verbose: `{generatedAt, axes, signalStatus, agents}` — `axes` serves every host-originated
+     *   Verbose: `{generatedAt, operatorPresence, axes, signalStatus, agents}` — `axes` serves every host-originated
      *   axis as its full `degraded/none` envelope, and each agent row is
      *   `{identity, name, family, participationStatus, online, state, reason, signals, axes, reviewLoad}` —
      *   the per-row `axes` holds every host-originated axis as `unknown` until the fleet publishes,
@@ -818,6 +820,7 @@ class WakeSubscriptionService extends Base {
         const nowMs             = this._coerceDate(now).getTime(),
               validationByLogin = new Map(),
               generatedAt       = new Date(nowMs).toISOString(),
+              operatorPresence  = OperatorPresenceService.getOperatorPresence(nowMs),
               reviewTrail       = this._readReviewLifecycleLoad(nowMs),
               wake              = await this._readWakeReachability(),
               axes              = this._composedAxesEnvelope(generatedAt, reviewTrail, wake);
@@ -837,6 +840,7 @@ class WakeSubscriptionService extends Base {
         if (verbose) {
             return {
                 generatedAt,
+                operatorPresence,
                 axes,
                 signalStatus: 'Precedence: (1) participationStatus hard gate; (2) a fresh turn-presence beacon, ' +
                               'which decides online before any absence verdict — add_memory lands at turn ' +
@@ -880,6 +884,7 @@ class WakeSubscriptionService extends Base {
 
         return {
             generatedAt,
+            operatorPresence,
             // The presence envelope is the default answer's honesty (the plane declaration), so it
             // stays terse-side; the three host-originated envelopes would repeat byte-identical
             // "nothing published" on every call — diagnostics by definition — so terse DECLARES

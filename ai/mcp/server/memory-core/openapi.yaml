@@ -37,8 +37,8 @@ tags:
     description: Knowledge Graph operations
   - name: Permissions
     description: Agent permission operations
-  - name: TurnPresence
-    description: Agent active-turn liveness interval operations
+  - name: Presence
+    description: Agent active-turn liveness intervals, and the operator's present/away mode (set by the operator only)
   - name: Diagnostics
     description: On-demand operational diagnostics
   - name: Community Sources
@@ -726,6 +726,11 @@ paths:
         wake envelope and omit the map, so they never read as reachable.
 
 
+        Operator presence: both answers carry operatorPresence, the operator's mode, which only the
+        operator sets (set_operator_presence). Peers drive in both modes; away means an operator-only
+        ask (org admin, credentials, merges) waits for the return.
+
+
         Terse by default: {summary, windows, online[], idle[], dark[], neverConnected[], benched[]}
         (identity arrays). Buckets separate liveness from membership: idle is stale but within the
         configured cutoff, dark is stale beyond it, neverConnected has no activity on this deployment
@@ -761,13 +766,15 @@ paths:
               schema:
                 type: object
                 description: >
-                  Terse default: {generatedAt, axes, summary, windows, reviewLoad, undeliverable, withdrawn,
-                  online[], idle[], dark[], neverConnected[], benched[]}. With verbose:true: {generatedAt, axes,
-                  signalStatus, agents[]}.
+                  Terse default: {generatedAt, operatorPresence, axes, summary, windows, reviewLoad, undeliverable,
+                  withdrawn, online[], idle[], dark[], neverConnected[], benched[]}. With verbose:true: {generatedAt,
+                  operatorPresence, axes, signalStatus, agents[]}.
                 properties:
                   generatedAt:
                     type: string
                     description: ISO timestamp the projection was computed at.
+                  operatorPresence:
+                    $ref: '#/components/schemas/OperatorPresence'
                   axes:
                     type: object
                     description: >
@@ -3391,7 +3398,7 @@ paths:
         itself: in a containerized deployment the graph lives on a Docker named volume with no
         host-visible path, so a path-based write silently lands in the caller's checkout and
         succeeds, producing beacons that no reader ever sees.
-      tags: [TurnPresence]
+      tags: [Presence]
       requestBody:
         required: false
         content:
@@ -3407,6 +3414,49 @@ paths:
                 $ref: '#/components/schemas/TurnPresenceRecordResponse'
         '400':
           description: Bad Request (invalid action / terminal state)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /operator-presence/set:
+    post:
+      summary: "Set whether the operator is present or away; use when the operator toggles Nightshift Mode."
+      operationId: set_operator_presence
+      x-neo-tool-tier: admin
+      x-pass-as-object: true
+      description: |
+        Writes the plane-wide record who_is_online carries as operatorPresence. Peers drive in both
+        modes; the mode says whether an operator-only ask (org admin, credentials, merges) gets a
+        quick answer.
+
+        Refused unless the request-bound identity is a human principal (its server-stamped
+        accountType); the identity is server-derived, so pass none. `until` applies to `away` only
+        and must lie in the future; past it, the record reads `present` with `expired: true`.
+        `since` moves only when the mode does. `changed` is true when readers now see a different
+        state, so the caller broadcasts once per change without reading first.
+      tags: [Presence]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorPresenceSetRequest'
+      responses:
+        '200':
+          description: The record as written, and whether readers now see a different state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorPresenceSetResponse'
+        '400':
+          description: Refused (the caller is not a human principal), or an invalid mode or until.
           content:
             application/json:
               schema:
@@ -5181,6 +5231,54 @@ components:
         note:
           type: string
           nullable: true
+
+    OperatorPresence:
+      type: object
+      description: >
+        The operator's mode. No record reads present with since null; an away past its until reads
+        present with expired true.
+      properties:
+        mode:
+          type: string
+          enum: [present, away]
+        since:
+          type: string
+          format: date-time
+          nullable: true
+          description: When this mode began; null when the operator never set one.
+        until:
+          type: string
+          format: date-time
+          nullable: true
+          description: When an away ends by itself; null when it has no end, and always for present.
+        setBy:
+          type: string
+          nullable: true
+          example: "@tobiu"
+        expired:
+          type: boolean
+          description: Present, and true, only when an away passed its until.
+
+    OperatorPresenceSetRequest:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [present, away]
+        until:
+          type: string
+          format: date-time
+          description: When an away ends by itself. Away only, and in the future.
+
+    OperatorPresenceSetResponse:
+      type: object
+      properties:
+        operatorPresence:
+          $ref: '#/components/schemas/OperatorPresence'
+        changed:
+          type: boolean
+          description: True when readers now see a different mode or until.
 
     MemoryResponse:
       type: object
