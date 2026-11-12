@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import {Command}       from 'commander';
 import fs              from 'fs';
 import path            from 'path';
 import Neo             from 'neo.mjs/src/Neo.mjs';
@@ -22,6 +23,9 @@ import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
  * - Reads UTF-8 JSONL rows (`{source, target, type, note?}` or `{source, target, type, op: "remove", decision}`)
  *   from `--file <path>`, or from `stdin` when `--file` is omitted.
  * - Rejects malformed JSONL before any store access or write.
+ * - Row classification is non-aborting per row: a `refused` or `differs` row does not prevent valid
+ *   `added` or `removed` rows in the same batch from applying, so a run can exit `1` (`ok: false`)
+ *   with `written: true`.
  * - Accepts no store-path flag or positional path; reaches the plane store solely via
  *   `ConceptService.getConceptsDir()`, configured here from `AiConfig.plane.dataRoot`.
  */
@@ -33,16 +37,12 @@ const FORBIDDEN_STORE_FLAGS = new Set([
     '--data-root'
 ]);
 
-export const USAGE_TEXT = [
-    'Usage: node ./ai/scripts/maintenance/importConceptEdges.mjs --tenant <id> [--file <path.jsonl>] [--dry-run]',
-    '',
-    'Options:',
-    '  --tenant <id>       Required tenant identifier for the imported rows',
-    '  --file <path.jsonl> Read JSONL edge rows from a file (defaults to stdin)',
-    '  --dry-run           Classify rows and print the JSON report without writing edges.jsonl',
-    '  -h, --help          Print this help message'
-].join('\n');
-
+/**
+ * @summary Creates an `Error` instance tagged with a deterministic CLI error code.
+ * @param {String} code
+ * @param {String} message
+ * @returns {Error}
+ */
 function createCliError(code, message) {
     const error = new Error(message);
     error.code  = code;
@@ -50,34 +50,38 @@ function createCliError(code, message) {
 }
 
 /**
- * @summary Parses CLI arguments and rejects store-path overrides, unknown flags, and positionals.
+ * @summary Builds a fresh Commander program instance for isolated CLI option parsing.
+ * @returns {Command}
+ */
+export function createProgram() {
+    const program = new Command();
+
+    program
+        .name('importConceptEdges')
+        .usage('--tenant <id> [--file <path.jsonl>] [--dry-run]')
+        .description('Imports curated concept edge additions and decision-backed removals into the plane store.')
+        .requiredOption('--tenant <id>', 'Required tenant identifier for the imported rows')
+        .option('--file <path.jsonl>', 'Read JSONL edge rows from a file (defaults to stdin)')
+        .option('--dry-run', 'Classify rows and print the JSON report without writing edges.jsonl', false)
+        .allowUnknownOption(false)
+        .allowExcessArguments(false);
+
+    return program;
+}
+
+/**
+ * @summary Parses CLI arguments with Commander and rejects store-path overrides, unknown flags, and positionals.
  * @param {String[]} [argv=[]]
- * @returns {{tenant: (String|null), file: (String|null), dryRun: Boolean, help: Boolean}}
+ * @returns {{tenant: (String|null), file: (String|null), dryRun: Boolean, help: Boolean, helpText: String}}
  */
 export function parseArgs(argv = []) {
-    const parsed = {
-        tenant: null,
-        file  : null,
-        dryRun: false,
-        help  : false
-    };
-
-    for (let i = 0; i < argv.length; i++) {
-        const arg = argv[i];
-
-        if (arg === '-h' || arg === '--help') {
-            parsed.help = true;
-            continue;
-        }
-
-        if (arg === '--dry-run') {
-            parsed.dryRun = true;
+    for (const arg of argv) {
+        if (typeof arg !== 'string') {
             continue;
         }
 
         const eqIndex  = arg.indexOf('='),
-              flagName = eqIndex === -1 ? arg : arg.slice(0, eqIndex),
-              inline   = eqIndex === -1 ? null : arg.slice(eqIndex + 1);
+              flagName = eqIndex === -1 ? arg : arg.slice(0, eqIndex);
 
         if (FORBIDDEN_STORE_FLAGS.has(flagName)) {
             throw createCliError(
@@ -85,40 +89,46 @@ export function parseArgs(argv = []) {
                 `Store path overrides (${flagName}) are forbidden; importConceptEdges resolves the store exclusively through ConceptService.getConceptsDir().`
             );
         }
-
-        if (flagName === '--tenant') {
-            const value = inline !== null ? inline : argv[++i];
-
-            if (value === undefined || (inline === null && value.startsWith('-'))) {
-                throw createCliError('MISSING_OPTION_VALUE', 'Option --tenant requires a non-empty tenant identifier.');
-            }
-
-            parsed.tenant = value;
-            continue;
-        }
-
-        if (flagName === '--file') {
-            const value = inline !== null ? inline : argv[++i];
-
-            if (value === undefined || value.trim().length === 0 || (inline === null && value.startsWith('-'))) {
-                throw createCliError('MISSING_OPTION_VALUE', 'Option --file requires a JSONL file path.');
-            }
-
-            parsed.file = value;
-            continue;
-        }
-
-        if (arg.startsWith('-')) {
-            throw createCliError('UNKNOWN_ARGUMENT', `Unknown option: ${arg}`);
-        }
-
-        throw createCliError(
-            'UNEXPECTED_POSITIONAL_ARGUMENT',
-            `Unexpected positional argument '${arg}'; importConceptEdges accepts no store path or positional arguments.`
-        );
     }
 
-    return parsed;
+    const program = createProgram();
+
+    program.exitOverride();
+    program.configureOutput({writeOut: () => {}, writeErr: () => {}});
+
+    try {
+        program.parse(argv, {from: 'user'});
+    } catch (error) {
+        if (error?.code === 'commander.helpDisplayed') {
+            return {
+                tenant  : null,
+                file    : null,
+                dryRun  : false,
+                help    : true,
+                helpText: program.helpInformation()
+            };
+        }
+
+        throw error;
+    }
+
+    const options = program.opts();
+
+    if (typeof options.tenant !== 'string' || options.tenant.trim().length === 0 || options.tenant.startsWith('-')) {
+        throw createCliError('MISSING_OPTION_VALUE', 'Option --tenant requires a non-empty tenant identifier.');
+    }
+
+    if (options.file !== undefined && (typeof options.file !== 'string' || options.file.trim().length === 0 || options.file.startsWith('-'))) {
+        throw createCliError('MISSING_OPTION_VALUE', 'Option --file requires a JSONL file path.');
+    }
+
+    return {
+        tenant  : options.tenant,
+        file    : options.file ?? null,
+        dryRun  : Boolean(options.dryRun),
+        help    : false,
+        helpText: program.helpInformation()
+    };
 }
 
 /**
@@ -161,6 +171,11 @@ export function parseJsonlRows(rawText, sourceLabel = 'stdin') {
     return rows;
 }
 
+/**
+ * @summary Collects all chunks from a readable stream into a single UTF-8 string.
+ * @param {AsyncIterable<Buffer|String>} stream
+ * @returns {Promise<String>}
+ */
 async function readStreamText(stream) {
     const chunks = [];
 
@@ -171,6 +186,9 @@ async function readStreamText(stream) {
     return Buffer.concat(chunks).toString('utf8');
 }
 
+/**
+ * @summary Injects the resolved plane concept store directory (`<plane.dataRoot>/concepts`) into `ConceptService`.
+ */
 function configurePlaneConceptStore() {
     ConceptService.defaultConceptsDir = path.join(AiConfig.plane.dataRoot, 'concepts');
 }
@@ -186,7 +204,6 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         stdin          = process.stdin,
         stdout         = process.stdout,
         stderr         = process.stderr,
-        env            = process.env,
         configureStore = configurePlaneConceptStore
     } = deps;
 
@@ -200,19 +217,8 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     }
 
     if (args.help) {
-        stdout.write(`${USAGE_TEXT}\n`);
+        stdout.write(args.helpText);
         return {ok: true, exitCode: 0};
-    }
-
-    if ((!args.tenant || args.tenant.trim().length === 0) && args.file === null && stdin?.isTTY) {
-        const report = ConceptService.importEdges({
-            rows  : [],
-            tenant: args.tenant,
-            dryRun: args.dryRun,
-            env
-        });
-        stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-        return {ok: false, exitCode: 1, report};
     }
 
     let rawText,
@@ -247,8 +253,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         const report = ConceptService.importEdges({
             rows,
             tenant: args.tenant,
-            dryRun: args.dryRun,
-            env
+            dryRun: args.dryRun
         });
 
         stdout.write(`${JSON.stringify(report, null, 2)}\n`);

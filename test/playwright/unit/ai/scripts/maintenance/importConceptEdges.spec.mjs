@@ -13,18 +13,17 @@ setup({
     }
 });
 
-import {test, expect}                      from '@playwright/test';
-import {spawnSync}                         from 'node:child_process';
-import fs                                  from 'node:fs';
-import os                                  from 'node:os';
-import path                                from 'node:path';
-import {Readable, Writable}                from 'node:stream';
-import Neo                                 from 'neo.mjs/src/Neo.mjs';
-import * as core                           from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager                     from 'neo.mjs/src/manager/Instance.mjs';
-import AiConfig                            from '../../../../../../ai/config.template.mjs';
-import ConceptService                      from '../../../../../../ai/services/ConceptService.mjs';
-import {parseArgs, parseJsonlRows, runCli} from '../../../../../../ai/scripts/maintenance/importConceptEdges.mjs';
+import {test, expect}                                     from '@playwright/test';
+import {spawnSync}                                        from 'node:child_process';
+import fs                                                 from 'node:fs';
+import os                                                 from 'node:os';
+import path                                               from 'node:path';
+import {Readable, Writable}                               from 'node:stream';
+import Neo                                                from 'neo.mjs/src/Neo.mjs';
+import * as core                                          from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                                    from 'neo.mjs/src/manager/Instance.mjs';
+import ConceptService                                     from '../../../../../../ai/services/ConceptService.mjs';
+import {createProgram, parseArgs, parseJsonlRows, runCli} from '../../../../../../ai/scripts/maintenance/importConceptEdges.mjs';
 
 function createCaptureStream() {
     let   text   = '';
@@ -69,22 +68,54 @@ function createPlaneFixture() {
 }
 
 test.describe('ai/scripts/maintenance/importConceptEdges.mjs', () => {
-    let priorPlaneDataRoot;
-
     test.beforeEach(() => {
-        priorPlaneDataRoot = AiConfig.plane.dataRoot;
         ConceptService.defaultConceptsDir = null;
-        ConceptService.loaded = false;
+        ConceptService.loaded             = false;
     });
 
     test.afterEach(() => {
-        AiConfig.setEnvOverride('NEO_PLANE_DATA_ROOT', priorPlaneDataRoot);
         ConceptService.defaultConceptsDir = null;
-        ConceptService.loaded = false;
+        ConceptService.loaded             = false;
     });
 
-    test('rejects store-path flags, unknown options, and positional arguments', () => {
+    test('parses valid defaults, supplied options, and --help via Commander while rejecting store-path, unknown, missing-value, and positional arguments', async () => {
+        expect(createProgram().name()).toBe('importConceptEdges');
+
+        expect(parseArgs(['--tenant', 'neo-shared'])).toMatchObject({
+            tenant: 'neo-shared',
+            file  : null,
+            dryRun: false,
+            help  : false
+        });
+
+        expect(parseArgs(['--tenant', 'neo-shared', '--file', 'batch.jsonl', '--dry-run'])).toMatchObject({
+            tenant: 'neo-shared',
+            file  : 'batch.jsonl',
+            dryRun: true,
+            help  : false
+        });
+
+        const helpParsed = parseArgs(['--help']);
+        expect(helpParsed.help).toBe(true);
+        expect(helpParsed.helpText).toContain('--tenant <id>');
+
+        const helpOut    = createCaptureStream(),
+              helpErr    = createCaptureStream(),
+              helpResult = await runCli(['--help'], {stdout: helpOut.stream, stderr: helpErr.stream});
+
+        expect(helpResult.exitCode).toBe(0);
+        expect(helpErr.read()).toBe('');
+        expect(helpOut.read()).toContain('--tenant <id>');
+
         for (const forbidden of [
+            [],
+            ['--dry-run'],
+            ['--tenant'],
+            ['--tenant', '   '],
+            ['--tenant', '--dry-run'],
+            ['--tenant', 'neo-shared', '--file'],
+            ['--tenant', 'neo-shared', '--file', '   '],
+            ['--tenant', 'neo-shared', '--file', '--dry-run'],
             ['--tenant', 'neo-shared', '--store', '/tmp/custom'],
             ['--tenant', 'neo-shared', '--store=/tmp/custom'],
             ['--tenant', 'neo-shared', '--store-path', '/tmp/custom'],
@@ -93,16 +124,17 @@ test.describe('ai/scripts/maintenance/importConceptEdges.mjs', () => {
             ['--tenant', 'neo-shared', '/tmp/positional-store'],
             ['--tenant', 'neo-shared', '--unknown-flag']
         ]) {
-            expect(() => parseArgs(forbidden)).toThrow();
+            expect(() => parseArgs(forbidden), JSON.stringify(forbidden)).toThrow();
         }
     });
 
-    test('supports --dry-run and --file against the plane store without mutating edges.jsonl during dry-run', async () => {
-        const {planeDir, conceptsDir} = createPlaneFixture();
+    test('supports --dry-run and --file against the plane store via configureStore without mutating shared AiConfig', async () => {
+        const {planeDir, conceptsDir} = createPlaneFixture(),
+              configureStore          = () => {
+                  ConceptService.defaultConceptsDir = conceptsDir;
+              };
 
         try {
-            AiConfig.setEnvOverride('NEO_PLANE_DATA_ROOT', planeDir);
-
             const
                 inputFile   = path.join(planeDir, 'batch.jsonl'),
                 edgesPath   = path.join(conceptsDir, 'edges.jsonl'),
@@ -121,7 +153,8 @@ test.describe('ai/scripts/maintenance/importConceptEdges.mjs', () => {
                   dryStderr = createCaptureStream(),
                   dryResult = await runCli(['--tenant', 'neo-shared', '--file', inputFile, '--dry-run'], {
                       stdout: dryStdout.stream,
-                      stderr: dryStderr.stream
+                      stderr: dryStderr.stream,
+                      configureStore
                   });
 
             expect(dryResult.exitCode).toBe(0);
@@ -139,7 +172,8 @@ test.describe('ai/scripts/maintenance/importConceptEdges.mjs', () => {
                   applyStderr = createCaptureStream(),
                   applyResult = await runCli(['--tenant', 'neo-shared', '--file', inputFile], {
                       stdout: applyStdout.stream,
-                      stderr: applyStderr.stream
+                      stderr: applyStderr.stream,
+                      configureStore
                   });
 
             expect(applyResult.exitCode).toBe(0);
@@ -153,25 +187,35 @@ test.describe('ai/scripts/maintenance/importConceptEdges.mjs', () => {
         }
     });
 
-    test('reads JSONL from stdin when --file is omitted', async () => {
-        const {planeDir, conceptsDir} = createPlaneFixture();
+    test('reads JSONL from stdin when --file is omitted and exits 1 with written: true when valid and refused rows coexist', async () => {
+        const {planeDir, conceptsDir} = createPlaneFixture(),
+              configureStore          = () => {
+                  ConceptService.defaultConceptsDir = conceptsDir;
+              };
 
         try {
-            AiConfig.setEnvOverride('NEO_PLANE_DATA_ROOT', planeDir);
-
             const
-                stdinPayload = `${JSON.stringify({source: 'alpha-concept', target: 'beta-concept', type: 'PARENT_CONCEPT'})}\n`,
+                stdinPayload = [
+                    JSON.stringify({source: 'alpha-concept', target: 'beta-concept', type: 'PARENT_CONCEPT'}),
+                    JSON.stringify({source: 'unknown-concept', target: 'beta-concept', type: 'PARENT_CONCEPT'})
+                ].join('\n') + '\n',
                 stdout       = createCaptureStream(),
                 stderr       = createCaptureStream(),
                 result       = await runCli(['--tenant', 'neo-shared'], {
                     stdin : Readable.from([stdinPayload]),
                     stdout: stdout.stream,
-                    stderr: stderr.stream
+                    stderr: stderr.stream,
+                    configureStore
                 });
 
-            expect(result.exitCode).toBe(0);
+            expect(result.exitCode).toBe(1);
             expect(stderr.read()).toBe('');
-            expect(JSON.parse(stdout.read()).counts.added).toBe(1);
+            const report = JSON.parse(stdout.read());
+            expect(report).toMatchObject({
+                ok     : false,
+                written: true,
+                counts : {total: 2, added: 1, refused: 1}
+            });
             expect(ConceptService.parseJsonl(path.join(conceptsDir, 'edges.jsonl'))).toEqual([
                 {source: 'beta-concept',  target: 'file:ai/services/RetiredTarget.mjs', type: 'IMPLEMENTED_BY'},
                 {source: 'alpha-concept', target: 'beta-concept',                       type: 'PARENT_CONCEPT'}
@@ -183,10 +227,9 @@ test.describe('ai/scripts/maintenance/importConceptEdges.mjs', () => {
 
     test('exits non-zero on malformed JSONL before touching the store', async () => {
         const {planeDir, conceptsDir} = createPlaneFixture();
+        let   storeConfigured         = false;
 
         try {
-            AiConfig.setEnvOverride('NEO_PLANE_DATA_ROOT', planeDir);
-
             const
                 edgesPath   = path.join(conceptsDir, 'edges.jsonl'),
                 beforeBytes = fs.readFileSync(edgesPath, 'utf8'),
@@ -200,12 +243,17 @@ test.describe('ai/scripts/maintenance/importConceptEdges.mjs', () => {
             expect(() => parseJsonlRows('["array-not-object"]')).toThrow(/JSON object/);
 
             const result = await runCli(['--tenant', 'neo-shared'], {
-                stdin : Readable.from([malformed]),
-                stdout: stdout.stream,
-                stderr: stderr.stream
+                stdin         : Readable.from([malformed]),
+                stdout        : stdout.stream,
+                stderr        : stderr.stream,
+                configureStore: () => {
+                    storeConfigured                   = true;
+                    ConceptService.defaultConceptsDir = conceptsDir;
+                }
             });
 
             expect(result.exitCode).toBe(1);
+            expect(storeConfigured).toBe(false);
             expect(stdout.read()).toBe('');
             expect(stderr.read()).toContain('Malformed JSONL at stdin:2');
             expect(fs.readFileSync(edgesPath, 'utf8')).toBe(beforeBytes);
@@ -241,7 +289,7 @@ test.describe('ai/scripts/maintenance/importConceptEdges.mjs', () => {
                 target     : 'file:ai/services/ConceptService.mjs',
                 type       : 'IMPLEMENTED_BY',
                 root       : 'neo-agent-brain',
-                rootVersion: null
+                rootVersion: expect.stringMatching(/^[a-f0-9]{40}$/)
             }]);
             expect(ConceptService.parseJsonl(path.join(conceptsDir, 'edges.jsonl'))).toHaveLength(2);
         } finally {

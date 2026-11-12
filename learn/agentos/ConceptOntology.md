@@ -338,7 +338,7 @@ enters: its `PARENT_CONCEPT` edges place it in the hierarchy, and its `EXPLAINED
 
 - **One JSON object per line** — no multi-line JSON
 - **No trailing commas** — strict JSON per line
-- **Atomic whole-file updates for edges** — `ConceptService.importEdges()` preserves existing tuple order, removes decision-backed deletions, appends new tuples, and swaps `edges.jsonl` atomically while `ConceptIngestor` remains strictly read-only on the store
+- **Append-only nodes, atomic whole-file updates for edges** — Discovery appends candidate lines to `nodes.jsonl`; `ConceptService.importEdges()` preserves untouched `edges.jsonl` lines verbatim, applies decision-backed removals and additions, and swaps `edges.jsonl` atomically while `ConceptIngestor` remains strictly read-only on the store
 
 ## Integration Architecture
 

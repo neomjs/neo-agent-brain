@@ -13,14 +13,15 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import ConceptService  from '../../../../../ai/services/ConceptService.mjs';
-import fs              from 'fs';
-import path            from 'path';
-import os              from 'os';
-import {createRequire} from 'module';
+import {test, expect}                                      from '@playwright/test';
+import Neo                                                 from 'neo.mjs/src/Neo.mjs';
+import * as core                                           from 'neo.mjs/src/core/_export.mjs';
+import ConceptService                                      from '../../../../../ai/services/ConceptService.mjs';
+import {isValidDecisionReference, resolveBrainRootVersion} from '../../../../../ai/services/shared/conceptEdgeValidation.mjs';
+import fs                                                  from 'fs';
+import path                                                from 'path';
+import os                                                  from 'os';
+import {createRequire}                                     from 'module';
 
 // The production ontology stayed in the Engine at the split; the Brain reads it through its Engine dependency.
 const productionConceptsDir = path.join(path.dirname(createRequire(import.meta.url).resolve('neo.mjs/package.json')), '.neo-ai-data/concepts');
@@ -636,7 +637,9 @@ test.describe('Neo.ai.services.ConceptService', () => {
     // ── importEdges ───────────────────────────────────────────
 
     test.describe('importEdges', () => {
-        const engineVersion = createRequire(import.meta.url)('neo.mjs/package.json').version;
+        const
+            engineVersion = createRequire(import.meta.url)('neo.mjs/package.json').version,
+            brainVersion  = resolveBrainRootVersion();
 
         function createSyntheticImportStore(edges = []) {
             const nodes = [
@@ -650,6 +653,8 @@ test.describe('Neo.ai.services.ConceptService', () => {
         }
 
         test('classifies added, equal, differs, removed, absent, and refused rows in separate report lists', () => {
+            expect(brainVersion).toMatch(/^[a-f0-9]{40}$/);
+
             const tmpDir = createSyntheticImportStore([
                 {source: 'alpha-concept', target: 'file:src/Neo.mjs',                             type: 'IMPLEMENTED_BY'},
                 {source: 'beta-concept',  target: 'ext:prior-analogue',                           type: 'ANALOGOUS_TO', note: 'Original distinction.'},
@@ -690,7 +695,7 @@ test.describe('Neo.ai.services.ConceptService', () => {
                     target     : 'file:ai/services/ConceptService.mjs',
                     type       : 'IMPLEMENTED_BY',
                     root       : 'neo-agent-brain',
-                    rootVersion: null
+                    rootVersion: brainVersion
                 }]);
                 expect(report.equal).toEqual([{
                     index      : 1,
@@ -762,10 +767,24 @@ test.describe('Neo.ai.services.ConceptService', () => {
                         {source: 'alpha-concept',     target: 'ext:   ',                      type: 'ANALOGOUS_TO'},
                         {source: 'alpha-concept',     target: 'ext:kept-analogue',            type: 'ANALOGOUS_TO', op: 'remove'},
                         {source: 'alpha-concept',     target: 'ext:kept-analogue',            type: 'ANALOGOUS_TO', op: 'remove', decision: 'just cleaning up'},
+                        {source: 'alpha-concept',     target: 'ext:kept-analogue',            type: 'ANALOGOUS_TO', op: 'remove', decision: 'agreed on 2026-11-09'},
+                        {source: 'alpha-concept',     target: 'ext:kept-analogue',            type: 'ANALOGOUS_TO', op: 'remove', decision: 'see chat 1234-abc'},
                         {source: 'alpha-concept',     target: 'ext:kept-analogue',            type: 'ANALOGOUS_TO', op: 'upsert'},
                         {source: 'alpha-concept',     target: 'ext:new-analogue',             type: 'ANALOGOUS_TO', note: 42}
                     ]
                 });
+
+                expect(isValidDecisionReference('agreed on 2026-11-09')).toBe(false);
+                expect(isValidDecisionReference('2026-11-09')).toBe(false);
+                expect(isValidDecisionReference('see chat 1234-abc')).toBe(false);
+                expect(isValidDecisionReference('0024-native-edge-graph-model')).toBe(false);
+                expect(isValidDecisionReference('#1551')).toBe(true);
+                expect(isValidDecisionReference('neomjs/neo#19235')).toBe(true);
+                expect(isValidDecisionReference('GH-1549')).toBe(true);
+                expect(isValidDecisionReference('https://github.com/neomjs/neo-agent-brain/pull/1549')).toBe(true);
+                expect(isValidDecisionReference('ADR-0024')).toBe(true);
+                expect(isValidDecisionReference('adr:0024-native-edge-graph-model')).toBe(true);
+                expect(isValidDecisionReference('learn/agentos/decisions/0024-native-edge-graph-model.md')).toBe(true);
 
                 expect(report.ok).toBe(false);
                 expect(report.written).toBe(false);
@@ -781,6 +800,8 @@ test.describe('Neo.ai.services.ConceptService', () => {
                     'MISSING_FILE',
                     'INVALID_EDGE_TARGET',
                     'MISSING_DECISION',
+                    'INVALID_DECISION',
+                    'INVALID_DECISION',
                     'INVALID_DECISION',
                     'UNSUPPORTED_OP',
                     'INVALID_NOTE'
@@ -915,11 +936,90 @@ test.describe('Neo.ai.services.ConceptService', () => {
             }
         });
 
-        test('refuses production store paths under a test runner via assertTestWriteIsolated', () => {
+        test('preserves untouched store lines verbatim—including duplicate tuples, rows missing type, and malformed JSONL—and refuses ambiguous duplicate-tuple removals', () => {
+            const tmpDir = createSyntheticImportStore([]);
+
+            try {
+                const
+                    edgesPath    = path.join(tmpDir, 'edges.jsonl'),
+                    initialLines = [
+                        JSON.stringify({source: 'alpha-concept', target: 'file:src/Neo.mjs', type: 'IMPLEMENTED_BY'}),
+                        JSON.stringify({source: 'beta-concept',  target: 'ext:shared-tuple', type: 'ANALOGOUS_TO', note: 'First note.'}),
+                        JSON.stringify({source: 'beta-concept',  target: 'ext:shared-tuple', type: 'ANALOGOUS_TO', note: 'Second note.'}),
+                        JSON.stringify({source: 'alpha-concept', target: 'beta-concept'}),
+                        '{"source":"alpha-concept","target":"beta-concept","type":"PARENT_CONCEPT",}'
+                    ];
+
+                fs.writeFileSync(edgesPath, `${initialLines.join('\n')}\n`, 'utf8');
+                ConceptService.defaultConceptsDir = tmpDir;
+
+                const addReport = ConceptService.importEdges({
+                    tenant: 'neo-shared',
+                    rows  : [
+                        {source: 'alpha-concept', target: 'file:ai/services/ConceptService.mjs', type: 'IMPLEMENTED_BY'}
+                    ]
+                });
+
+                expect(addReport.ok).toBe(true);
+                expect(addReport.written).toBe(true);
+                expect(addReport.counts).toEqual({
+                    total  : 1,
+                    added  : 1,
+                    equal  : 0,
+                    differs: 0,
+                    removed: 0,
+                    absent : 0,
+                    refused: 0
+                });
+
+                const afterAddLines = fs.readFileSync(edgesPath, 'utf8').trimEnd().split('\n');
+                expect(afterAddLines).toEqual([
+                    ...initialLines,
+                    JSON.stringify({source: 'alpha-concept', target: 'file:ai/services/ConceptService.mjs', type: 'IMPLEMENTED_BY'})
+                ]);
+
+                const dupRemoveReport = ConceptService.importEdges({
+                    tenant: 'neo-shared',
+                    rows  : [
+                        {source: 'beta-concept', target: 'ext:shared-tuple', type: 'ANALOGOUS_TO', op: 'remove', decision: '#1551'}
+                    ]
+                });
+
+                expect(dupRemoveReport.ok).toBe(false);
+                expect(dupRemoveReport.written).toBe(false);
+                expect(dupRemoveReport.refused).toMatchObject([{
+                    index: 0,
+                    code : 'DUPLICATE_STORE_TUPLE'
+                }]);
+                expect(fs.readFileSync(edgesPath, 'utf8').trimEnd().split('\n')).toEqual(afterAddLines);
+            } finally {
+                fs.rmSync(tmpDir, {recursive: true, force: true});
+            }
+        });
+
+        test('resolves Brain rootVersion from .neo-revision image stamp when git metadata is absent', () => {
+            const stampDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-brain-stamp-')),
+                  stampSha = 'b'.repeat(40);
+
+            try {
+                fs.writeFileSync(path.join(stampDir, '.neo-revision'), `${stampSha}\n`, 'utf8');
+                expect(resolveBrainRootVersion(stampDir)).toBe(stampSha);
+            } finally {
+                fs.rmSync(stampDir, {recursive: true, force: true});
+            }
+        });
+
+        test('refuses production store paths under a test runner via assertTestWriteIsolated without an env bypass option', () => {
             ConceptService.defaultConceptsDir = '/var/neo-ai-data/concepts';
 
             expect(() => ConceptService.importEdges({
                 tenant: 'neo-shared',
+                rows  : [{source: 'alpha-concept', target: 'file:src/Neo.mjs', type: 'IMPLEMENTED_BY'}]
+            })).toThrow(/STORE_WRITE_GUARD: refusing a concept-ontology write/);
+
+            expect(() => ConceptService.importEdges({
+                tenant: 'neo-shared',
+                env   : {},
                 rows  : [{source: 'alpha-concept', target: 'file:src/Neo.mjs', type: 'IMPLEMENTED_BY'}]
             })).toThrow(/STORE_WRITE_GUARD: refusing a concept-ontology write/);
 
@@ -929,6 +1029,7 @@ test.describe('Neo.ai.services.ConceptService', () => {
             try {
                 ConceptService.importEdges({
                     tenant: 'neo-shared',
+                    env   : {},
                     rows  : [{source: 'alpha-concept', target: 'file:src/Neo.mjs', type: 'IMPLEMENTED_BY'}]
                 });
             } catch (error) {

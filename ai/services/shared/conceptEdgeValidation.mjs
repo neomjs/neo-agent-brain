@@ -1,3 +1,4 @@
+import {execFileSync}  from 'child_process';
 import fs              from 'fs';
 import path            from 'path';
 import {createRequire} from 'module';
@@ -41,13 +42,71 @@ export const CONCEPT_EDGE_TYPES = Object.freeze({
 export const CONCEPT_EDGE_TYPE_SET = new Set(Object.values(CONCEPT_EDGE_TYPES));
 
 const DECISION_REFERENCE_PATTERNS = Object.freeze([
-    /(?:^|[\s(])(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#\d+\b/,
-    /\bGH-\d+\b/i,
-    /https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull|discussions)\/\d+\b/i,
+    /(?:^|[\s(])(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#[1-9]\d*\b/,
+    /\bGH-[1-9]\d*\b/i,
+    /https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull|discussions)\/[1-9]\d*\b/i,
     /(?:^|[\s(#])adr:[A-Za-z0-9][A-Za-z0-9_.-]*\b/i,
-    /\bADR[-\s]?\d{1,4}\b/i,
-    /(?:^|[\s/(])\d{4}-[a-z0-9][a-z0-9-]*(?:\.md)?\b/i
+    /\bADR[-\s]?(?!0+\b)\d{1,4}\b/i,
+    /(?:^|[\s/(])decisions\/\d{4}-[a-z][a-z0-9-]*(?:\.md)?\b/i
 ]);
+
+let cachedDefaultBrainRootVersion;
+
+/**
+ * @summary Resolves the image revision stamp or Git `HEAD` commit SHA for a Brain repository root.
+ *
+ * Reads `.neo-revision` first for packaged/container images without `.git`, falling back to
+ * `git -C <rootDir> rev-parse HEAD` for checkouts. Caches the default Brain root lookup so
+ * multi-row imports spawn `git` at most once.
+ * @param {String} [rootDir=neoRootDir]
+ * @returns {String|null}
+ */
+export function resolveBrainRootVersion(rootDir = neoRootDir) {
+    const
+        resolvedRoot = path.resolve(rootDir),
+        isDefault    = resolvedRoot === neoRootDir;
+
+    if (isDefault && cachedDefaultBrainRootVersion !== undefined) {
+        return cachedDefaultBrainRootVersion;
+    }
+
+    let version = null;
+
+    try {
+        const stampPath = path.join(resolvedRoot, '.neo-revision');
+
+        if (fs.lstatSync(stampPath).isFile()) {
+            const stamped = fs.readFileSync(stampPath, 'utf8').trim();
+
+            if (/^[a-f0-9]{40}$/i.test(stamped)) {
+                version = stamped.toLowerCase();
+            }
+        }
+    } catch {
+        // Unstamped checkout; fall back to git rev-parse HEAD.
+    }
+
+    if (!version) {
+        try {
+            const head = execFileSync('git', ['-C', resolvedRoot, 'rev-parse', 'HEAD'], {
+                encoding: 'utf8',
+                stdio   : ['ignore', 'pipe', 'pipe']
+            }).trim();
+
+            if (/^[a-f0-9]{40}$/i.test(head)) {
+                version = head.toLowerCase();
+            }
+        } catch {
+            version = null;
+        }
+    }
+
+    if (isDefault) {
+        cachedDefaultBrainRootVersion = version;
+    }
+
+    return version;
+}
 
 /**
  * @summary Builds the canonical Native Edge Graph `file-<path>` node ID for a repository-relative path.
