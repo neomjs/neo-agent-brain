@@ -220,8 +220,9 @@ export const OPEN_WORK_TERMINAL = `
 
 /**
  * A merged pull request's unblock read: the issues it closes, the open issues each one blocks, and for those
- * their assignees and every issue still blocking them. `totalCount` makes a blocker list past its first page
- * visible, because an unread blocker may still be open.
+ * their assignees and every issue still blocking them. Each dependency list carries `totalCount`, so a list
+ * past its page is visible: an unread dependent would never be woken, and an unread blocker may still be open.
+ * An issue has at most ten assignees, so their list is whole by GitHub's own limit.
  * Variables: `$owner`, `$name`, `$number`.
  * @type {String}
  */
@@ -237,12 +238,14 @@ export const OPEN_WORK_UNBLOCKED = `
     repository(owner: $owner, name: $name) {
       pullRequest(number: $number) {
         closingIssuesReferences(first: 10) {
+          totalCount
           nodes {
             number
             repository {
               nameWithOwner
             }
-            blocking(first: 10) {
+            blocking(first: 50) {
+              totalCount
               nodes {
                 number
                 state
@@ -254,7 +257,7 @@ export const OPEN_WORK_UNBLOCKED = `
                     login
                   }
                 }
-                blockedBy(first: 10) {
+                blockedBy(first: 50) {
                   totalCount
                   nodes {
                     number
@@ -319,8 +322,8 @@ export const OPEN_WORK_FAILED_CHECKS = `
 /**
  * @summary Published GraphQL formula estimates for the static pulse documents, not timeout-cost bounds.
  * Snapshot has the search plus five connections for up to 50 PRs: round((1 + 50 * 5) / 100) = 3.
- * Terminal has one connection; the published minimum is one. Unblocked reads 10 closing issues, 10
- * blocked issues each, and two lists on each of those: round((1 + 10 + 100 + 100) / 100) = 2, which a
+ * Terminal has one connection; the published minimum is one. Unblocked reads 10 closing issues, 50
+ * blocked issues each, and two lists on each of those: round((1 + 10 + 500 + 500) / 100) = 10, which a
  * live read measured too. The gate also uses measured maxima.
  *
  * The third entry prices the previous snapshot document. The wake gate looks up every retained pulse's
@@ -334,7 +337,7 @@ export const OPEN_WORK_QUERY_COSTS = Object.freeze([
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 3}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
     Object.freeze({queryHash: 'dd32c5ca7fac2494379b94fb28cfc37a1d2df150e15e832c031fb88316b46dad', formulaCost: 3}),
-    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 2})
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10})
 ]);
 
 /**

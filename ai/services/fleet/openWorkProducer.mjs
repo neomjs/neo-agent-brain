@@ -171,9 +171,10 @@ async function readSearch({query, text, search, cursor = null, pageBudget, tally
 
 /**
  * @summary Reads what each recent merge unblocked, oldest first and at most {@link UNBLOCK_READS} per pulse, with
- * its author seat's reader, or the outside reader when that seat did not read this pulse. An answer becomes
- * `unblock: {at, issues}`; a failure counts in `unblock.failures` and the next pulse reads again, up to
- * {@link UNBLOCK_ATTEMPTS}. Each attempt is recorded in the pulse's quota like any search page.
+ * its author seat's reader, or the outside reader when that seat did not read this pulse. A whole answer becomes
+ * `unblock: {at, issues}`. A failure, or an answer with a dependency list past its page, counts in
+ * `unblock.failures` and the next pulse reads again, up to {@link UNBLOCK_ATTEMPTS}: a truncated answer is never
+ * kept as the merge's result. Each attempt is recorded in the pulse's quota like any search page.
  * @param {Object}   options
  * @param {Object[]} options.transitions The retained transitions with this pulse's appended.
  * @param {Map<String,Object>} options.readers Each seat that read this pulse to its `{query, apiBase}`.
@@ -208,9 +209,9 @@ async function readUnblocked({transitions, readers, fallback, identities, tally,
 
         try {
             data = await reader.query(OPEN_WORK_UNBLOCKED, {owner, name, number: transition.number});
-            const pullRequest = data?.repository?.pullRequest;
-            if (!Array.isArray(pullRequest?.closingIssuesReferences?.nodes)) throw new Error('the unblock read answered without its pull request');
-            result.push({...transition, unblock: {at, issues: normalizeUnblocked(pullRequest, identities)}});
+            const issues = normalizeUnblocked(data?.repository?.pullRequest, identities);
+            if (!issues) throw new Error('the unblock read answered no pull request, or a dependency list past its page');
+            result.push({...transition, unblock: {at, issues}});
             failed = false
         } catch (error) {
             data ??= error?.quota;

@@ -172,27 +172,35 @@ export function normalizeTerminal(node, identities) {
 /**
  * @summary What one merge unblocked: each open issue it closed the last open blocker of, with the seats among
  * its assignees. A blocker that is another issue this merge closes counts as closed, because GitHub closes it
- * just after the merge. An issue whose blocker list runs past its page stays blocked, because the unread
- * blocker may be open. An issue with no assignee seat names nobody to wake, so it is left out.
+ * just after the merge. An issue with no assignee seat names nobody to wake, so it is left out.
+ *
+ * The answer counts only when every dependency list in it is whole: a closing, dependent or blocker list past
+ * its page makes the read incomplete, because an unread dependent would never be woken and an unread blocker
+ * may still be open.
  * @param {Object} pullRequest The `OPEN_WORK_UNBLOCKED` answer's pull request.
  * @param {{byLogin: Function}} identities
- * @returns {{issue: String, seats: String[]}[]} Each issue as `owner/name#N`, once.
+ * @returns {{issue: String, seats: String[]}[]|null} Each issue as `owner/name#N`, once; null for an incomplete read.
  */
 export function normalizeUnblocked(pullRequest, identities) {
     const
-        keyOf   = node => typeof node?.repository?.nameWithOwner === 'string' && Number.isInteger(node.number)
+        whole = list => Array.isArray(list?.nodes) && list.totalCount === list.nodes.length,
+        keyOf = node => typeof node?.repository?.nameWithOwner === 'string' && Number.isInteger(node.number)
             ? `${node.repository.nameWithOwner}#${node.number}` : null,
-        closers = pullRequest?.closingIssuesReferences?.nodes ?? [],
+        refs    = pullRequest?.closingIssuesReferences,
+        closers = refs?.nodes ?? [],
         closing = new Set(closers.map(keyOf)),
         issues  = new Map();
 
-    for (const blocked of closers.flatMap(closer => closer?.blocking?.nodes ?? [])) {
+    if (!whole(refs) || !closers.every(closer => whole(closer?.blocking))) return null;
+
+    for (const blocked of closers.flatMap(closer => closer.blocking.nodes)) {
         const
             issue    = keyOf(blocked),
             blockers = blocked?.blockedBy;
 
-        if (!issue || issues.has(issue) || blocked.state !== 'OPEN' || !Array.isArray(blockers?.nodes) ||
-            blockers.totalCount !== blockers.nodes.length ||
+        if (blocked?.state === 'OPEN' && !whole(blockers)) return null;
+
+        if (!issue || issues.has(issue) || blocked.state !== 'OPEN' ||
             blockers.nodes.some(blocker => blocker?.state !== 'CLOSED' && !closing.has(keyOf(blocker)))) continue;
 
         const seats = [...new Set((blocked.assignees?.nodes ?? [])

@@ -916,12 +916,20 @@ test.describe('openWorkProducer — what a merge unblocked (#1619)', () => {
         issue   = (number, state = 'OPEN', extra = {}) => ({number, state, repository: {nameWithOwner: 'acme/app'}, ...extra}),
         blocked = (number, {assignees = ['neo-gpt'], blockers = [issue(5, 'CLOSED')], totalCount = blockers.length} = {}) =>
             issue(number, 'OPEN', {assignees: {nodes: assignees.map(login => ({login}))}, blockedBy: {totalCount, nodes: blockers}}),
-        pullRequest = (...closers) => ({closingIssuesReferences: {nodes: closers.map(([number, blocking]) =>
-            ({...issue(number, 'CLOSED'), blocking: {nodes: blocking}}))}}),
+        pullRequest = (...closers) => ({closingIssuesReferences: {totalCount: closers.length, nodes: closers.map(([number, blocking]) =>
+            ({...issue(number, 'CLOSED'), blocking: {totalCount: blocking.length, nodes: blocking}}))}}),
+        // GitHub's answer to the production document: each dependent list holds at most the document's own page
+        paged       = (text, answer) => {
+            const first = Number(/blocking\(first: (\d+)\)/.exec(text)[1]);
+
+            answer.closingIssuesReferences.nodes.forEach(closer => { closer.blocking.nodes = closer.blocking.nodes.slice(0, first) });
+            return answer
+        },
         UNBLOCKED   = [{issue: 'acme/app#9', seats: ['@neo-gpt']}];
 
     /**
-     * @summary A producer whose one pull request merges on its third pulse; unblock reads answer through `answer(attempt)`.
+     * @summary A producer whose one pull request merges on its third pulse; unblock reads answer through
+     * `answer(attempt, document)`.
      * @param {Function} answer
      * @param {Function} [step] Milliseconds between pulses, by pulse index.
      * @returns {{producer: Object, reads: Object[], merge: Function}}
@@ -934,7 +942,7 @@ test.describe('openWorkProducer — what a merge unblocked (#1619)', () => {
             query  = async (text, variables) => {
                 if (text !== OPEN_WORK_UNBLOCKED) return search.query(text, variables);
                 reads.push(variables);
-                return answer(reads.length)
+                return answer(reads.length, text)
             },
             producer = createOpenWorkProducer({readers: ada(query), repos: async () => ['acme/app'], identities,
                 now: () => new Date(ms += step(++pulses))});
@@ -946,9 +954,31 @@ test.describe('openWorkProducer — what a merge unblocked (#1619)', () => {
         expect(normalizeUnblocked(pullRequest([5, [blocked(9)]]), identities)).toEqual(UNBLOCKED)
     });
 
-    test('another open blocker keeps an issue blocked, and so does a blocker list past its page', () => {
+    test('another open blocker keeps an issue blocked; a blocker or dependent list past its page makes the read incomplete', () => {
+        const truncated = pullRequest([5, [blocked(9)]]);
+
+        truncated.closingIssuesReferences.nodes[0].blocking.totalCount = 2;
+
         expect(normalizeUnblocked(pullRequest([5, [blocked(9, {blockers: [issue(5, 'CLOSED'), issue(6)]})]]), identities)).toEqual([]);
-        expect(normalizeUnblocked(pullRequest([5, [blocked(9, {totalCount: 11})]]), identities)).toEqual([])
+        expect(normalizeUnblocked(pullRequest([5, [blocked(9, {totalCount: 11})]]), identities)).toBeNull();
+        expect(normalizeUnblocked(truncated, identities)).toBeNull()
+    });
+
+    test('a dependent past the tenth is read and woken, and past the document\'s page the read is incomplete, never kept', async () => {
+        const
+            eleven  = seatOn => Array.from({length: 11}, (_, index) => blocked(20 + index, {assignees: [index === seatOn ? 'neo-gpt' : 'outsider']})),
+            resolve = async dependents => {
+                const {producer, merge} = merging((attempt, text) => ({rateLimit: {cost: 10}, repository: {pullRequest: paged(text, pullRequest([5, dependents]))}}));
+
+                await producer.pulse();
+                await producer.pulse();
+                merge();
+                return (await producer.pulse()).transitions[0].unblock
+            };
+
+        expect((await resolve(eleven(10))).issues).toEqual([{issue: 'acme/app#30', seats: ['@neo-gpt']}]);
+        expect((await resolve(eleven(0))).issues).toEqual([{issue: 'acme/app#20', seats: ['@neo-gpt']}]);
+        expect(await resolve(Array.from({length: 51}, (_, index) => blocked(20 + index)))).toEqual({failures: 1})
     });
 
     test('a blocker that is another issue the same merge closes counts as closed before GitHub closes it', () => {
