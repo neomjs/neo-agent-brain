@@ -1,7 +1,11 @@
-import {expect, test}                           from '@playwright/test';
-import {createHash}                             from 'node:crypto';
-import {planOpenWorkWakes, wakeGateOf}          from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
-import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
+import {expect, test}                  from '@playwright/test';
+import {createHash}                    from 'node:crypto';
+import {planOpenWorkWakes, wakeGateOf} from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {
+    OPEN_WORK_QUERY_COSTS,
+    OPEN_WORK_SNAPSHOT,
+    OPEN_WORK_TERMINAL
+} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const
     START   = Date.parse('2026-10-13T12:00:00.000Z'),
@@ -382,10 +386,37 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
         expect(approval.wakes[0]).toMatchObject({to: roster[digest('approve-runs')], role: 'rotation', kind: 'approve-runs'});
     });
 
+    test('a rotation action seen on the producer\'s first pulse wakes one seat once, while a seat-held action stays its baseline (#1629)', () => {
+        const
+            roster   = [ADA, GPT],
+            approval = {number: 8, owner: {kind: 'outside', seat: null, login: 'contributor'}, ci: 'pending', runApproval: 'action_required'},
+            own      = {number: 9, ci: 'red'},
+            run      = journey(),
+            first    = run.step(0, [approval, own], {}, {rotationSeats: roster});
+
+        expect(first.wakes.map(({number, role, kind}) => ({number, role, kind}))).toEqual([{number: 8, role: 'rotation', kind: 'approve-runs'}]);
+        expect(run.step(1, [approval, own], {}, {rotationSeats: roster}).wakes).toEqual([])
+    });
+
+    test('a rotation slot stored as baseline, by a quiet round or by a producer before this rule, wakes one seat once on the next round (#1629)', () => {
+        const
+            roster   = [ADA, GPT],
+            approval = {number: 8, owner: {kind: 'outside', seat: null, login: 'contributor'}, ci: 'pending', runApproval: 'action_required'},
+            run      = journey();
+
+        expect(run.step(0, [approval], {}, {rotationSeats: roster, quiet: true}).wakes).toEqual([]);
+        expect(Object.values(run.ledger().holding)).toEqual([expect.objectContaining({status: 'baseline'})]);
+
+        const woken = run.step(1, [approval], {}, {rotationSeats: roster}).wakes;
+
+        expect(woken).toEqual([expect.objectContaining({role: 'rotation', kind: 'approve-runs', episode: iso(0)})]);
+        expect(run.step(2, [approval], {}, {rotationSeats: roster}).wakes).toEqual([])
+    });
+
     test('outside and bot PR bodies containing Authored by <Seat> cannot hijack seat authorship or bypass bot suppression (#1008)', async () => {
         const
             {normalizePullRequest} = await import('../../../../../../ai/services/fleet/openWorkReducer.mjs'),
-            identities = {
+            identities             = {
                 byLogin: login => ({'neo-opus-ada': ADA, 'neo-gpt': GPT})[login] ?? null,
                 byName : name  => ({Ada: ADA, Euclid: GPT})[name] ?? null
             },
@@ -521,6 +552,22 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: terminalHash, formulaCost: 1, reservePerCall: 1}));
         item.quota[1].queryHash = 'f'.repeat(64);
         expect(gate(observed)).toMatchObject({holds: false, reason: expect.stringContaining('query')});
+    });
+
+    test('a retained failed call under the previous snapshot document is still priced, so certification does not wait out the window (#1629)', () => {
+        const
+            previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash].includes(entry.queryHash)),
+            observed = history(), item = observed.pulses[100], base = item.quota[0];
+
+        expect(previous).toEqual({queryHash: expect.stringMatching(/^[a-f\d]{64}$/), formulaCost: 3});
+        item.quota = [
+            classified(base),
+            classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: previous.queryHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})
+        ];
+        item.costUnknown = true;
+        expect(gate(observed).holds).toBe(true);
+        item.quota[1].queryHash = 'f'.repeat(64);
+        expect(gate(observed)).toMatchObject({holds: false, reason: expect.stringContaining('query')})
     });
 
     test('unattributed failures charge all intersecting endpoint windows and stay pending without one', () => {

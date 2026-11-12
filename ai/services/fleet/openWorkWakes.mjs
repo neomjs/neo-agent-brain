@@ -7,6 +7,8 @@
  * different action even if the kind is unchanged. Incomplete or stale evidence preserves the prior
  * holding; it cannot invent a departure and then a second arrival. First and quiet observations
  * baseline without a backlog burst; an unread row defers that baseline once, bound to its full head.
+ * A rotation action is the exception: no seat holds it, so nobody already knows of it. Outside a quiet
+ * round it wakes one seat even on a first observation, and a slot stored as a baseline retries.
  * The external gate decides quiet; this module neither polls nor sends.
  *
  * A skipped merge keeps its original observation and payload until its route answers, even after the
@@ -136,11 +138,11 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
                 episode = prior?.wake?.episode ?? state.observedAt;
 
             current.add(slot);
-            if (prior?.status === 'admitted' || prior?.status === 'baseline') {
+            if (prior?.status === 'admitted') {
                 holding[slot] = prior;
                 continue
             }
-            if (rowBaseline) {
+            if (quiet) {
                 const seat = pickRotationSeat(row, holder.kind, roster, () => 'unknown') ?? prior?.wake?.to ?? roster[0] ?? '@rotation';
                 holding[slot] = {wake: wakeOf(row, seat, 'rotation', holder.kind, episode), status: 'baseline'};
                 continue
