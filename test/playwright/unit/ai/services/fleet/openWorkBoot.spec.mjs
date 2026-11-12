@@ -72,6 +72,9 @@ test.describe('Fleet open-work boot custody (#761)', () => {
             const acquire = ['acquire', {family: 'codex-desktop', optedIn: false}, 6 * 3_600_000];
             expect(h.events).toEqual(wakes ? ['listen', 'wake', ['observe', h.round], acquire] : ['listen', ['observe', null], acquire]);
             if (wakes) {
+                // the round reads routes from the shared verbose presence read, never a terse-only field
+                expect(typeof h.wakeOptions().readPresence).toBe('function');
+                expect(h.wakeOptions()).not.toHaveProperty('readUndeliverable');
                 expect(h.wakeOptions().isEnabled()).toBe(true);
                 h.config.fleet.openWorkWakes = false;
                 expect(h.wakeOptions().isEnabled()).toBe(false)

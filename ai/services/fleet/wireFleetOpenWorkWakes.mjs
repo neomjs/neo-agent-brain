@@ -409,12 +409,29 @@ function failedChecksReader({listDefinitions, resolveCredential, createQuery}) {
 }
 
 /**
+ * @summary The round's route map from the Fleet's verbose presence answer: each seat whose wake reads `undeliverable`,
+ * with the receiver's last reason. The verbose answer carries the wake state per row, never the terse report's
+ * top-level map. Null when no row holds a readable wake state, so unreadable records read unknown, never reachable.
+ * @param {Object|null} presence A verbose `who_is_online` payload: `{agents: [{identity, wake: {state, reason}}]}`.
+ * @returns {Object<String,String|null>|null}
+ */
+export function undeliverableOf(presence) {
+    const rows = Array.isArray(presence?.agents) ? presence.agents : [];
+
+    if (!rows.some(row => typeof row?.wake?.state === 'string' && row.wake.state !== 'unknown')) return null;
+
+    return Object.fromEntries(rows
+        .filter(row => typeof row?.identity === 'string' && row.wake?.state === 'undeliverable')
+        .map(row => [row.identity, typeof row.wake.reason === 'string' ? row.wake.reason : null]))
+}
+
+/**
  * @summary Bind the existing producer callback to a ledger beside its state file; never start a poller.
  * @param {Object} options
  * @param {{getDataDir: Function, listAgents: Function, resolveCredential: Function}} options.registry Fleet-owned
  *     durable root, and the seats whose PATs read a `repair-ci` wake's failing checks.
  * @param {Function} options.admitWake The already verified plane's open-work intake.
- * @param {Function} [options.readUndeliverable]
+ * @param {Function} [options.readPresence] The Fleet's shared verbose presence read; its rows give the route map.
  * @param {Function} [options.now]
  * @param {Function} [options.gateOf] Test seam only.
  * @param {Function} [options.isEnabled] Live entrypoint enablement, checked at effect boundaries.
@@ -423,7 +440,7 @@ function failedChecksReader({listDefinitions, resolveCredential, createQuery}) {
  * @param {Object} [options.log]
  * @returns {Function|null} onPulse with stop(), or null without the required registry/intake.
  */
-export function wireFleetOpenWorkWakes({registry, admitWake, readUndeliverable, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
+export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
     if (typeof registry?.getDataDir !== 'function' || typeof admitWake !== 'function') return null;
     return createOpenWorkWakeRound({
         store           : fileStore(path.join(registry.getDataDir(), 'open-work-wakes.json')),
@@ -432,7 +449,8 @@ export function wireFleetOpenWorkWakes({registry, admitWake, readUndeliverable, 
             resolveCredential: id => registry.resolveCredential?.(id) ?? null,
             createQuery
         }),
-        admitWake, readUndeliverable, now, gateOf, isEnabled, rotationSeats, log
+        ...(typeof readPresence === 'function' ? {readUndeliverable: async () => undeliverableOf(await readPresence())} : {}),
+        admitWake, now, gateOf, isEnabled, rotationSeats, log
     })
 }
 
