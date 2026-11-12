@@ -582,6 +582,16 @@ class ConfigBase extends ConfigProvider {
                  */
                 rosterAxisTimeoutMs: leaf(4000, 'NEO_FLEET_ROSTER_AXIS_TIMEOUT_MS', 'number'),
                 /**
+                 * How long the roster keeps serving a presence answer that settled after its read
+                 * timed out, while each later read times out too. The cockpit reads the roster once a
+                 * minute on a 15s pass, so a late answer is up to a minute and a pass old when the next
+                 * read needs it: the window must hold one interval, one pass and the axis bound (79s),
+                 * and 120s leaves room for one more late read. Past it, participation reads unread and
+                 * presence unknown, so a plane that stops answering still shows. Milliseconds.
+                 * @type {number}
+                 */
+                rosterRetainedMaxAgeMs: leaf(120000, 'NEO_FLEET_ROSTER_RETAINED_MAX_AGE_MS', 'number'),
+                /**
                  * Whole-quit budget in milliseconds that Fleet may spend across request drain and
                  * launch-admission continuity handoff before the host's grace escalates to SIGKILL.
                  * `devFleetServer` (`cleanShutdown`) reads this leaf once at quit start (falling back
