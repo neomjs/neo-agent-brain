@@ -64,6 +64,7 @@ import {parseLaneState} from '../../parseLaneState.mjs';
 import {buildDeferenceStopHookDirective,
         classifyPromptingContext,
         decideDeferenceStopHookAction,
+        decideOperatorAway,
         decideStopHookAction,
         evaluateCleanTerminalAcceptance,
         isOperatorInLoop,
@@ -113,9 +114,11 @@ async function resolveStopHookPolicy() {
         const projection = AiConfig.stopHook.projection;
 
         return {
-            deferenceMirror : AiConfig.stopHook.deferenceMirror,
-            laneContinuation: AiConfig.stopHook.laneContinuation,
-            projection      : {
+            deferenceMirror        : AiConfig.stopHook.deferenceMirror,
+            laneContinuation       : AiConfig.stopHook.laneContinuation,
+            operatorPresencePath   : AiConfig.seat.operatorPresencePath,
+            operatorPresenceGraceMs: AiConfig.stopHook.operatorPresenceGraceMs,
+            projection             : {
                 path              : projection.path,
                 targetId          : projection.targetId,
                 capability        : projection.capability,
@@ -660,9 +663,9 @@ const HARNESS_MARKER_PATTERNS = Object.freeze([
 ]);
 
 /**
- * @summary Extracts the newest HUMAN-CANDIDATE user text from a Claude Code JSONL transcript — the
- * mid-chain operator-visibility walk. Walks records backward and returns the text of the first
- * user record that is mechanically human-shaped:
+ * @summary Extracts the newest HUMAN-CANDIDATE user message from a Claude Code JSONL transcript — the
+ * mid-chain operator-visibility walk. Walks records backward and returns the text and the record's
+ * `timestamp` of the first user record that is mechanically human-shaped:
  *
  *  - `isMeta: true` records are skipped — the harness-injected plumbing (the hook's own
  *    `"Stop hook feedback:"` block directives, skill payloads, auto-continuations). The discriminator
@@ -690,11 +693,12 @@ const HARNESS_MARKER_PATTERNS = Object.freeze([
  * Channel separation: the returned text is classified by shape, never parsed as instructions —
  * injected content stays data.
  * @param {String} jsonl
- * @returns {String}
+ * @returns {{text: String, timestamp: (String|null)}} `{text: '', timestamp: null}` when no candidate decides.
  * @protected
  */
-export function extractLatestHumanUserTextFromJsonl(jsonl = '') {
-    const lines = jsonl.split('\n');
+export function extractLatestHumanUserMessageFromJsonl(jsonl = '') {
+    const none  = {text: '', timestamp: null},
+          lines = jsonl.split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i].trim();
         if (!line) continue;
@@ -730,7 +734,7 @@ export function extractLatestHumanUserTextFromJsonl(jsonl = '') {
             // number) is a MALFORMED prompt-bearing envelope: walk-stopping autonomous boundary,
             // never a skip (a skip would leak past it to older operator prose).
             if (prompt == null) continue;
-            if (typeof prompt !== 'string') return '';
+            if (typeof prompt !== 'string') return none;
             if (!prompt.trim()) continue;
 
             const isOperatorDelivery = attachment.type === 'queued_command' &&
@@ -738,10 +742,10 @@ export function extractLatestHumanUserTextFromJsonl(jsonl = '') {
                 typeof attachment.source_uuid === 'string' && attachment.source_uuid.trim() !== '' &&
                 attachment.origin?.kind === 'human';
 
-            if (!isOperatorDelivery) return '';
+            if (!isOperatorDelivery) return none;
 
             if (HARNESS_MARKER_PATTERNS.some(re => re.test(prompt))) continue;
-            return prompt;
+            return {text: prompt, timestamp: record.timestamp ?? null};
         }
 
         const message = record.message || record;
@@ -751,9 +755,57 @@ export function extractLatestHumanUserTextFromJsonl(jsonl = '') {
         if (!text) continue;
         if (HARNESS_MARKER_PATTERNS.some(re => re.test(text))) continue;
 
-        return text;
+        return {text, timestamp: record.timestamp ?? null};
     }
-    return '';
+    return none;
+}
+
+/**
+ * @summary The text of the newest human-candidate user message ({@link extractLatestHumanUserMessageFromJsonl}).
+ * @param {String} jsonl
+ * @returns {String}
+ * @protected
+ */
+export function extractLatestHumanUserTextFromJsonl(jsonl = '') {
+    return extractLatestHumanUserMessageFromJsonl(jsonl).text
+}
+
+/**
+ * @summary Reads the Fleet's host record of the operator's presence, the file `seat.operatorPresencePath` names.
+ * One local file read: a turn-end never waits on the plane. Any failure (no path, no file, bad JSON, not an
+ * object) reads as no record.
+ * @param {String} filePath The record's absolute path; empty when the seat was not started by a Fleet.
+ * @returns {Object|null} `{mode, since, until, writtenAt}`, or `null`.
+ * @protected
+ */
+export function readOperatorPresenceRecord(filePath) {
+    if (!filePath) return null;
+
+    try {
+        const record = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+
+        return record && typeof record === 'object' && !Array.isArray(record) ? record : null
+    } catch {
+        return null
+    }
+}
+
+/**
+ * @summary This turn-end's "away" reading by the Fleet's record. The record decides when there is one, and the
+ * prompting message ends an away when the operator wrote it, whatever it says: "Nightshift is over, I am back"
+ * is a return although its wording reads as a handoff. A `[WAKE]` delivery, synthetic noise or an unattested
+ * chain never ends one, and the grace keeps the good-night message sent with the switch from ending it.
+ * @param {Object|null} record The host record ({@link readOperatorPresenceRecord}).
+ * @param {{timestamp: (String|null)}} promptingMessage From {@link extractLatestHumanUserMessageFromJsonl}.
+ * @param {{operatorAuthored: Boolean}} promptContext From `classifyPromptingContext`.
+ * @param {Object} [options]
+ * @param {Number} [options.graceMs=0] `stopHook.operatorPresenceGraceMs`.
+ * @param {Number} [options.now=Date.now()]
+ * @returns {Boolean|null} `null` without a record.
+ * @protected
+ */
+export function decideTurnOperatorAway(record, promptingMessage, {operatorAuthored}, {graceMs = 0, now = Date.now()} = {}) {
+    return decideOperatorAway(record, {graceMs, now, lastOperatorMessageAt: operatorAuthored ? promptingMessage.timestamp : null})
 }
 
 /**
@@ -801,9 +853,11 @@ async function main() {
     }
 
     const {
-        deferenceMirror : DEFERENCE_MIRROR,
-        laneContinuation: LANE_CONTINUATION,
-        projection      : PROJECTION
+        deferenceMirror        : DEFERENCE_MIRROR,
+        laneContinuation       : LANE_CONTINUATION,
+        operatorPresencePath   : OPERATOR_PRESENCE_PATH,
+        operatorPresenceGraceMs: OPERATOR_PRESENCE_GRACE_MS,
+        projection             : PROJECTION
     } = policy;
 
     // Resolve the agent's FINAL message text (last_assistant_message, or JSONL-extracted from the
@@ -832,8 +886,9 @@ async function main() {
     } catch (e) {
         // best-effort; classification falls back to stop_hook_active when promptingText is empty
     }
-    const promptingText = extractLatestHumanUserTextFromJsonl(transcriptJsonl);
-    let   evidenceText  = '';
+    const promptingMessage = extractLatestHumanUserMessageFromJsonl(transcriptJsonl),
+          promptingText    = promptingMessage.text;
+    let   evidenceText     = '';
     // Terminal-evidence collection is a full transcript scan whose ONLY consumer is the lane-state
     // validator. With the continuation apparatus off there is no terminal to validate, so the scan is
     // pure waste — skip it rather than compute an unread result.
@@ -852,8 +907,15 @@ async function main() {
     });
     const {autonomousHandoff, handoffReason, handoffWindowMs, midChainOperator, operatorInLoop} = promptContext;
 
+    // The Fleet's record of the operator's presence decides "away" when there is one; the prompting
+    // classifier above stays the reading without one. Only an operator message can end an away.
+    const presenceRecord = readOperatorPresenceRecord(OPERATOR_PRESENCE_PATH),
+          operatorAway   = decideTurnOperatorAway(presenceRecord, promptingMessage, promptContext, {graceMs: OPERATOR_PRESENCE_GRACE_MS});
+
     const deferenceDecision = decideDeferenceStopHookAction(finalText, {
         operatorInLoop,
+        operatorAway,
+        awaySince             : presenceRecord?.since ?? null,
         enforcing             : ENFORCING,
         deferenceMirrorEnabled: DEFERENCE_MIRROR,
         wrapUpAsk             : extractTurnWrapUpAskFromJsonl(transcriptJsonl)
@@ -866,7 +928,7 @@ async function main() {
               identity = process.env.NEO_AGENT_IDENTITY || '?';
 
         if (deferenceDecision.action === 'block') {
-            auditLog(`BLOCK (session=${session}, identity=${identity}, operatorInLoop=${operatorInLoop}, midChainOperator=${midChainOperator}, autonomousHandoff=${autonomousHandoff}, handoffReason=${handoffReason || 'none'}, handoffWindowMs=${handoffWindowMs ?? 'none'}): ${reason}`);
+            auditLog(`BLOCK (session=${session}, identity=${identity}, operatorInLoop=${operatorInLoop}, operatorAway=${operatorAway ?? 'no-record'}, midChainOperator=${midChainOperator}, autonomousHandoff=${autonomousHandoff}, handoffReason=${handoffReason || 'none'}, handoffWindowMs=${handoffWindowMs ?? 'none'}): ${reason}`);
 
             let projectionRender = '';
             try {
@@ -886,7 +948,7 @@ async function main() {
             return;
         }
 
-        auditLog(`WOULD-BLOCK (session=${session}, identity=${identity}, operatorInLoop=${operatorInLoop}, midChainOperator=${midChainOperator}, autonomousHandoff=${autonomousHandoff}, handoffReason=${handoffReason || 'none'}, handoffWindowMs=${handoffWindowMs ?? 'none'}): ${reason}`);
+        auditLog(`WOULD-BLOCK (session=${session}, identity=${identity}, operatorInLoop=${operatorInLoop}, operatorAway=${operatorAway ?? 'no-record'}, midChainOperator=${midChainOperator}, autonomousHandoff=${autonomousHandoff}, handoffReason=${handoffReason || 'none'}, handoffWindowMs=${handoffWindowMs ?? 'none'}): ${reason}`);
         process.exit(0);
     }
 

@@ -1937,7 +1937,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
               original = FleetLifecycleService.credentialEnvVar;
 
         try {
-            for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY', 'NEO_FLEET_BRIDGE_TOKEN', 'NEO_GITLAB_PAT']) {
+            for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY', 'NEO_FLEET_BRIDGE_TOKEN', 'NEO_GITLAB_PAT', 'NEO_OPERATOR_PRESENCE_PATH']) {
                 fs.writeFileSync(envFile, `# a second forge\nSECOND_FORGE_TOKEN=x\nexport ${key}=spoofed\n`);
 
                 const spawnStub = install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
@@ -2601,6 +2601,18 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(spawn.calls[1].opts.env).not.toHaveProperty('NEO_MCP_REMOTE_TOKEN');
 
         install({agents: {c: agentDef('c', {metadata: {launch: {command: 'x', args: [], env: {NEO_SEAT_PLANE_BASE: 'https://elsewhere.example'}}}})}, creds: {}});
+        expect(() => FleetLifecycleService.start('c')).toThrow(/collides with a reserved env slot/)
+    });
+
+    // The seat's Stop hook reads the Fleet's host record of the operator's presence (AiConfig.seat): every start
+    // hands it the record's path beneath the Fleet's data directory, and a launch env cannot point it elsewhere.
+    test('every start hands the seat the operator presence record path, and a launch env cannot pre-load it (#1640)', () => {
+        const spawn = install({agents: {a: agentDef('a')}, creds: {a: 'ghp_a'}});
+
+        FleetLifecycleService.start('a');
+        expect(spawn.calls[0].opts.env.NEO_OPERATOR_PRESENCE_PATH).toBe(path.join(AiConfig.fleet.dataDir, 'operator-presence.json'));
+
+        install({agents: {c: agentDef('c', {metadata: {launch: {command: 'x', args: [], env: {NEO_OPERATOR_PRESENCE_PATH: '/tmp/elsewhere.json'}}}})}, creds: {}});
         expect(() => FleetLifecycleService.start('c')).toThrow(/collides with a reserved env slot/)
     });
 });

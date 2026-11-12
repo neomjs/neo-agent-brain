@@ -113,10 +113,25 @@ export const DEFERENCE_REMINDER = 'It looks like you slipped into the "helpful a
 export const WRAP_UP_ASK_TEST = 'A question is the human\'s only when no gate of his will see the change before it takes effect.';
 
 /**
+ * The two ways out of an unattended question box, shared by both of its reminders.
+ * @type {String}
+ */
+const UNATTENDED_ASK_EXITS = 'Take your stated pick and continue, or record the question on its ticket and continue with another lane.';
+
+/**
  * The reminder for a question box in a turn the operator did not prompt, whoever the question belongs to.
  * @type {String}
  */
-export const UNATTENDED_ASK_REMINDER = 'The operator did not prompt this turn, so its question box may wait hours for a click that no ticket records. Take your stated pick and continue, or record the question on its ticket and continue with another lane.';
+export const UNATTENDED_ASK_REMINDER = `The operator did not prompt this turn, so its question box may wait hours for a click that no ticket records. ${UNATTENDED_ASK_EXITS}`;
+
+/**
+ * @summary The reminder for a question box while the operator's recorded Nightshift is on, naming when he switched it on.
+ * @param {String} since The record's ISO `since`.
+ * @returns {String}
+ */
+export function buildAwayAskReminder(since) {
+    return `The operator switched Nightshift on at ${since.slice(0, 16).replace('T', ' ')} UTC, so this turn's question box may wait hours for a click that no ticket records. ${UNATTENDED_ASK_EXITS}`
+}
 
 /**
  * @summary Replaces markdown code spans and fences before deference phrase matching.
@@ -452,11 +467,15 @@ export function matchWrapUpAskDeference(wrapUpAsk = null, text = '') {
  * @param {Object} [options]
  * @param {String|null} [options.ask=null] The wrap-up ask that fired, if one did.
  * @param {Boolean} [options.unattended=false] It fired because the operator did not prompt the turn.
+ * @param {String|null} [options.awaySince=null] It fired because the operator's recorded Nightshift has been on
+ * since this ISO time.
  * @returns {String}
  */
-export function buildDeferenceReminder(phrase = null, {ask = null, unattended = false} = {}) {
+export function buildDeferenceReminder(phrase = null, {ask = null, unattended = false, awaySince = null} = {}) {
     if (ask) {
-        return `${unattended ? UNATTENDED_ASK_REMINDER : DEFERENCE_REMINDER} ${WRAP_UP_ASK_TEST}\n\n(Stop-hook trigger: the wrap-up ask "${ask}" at turn-terminal)`;
+        const lead = awaySince ? buildAwayAskReminder(awaySince) : unattended ? UNATTENDED_ASK_REMINDER : DEFERENCE_REMINDER;
+
+        return `${lead} ${WRAP_UP_ASK_TEST}\n\n(Stop-hook trigger: the wrap-up ask "${ask}" at turn-terminal)`;
     }
 
     return phrase ? `${DEFERENCE_REMINDER}\n\n(Stop-hook trigger: deference phrase "${phrase}" at turn-terminal)` : DEFERENCE_REMINDER;

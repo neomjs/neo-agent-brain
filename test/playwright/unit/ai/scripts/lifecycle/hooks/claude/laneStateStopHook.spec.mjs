@@ -1,10 +1,20 @@
+import fs             from 'node:fs';
+import os             from 'node:os';
+import path           from 'node:path';
 import {test, expect} from '@playwright/test';
 
 import {
     WRAP_UP_TOOL_NAME,
-    extractTurnWrapUpAskFromJsonl
+    decideTurnOperatorAway,
+    extractLatestHumanUserMessageFromJsonl,
+    extractTurnWrapUpAskFromJsonl,
+    readOperatorPresenceRecord
 } from '../../../../../../../../ai/scripts/lifecycle/hooks/claude/laneStateStopHook.mjs';
-import {decideDeferenceStopHookAction} from '../../../../../../../../ai/scripts/lifecycle/stopHookDecision.mjs';
+import {
+    classifyPromptingContext,
+    decideDeferenceStopHookAction,
+    decideOperatorAway
+} from '../../../../../../../../ai/scripts/lifecycle/stopHookDecision.mjs';
 
 const prompt     = text => ({type: 'user', message: {role: 'user', content: text}}),
       reply      = text => ({type: 'assistant', message: {role: 'assistant', content: [{type: 'text', text}]}}),
@@ -64,5 +74,105 @@ test.describe('extractTurnWrapUpAskFromJsonl (#78)', () => {
         expect(extractTurnWrapUpAskFromJsonl(jsonl([prompt('go'), '{not json', wrapUp({ask: 42}), toolResult()]))).toBeNull();
         expect(extractTurnWrapUpAskFromJsonl('')).toBeNull();
         expect(extractTurnWrapUpAskFromJsonl(jsonl(['{not json', wrapUp({ask, actions})]))).toEqual({ask, actions});
+    });
+});
+
+/**
+ * @summary The Fleet writes the operator's presence to a host file and hands each seat its path at Start; the
+ * adapter reads it once per turn-end and lets the record, not the prompting classifier, decide "away".
+ */
+test.describe('the operator presence record at the adapter seam (#1640)', () => {
+    const at       = (record, timestamp) => ({...record, timestamp}),
+          awayFrom = since => ({mode: 'away', since, until: null, writtenAt: since});
+    let dir;
+
+    test.beforeEach(() => {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-operator-presence-'))
+    });
+
+    test.afterEach(() => {
+        fs.rmSync(dir, {recursive: true, force: true})
+    });
+
+    test('the prompting message carries its record\'s timestamp; no candidate carries none', () => {
+        expect(extractLatestHumanUserMessageFromJsonl(jsonl([at(prompt('good night'), '2026-11-12T22:03:00.000Z'), reply('On it.')])))
+            .toEqual({text: 'good night', timestamp: '2026-11-12T22:03:00.000Z'});
+        expect(extractLatestHumanUserMessageFromJsonl(jsonl([prompt('no stamp')]))).toEqual({text: 'no stamp', timestamp: null});
+        expect(extractLatestHumanUserMessageFromJsonl('')).toEqual({text: '', timestamp: null});
+    });
+
+    test('reads the record; no path, no file, bad JSON or a non-object reads as no record', () => {
+        const file = path.join(dir, 'operator-presence.json');
+
+        fs.writeFileSync(file, JSON.stringify(awayFrom('2026-11-12T22:00:00.000Z')));
+        expect(readOperatorPresenceRecord(file)).toEqual(awayFrom('2026-11-12T22:00:00.000Z'));
+
+        expect(readOperatorPresenceRecord('')).toBeNull();
+        expect(readOperatorPresenceRecord(path.join(dir, 'missing.json'))).toBeNull();
+        fs.writeFileSync(file, '{half');
+        expect(readOperatorPresenceRecord(file)).toBeNull();
+        fs.writeFileSync(file, '[1]');
+        expect(readOperatorPresenceRecord(file)).toBeNull();
+    });
+
+    test('Nightshift on: the operator\'s own handoff turn ends on a box ask and blocks once', () => {
+        const file    = path.join(dir, 'operator-presence.json'),
+              handoff = [at(prompt('back at 09:00, you can freely choose what to focus on'), '2026-11-12T22:03:00.000Z'),
+                         wrapUp({recap: 'Done.', ask, actions}), toolResult(), reply('Closing.')],
+              decide  = turn => {
+                  const record  = readOperatorPresenceRecord(file),
+                        message = extractLatestHumanUserMessageFromJsonl(jsonl(turn));
+
+                  return decideDeferenceStopHookAction(turn.at(-1).message.content[0].text, {
+                      operatorInLoop: true,
+                      operatorAway  : decideOperatorAway(record, {
+                          now                  : Date.parse('2026-11-12T22:10:00Z'),
+                          graceMs              : 600000,
+                          lastOperatorMessageAt: message.timestamp
+                      }),
+                      awaySince: record?.since ?? null,
+                      enforcing: true,
+                      wrapUpAsk: extractTurnWrapUpAskFromJsonl(jsonl(turn))
+                  })
+              };
+
+        fs.writeFileSync(file, JSON.stringify(awayFrom('2026-11-12T22:00:00.000Z')));
+
+        expect(decide(handoff).reason).toContain('The operator switched Nightshift on at 2026-11-12 22:00 UTC');
+        expect(decide([...handoff, feedback(), reply('Taking the stated pick.')])).toBeNull();
+
+        // Without a record the same operator-prompted turn is dialogue, and its ask asks nothing of him
+        fs.rmSync(file);
+        expect(decide(handoff)).toBeNull();
+    });
+
+    test('an operator message past the grace ends the away whatever it says; a [WAKE] or a task notification never does', () => {
+        const record = awayFrom('2026-11-12T22:00:00.000Z'),
+              back   = 'Nightshift is over; I am back, show me the result',
+              queued = (text, timestamp) => ({type: 'attachment', timestamp, attachment: {
+                  type: 'queued_command', commandMode: 'prompt', prompt: text, source_uuid: 'uuid-1', origin: {kind: 'human'}
+              }}),
+              notice = timestamp => ({type: 'attachment', timestamp, attachment: {
+                  type: 'queued_command', commandMode: 'task-notification', prompt: '<task-notification>done</task-notification>'
+              }}),
+              away   = (records, stopHookActive = false) => {
+                  const message = extractLatestHumanUserMessageFromJsonl(jsonl(records)),
+                        context = classifyPromptingContext({stopHookActive, promptingText: message.text, promptingTextHumanFiltered: true});
+
+                  return decideTurnOperatorAway(record, message, context, {graceMs: 600000, now: Date.parse('2026-11-12T22:40:00Z')})
+              };
+
+        // the return, typed as a prompt, queued mid-turn, or reaching a chained stop
+        expect(away([at(prompt(back), '2026-11-12T22:30:00.000Z'), reply('Here it is.')])).toBe(false);
+        expect(away([prompt('[WAKE] route-review'), reply('Routing.'), queued(back, '2026-11-12T22:30:00.000Z')])).toBe(false);
+        expect(away([at(prompt(back), '2026-11-12T22:30:00.000Z'), reply('Here it is.'), feedback(), reply('Done.')], true)).toBe(false);
+        expect(away([at(prompt('I am back, show me the result'), '2026-11-12T22:30:00.000Z')])).toBe(false);
+
+        // the good-night message inside the grace is the handoff, not a return
+        expect(away([at(prompt('good night, Nightshift on'), '2026-11-12T22:05:00.000Z')])).toBe(true);
+
+        // a turn the operator did not prompt never ends the away
+        expect(away([at(prompt('[WAKE] route-review · Brain #1648'), '2026-11-12T22:30:00.000Z')])).toBe(true);
+        expect(away([at(prompt(back), '2026-11-12T22:30:00.000Z'), reply('Done.'), notice('2026-11-12T22:35:00.000Z')])).toBe(true);
     });
 });

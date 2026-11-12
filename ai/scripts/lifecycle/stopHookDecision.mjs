@@ -93,18 +93,29 @@ export function isSyntheticPromptingText(text = '') {
 }
 
 /**
- * @summary The shared operator-dialogue text gates — non-empty, not a `[WAKE]` autonomous injection,
- * not synthetic lifecycle noise, and not an autonomous-handoff delegation. This is the single
+ * @summary Whether the operator wrote the prompting text: non-empty, not a `[WAKE]` autonomous injection
+ * and not synthetic lifecycle noise. Its wording is not read, so a handoff ("Nightshift is over") counts:
+ * this answers who wrote it, {@link isOperatorDialogueText} what it asks for. Pure + total; a non-string
+ * fails closed.
+ * @param {String} text Prompting-text candidate.
+ * @returns {Boolean}
+ */
+export function isOperatorAuthoredText(text = '') {
+    return typeof text === 'string' && !!text.trim() &&
+        !/^\s*\[WAKE\]/.test(text) &&
+        !isSyntheticPromptingText(text);
+}
+
+/**
+ * @summary The shared operator-dialogue text gates — an operator-authored text
+ * ({@link isOperatorAuthoredText}) that is not an autonomous-handoff delegation. This is the single
  * authority both the turn-prompt path and the mid-chain path classify against, so the two
  * paths cannot drift on what counts as dialogue. Pure + total; a non-string fails closed.
  * @param {String} text Prompting-text candidate.
  * @returns {Boolean}
  */
 export function isOperatorDialogueText(text = '') {
-    return typeof text === 'string' && !!text.trim() &&
-        !/^\s*\[WAKE\]/.test(text) &&
-        !isSyntheticPromptingText(text) &&
-        !detectAutonomousHandoffPrompt(text).active;
+    return isOperatorAuthoredText(text) && !detectAutonomousHandoffPrompt(text).active;
 }
 
 /**
@@ -123,15 +134,19 @@ export function isOperatorDialogueText(text = '') {
  * @param {String} [signals.promptingText=''] Newest prompting-boundary candidate text.
  * @param {Boolean} [signals.promptingTextHumanFiltered=false] Adapter attestation that `promptingText`
  * came from a mechanically human-filtered walk (non-meta, non-marker records only). Fail-closed default.
- * @returns {{operatorInLoop: Boolean, midChainOperator: Boolean, autonomousHandoff: Boolean, handoffReason: String|null, handoffWindowMs: Number|null}}
+ * @returns {{operatorInLoop: Boolean, operatorAuthored: Boolean, midChainOperator: Boolean, autonomousHandoff: Boolean, handoffReason: String|null, handoffWindowMs: Number|null}}
+ * `operatorAuthored` says the operator wrote the prompting text, whatever it asks for, under the same
+ * chain attestation; an away ends on it.
  */
 export function classifyPromptingContext({stopHookActive, promptingText = '', promptingTextHumanFiltered = false}) {
     const handoff          = detectAutonomousHandoffPrompt(promptingText),
           dialogueText     = isOperatorDialogueText(promptingText),
+          attested         = !stopHookActive || promptingTextHumanFiltered,
           midChainOperator = !!stopHookActive && promptingTextHumanFiltered && dialogueText;
 
     return {
         operatorInLoop   : (!stopHookActive && dialogueText) || midChainOperator,
+        operatorAuthored : attested && isOperatorAuthoredText(promptingText),
         midChainOperator,
         autonomousHandoff: handoff.active,
         handoffReason    : handoff.reason,
@@ -347,23 +362,52 @@ export function decideStopHookAction(verdict, {
  * @param {Object} [options]
  * @param {String|null} [options.ask=null] The wrap-up ask that fired, if any.
  * @param {Boolean} [options.unattended=false] It fired because the operator did not prompt the turn.
+ * @param {String|null} [options.awaySince=null] It fired on the operator's recorded Nightshift, on since this ISO time.
  * @returns {String}
  */
-export function buildDeferenceStopHookDirective(phrase = null, {ask = null, unattended = false} = {}) {
-    return buildDeferenceReminder(phrase, {ask, unattended});
+export function buildDeferenceStopHookDirective(phrase = null, {ask = null, unattended = false, awaySince = null} = {}) {
+    return buildDeferenceReminder(phrase, {ask, unattended, awaySince});
+}
+
+/**
+ * @summary Reads the Fleet's host record of the operator's presence for one turn: `true` while his Nightshift
+ * is on, `false` while he is present, `null` when there is no record to read.
+ *
+ * No record is a missing or unreadable file, a mode outside `present | away`, or `since: null`, which is how
+ * the plane reads a presence nobody ever set. So a fleet that never uses the toggle keeps the prompting
+ * classifier. An `away` ends by its `until`, and for the turn an operator message prompts later than `since`
+ * plus the grace; a message inside the grace is the handoff itself ("good night").
+ * @param {Object|null} record The host record `{mode, since, until}`.
+ * @param {Object} [options]
+ * @param {Number} [options.now=Date.now()] Clock source.
+ * @param {String|null} [options.lastOperatorMessageAt=null] ISO time of the operator message that prompted the turn.
+ * @param {Number} [options.graceMs=0] How long after `since` an operator message still counts as the handoff.
+ * @returns {Boolean|null}
+ */
+export function decideOperatorAway(record, {now = Date.now(), lastOperatorMessageAt = null, graceMs = 0} = {}) {
+    const since = Date.parse(record?.since);
+
+    if (!['present', 'away'].includes(record?.mode) || Number.isNaN(since)) return null;
+    if (record.mode === 'present' || (record.until && Date.parse(record.until) <= now)) return false;
+
+    return !(Date.parse(lastOperatorMessageAt) > since + graceMs)
 }
 
 /**
  * @summary Shared deference-register Stop-hook decision. Returns `null` when no deference slip exists;
  * otherwise maps it to the same non-enforcing/enforcing action for every Stop-hook adapter. The
  * operator-dialogue carve and the question-box carves live in `deferencePhraseMatch`, so adapters cannot
- * drift on that business rule; an adapter only supplies what its harness shows. In a turn the operator
- * did not prompt, any ask blocks: its box may wait for a click nobody gives, whoever the question belongs
- * to. The Claude adapter reads a box only up to the hook's own feedback, so each ask blocks once.
+ * drift on that business rule; an adapter only supplies what its harness shows. While the operator is away,
+ * any ask blocks: its box may wait for a click nobody gives, whoever the question belongs to. The recorded
+ * presence decides away when there is one ({@link decideOperatorAway}); without one, a turn the operator did
+ * not prompt counts as away. The Claude adapter reads a box only up to the hook's own feedback, so each ask
+ * blocks once.
  * @param {String} text Assistant final-turn text.
  * @param {Object} [options]
  * @param {Boolean} [options.enforcing=false]
  * @param {Boolean} [options.operatorInLoop=false]
+ * @param {Boolean|null} [options.operatorAway=null] The recorded presence's reading; `null` when there is no record.
+ * @param {String|null} [options.awaySince=null] The record's `since`, named by the reminder when it fired on the record.
  * @param {Object|null} [options.wrapUpAsk=null] The turn's question box (`{ask, actions}`), for an
  * adapter whose harness closes turns through one.
  * @param {Boolean} [options.deferenceMirrorEnabled=true] The `stopHook.deferenceMirror` policy leaf.
@@ -376,20 +420,22 @@ export function buildDeferenceStopHookDirective(phrase = null, {ask = null, unat
 export function decideDeferenceStopHookAction(text = '', {
     enforcing              = false,
     operatorInLoop         = false,
+    operatorAway           = null,
+    awaySince              = null,
     deferenceMirrorEnabled = true,
     wrapUpAsk              = null
 } = {}) {
     if (!deferenceMirrorEnabled) return null;
 
     const phrase     = detectDeferencePhrase(text, {operatorInLoop}),
-          unattended = !phrase && !operatorInLoop && typeof wrapUpAsk?.ask === 'string' && !!wrapUpAsk.ask.trim(),
+          unattended = !phrase && (operatorAway ?? !operatorInLoop) && typeof wrapUpAsk?.ask === 'string' && !!wrapUpAsk.ask.trim(),
           ask        = phrase ? null : unattended ? wrapUpAsk.ask : matchWrapUpAskDeference(wrapUpAsk, text);
 
     if (!phrase && !ask) return null;
 
     return {
         action: enforcing ? 'block' : 'would-block',
-        reason: buildDeferenceStopHookDirective(phrase, {ask, unattended}),
+        reason: buildDeferenceStopHookDirective(phrase, {ask, unattended, awaySince: unattended && operatorAway ? awaySince : null}),
         phrase,
         ask
     };
