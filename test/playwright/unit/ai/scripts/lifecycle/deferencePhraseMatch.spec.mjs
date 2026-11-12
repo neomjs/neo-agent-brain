@@ -70,8 +70,8 @@ test.describe('deferencePhraseMatch in operator dialogue (#78)', () => {
 });
 
 /**
- * @summary The Claude desktop wrap-up `ask`. Case 3 needs both halves: the turn's text states the
- * agent's pick, and the box asks to go ahead with the agent's own step. Every ask below is a real one from
+ * @summary The Claude desktop wrap-up `ask` on the agent's own step: the turn's text states a pick, even a
+ * bare "I'll", and the box asks to go ahead with that step. Every ask below is a real one from
  * Ada's sessions (the 2026-11-09 corpus of 109 asks over 1,782 turns, 4 of which fire) or Mnemosyne's
  * specimen; the carved rows are the operator-owned asks the first, wider draft of this rule wrongly fired on.
  */
@@ -130,6 +130,56 @@ test.describe('matchWrapUpAskDeference (#78)', () => {
         for (const input of [null, undefined, {}, {ask: ''}, {ask: '   '}, {ask: 42}, 'Fix it now?']) {
             expect(matchWrapUpAskDeference(input, "I'd fix it.")).toBeNull();
         }
+    });
+});
+
+/**
+ * @summary A recommendation hands the box's question back whatever verb opens it. A bare "I'll" keeps
+ * the agent-step gate: replayed over Ada's 402 dialogue asks, it armed twenty asks that were the
+ * operator's own (his schedule, his Auto-fix switch, a PAT step) with a promise about some other step.
+ */
+test.describe('matchWrapUpAskDeference after a recommendation (#1618)', () => {
+    const buttons = [{label: 'Yes, the hook'}, {label: 'Keep the prompt'}];
+
+    test('the reproduction: a recommendation, then a box that opens with an unlisted verb', () => {
+        const ask = 'Replace the per-call prompt with a hook that checks every helper call?';
+
+        expect(matchWrapUpAskDeference({ask, actions: buttons}, 'There are three ways to end the wait, and I recommend the third. ' +
+            'With the prompt, a helper that saves a few minutes waits for you, and at night it never starts.')).toBe(ask);
+        expect(matchWrapUpAskDeference({ask: 'File it?', actions: buttons}, 'I would want this on.')).toBe('File it?');
+    });
+
+    test('the ticket\'s six rows', () => {
+        for (const [ask, text, actions, mirrors] of [
+            ['Replace the per-call prompt with a hook that checks every helper call?', 'I recommend the third.', buttons, true],
+            ['Which fix first?', 'I would take the hook first.', buttons, true],
+            ['Keep the prompt?', 'My pick is the hook.', buttons, true],
+            ['Did the app show you a confirmation?', 'I recommend the third.', buttons, false],
+            ['Run one small helper now to record whether its call asks you first?', 'The helper is ready.', buttons, false],
+            ['Merge the pull request?', 'I recommend merging.', [{action: 'merge', label: 'Merge'}], false]
+        ]) {
+            expect(matchWrapUpAskDeference({ask, actions}, text)).toBe(mirrors ? ask : null);
+        }
+    });
+
+    test('what he saw and a step only he takes stay his; a preference question does not', () => {
+        for (const ask of ['Did you see the toast?', 'Do you see the button now?', 'Could you check the tray icon?',
+                           'Have you quit and reopened the Fleet Manager?', 'Does the dock show you the count?']) {
+            expect(matchWrapUpAskDeference({ask, actions: buttons}, "I'd ship it.")).toBeNull();
+        }
+
+        expect(matchWrapUpAskDeference({ask: 'Would you rather I take the hook?', actions: buttons}, "I'd take the hook."))
+            .toBe('Would you rather I take the hook?');
+    });
+
+    test('a bare "I\'ll" arms only a go-ahead on the agent\'s own step', () => {
+        const text = "CI is still running. I'll ask Julia to review once it is green.";
+
+        for (const ask of ['Turn on Auto-fix for PR #1447?', 'Which vision line should open VISION?', 'Thu 14:00 CET for row 3: does that work?']) {
+            expect(matchWrapUpAskDeference({ask, actions: buttons}, text)).toBeNull();
+        }
+
+        expect(matchWrapUpAskDeference({ask: 'Take #95 now?', actions: buttons}, "I'll take #95 next.")).toBe('Take #95 now?');
     });
 });
 

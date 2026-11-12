@@ -4,6 +4,7 @@ import {
     WRAP_UP_TOOL_NAME,
     extractTurnWrapUpAskFromJsonl
 } from '../../../../../../../../ai/scripts/lifecycle/hooks/claude/laneStateStopHook.mjs';
+import {decideDeferenceStopHookAction} from '../../../../../../../../ai/scripts/lifecycle/stopHookDecision.mjs';
 
 const prompt     = text => ({type: 'user', message: {role: 'user', content: text}}),
       reply      = text => ({type: 'assistant', message: {role: 'assistant', content: [{type: 'text', text}]}}),
@@ -45,6 +46,18 @@ test.describe('extractTurnWrapUpAskFromJsonl (#78)', () => {
         expect(extractTurnWrapUpAskFromJsonl(jsonl([
             prompt('go'), wrapUp({recap: 'Done.', ask, actions}), toolResult(), reply('Closing.'), feedback(), reply('Acting on it instead.')
         ]))).toBeNull();
+    });
+
+    test('a box in a turn the operator did not prompt blocks the stop once (#1618)', () => {
+        const turn       = [prompt('[WAKE] route-review'), wrapUp({recap: 'Done.', ask, actions}), toolResult(), reply('Closing.')],
+              unprompted = {operatorInLoop: false, enforcing: true};
+
+        expect(decideDeferenceStopHookAction('Closing.', {...unprompted, wrapUpAsk: extractTurnWrapUpAskFromJsonl(jsonl(turn))}).action)
+            .toBe('block');
+        expect(decideDeferenceStopHookAction('Recorded on the ticket.', {
+            ...unprompted,
+            wrapUpAsk: extractTurnWrapUpAskFromJsonl(jsonl([...turn, feedback(), reply('Recorded on the ticket.')]))
+        })).toBeNull();
     });
 
     test('malformed lines, a missing transcript and a non-string ask match nothing', () => {
