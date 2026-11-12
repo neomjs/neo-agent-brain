@@ -20,7 +20,7 @@
  * but no seat is that author. A `holder-unreachable` slot is a holder wake that would be sent if the holder's route
  * were not `unreachable`. Each wakes one rotation seat per head, and that seat is never the holder it escalates.
  */
-import {createHash}                                          from 'node:crypto';
+import {createHash}                                            from 'node:crypto';
 import {openWorkFreshness}                                     from './fleetOpenWorkSource.mjs';
 import {holderOf}                                              from './openWorkHolder.mjs';
 import {OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf} from './openWorkWakeMessage.mjs';
@@ -90,10 +90,13 @@ function wakeOf(row, seat, role, kind, episode, holder = null) {
  * @param {Number} options.now Epoch milliseconds.
  * @param {Function} [options.routeOf] Native seat to reachable, unreachable or unknown; only unreachable skips.
  * @param {Array<String|Object>} [options.rotationSeats] Participating native seats (or pulse seat records) for rotation actions.
+ * @param {Object<String, Number>|null} [options.exhaustedUntil=null] Native seat to the epoch milliseconds its plan
+ *     resets (`capacityThrottleState.mjs#exhaustedUntilOf`). The rotation passes such a seat over until then, the way it
+ *     passes an unreachable one. Work a seat holds as reviewer or author keeps routing through `routeOf` alone.
  * @param {Boolean} [options.quiet=false] Baseline the observed actions without admitting sends.
  * @returns {{wakes: Object[], ledger: Object|null}} Inputs are never mutated.
  */
-export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', rotationSeats, quiet = false}) {
+export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', rotationSeats, exhaustedUntil = null, quiet = false}) {
     const
         wakes   = [],
         holding = Object.fromEntries(Object.entries(ledger?.holding ?? {}).map(([key, entry]) =>
@@ -116,7 +119,10 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         native  = seat => typeof seat === 'string' && seat.startsWith('@') && seat.length > 1,
         roster  = [...new Set((Array.isArray(rotationSeats) ? rotationSeats : state?.pulses?.at(-1)?.seats ?? [])
             .filter(item => typeof item === 'string' ? native(item) : !item?.benched && native(item?.seat))
-            .map(item => typeof item === 'string' ? item : item.seat))];
+            .map(item => typeof item === 'string' ? item : item.seat))],
+        // A seat waiting for its plan to reset is unreachable for the rotation only; the roster and its offset stay whole
+        rotationRoute = seat => exhaustedUntil && Object.hasOwn(exhaustedUntil, seat) && exhaustedUntil[seat] > now
+            ? 'unreachable' : routeOf(seat);
 
     /**
      * Holds one rotation-routed slot: an outside PR's action, or an escalation naming the holder it never picks.
@@ -133,7 +139,7 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         current.add(slot);
         if (prior?.status === 'admitted') return;
 
-        const seat = pickRotationSeat(row, kind, roster, quiet ? () => 'unknown' : routeOf, holder ? [holder] : []);
+        const seat = pickRotationSeat(row, kind, roster, quiet ? () => 'unknown' : rotationRoute, holder ? [holder] : []);
 
         if (seat && !quiet) {
             wakes.push(hold(seat, 'admitted').wake)

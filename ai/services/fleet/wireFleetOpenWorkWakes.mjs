@@ -6,6 +6,7 @@
  * submission is never replayed.
  */
 import path                            from 'path';
+import {exhaustedUntilOf}              from './capacityThrottleState.mjs';
 import {OPEN_WORK_FAILED_CHECKS}       from '../github-workflow/queries/openWorkQueries.mjs';
 import {fileStore, seatReaders}        from './wireFleetOpenWorkSource.mjs';
 import {planOpenWorkWakes, wakeGateOf} from './openWorkWakes.mjs';
@@ -233,6 +234,8 @@ function freshWake(wake, state, now) {
  *     injected by the entrypoint. The plane composes the wake and sends it as `@system`.
  * @param {Function} [options.readUndeliverable] Seat-to-nullable-reason map; membership means unreachable.
  *     An unreadable or absent whole map means unknown.
+ * @param {Function} [options.readExhausted] Seat to the epoch milliseconds its plan resets, read with the route map
+ *     and cached with it. The rotation passes those seats over until then; an unreadable map passes nobody over.
  * @param {Function} [options.now] Epoch milliseconds.
  * @param {Number} [options.routesTtlMs] Short cache duration for the existing route read.
  * @param {Function} [options.gateOf] Test seam; production uses wakeGateOf's measured observation gate.
@@ -243,7 +246,7 @@ function freshWake(wake, state, now) {
  * @param {Object} [options.log] Bounded diagnostics; sender error contents are never logged.
  * @returns {Function} Post-pulse callback with an async stop() method; persistence errors reject.
  */
-export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = async () => null,
+export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = async () => null, readExhausted = async () => null,
     now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true, rotationSeats, readFailedChecks = null, log = console}) {
     let running = null, queued = null, stopped = false, routes = null;
 
@@ -252,16 +255,17 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
         try { return await readFailedChecks?.(wake) ?? null } catch { return null }
     };
 
-    /** @summary Read the existing route projection only when a plan has eligible work. */
+    /** @summary Read the route projection and the plan resets only when a plan has eligible work. */
     async function routeMap() {
         const time = now();
         if (!routes || time < routes.at || time - routes.at >= routesTtlMs) {
-            let map;
-            try { map = await readUndeliverable() } catch { map = null }
-            routes = {at: time, map: map && typeof map === 'object' && !Array.isArray(map) &&
-                Object.values(map).every(reason => reason === null || typeof reason === 'string') ? map : null}
+            const settled        = read => Promise.resolve().then(read).catch(() => null),
+                [map, exhausted] = await Promise.all([settled(readUndeliverable), settled(readExhausted)]),
+                plain            = (value, valid) => value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(valid) ? value : null;
+
+            routes = {at: time, map: plain(map, reason => reason === null || typeof reason === 'string'), exhausted: plain(exhausted, Number.isFinite)}
         }
-        return routes.map
+        return routes
     }
 
     /** @summary Persist certification once, then admit fresh actions while the entrypoint permits effects. */
@@ -323,11 +327,11 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
 
         if (plan.wakes.length) {
             if (isEnabled() !== true) return {admitted: 0, disabled: true};
-            const map = await routeMap(), preparedAt = now();
+            const {map, exhausted} = await routeMap(), preparedAt = now();
             if (isEnabled() !== true) return {admitted: 0, disabled: true};
             expired = plan.wakes.filter(wake => !freshWake(wake, state, preparedAt)).length;
             if (!freshObservation(state, preparedAt)) return {admitted: 0, expired};
-            plan = planOpenWorkWakes({...args, now: preparedAt, quiet: !activation, routeOf: seat =>
+            plan = planOpenWorkWakes({...args, now: preparedAt, quiet: !activation, exhaustedUntil: exhausted, routeOf: seat =>
                 map && Object.hasOwn(map, seat) ? 'unreachable' : 'unknown'})
         }
 
@@ -431,7 +435,8 @@ export function undeliverableOf(presence) {
  * @param {{getDataDir: Function, listAgents: Function, resolveCredential: Function}} options.registry Fleet-owned
  *     durable root, and the seats whose PATs read a `repair-ci` wake's failing checks.
  * @param {Function} options.admitWake The already verified plane's open-work intake.
- * @param {Function} [options.readPresence] The Fleet's shared verbose presence read; its rows give the route map.
+ * @param {Function} [options.readPresence] The Fleet's shared verbose presence read; one answer per route refresh
+ *     gives the route map and the plan resets.
  * @param {Function} [options.now]
  * @param {Function} [options.gateOf] Test seam only.
  * @param {Function} [options.isEnabled] Live entrypoint enablement, checked at effect boundaries.
@@ -442,6 +447,9 @@ export function undeliverableOf(presence) {
  */
 export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
     if (typeof registry?.getDataDir !== 'function' || typeof admitWake !== 'function') return null;
+    let presence = null;
+    // The refresh asks both readers at once, so one answer serves both; the next refresh reads fresh
+    const answer = () => presence ??= Promise.resolve().then(readPresence).finally(() => setTimeout(() => { presence = null }, 0));
     return createOpenWorkWakeRound({
         store           : fileStore(path.join(registry.getDataDir(), 'open-work-wakes.json')),
         readFailedChecks: failedChecksReader({
@@ -449,7 +457,10 @@ export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, now, 
             resolveCredential: id => registry.resolveCredential?.(id) ?? null,
             createQuery
         }),
-        ...(typeof readPresence === 'function' ? {readUndeliverable: async () => undeliverableOf(await readPresence())} : {}),
+        ...(typeof readPresence === 'function' ? {
+            readUndeliverable: async () => undeliverableOf(await answer()),
+            readExhausted    : async () => exhaustedUntilOf(await answer(), (now ?? Date.now)())
+        } : {}),
         admitWake, now, gateOf, isEnabled, rotationSeats, log
     })
 }

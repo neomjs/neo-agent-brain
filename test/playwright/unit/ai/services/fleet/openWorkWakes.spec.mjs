@@ -386,6 +386,38 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
         expect(approval.wakes[0]).toMatchObject({to: roster[digest('approve-runs')], role: 'rotation', kind: 'approve-runs'});
     });
 
+    test('the rotation passes a seat over until its plan resets, and the seat still hears the work it holds (#1653)', () => {
+        const
+            roster  = [ADA, GPT],
+            outside = {kind: 'outside', seat: null, login: 'contributor'},
+            offset  = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % roster.length,
+            first   = roster[offset],
+            second  = roster[(offset + 1) % roster.length],
+            triage  = (minute, exhaustedUntil) => {
+                const run = journey();
+                run.step(0, [{owner: outside, ci: 'pending'}], {}, {rotationSeats: roster});
+                return run.step(minute, [{owner: outside, ci: 'green'}], {}, {rotationSeats: roster, exhaustedUntil})
+            };
+
+        // Before the reset the hashed seat passes its pick on; from the reset instant on it is picked again
+        expect(triage(1, {[first]: at(10)}).wakes.map(({to, role, kind}) => ({to, role, kind}))).toEqual([{to: second, role: 'rotation', kind: 'triage-outside'}]);
+        expect(triage(10, {[first]: at(10)}).wakes.map(wake => wake.to)).toEqual([first]);
+
+        // Every seat waiting: the slot stays pending, and the first round after a reset picks the hashed seat
+        const run = journey(), waiting = {[ADA]: at(10), [GPT]: at(10)};
+        run.step(0, [{owner: outside, ci: 'pending'}], {}, {rotationSeats: roster});
+        const blocked = run.step(1, [{owner: outside, ci: 'green'}], {}, {rotationSeats: roster, exhaustedUntil: waiting});
+        expect(blocked.wakes).toEqual([]);
+        expect(Object.values(blocked.ledger.holding)[0].status).toBe('pending');
+        expect(run.step(11, [{owner: outside, ci: 'green'}], {}, {rotationSeats: roster, exhaustedUntil: waiting}).wakes.map(wake => wake.to)).toEqual([first]);
+
+        // Work a waiting seat holds still routes through routeOf alone
+        const held = journey();
+        held.step(0, [{ci: 'pending'}], {}, {rotationSeats: roster});
+        expect(held.step(1, [{ci: 'red'}], {}, {rotationSeats: roster, exhaustedUntil: {[ADA]: at(10)}}).wakes.map(({to, role, kind}) => ({to, role, kind})))
+            .toEqual([{to: ADA, role: 'author', kind: 'repair-ci'}])
+    });
+
     test('a rotation action seen on the producer\'s first pulse wakes one seat once, while a seat-held action stays its baseline (#1629)', () => {
         const
             roster   = [ADA, GPT],
@@ -1007,7 +1039,7 @@ test.describe('openWorkWakes — an action whose holder cannot act escalates to 
         const lone = journey();
         lone.step(0, [{ci: 'pending'}], {}, {rotationSeats: [ADA]});
         for (const minute of [1, 2]) {
-            const stuck = lone.step(minute, [{ci: 'red'}], {}, {rotationSeats: [ADA], routeOf: only(ADA)});
+            const stuck      = lone.step(minute, [{ci: 'red'}], {}, {rotationSeats: [ADA], routeOf: only(ADA)});
             const escalation = Object.values(stuck.ledger.holding).find(entry => entry.wake.kind === 'holder-unreachable');
 
             expect(stuck.wakes).toEqual([]);
