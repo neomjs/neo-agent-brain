@@ -6727,7 +6727,7 @@ class MailboxService extends Base {
     /**
      * @summary Sweeps expired A2A Tasks past their `task.expiresAt` to the `Expired` state.
      *
-     * Maintenance operation invoked by the swarm-heartbeat cron cycle.
+     * Maintenance operation run by the Orchestrator's container-plane `task-expiry-sweep` lane.
      * Bulk-transitions all MESSAGE nodes carrying an A2A Task envelope whose `task.expiresAt`
      * ISO timestamp has passed AND whose `task.state` is non-terminal
      * (`Submitted` / `Working` / `InputRequired`) to `Expired` via a single atomic
@@ -6754,7 +6754,7 @@ class MailboxService extends Base {
      * (`Completed` / `Canceled` / `Failed` / `Rejected` / `Expired`) are untouched.
      *
      * NOT exposed via MCP tool surface — internal cron primitive only. See
-     * `ai/scripts/lifecycle/sweepExpiredTasks.mjs` for the CLI invoker consumed by the heartbeat.
+     * `ai/scripts/lifecycle/sweepExpiredTasks.mjs` for the manual CLI invoker.
      *
      * @returns {Promise<{success: Boolean, sweptCount: Number}>}
      */

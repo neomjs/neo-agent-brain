@@ -446,6 +446,7 @@
         "orchestrator.intervals.remStarvationBreakerMs",
         "orchestrator.intervals.summarySweepMs",
         "orchestrator.intervals.swarmHeartbeatMs",
+        "orchestrator.intervals.taskExpirySweepMs",
         "orchestrator.intervals.tenantRepoSyncMs",
         "orchestrator.lms",
         "orchestrator.lms.enabled",

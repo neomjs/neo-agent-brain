@@ -156,9 +156,6 @@ function buildGitHubNotificationPulseId(notifications = []) {
  * Direct module imports replace subprocess invocations where the imported
  * primitive already owns a stable programmatic API:
  *
- *   - `MailboxService.sweepExpiredTasks()` — the expired-task sweep was previously a `node
- *     ai/scripts/lifecycle/sweepExpiredTasks.mjs` subprocess; calling MailboxService directly removes the
- *     ~2s Node-startup hop on every poll cycle.
  *   - `wakeSafetyGate.mjs` exports (`isGateOpen`, `readGateState`) — the bash `if ! node
  *     wakeSafetyGate.mjs check` shell-out is replaced with direct function calls.
  *   - `heartbeatLock.mjs` exports (`inspectHeartbeatLock`, `releaseHeartbeatLock`) — the bash
@@ -336,8 +333,7 @@ class SwarmHeartbeatService extends Base {
      *      the shell loop's touch-before-lock ordering.
      *   1. Concurrency-lock skip (active lock = expensive work in flight, skip pulse;
      *      stale lock = clear and continue).
-     *   2. TTL sweep (`MailboxService.sweepExpiredTasks` — direct call, no subprocess).
-     *   3. Sunset detection via `checkSunsetted.mjs` direct export.
+     *   2. Sunset detection via `checkSunsetted.mjs` direct export.
      *      - sunset=true + gate-open → fresh-session-spawn via `resumeHarness.mjs` direct export.
      *      - sunset=true + gate-closed → log + skip (no spawn).
      *      - recommended_action=idle_out_nudge + gate-open + ready → `idleOutNudge.mjs`. The
@@ -350,9 +346,9 @@ class SwarmHeartbeatService extends Base {
      *      - runs for the primary identity plus every active WAKE_SUBSCRIPTION
      *        identity, so Codex/Claude/Gemini routes are monitored by subscription
      *        reality rather than by the Orchestrator process owner's env var.
-     *   4. All-agent-idle detection via `checkAllAgentIdle.mjs` direct export.
+     *   3. All-agent-idle detection via `checkAllAgentIdle.mjs` direct export.
      *      - allIdle=true + gate-open → `swarmWakeCooldown.mjs` direct export.
-     *   5. GitHub notification wake-content ingestion. When the current workspace
+     *   4. GitHub notification wake-content ingestion. When the current workspace
      *      is GitHub-backed, unread `mention` / `review_requested` notifications
      *      are deduped by GitHub notification id and emitted once through the
      *      same Shape B heartbeat-pulse transport. Non-GitHub deployments log and
@@ -377,20 +373,7 @@ class SwarmHeartbeatService extends Base {
             await this.clearHeartbeatLock()
         }
 
-        // Step 2: TTL sweep — direct MailboxService call (was subprocess in bash shape).
-        // Substrate maintenance: fires every cycle regardless of token-economy gate.
-        let expired = 0;
-        try {
-            const result = await this.sweepExpiredTasks();
-            expired = result?.sweptCount || 0;
-            if (expired > 0) {
-                logger.info(`[SwarmHeartbeatService] sweep: ${expired} task(s) transitioned to Expired`)
-            }
-        } catch (err) {
-            logger.error('[SwarmHeartbeatService] sweepExpiredTasks failed:', err)
-        }
-
-        // Step 3: Sunset / idle-out detection (direct module exports; CLI wrappers preserved for shell consumers).
+        // Step 2: Sunset / idle-out detection (direct module exports; CLI wrappers preserved for shell consumers).
         const pulseIdentities = await this.getPulseIdentities();
         for (const identity of pulseIdentities) {
             const sunsetJson = await this.checkSunsetted(identity);
@@ -436,7 +419,7 @@ class SwarmHeartbeatService extends Base {
             }
         }
 
-        // Step 4: All-agent-idle detection. `checkAllAgentIdle.mjs` owns the
+        // Step 3: All-agent-idle detection. `checkAllAgentIdle.mjs` owns the
         // logical cycle id so the cooldown key remains stable across pulses.
         const allIdleJson = await this.checkAllAgentIdle();
         if (allIdleJson?.allIdle) {
@@ -465,7 +448,7 @@ class SwarmHeartbeatService extends Base {
             }
         }
 
-        // Step 5: GitHub notification wake-content ingestion. The notification
+        // Step 4: GitHub notification wake-content ingestion. The notification
         // source is gated by repo remote and deduped by GitHub notification id;
         // it never mutates GitHub's own notification read/unread state.
         await this.emitGitHubNotificationWakes(pulseIdentities);
@@ -519,15 +502,6 @@ class SwarmHeartbeatService extends Base {
      */
     async clearHeartbeatLock() {
         return releaseHeartbeatLock({lockPath: heartbeatLockPath()})
-    }
-
-    /**
-     * Test-stubbable seam over `MailboxService.sweepExpiredTasks`.
-     * @returns {Promise<{success: Boolean, sweptCount: Number}>}
-     * @protected
-     */
-    async sweepExpiredTasks() {
-        return MailboxService.sweepExpiredTasks()
     }
 
     /**

@@ -485,6 +485,18 @@ export class Orchestrator extends Base {
     }
 
     /**
+     * @summary Runs the Task expiry sweep for the `task-expiry-sweep` lane against this plane's graph.
+     * Without a graph the sweep reports a successful sweep of nothing, so this throws instead and the
+     * lane records the run as failed.
+     * @returns {Promise<{success: Boolean, sweptCount: Number}>}
+     */
+    async sweepExpiredTasks() {
+        await GraphService.ready();
+        GraphService.requireDb('Orchestrator.sweepExpiredTasks');
+        return MailboxService.sweepExpiredTasks()
+    }
+
+    /**
      * @summary Resolves the runtime-state directory from the owning config leaf when no explicit
      * value was set — a per-read use-site resolution, never a module-load capture.
      * @param {String|null} value
