@@ -1745,7 +1745,7 @@ class FleetLifecycleService extends Base {
      * @param {String} id
      * @returns {Object} `{id, state, running, adopted, pid, startedAt, uptimeMs, exitCode, exitedAt,
      *     stderrBytes, authRequired, instanceHome, authHome, launchCommand, authCommand,
-     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, repos, dependencies, sessionFolder}` — `authRequired`
+     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, rotationRoute, repos, dependencies, sessionFolder}` — `authRequired`
      *     is the LIVE per-home
      *     auth-marker heuristic for curated launches (`true` = the operator-owned per-home login has
      *     not happened yet; recomputed each read so a completed login flips it without a restart);
@@ -1759,7 +1759,9 @@ class FleetLifecycleService extends Base {
      *     never raw child output. Fleet-managed OpenCode additionally carries a non-secret
      *     `wakeRoute` (`starting | ready | degraded`, owner tuple, envelope path); a GUI seat the
      *     Fleet armed at start carries one too (`ready | unarmed`, the reason, the adapter and the
-     *     window's `userDataDir`). Server and signing credentials never enter the record or
+     *     window's `userDataDir`). `rotationRoute` is the route the receiver opens the seat's fresh
+     *     session through after its sunset handover ({@link setRotationRoute}), with the same fields;
+     *     `null` for a harness without one. Server and signing credentials never enter the record or
      *     projection. `adopted` marks a
      *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
      *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`). `repos` is the
@@ -1783,7 +1785,7 @@ class FleetLifecycleService extends Base {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, windowPlacement: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, exitReason: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null), harnessGeneration: null};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, rotationRoute: null, windowPlacement: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, exitReason: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null), harnessGeneration: null};
 
         this.refreshAdoptedSeat(record);
 
@@ -1819,6 +1821,14 @@ class FleetLifecycleService extends Base {
                 addressType    : record.wakeRoute.addressType ?? null,
                 instanceAddress: record.wakeRoute.instanceAddress ?? null,
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
+            } : null,
+            rotationRoute    : record.rotationRoute ? {
+                state          : record.rotationRoute.state,
+                reason         : record.rotationRoute.reason,
+                adapter        : record.rotationRoute.adapter ?? null,
+                addressType    : record.rotationRoute.addressType ?? null,
+                instanceAddress: record.rotationRoute.instanceAddress ?? null,
+                subscriptionId : record.rotationRoute.subscriptionId ?? null
             } : null,
             repos            : record.repos ? record.repos.map(repo => ({...repo})) : null,
             dependencies     : this.dependenciesOf(id),
@@ -1946,10 +1956,10 @@ class FleetLifecycleService extends Base {
      * @param {Object} launch `{pid, startedAt}` from the status of that start.
      * @returns {Boolean} `true` when recorded; `false` for an unknown seat or a launch it has since replaced.
      */
-    setRepoOutcomes(id, repos, {pid, startedAt} = {}) {
-        const record = this.processes.get(id);
+    setRepoOutcomes(id, repos, launch) {
+        const record = this.launchRecord(id, launch);
 
-        if (!record || record.state !== 'running' || record.pid !== pid || record.startedAt !== startedAt) return false;
+        if (!record || record.state !== 'running') return false;
 
         const merged = new Map((record.repos ?? []).map(row => [row.repoSlug, row]));
         for (const {repoSlug, state, reason, via, at} of repos) {
@@ -2079,13 +2089,45 @@ class FleetLifecycleService extends Base {
      * @returns {Boolean} `true` when recorded; `false` for an unknown seat, one that owns its route, or
      *     a launch the seat has since replaced.
      */
-    setWakeRoute(id, route, {pid, startedAt} = {}) {
-        const record = this.processes.get(id);
+    setWakeRoute(id, route, launch) {
+        const record = this.launchRecord(id, launch);
 
-        if (!record || record.wakeRoute?.hookPath || record.pid !== pid || record.startedAt !== startedAt) return false;
+        if (!record || record.wakeRoute?.hookPath) return false;
 
         record.wakeRoute = {...route};
         return true
+    }
+
+    /**
+     * @summary Records the rotation route the Fleet armed beside the wake route, so {@link status} says
+     * whether the receiver can open the seat's fresh session after its sunset handover, and why not.
+     * Bound to its launch like {@link setWakeRoute}.
+     * @param {String} id
+     * @param {Object} route `{state, reason, adapter, addressType, instanceAddress, subscriptionId}`.
+     * @param {Object} launch `{pid, startedAt}` from the status of the start the route was armed for.
+     * @returns {Boolean} `true` when recorded; `false` for an unknown seat or a launch it has since replaced.
+     */
+    setRotationRoute(id, route, launch) {
+        const record = this.launchRecord(id, launch);
+
+        if (!record) return false;
+
+        record.rotationRoute = {...route};
+        return true
+    }
+
+    /**
+     * @summary The seat's process record while it still describes the launch `{pid, startedAt}` names. A seat
+     * restarted in the meantime runs at the same profile path, so only those two tell the launches apart.
+     * @param {String} id
+     * @param {Object} [launch={}] `{pid, startedAt}` from the status of the start in question.
+     * @returns {Object|null}
+     * @protected
+     */
+    launchRecord(id, {pid, startedAt} = {}) {
+        const record = this.processes.get(id);
+
+        return record && record.pid === pid && record.startedAt === startedAt ? record : null
     }
 
     /**
