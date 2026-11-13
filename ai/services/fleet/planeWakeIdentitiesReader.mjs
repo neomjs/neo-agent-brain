@@ -45,14 +45,18 @@ export function createPlaneWakeIdentitiesReader(planeClient) {
  * payload without even an identities array still throws, exactly like the sibling reader.
  * @param {Object} planeClient A `planeMailboxClient`-contract client: `callTool(name, args)`
  *     resolving to the parsed tool payload (never the wire envelope).
- * @returns {Function} `() => Promise<Object[]>` yielding `[{identity, lastPollAt, pullRoute}]`,
- *     matching the wake adapter's `listActiveSubscriptionObservations` bulk-reader seam.
+ * @returns {Function} `() => Promise<Object[]>` yielding `[{identity, lastPollAt, pullRoute, rotation?}]`,
+ *     matching the wake adapter's `listActiveSubscriptionObservations` bulk-reader seam. `rotation` is
+ *     carried only when the plane's row names it, so a plane that reports no rotations stays silent.
  */
 export function createPlaneWakeObservationsReader(planeClient) {
     const
-        stampOf = value => typeof value === 'string' && value !== '' ? value : null,
+        stampOf    = value => typeof value === 'string' && value !== '' ? value : null,
         // out of contract (a bare flag included) reads as no pull route, never as one
-        routeOf = value => value !== null && typeof value === 'object' ? {lastPollAt: stampOf(value.lastPollAt)} : null;
+        routeOf    = value => value !== null && typeof value === 'object' ? {lastPollAt: stampOf(value.lastPollAt)} : null,
+        rotationOf = row => Object.hasOwn(row, 'rotation')
+            ? {rotation: row.rotation !== null && typeof row.rotation === 'object' ? {...row.rotation} : null}
+            : {};
 
     return async () => {
         const payload = await planeClient.callTool('manage_wake_subscription', {action: 'fleet-identities'});
@@ -63,7 +67,8 @@ export function createPlaneWakeObservationsReader(planeClient) {
                 .map(row => ({
                     identity  : row.identity,
                     lastPollAt: stampOf(row.lastPollAt),
-                    pullRoute : routeOf(row.pullRoute)
+                    pullRoute : routeOf(row.pullRoute),
+                    ...rotationOf(row)
                 }))
         }
 
