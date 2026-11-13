@@ -3114,6 +3114,28 @@ async function isMessageAccepted(messageId) {
 }
 
 /**
+ * @summary Resolves a list read's `expiredWithinSpan` into the window start it applies. The span is this
+ * service's own `mailbox.humanAskTtlMs`, read here, so no caller passes a duration.
+ * @param {Object} args The list read's arguments.
+ * @param {String} surface The read named in a refusal.
+ * @returns {String|undefined} The ISO instant a Task's `task.expiredAt` reaches when it expired within the
+ * span, or `undefined` when the window is not asked for.
+ * @private
+ */
+function resolveExpiredSince({expiredWithinSpan, taskStates, taskOrder}, surface) {
+    if (expiredWithinSpan === undefined || expiredWithinSpan === false) {
+        return undefined
+    }
+
+    // Refused, never widened: a window over states that never expire would read as nothing expired
+    if (expiredWithinSpan !== true || taskStates?.length !== 1 || taskStates[0] !== 'Expired' || taskOrder !== undefined) {
+        throw new Error(`${surface}: expiredWithinSpan takes true, with taskStates ['Expired'] and without taskOrder`)
+    }
+
+    return new Date(Date.now() - aiConfig.mailbox.humanAskTtlMs).toISOString()
+}
+
+/**
  * @summary Stamps the SEEN timestamp on a per-recipient `DELIVERED_TO` edge.
  *
  * Broadcasts carry per-recipient read state on the edge, so `seenAt` follows `readAt` to exactly the
@@ -3738,9 +3760,13 @@ class MailboxService extends Base {
         };
 
         if (task !== undefined) {
-            messageProperties.task = task && typeof task === 'object' && !Array.isArray(task)
+            // `expiredAt` is the expiry sweep's stamp alone: the recent-expiry read trusts it, so a caller's is dropped.
+            const isTaskObject               = task && typeof task === 'object' && !Array.isArray(task),
+                  {expiredAt, ...callerTask} = isTaskObject ? task : {};
+
+            messageProperties.task = isTaskObject
                 ? {
-                    ...task,
+                    ...callerTask,
                     assignee: getCanonicalTaskAssigneeForTarget(to, db, {admitHuman: true})
                 }
                 : task;
@@ -4409,6 +4435,9 @@ class MailboxService extends Base {
      *   filter. A Task read is not a receipt: it neither marks a row read nor moves its state.
      * @param {String} [args.taskOrder] `'priority-age'` orders the Task view high, normal, low (an
      *   absent priority reads normal), then oldest first, then by message id. Requires `taskStates`.
+     * @param {Boolean} [args.expiredWithinSpan] With `taskStates: ['Expired']` and no `taskOrder`: only the
+     *   Tasks that expired within `mailbox.humanAskTtlMs`, newest expiry first. The answer carries the window
+     *   start as `expiredSince`.
      * @param {Number} [args.limit=50] Page size. Must be a positive integer — rejected, never
      *   clamped, because a zero or negative page cannot advance the continuation this method
      *   advertises, and a silently-substituted page size hides the caller's bug behind a receipt
@@ -4512,6 +4541,8 @@ class MailboxService extends Base {
             throw new Error(`MailboxService.listMessages: taskOrder takes 'priority-age', and only with taskStates; received ${JSON.stringify(taskOrder)}`);
         }
 
+        const expiredSince = resolveExpiredSince(args, 'MailboxService.listMessages');
+
         // Candidate discovery and per-message projection form one routing contract. Assert both
         // indexes before either can publish an empty result, including an honestly empty mailbox
         // where no later source-index lookup would otherwise execute.
@@ -4549,13 +4580,15 @@ class MailboxService extends Base {
             taskView = taskStates !== undefined,
             viewSql  = taskView ? `${matchesSql}, tasks AS (
                 SELECT m.messageId, m.sentAt, json_extract(n.data, '$.properties.task') AS task,
+                       json_extract(n.data, '$.properties.task.expiredAt') AS expiredAt,
                        CASE COALESCE(json_extract(n.data, '$.properties.priority'), 'normal') WHEN 'high' THEN 0 WHEN 'low' THEN 2 ELSE 1 END AS priorityRank
                 FROM matches m JOIN Nodes n ON n.id = m.messageId
                 WHERE json_extract(n.data, '$.properties.task.state') IN (SELECT value FROM json_each(@taskStates))
+                ${expiredSince ? `AND datetime(json_extract(n.data, '$.properties.task.expiredAt')) >= datetime(@expiredSince)` : ''}
             )` : matchesSql,
             view          = taskView ? 'tasks' : 'matches',
-            viewParams    = taskView ? {...params, taskStates: JSON.stringify(taskStates)} : params,
-            orderBy       = taskOrder === 'priority-age' ? 'priorityRank, sentAt, messageId' : 'sentAt DESC, messageId DESC';
+            viewParams    = taskView ? {...params, taskStates: JSON.stringify(taskStates), ...(expiredSince ? {expiredSince} : {})} : params,
+            orderBy       = expiredSince ? 'expiredAt DESC, messageId DESC' : taskOrder === 'priority-age' ? 'priorityRank, sentAt, messageId' : 'sentAt DESC, messageId DESC';
 
         if (projection === 'counts') {
             const
@@ -4574,10 +4607,10 @@ class MailboxService extends Base {
                     WHERE json_extract(n.data, '$.label') = 'MESSAGE'
                     ORDER BY ${orderBy}`).all(viewParams);
 
-            return this._buildCountsProjection({
-                matchedRows,
-                resolvedIdentityAliases
-            });
+            return {
+                ...this._buildCountsProjection({matchedRows, resolvedIdentityAliases}),
+                ...(expiredSince ? {expiredSince} : {})
+            };
         }
 
         const
@@ -4634,6 +4667,7 @@ class MailboxService extends Base {
             nextOffset,
             limit             : appliedLimit,
             offset            : appliedOffset,
+            ...(expiredSince ? {expiredSince} : {}),
             ...(Object.keys(resolvedIdentityAliases).length > 0 ? {resolvedIdentityAliases} : {})
         };
     }
@@ -4923,6 +4957,8 @@ class MailboxService extends Base {
                 {code: 'MAILBOX_OBSERVER_UNAVAILABLE'});
         }
 
+        const expiredSince = resolveExpiredSince(args, 'MailboxService.observeMessages');
+
         // Policy is read at use, and stored grants, count, page and detail share one snapshot.
         // No async gap separates authority from the content it admits.
         return sqlite.transaction(() => {
@@ -4954,6 +4990,7 @@ class MailboxService extends Base {
                 offset              : args.offset,
                 taskStates          : args.taskStates,
                 taskOrder           : args.taskOrder,
+                expiredSince,
                 fromVariants        : args.fromIdentity ? getMailboxIdentityStorageVariants(args.fromIdentity) : [],
                 threadId            : args.threadId,
                 taggedConceptGroups : buildTaggedConceptFilterGroups(args.taggedConcepts),
@@ -6733,7 +6770,8 @@ class MailboxService extends Base {
      * (`Submitted` / `Working` / `InputRequired`) to `Expired` via a single atomic
      * `UPDATE-WHERE` statement — mirroring the optimistic-concurrency pattern used by
      * `transitionTask`. Cached MESSAGE nodes are then synced to reflect the SQLite write,
-     * triggering observable cache events.
+     * triggering observable cache events. The same statement stamps `task.expiredAt` with the
+     * sweep's timestamp, the instant a read of recent expiries keys on.
      *
      * Distinguished from `transitionTask` in three ways:
      * 1. **No identity context required.** Sweeper runs as a maintenance role; not bound
@@ -6787,6 +6825,7 @@ class MailboxService extends Base {
                 WHEN json_extract(data, '$.properties.publication.state') = 'queued' THEN
                     json_set(data,
                         '$.properties.task.state', 'Expired',
+                        '$.properties.task.expiredAt', @now,
                         '$.properties.publication.state', 'refused',
                         '$.properties.publication.refusalReason', 'refused: expired',
                         '$.properties.task.publication.state', 'refused',
@@ -6796,6 +6835,7 @@ class MailboxService extends Base {
                 ELSE
                     json_set(data,
                         '$.properties.task.state', 'Expired',
+                        '$.properties.task.expiredAt', @now,
                         '$.properties.lastModifiedAt', @now
                     )
             END
@@ -6860,6 +6900,7 @@ class MailboxService extends Base {
                 const cached = db.nodes.get(row.id);
                 if (cached?.properties?.task) {
                     cached.properties.task.state     = 'Expired';
+                    cached.properties.task.expiredAt = timestamp;
                     cached.properties.lastModifiedAt = timestamp;
                     if (owing.has(row.id)) {
                         cached.properties.expiryNotice = EXPIRY_NOTICE_OWED;

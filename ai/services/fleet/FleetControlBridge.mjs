@@ -89,26 +89,56 @@ function callOwnInbox(seam, primitive, messageId, args, invalid = null) {
 const OPEN_TASK_STATES = Object.freeze(['InputRequired', 'Submitted', 'Working']);
 
 /**
- * @summary Reads the viewer's open questions through the operator-mailbox seam: its non-terminal A2A Tasks,
- * archived ones included, highest priority then oldest first, with the complete count. The seam reads under
+ * The question views the Fleet reads through the seam: the open questions, highest priority then oldest first,
+ * and the questions that expired within the Memory Core's ask span, newest expiry first. The span stays the
+ * Memory Core's: the expired view asks for it and reads back the window it applied.
+ * @type {Readonly<Object>}
+ */
+const QUESTION_VIEWS = Object.freeze({
+    open   : Object.freeze({label: 'open-questions',    noun: 'open questions',    filter: {taskStates: OPEN_TASK_STATES, taskOrder: 'priority-age'}}),
+    expired: Object.freeze({label: 'expired-questions', noun: 'expired questions', filter: {taskStates: ['Expired'], expiredWithinSpan: true}})
+});
+
+/**
+ * @summary Clamps a question read's page to the mailbox mirror's bounds.
+ * @param {Object} [params] `{limit, offset}`.
+ * @returns {{limit: Number, offset: Number}}
+ */
+function questionPage(params) {
+    const {limit, offset} = params ?? {};
+
+    return {
+        limit : Number.isInteger(limit) ? Math.min(Math.max(limit, 1), MAX_FLEET_MAILBOX_MIRROR_LIMIT) : DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT,
+        offset: Number.isInteger(offset) && offset > 0 ? offset : 0
+    }
+}
+
+/**
+ * @summary Reads one view of the viewer's questions through the operator-mailbox seam ({@link QUESTION_VIEWS}):
+ * its A2A Tasks in the view's states, archived ones included, with the complete count. The seam reads under
  * the transport-stamped identity, so no identity crosses here. Only its `observeMessages` serves, a read that
  * never records `seenAt`: a Fleet read is an observation, and a seen mark it left would let a mark-all-read drain
  * a question the operator never displayed. A seam without one, or a failed read, answers `unavailable` with its
  * reason, never an empty list or a zero. The page is the mailbox's own window (its applied `limit` and
  * `offset`, and `hasMore` from its `truncated`): it advances by the rows storage served, so a row the graph could
  * not project never ends a middle page or extends a final one. `capturedAt` is when the read answered: the age a
- * view judges the list's freshness by.
+ * view judges the list's freshness by. The expired view also carries `since`, the window start the Memory Core
+ * applied; a plane that answers it without one ignored the window, and its count would hold every expiry ever.
  * @param {Object|null} seam The bridge's `composeWriter`.
  * @param {{limit: Number, offset: Number}} page
- * @returns {Promise<Object>} `{state, reason, count, rows, page, capturedAt}`.
+ * @param {Object} [view=QUESTION_VIEWS.open]
+ * @returns {Promise<Object>} `{state, reason, count, rows, page, capturedAt}`, plus `since` for the expired view.
  */
-async function readOwnQuestions(seam, page) {
-    const unavailable = reason => ({
-        state: 'unavailable', reason, count: null, rows: [], page: {...page, count: 0, hasMore: false}, capturedAt: new Date().toISOString()
-    });
+async function readOwnQuestions(seam, page, view = QUESTION_VIEWS.open) {
+    const
+        windowed    = view.filter.expiredWithinSpan === true,
+        unavailable = reason => ({
+            state: 'unavailable', reason, count: null, rows: [], page: {...page, count: 0, hasMore: false}, capturedAt: new Date().toISOString(),
+            ...(windowed ? {since: null} : {})
+        });
 
     if (typeof seam?.observeMessages !== 'function') {
-        return unavailable('fleet: no read here lists the open questions without marking them seen')
+        return unavailable(`fleet: no read here lists the ${view.noun} without marking them seen`)
     }
 
     let answer;
@@ -118,22 +148,25 @@ async function readOwnQuestions(seam, page) {
             box            : 'inbox',
             status         : 'all',
             includeArchived: true,
-            taskStates     : OPEN_TASK_STATES,
-            taskOrder      : 'priority-age',
+            ...view.filter,
             limit          : page.limit,
             offset         : page.offset
         })
     } catch (error) {
-        console.error('[fleet] the open-questions read failed:', error);
-        return unavailable('fleet: the open-questions read failed')
+        console.error(`[fleet] the ${view.label} read failed:`, error);
+        return unavailable(`fleet: the ${view.label} read failed`)
     }
 
     if (!Number.isInteger(answer?.totalCount) || !Array.isArray(answer?.messages)) {
-        return unavailable('fleet: the open-questions read answered without a complete count')
+        return unavailable(`fleet: the ${view.label} read answered without a complete count`)
     }
 
     if (typeof answer.truncated !== 'boolean') {
-        return unavailable('fleet: the open-questions read answered without its continuation')
+        return unavailable(`fleet: the ${view.label} read answered without its continuation`)
+    }
+
+    if (windowed && typeof answer.expiredSince !== 'string') {
+        return unavailable(`fleet: the ${view.label} read answered without its window`)
     }
 
     const
@@ -150,7 +183,8 @@ async function readOwnQuestions(seam, page) {
         count     : answer.totalCount,
         rows,
         page      : {...window, count: rows.length, hasMore: answer.truncated},
-        capturedAt: observedAt
+        capturedAt: observedAt,
+        ...(windowed ? {since: answer.expiredSince} : {})
     }
 }
 
@@ -1419,19 +1453,31 @@ class FleetControlBridge extends Base {
      * pull requests it owns and the reviews requested of it. The source envelope passes through
      * untouched; an unwired source is named as unavailable, never as no open work. Beside it,
      * `questions` counts the viewer's open questions from the same read {@link fleetOwnQuestions}
-     * lists, so the count and the list cannot disagree.
+     * lists, so the count and the list cannot disagree, and `questions.expired` counts the ones that
+     * expired within the ask span from the read `fleetOwnQuestions({expired: true})` lists.
      * @param {Object} [params] `{seat}` narrows the answer to one seat.
-     * @returns {Promise<Object>} the source envelope plus `questions: {state, count, reason}`.
+     * @returns {Promise<Object>} the source envelope plus `questions: {state, count, reason, expired: {state, count, since, reason}}`.
      */
     async fleetOpenWork(params = {}) {
         const
             openWork = typeof this.openWorkSource?.readOpenWork === 'function'
                 ? await this.openWorkSource.readOpenWork(params)
                 : {state: 'unavailable', observedAt: null, coverage: 'unavailable', reason: 'fleet open-work source not wired', seats: {}},
-            // the count is complete on any page, so one row reads it
-            {state, count, reason} = await readOwnQuestions(this.composeWriter, {limit: 1, offset: 0});
+            // a count is complete on any page, so one row reads it
+            [open, expired] = await Promise.all([
+                readOwnQuestions(this.composeWriter, {limit: 1, offset: 0}),
+                readOwnQuestions(this.composeWriter, {limit: 1, offset: 0}, QUESTION_VIEWS.expired)
+            ]);
 
-        return {...openWork, questions: {state, count, reason}}
+        return {
+            ...openWork,
+            questions: {
+                state  : open.state,
+                count  : open.count,
+                reason : open.reason,
+                expired: {state: expired.state, count: expired.count, since: expired.since, reason: expired.reason}
+            }
+        }
     }
 
     /**
@@ -1439,18 +1485,15 @@ class FleetControlBridge extends Base {
      * priority then oldest first, with their complete count. Read under the TRANSPORT-STAMPED request identity
      * through the operator-mailbox seam's observational read, which leaves every message unseen:
      * `MailboxService.listMessages` decides whose inbox it reads, and an archived but open Task still counts.
-     * Rows are the mailbox mirror's body-free rows.
-     * @param {Object} [params] `{limit, offset}`, bounded like the mailbox mirror's page.
-     * @returns {Promise<Object>} `{state: 'ok', reason: null, count, rows, page}`, or `unavailable` with its
-     *     reason, `count: null` and no rows.
+     * Rows are the mailbox mirror's body-free rows. With `expired: true` the read lists instead the questions
+     * that expired unanswered within the Memory Core's ask span, newest expiry first, and adds `since`, the
+     * window start the Memory Core applied.
+     * @param {Object} [params] `{limit, offset, expired}`, the page bounded like the mailbox mirror's.
+     * @returns {Promise<Object>} `{state: 'ok', reason: null, count, rows, page}` (plus `since` when expired), or
+     *     `unavailable` with its reason, `count: null` and no rows.
      */
     fleetOwnQuestions(params = {}) {
-        const {limit, offset} = params ?? {};
-
-        return readOwnQuestions(this.composeWriter, {
-            limit : Number.isInteger(limit) ? Math.min(Math.max(limit, 1), MAX_FLEET_MAILBOX_MIRROR_LIMIT) : DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT,
-            offset: Number.isInteger(offset) && offset > 0 ? offset : 0
-        })
+        return readOwnQuestions(this.composeWriter, questionPage(params), params?.expired === true ? QUESTION_VIEWS.expired : QUESTION_VIEWS.open)
     }
 
     /**

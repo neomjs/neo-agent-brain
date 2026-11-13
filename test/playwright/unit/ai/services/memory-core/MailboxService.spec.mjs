@@ -8126,6 +8126,104 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
             sends.restore()
         }
     });
+
+    test('#1689 AC-1: the sweep stamps task.expiredAt with its own timestamp', async () => {
+        await seedHumanRecipients();
+
+        const asked = await ask('@operator', {task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z'}});
+
+        await MailboxService.sweepExpiredTasks();
+
+        expect(readStoredTask(asked).task.expiredAt).toBe(readStoredTask(asked).lastModifiedAt);
+        expect(stored(asked).task.expiredAt).toBe(readStoredTask(asked).lastModifiedAt)
+    });
+
+    /** Moves an expired Task's expiry `daysAgo` days back, as if an earlier sweep had expired it. */
+    function backdateExpiry(messageId, daysAgo) {
+        GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.task.expiredAt', ?) WHERE id = ?`)
+            .run(new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString(), messageId)
+    }
+
+    test('#1689 AC-2: expiredWithinSpan lists exactly the Tasks that expired within the ask span, newest first, with the window start', async () => {
+        await seedHumanRecipients();
+
+        const
+            deadline = {task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z'}},
+            older    = await ask('@operator', deadline),
+            newer    = await ask('@operator', deadline),
+            outside  = await ask('@operator', deadline),
+            open     = await ask('@operator'),
+            windowed = {taskStates: ['Expired'], expiredWithinSpan: true};
+
+        await MailboxService.sweepExpiredTasks();
+
+        backdateExpiry(older, 2);
+        backdateExpiry(newer, 1);
+        backdateExpiry(outside, 8);
+
+        // the plain read and the observer read the Fleet uses
+        for (const args of [windowed, {...windowed, observer: {scope: 'own'}}]) {
+            const page = await actAs('@operator', () => MailboxService.listMessages(args));
+
+            expect(page.messages.map(row => row.messageId)).toEqual([newer, older]);
+            expect(page.totalCount).toBe(2);
+            expect(Math.abs(Date.parse(page.expiredSince) - (Date.now() - mailboxAiConfig.mailbox.humanAskTtlMs))).toBeLessThan(60000)
+        }
+
+        // without the window: every expired Task, and no window in the answer
+        const all = await actAs('@operator', () => MailboxService.listMessages({taskStates: ['Expired']}));
+
+        expect(all.totalCount).toBe(3);
+        expect(all).not.toHaveProperty('expiredSince');
+        expect(stored(open).task.state).toBe('InputRequired')
+    });
+
+    test('#1689 AC-1: a caller cannot supply task.expiredAt; the sweep\'s stamp is the only one the window reads', async () => {
+        await seedHumanRecipients();
+
+        const supplied = await ask('@operator', {task: {state: 'Expired', expiredAt: '2099-01-01T00:00:00.000Z', reference: 'kept'}});
+
+        expect(stored(supplied).task).not.toHaveProperty('expiredAt');
+        expect(readStoredTask(supplied).task).not.toHaveProperty('expiredAt');
+        expect(stored(supplied).task.reference).toBe('kept');
+
+        const page = await actAs('@operator', () => MailboxService.listMessages({taskStates: ['Expired'], expiredWithinSpan: true}));
+
+        expect(page.messages.map(row => row.messageId)).not.toContain(supplied)
+    });
+
+    test('#1689 AC-2: the counts answer carries the window it applied, and only with expiredWithinSpan', async () => {
+        await seedHumanRecipients();
+
+        const deadline = {task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z'}},
+              inside   = await ask('@operator', deadline),
+              outside  = await ask('@operator', deadline);
+
+        await MailboxService.sweepExpiredTasks();
+
+        backdateExpiry(inside, 1);
+        backdateExpiry(outside, 8);
+
+        const counts = await actAs('@operator', () => MailboxService.listMessages({taskStates: ['Expired'], expiredWithinSpan: true, projection: 'counts'})),
+              plain  = await actAs('@operator', () => MailboxService.listMessages({taskStates: ['Expired'], projection: 'counts'}));
+
+        expect(counts.totalCount).toBe(1);
+        expect(Math.abs(Date.parse(counts.expiredSince) - (Date.now() - mailboxAiConfig.mailbox.humanAskTtlMs))).toBeLessThan(60000);
+        expect(plain.totalCount).toBe(2);
+        expect(plain).not.toHaveProperty('expiredSince')
+    });
+
+    test('#1689 AC-2: expiredWithinSpan is refused without taskStates [Expired] or beside taskOrder', async () => {
+        for (const args of [
+            {expiredWithinSpan: true},
+            {expiredWithinSpan: true, taskStates: ['InputRequired']},
+            {expiredWithinSpan: true, taskStates: ['Expired', 'Completed']},
+            {expiredWithinSpan: true, taskStates: ['Expired'], taskOrder: 'priority-age'}
+        ]) {
+            await expect(actAs('@operator', () => MailboxService.listMessages(args))).rejects.toThrow('expiredWithinSpan takes true');
+            await expect(actAs('@operator', () => MailboxService.listMessages({...args, observer: {scope: 'own'}}))).rejects.toThrow('expiredWithinSpan takes true')
+        }
+    });
 });
 
 /**

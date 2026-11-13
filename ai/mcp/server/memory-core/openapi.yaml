@@ -2861,6 +2861,12 @@ paths:
           schema:
             type: string
             enum: [priority-age]
+        - name: expiredWithinSpan
+          in: query
+          required: false
+          description: "With `taskStates: ['Expired']` and no `taskOrder`: only Tasks that expired within the ask span, newest expiry first; the answer adds `expiredSince`."
+          schema:
+            type: boolean
         - name: limit
           in: query
           required: false
@@ -2944,6 +2950,9 @@ paths:
                       offset:
                         type: integer
                         description: "Offset actually applied."
+                      expiredSince:
+                        type: string
+                        description: "With `expiredWithinSpan`: the window start the server applied."
                       observation:
                         type: object
                         description: "Server-derived context for an explicit observer read; `admissionKey` is a comparison fingerprint, never a credential or authorization token. Absent from ordinary list reads."
@@ -2979,6 +2988,9 @@ paths:
                       totalCount:
                         type: integer
                         description: "Rows matching the applied filter."
+                      expiredSince:
+                        type: string
+                        description: "With `expiredWithinSpan`: the window start the server applied."
                       unreadCount:
                         type: integer
                         description: "Matched messages with `readAt == null` (`'counts'` projection)."
