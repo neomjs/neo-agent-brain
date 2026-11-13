@@ -11,8 +11,9 @@ import {resolveUserDataDir}                          from './seatModelGuardHook.
 
 /**
  * @summary The actions that carry the seat's capacity reading: the turn's start only. Progress fires
- * per tool call, the Desktop app samples usage every few hours, and `add_memory` closes the turn on
- * the server, so no Claude hook sends a terminal event.
+ * per tool call, and the Desktop app samples usage every few hours. `add_memory` closes a turn on the
+ * server; a turn that ends on an API error never reaches it, so `StopFailure` closes that one as
+ * `aborted`.
  * @type {Set<String>}
  */
 export const CAPACITY_ACTIONS = new Set(['start']);
@@ -95,6 +96,7 @@ function resolveAction({actionArg, hookPayload} = {}) {
     if (actionArg) return actionArg;
 
     const eventName = normalizeHookEventName(hookPayload);
+    if (eventName === 'StopFailure') return 'terminal';
     return eventName === 'PostToolUse' ? 'progress' : 'start';
 }
 
@@ -102,6 +104,7 @@ function resolveSource({action, hookPayload} = {}) {
     const eventName = normalizeHookEventName(hookPayload);
     if (eventName === 'UserPromptSubmit') return 'claude-user-prompt-submit';
     if (eventName === 'PostToolUse')      return 'claude-post-tool-use';
+    if (eventName === 'StopFailure')      return 'claude-stop-failure';
     return `claude-${action}`;
 }
 
@@ -109,6 +112,9 @@ function resolveNote({action, hookPayload} = {}) {
     const eventName = normalizeHookEventName(hookPayload);
     if (eventName === 'PostToolUse' && typeof hookPayload?.tool_name === 'string') {
         return `claude PostToolUse ${hookPayload.tool_name}`;
+    }
+    if (eventName === 'StopFailure' && typeof hookPayload?.error === 'string') {
+        return `claude StopFailure ${hookPayload.error}`;
     }
     if (eventName) {
         return `claude ${eventName}`;
@@ -161,6 +167,7 @@ export async function recordClaudeTurnPresence({
         now,
         plane     : plane ?? await readPlaneConfig(),
         source    : resolveSource({action, hookPayload}),
+        ...(normalizeHookEventName(hookPayload) === 'StopFailure' ? {terminalState: 'aborted'} : {}),
         ...(record ? {record} : {})
     });
 }

@@ -34,10 +34,69 @@ export const POLL_INTERVAL_MS = 15000;
 export const MAX_BACKOFF_MS = 120000;
 
 /**
+ * The event Claude Code runs instead of `Stop` when a turn ends on an API error. Its payload's `error`
+ * names the class.
+ * @type {String}
+ */
+export const FAILURE_EVENT = 'StopFailure';
+
+/**
+ * `StopFailure` errors a later turn may not repeat, so the listener re-arms after them. Every other class
+ * (an auth or billing failure, an invalid request, a missing model) fails each rewake the same way and would
+ * spend the wake again: those wait for the next turn that reaches `Stop`, such as the operator's prompt
+ * after signing the seat in.
+ * @type {Set<String>}
+ */
+export const TRANSIENT_FAILURES = new Set(['overloaded', 'rate_limit', 'server_error', 'unknown']);
+
+/**
  * Executables the harness may run a hook command through before it reaches `node`.
  * @type {Set<String>}
  */
 const SHELLS = new Set(['bash', 'dash', 'env', 'fish', 'ksh', 'sh', 'zsh']);
+
+/**
+ * @summary The wait before a re-armed listener's first poll after `count` failed turns in a row: one poll
+ * interval, doubling per failure, up to the back-off ceiling. Each rewake costs a model call, so a seat
+ * that keeps failing spends them slower and slower.
+ * @param {Number} count
+ * @param {Object} [options]
+ * @param {Number} [options.pollIntervalMs=POLL_INTERVAL_MS]
+ * @param {Number} [options.maxBackoffMs=MAX_BACKOFF_MS]
+ * @returns {Number}
+ */
+export function failureBackoffMs(count, {pollIntervalMs = POLL_INTERVAL_MS, maxBackoffMs = MAX_BACKOFF_MS} = {}) {
+    return Math.min(maxBackoffMs, pollIntervalMs * 2 ** Math.max(0, count - 1))
+}
+
+/**
+ * @summary What the end of a turn settles in the seat's record. Pure.
+ *
+ * A wake moves the watermark past its events before the woken turn runs, so it records the session it
+ * went to and the cursor it delivered from (`delivered`). That session's `Stop` commits the delivery. Its
+ * `StopFailure` rolls the watermark back, so the next listener delivers the same events once more. Failed
+ * turns are counted until any turn reaches `Stop`, and the count paces the next re-arm.
+ * @param {Object} options
+ * @param {String} [options.error] The `StopFailure` payload's `error`; absent when the turn reached `Stop`.
+ * @param {Object|null} options.record The seat's listener record.
+ * @param {String} options.sessionId The session whose turn ended.
+ * @returns {Object} Only the fields that change; a field set to `undefined` is dropped from the record.
+ */
+export function settleTurn({error, record, sessionId}) {
+    const mine = record?.delivered?.sessionId === sessionId;
+
+    if (error === undefined) {
+        return {
+            ...(mine            ? {delivered: undefined} : {}),
+            ...(record?.failure ? {failure  : undefined} : {})
+        }
+    }
+
+    return {
+        ...(mine ? {watermark: record.delivered.from, delivered: undefined} : {}),
+        failure: {error, count: (record?.failure?.count ?? 0) + 1}
+    }
+}
 
 /**
  * @summary Reads a process's parent, start time and command, or `null` once it is gone.
@@ -155,6 +214,9 @@ async function writeRecord(statePath, record, fs) {
  * The event decides the run ({@link decideClaim}). `UserPromptSubmit` only takes the seat and exits: the
  * harness holds the prompt for it, and the takeover makes an older poll stand down before this turn's
  * digest. `SessionStart` touches nothing, since a resumed session may never be prompted. `Stop` polls.
+ * `StopFailure` first settles what its turn lost ({@link settleTurn}). It polls again only after a
+ * {@link TRANSIENT_FAILURES} error, and only after {@link failureBackoffMs}; any other error holds the seat
+ * without a listener until a turn reaches `Stop`.
  *
  * Polling stops with `exit: 0` when the plane is not configured, when another session was prompted
  * later, or when this session has ended. It returns `exit: 2` only with a digest, and only for
@@ -194,7 +256,8 @@ export async function runListener({
     maxBackoffMs   = MAX_BACKOFF_MS
 } = {}) {
     const sessionId = payload?.session_id,
-          event     = payload?.hook_event_name;
+          event     = payload?.hook_event_name,
+          error     = event === FAILURE_EVENT ? String(payload?.error || 'unknown') : undefined;
 
     if (typeof sessionId !== 'string' || !sessionId) return {exit: 0, reason: 'the hook payload names no session_id'};
     if (event === 'SessionStart')                    return {exit: 0, reason: 'a session start claims nothing'};
@@ -216,27 +279,36 @@ export async function runListener({
 
     await fs.mkdir(path.dirname(statePath), {recursive: true});
 
-    const decision = await lock(statePath, async () => {
-        const record = await readRecord(statePath, fs),
-              live   = {owner: await isLive(record?.owner?.session, read), listener: await isLive(record?.listener, read)},
-              claim  = decideClaim({event, record, me, live});
+    const {claim: decision, failures} = await lock(statePath, async () => {
+        const record  = await readRecord(statePath, fs),
+              live    = {owner: await isLive(record?.owner?.session, read), listener: await isLive(record?.listener, read)},
+              claim   = decideClaim({event, record, me, live}),
+              settled = event === 'UserPromptSubmit' ? {} : settleTurn({error, record, sessionId}),
+              rearm   = claim === 'listen' && (error === undefined || TRANSIENT_FAILURES.has(error));
 
         if (claim === 'claim' || claim === 'listen') {
             await writeRecord(statePath, {
                 ...record,
+                ...settled,
                 owner   : me,
-                listener: claim === 'listen' ? listener : null,
+                listener: rearm ? listener : null,
                 ...(record?.source === source ? {} : {source, watermark: null})
             }, fs)
+        } else if (Object.keys(settled).length > 0) {
+            // A turn that ended after its session lost the seat still settles what its wake delivered.
+            await writeRecord(statePath, {...record, ...settled}, fs)
         }
 
-        return claim
+        return {claim: claim === 'listen' && !rearm ? 'held' : claim, failures: settled.failure?.count ?? 0}
     });
 
     if (decision === 'claim')  return {exit: 0, reason: 'claimed'};
+    if (decision === 'held')   return {exit: 0, reason: `the turn failed on ${error}, which a rewake would repeat: the next turn that reaches Stop delivers the pending wakes`};
     if (decision !== 'listen') return {exit: 0, reason: decision};
 
     let backoff = 0, client = null, subscriptionId = null;
+
+    if (failures > 0) await sleep(failureBackoffMs(failures, {pollIntervalMs, maxBackoffMs}));
 
     try {
         for (;;) {
@@ -274,7 +346,8 @@ export async function runListener({
                     await writeRecord(statePath, {
                         ...current,
                         watermark: answer.watermark ?? current.watermark,
-                        listener : wake ? null : current.listener
+                        listener : wake ? null : current.listener,
+                        delivered: wake ? {sessionId, from: record.watermark} : current.delivered
                     }, fs);
 
                     return true

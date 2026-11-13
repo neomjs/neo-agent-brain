@@ -331,10 +331,15 @@ test.describe('turnPresenceHook — progress runs in the background, start befor
             buckets.flatMap(bucket => bucket.hooks.filter(entry => entry.command.includes(PRESENCE)).map(entry => ({event, entry})))),
         commandFor      = action => `/usr/bin/env node "$(git rev-parse --show-toplevel)${PRESENCE}" ${action}`;
 
-    test('progress is async with no timeout; start is synchronous within its 2 s bound; both keep their commands', () => {
+    test('progress is async with no timeout; start and the failed turn\'s terminal are synchronous within their 2 s bound; all keep their commands', () => {
         const byEvent = Object.fromEntries(presenceEntries(MANIFEST.events).map(({event, entry}) => [event, entry]));
 
-        expect(Object.keys(byEvent).sort()).toEqual(['PostToolUse', 'UserPromptSubmit']);
+        expect(Object.keys(byEvent).sort()).toEqual(['PostToolUse', 'StopFailure', 'UserPromptSubmit']);
+
+        // A failed turn never reaches `add_memory`, which closes a turn on the server.
+        expect(byEvent.StopFailure.async, 'an async terminal can land after the next turn started').toBeUndefined();
+        expect(byEvent.StopFailure.timeout).toBe(2);
+        expect(byEvent.StopFailure.command).toBe(commandFor('terminal'));
 
         expect(byEvent.PostToolUse.async, 'PostToolUse would block every tool call on presence').toBe(true);
         expect('timeout' in byEvent.PostToolUse, 'PostToolUse carries a timeout the harness never enforces').toBe(false);
@@ -359,10 +364,12 @@ test.describe('turnPresenceHook — progress runs in the background, start befor
             }),
             byEvent    = Object.fromEntries(presenceEntries(settings.hooks).map(({event, entry}) => [event, entry]));
 
-        expect(presenceEntries(settings.hooks)).toHaveLength(2);
+        expect(presenceEntries(settings.hooks)).toHaveLength(3);
         expect(byEvent.PostToolUse.async).toBe(true);
         expect('timeout' in byEvent.PostToolUse).toBe(false);
         expect(byEvent.UserPromptSubmit).toEqual({type: 'command', command: commandFor('start'), timeout: 2});
+        // A seat projected before StopFailure was wired has no entry there; reconciliation adds the synchronous terminal.
+        expect(byEvent.StopFailure).toEqual({type: 'command', command: commandFor('terminal'), timeout: 2});
         expect(settings.hooks.PostToolUse.flatMap(bucket => bucket.hooks)).toContainEqual(operator)
     })
 });
@@ -610,5 +617,22 @@ test.describe('the Claude hook\'s capacity reading', () => {
 
         expect([...CAPACITY_ACTIONS]).toEqual(['start']);
         expect(calls.map(call => [call.action, call.capacity])).toEqual([['start', capacity], ['progress', undefined]])
+    });
+
+    test('a StopFailure closes the failed turn as aborted and names its error', async () => {
+        const calls = [];
+
+        await recordClaudeTurnPresence({
+            actionArg  : 'terminal',
+            deadlineMs : 500,
+            env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
+            hookPayload: {hook_event_name: 'StopFailure', error: 'authentication_failed', last_assistant_message: 'Invalid API key'},
+            plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+            record     : async args => {calls.push(args); return {status: 'recorded'}}
+        });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({action: 'terminal', terminalState: 'aborted', source: 'claude-stop-failure', note: 'claude StopFailure authentication_failed'});
+        expect(calls[0].capacity).toBeUndefined()
     })
 });
