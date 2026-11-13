@@ -19,6 +19,11 @@ import {
     resolveGuiInstancePid
 } from './instanceResolver.mjs';
 import {withOutboxLock}      from './outboxLock.mjs';
+import {
+    evaluateHumanInput,
+    isSessionRotation,
+    rotationPrompt
+} from './sessionRotation.mjs';
 import {selectWakeDirective} from './wakeLaneDirective.mjs';
 
 const LOOPBACK_HOSTS     = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -168,11 +173,16 @@ export async function dispatchLocalWake(record, dependencies = {}) {
     const adapter        = meta.adapter || defaultAdapter;
     const timeoutMs      = adapterConfig.attemptTimeoutMs;
     const controller     = new AbortController();
-    const digest         = formatLocalWakeDigest(record?.envelope);
-    const abortable      = meta.addressType === 'webhookUrl' || ABORTABLE_ADAPTERS.has(adapter);
+    const rotation       = isSessionRotation(record?.envelope);
+    // A rotation types its own first prompt; a wake types the formatted digest.
+    const digest    = rotation ? rotationPrompt(record.envelope) : formatLocalWakeDigest(record?.envelope);
+    const abortable = meta.addressType === 'webhookUrl' || ABORTABLE_ADAPTERS.has(adapter);
 
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
         throw new Error('local wake adapter requires positive adapterConfig.attemptTimeoutMs');
+    }
+    if (rotation && !digest) {
+        return {outcome: 'failed', outcomeReason: 'session-rotate-without-prompt'}
     }
 
     const attempt = deliveryPromise.then(() => performDispatch({
@@ -218,6 +228,7 @@ async function performDispatch({adapter, adapterConfig, digest, meta, record, si
         homedir         : os.homedir,
         log             : console,
         platform        : process.platform,
+        readHumanIdleMs,
         resolveGuiInstancePid,
         spawnAsync,
         ...dependencies
@@ -242,6 +253,11 @@ async function performDispatch({adapter, adapterConfig, digest, meta, record, si
             );
         });
         return 'delivered';
+    }
+    // Only the osascript step can open a fresh session; any other transport would deliver the
+    // rotation's prompt into the session it is meant to replace.
+    if (isSessionRotation(record?.envelope) && adapter !== 'osascript') {
+        return {outcome: 'failed', outcomeReason: `session-rotate-unsupported-adapter:${adapter}`}
     }
     if (meta.addressType === 'webhookUrl' && meta.instanceAddress) {
         await deliverWebhook({digest, effects, meta, signal});
@@ -667,9 +683,22 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record}) 
     if (appName === 'Codex' && !resolvedMeta.focusSeedKey) return 'skipped';
 
     let   instancePid     = null;
+    const rotation        = isSessionRotation(record?.envelope);
     const addressType     = resolvedMeta.addressType || (resolvedMeta.userDataDir ? 'userDataDir' : null);
     const instanceAddress = resolvedMeta.instanceAddress
         || (addressType === 'userDataDir' ? resolvedMeta.userDataDir : null);
+
+    // A rotation opens a session in one seat's window and submits a prompt there. It needs the app's
+    // fresh-session shortcut and the seat's own instance, never the app-name default target, and it
+    // types only after a quiet minute of keyboard and pointer, read at the typing boundary below.
+    if (rotation) {
+        if (!resolvedMeta.freshSessionShortcut) {
+            return {outcome: 'failed', outcomeReason: `session-rotate-without-fresh-session-shortcut:${appName}`}
+        }
+        if (addressType !== 'pid' && addressType !== 'userDataDir') {
+            return {outcome: 'failed', outcomeReason: 'session-rotate-requires-addressed-instance'}
+        }
+    }
 
     if (addressType === 'pid' || addressType === 'userDataDir') {
         try {
@@ -707,13 +736,24 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record}) 
         }
     }
 
+    // The human-input read comes last, after every awaited preparation: a quiet reading taken before
+    // the pid lookup or the dialog probe can be stale by the first keystroke.
+    if (rotation) {
+        const humanInput = evaluateHumanInput(await effects.readHumanIdleMs());
+
+        if (humanInput.action === 'defer') {
+            return {outcome: 'deferred', outcomeReason: humanInput.reason}
+        }
+    }
+
     const args = buildOsascriptArgs({
         appName,
         digest,
-        focusSeedKey     : resolvedMeta.focusSeedKey,
-        focusSeedSequence: resolvedMeta.focusSeedSequence,
+        focusSeedKey        : resolvedMeta.focusSeedKey,
+        focusSeedSequence   : resolvedMeta.focusSeedSequence,
+        freshSessionShortcut: rotation ? resolvedMeta.freshSessionShortcut : null,
         instancePid,
-        tabShortcut      : resolvedMeta.tabShortcut
+        tabShortcut         : resolvedMeta.tabShortcut
     });
     const outcome = await spawnOsascriptOnce(effects, args, record.subscriptionId);
     return outcome;
@@ -779,9 +819,22 @@ export function processAutomationIdLines(indent = '  ') {
 
 /**
  * @summary Builds the draft-preserving AppleScript argument vector.
- * @private
+ *
+ * With a `freshSessionShortcut`, the step after the tab switch opens a new session in the target
+ * window, so the prompt clear, paste and submit that follow land in that session's empty composer.
+ * Without one, the vector is the wake delivery, unchanged.
+ *
+ * @param {Object} options
+ * @param {String} options.appName Canonical harness application name.
+ * @param {String} options.digest The text pasted and submitted.
+ * @param {String} [options.focusSeedKey] Key typed to seat focus in the composer.
+ * @param {String} [options.focusSeedSequence] Named focus-seed sequence (`r-undo`).
+ * @param {String|null} [options.freshSessionShortcut] Command-key shortcut that opens a fresh session.
+ * @param {Number|null} [options.instancePid] Resolved Unix PID when instance-addressed.
+ * @param {String} [options.tabShortcut] Command-key shortcut for the harness tab.
+ * @returns {String[]} `osascript` argv fragments ending with the digest.
  */
-function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, instancePid, tabShortcut}) {
+export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, instancePid, tabShortcut}) {
     const escapedAppName   = escapeAppleScript(appName);
     const targetPid        = instancePid ? String(instancePid) : '';
     const addressedProcess = Boolean(instancePid);
@@ -848,6 +901,11 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
             ? `      keystroke "${escapeAppleScript(key)}" using {command down, shift down}`
             : `      keystroke "${escapeAppleScript(key)}" using command down`);
         args.push('-e', '      delay 0.5');
+    }
+    if (freshSessionShortcut) {
+        args.push('-e', `      keystroke "${escapeAppleScript(freshSessionShortcut)}" using command down`);
+        // The new session's composer renders before it takes input.
+        args.push('-e', '      delay 1.5');
     }
     if (focusSeedSequence === 'r-undo') {
         args.push('-e', '      keystroke "r"', '-e', '      delay 0.2', '-e', '      keystroke "z" using command down', '-e', '      delay 0.2');
@@ -1140,6 +1198,31 @@ function spawnAsync(command, args) {
             reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
         });
     });
+}
+
+/**
+ * @summary Reads how long the host's keyboard and pointer have been untouched.
+ *
+ * `IOHIDSystem`'s `HIDIdleTime` (nanoseconds) is readable without a privacy grant, unlike the
+ * keystrokes it gates. Anything unreadable answers `null`, and a rotation then defers.
+ *
+ * @param {Object} [options]
+ * @param {Function} [options.spawnSyncFn=spawnSync] Child-process seam for tests.
+ * @param {String} [options.platform=process.platform]
+ * @returns {Number|null} Milliseconds since the last human input, or `null` when unreadable.
+ */
+export function readHumanIdleMs({spawnSyncFn = spawnSync, platform = process.platform} = {}) {
+    if (platform !== 'darwin') return null;
+
+    const result = spawnSyncFn('ioreg', ['-r', '-c', 'IOHIDSystem', '-d', '1'], {encoding: 'utf8', timeout: 2000});
+
+    // Only a clean exit is an observation: a failed, killed or timed-out read can still carry numeric
+    // output, and a partial idle time must not pass the gate.
+    if (!result || result.error || result.signal || result.status !== 0) return null;
+
+    const match = /"HIDIdleTime"\s*=\s*(\d+)/.exec(result.stdout || '');
+
+    return match ? Math.floor(Number(match[1]) / 1e6) : null
 }
 
 /**

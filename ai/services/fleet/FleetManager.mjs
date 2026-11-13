@@ -366,6 +366,12 @@ class FleetManager extends Base {
      */
     wakeArmFn = null
     /**
+     * Seat rotation-arming seam. Defaults (via {@link getRotationArmFn}) to `armFleetSeatWake` with
+     * `routeClass: 'rotation'`; inject a recording stub for tests. Plain field, like {@link wakeArmFn}.
+     * @member {Function|null} rotationArmFn=null
+     */
+    rotationArmFn = null
+    /**
      * Tenant collaborator for wake arming and seat plane credentials. `null` ⇒ the
      * `FleetTenantService` singleton is imported lazily, only when a seat reaches a tenant or the plane
      * this Fleet serves. Plain field.
@@ -622,6 +628,15 @@ class FleetManager extends Base {
     }
 
     /**
+     * @summary The rotation-route arming function: an injected `rotationArmFn` or the real one.
+     * @returns {Function}
+     * @protected
+     */
+    getRotationArmFn() {
+        return this.rotationArmFn || armFleetSeatWake
+    }
+
+    /**
      * @summary Arms the wake route of a seat {@link startAgent} has just started, and records the
      * outcome on the seat's lifecycle record so its status says whether a peer can wake it.
      *
@@ -640,10 +655,10 @@ class FleetManager extends Base {
             agent     = registry.getDefinition?.(agentId) ?? registry.getAgent(agentId),
             options   = this.wakeStateOptions || {};
 
-        let wakeRoute;
+        let wakeRoute, rotationRoute = null, tenantService = null;
 
         try {
-            const tenantService = agent?.mcpTarget?.kind === 'tenant' || this.planeBase
+            tenantService = agent?.mcpTarget?.kind === 'tenant' || this.planeBase
                 ? await this.getTenantService() : null;
 
             startSignal?.throwIfAborted();
@@ -660,12 +675,31 @@ class FleetManager extends Base {
             wakeRoute = {state: 'unarmed', reason: redactReadFailure(`wake arming failed: ${error?.message ?? error}`)}
         }
 
-        if (!wakeRoute) return status;
+        // The rotation route opens the seat's fresh session after its sunset handover. It is armed after
+        // the wake route because both publish into the one receiver manifest.
+        if (!startSignal?.aborted) {
+            try {
+                rotationRoute = await this.getRotationArmFn()({
+                    agent,
+                    startSignal,
+                    instanceHome: status?.instanceHome,
+                    planeBase   : this.planeBase,
+                    receiverBase: options.wakeReceiverBase,
+                    manifestPath: options.wakeReceiverManifestPath,
+                    tenantService,
+                    routeClass  : 'rotation'
+                })
+            } catch (error) {
+                rotationRoute = {state: 'unarmed', reason: redactReadFailure(`rotation arming failed: ${error?.message ?? error}`)}
+            }
+        }
 
         // Arming can outlive the launch it was started for; the record takes it only from that launch.
-        if (!startSignal?.aborted) lifecycle.setWakeRoute?.(agentId, wakeRoute, {pid: status?.pid, startedAt: status?.startedAt});
+        if (wakeRoute && !startSignal?.aborted) lifecycle.setWakeRoute?.(agentId, wakeRoute, {pid: status?.pid, startedAt: status?.startedAt});
 
-        return {...status, wakeRoute}
+        if (!wakeRoute && !rotationRoute) return status;
+
+        return {...status, ...(wakeRoute ? {wakeRoute} : {}), ...(rotationRoute ? {rotationRoute} : {})}
     }
 
     /**

@@ -91,6 +91,18 @@ test.describe('armSeatWakePull', () => {
             .toEqual(['retire:a2a-osascript', 'retire:bridge-appName'])
     });
 
+    test('leaves the seat\'s SESSION_ROTATE route in place: it opens a fresh session and carries no wake', async () => {
+        const client = scriptedClient([
+            route('retire:a2a-osascript'),
+            route('keep:rotation', {
+                trigger              : 'SESSION_ROTATE',
+                harnessTargetMetadata: {adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir', instanceAddress: '/seats/neo-seat'}
+            })
+        ]);
+
+        expect((await armSeatWakePull({client, identity: '@neo-seat'})).retired).toEqual(['retire:a2a-osascript'])
+    });
+
     test('a plane that names no pull route fails the arming before anything is unsubscribed', async () => {
         const calls  = [],
               client = {async callTool(name, args) {calls.push(args.action); return {}}};

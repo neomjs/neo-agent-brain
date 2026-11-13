@@ -13,6 +13,7 @@ import TurnPresenceService                                                      
 import WebhookDeliveryService                                                                   from './WebhookDeliveryService.mjs';
 import {DELIVERABLE_HARNESS_TARGET, PULL_HARNESS_TARGET, wakeRouteWithdrawalReasonFor}          from '../../daemons/wake/buildReceiverManifest.mjs';
 import {buildWakeDigest, getHighestWakePriority}                                                from '../../daemons/wake/wakeDigestBuilder.mjs';
+import {SESSION_ROTATE_TRIGGER}                                                                 from '../../daemons/wake/sessionRotation.mjs';
 import {HEARTBEAT_PULSE_ENTITY_PREFIX, HEARTBEAT_PULSE_ENTITY_TYPE, match, matchHeartbeatPulse} from './heartbeatPulseEvaluator.mjs';
 import {resolveResidentFamilyById}                                                              from '../graph/agentFamilyResolution.mjs';
 import {PRESENCE_STATES}                                                                        from '../fleet/fleetPresenceStateAdapter.mjs';
@@ -119,10 +120,12 @@ class WakeSubscriptionService extends Base {
     wakeDeliveryReadFn = null
 
     /**
+     * `SESSION_ROTATE` carries no wake: its route admits only the `session/rotate` envelope that opens a
+     * seat's fresh session after its sunset handover (`ai/daemons/wake/sessionRotation.mjs`).
      * @member {String[]} validTriggers
      * @protected
      */
-    validTriggers = ['SENT_TO_ME', 'TASK_STATE_CHANGED', 'PERMISSION_GRANTED', 'HEARTBEAT_PULSE']
+    validTriggers = ['SENT_TO_ME', 'TASK_STATE_CHANGED', 'PERMISSION_GRANTED', 'HEARTBEAT_PULSE', SESSION_ROTATE_TRIGGER]
 
     /**
      * @member {String} heartbeatPulseEntityType='heartbeat_pulse'
@@ -847,7 +850,7 @@ class WakeSubscriptionService extends Base {
                 generatedAt,
                 operatorPresence,
                 axes,
-                pools: this._capacityPools(capacityByIdentity),
+                pools       : this._capacityPools(capacityByIdentity),
                 signalStatus: 'Precedence: (1) participationStatus hard gate; (2) a fresh turn-presence beacon, ' +
                               'which decides online before any absence verdict — add_memory lands at turn ' +
                               'boundaries, so a first or long turn is present without a recent write; (3) ' +

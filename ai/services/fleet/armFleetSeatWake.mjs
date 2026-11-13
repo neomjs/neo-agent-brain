@@ -1,4 +1,5 @@
 import {armSeatWakeRoute}           from '../../daemons/wake/armSeatWakeRoute.mjs';
+import {SESSION_ROTATE_TRIGGER}     from '../../daemons/wake/sessionRotation.mjs';
 import {createPlaneMailboxClient}   from './planeMailboxClient.mjs';
 import {deriveHarnessWakeAddress}   from './deriveHarnessLaunchSpec.mjs';
 import {normalizeSecureMcpEndpoint} from './mcpWireParsing.mjs';
@@ -26,6 +27,12 @@ import {resolveSeatPlaneTarget}     from './resolveSeatPlaneTarget.mjs';
  * running and its status says why it cannot be woken. `null` means "no GUI wake applies to this
  * family" — the Fleet records nothing, and a family with its own route keeps it: OpenCode's, and the
  * pull route a Claude Desktop seat arms at its own SessionStart.
+ *
+ * **Two route classes, one path.** The `wake` class arms the `SENT_TO_ME` route that types a wake
+ * digest. The `rotation` class arms the `SESSION_ROTATE` route that opens the seat's fresh session after
+ * its sunset handover (`ai/daemons/wake/sessionRotation.mjs`). That route admits no wake, so a Claude
+ * Desktop seat whose wakes are pulled still gets one, and its SessionStart arming leaves it alone,
+ * because it retires only `SENT_TO_ME` routes that type.
  */
 
 /**
@@ -42,6 +49,25 @@ export const GUI_WAKE_DISPATCH = Object.freeze({
 });
 
 /**
+ * The receiver dispatch per GUI family whose fresh-session step is measured: the app's shortcuts come
+ * from `hostHarnessMetadata.mjs`. Codex and Antigravity join once their fresh-session keystroke is
+ * measured.
+ * @type {Object}
+ */
+export const GUI_ROTATION_DISPATCH = Object.freeze({
+    'claude-desktop': Object.freeze({adapter: 'osascript', appName: 'Claude'})
+});
+
+/**
+ * The route classes this path arms: the dispatch table each reads and the trigger each subscribes.
+ * @type {Object}
+ */
+export const FLEET_ROUTE_CLASSES = Object.freeze({
+    wake    : Object.freeze({dispatchTable: GUI_WAKE_DISPATCH,     trigger: 'SENT_TO_ME'}),
+    rotation: Object.freeze({dispatchTable: GUI_ROTATION_DISPATCH, trigger: SESSION_ROTATE_TRIGGER})
+});
+
+/**
  * @summary Arms one launched GUI seat: proves its plane credential, subscribes its route, and
  * publishes the route to the host receiver.
  * @param {Object} options
@@ -53,6 +79,7 @@ export const GUI_WAKE_DISPATCH = Object.freeze({
  * @param {Object} options.tenantService Resolves the seat's plane resources and credential.
  * @param {AbortSignal} [options.startSignal] Pending Start fence. The caller holds the seat home
  *     through this operation, so cancellation cleanup cannot withdraw a newer Start's subscription.
+ * @param {String} [options.routeClass='wake'] A {@link FLEET_ROUTE_CLASSES} key: `wake` or `rotation`.
  * @param {Function} [options.createClient=createPlaneMailboxClient] Plane MCP client seam.
  * @param {Function} [options.armRoute=armSeatWakeRoute] Publish seam.
  * @param {Object} [options.logger=console]
@@ -69,11 +96,16 @@ export async function armFleetSeatWake({
     manifestPath,
     tenantService,
     startSignal,
+    routeClass   = 'wake',
     createClient = createPlaneMailboxClient,
     armRoute     = armSeatWakeRoute,
     logger       = console
 } = {}) {
-    const dispatch = GUI_WAKE_DISPATCH[agent?.harnessType];
+    const routeSpec = FLEET_ROUTE_CLASSES[routeClass];
+
+    if (!routeSpec) throw new Error(`armFleetSeatWake: unknown route class '${routeClass}'`);
+
+    const dispatch = routeSpec.dispatchTable[agent?.harnessType];
 
     if (!dispatch) return null;
 
@@ -176,7 +208,7 @@ export async function armFleetSeatWake({
         subscriptionRequested = true;
         ({subscriptionId} = await client.callTool('manage_wake_subscription', {
             action               : 'subscribe',
-            trigger              : 'SENT_TO_ME',
+            trigger              : routeSpec.trigger,
             filters              : {},
             harnessTarget        : 'a2a-webhook',
             harnessTargetMetadata: {...dispatch, url, ...address}
@@ -197,7 +229,7 @@ export async function armFleetSeatWake({
             : unarmed(`the publish carried no route for ${subscriptionId}`)
     } catch (error) {
         return {
-            ...unarmed(`wake arming failed: ${error?.message ?? error}`),
+            ...unarmed(`${routeClass} arming failed: ${error?.message ?? error}`),
             ...(startSignal?.aborted && subscriptionRequested ? {cleanupUnresolved: true, subscriptionId} : {})
         }
     } finally {

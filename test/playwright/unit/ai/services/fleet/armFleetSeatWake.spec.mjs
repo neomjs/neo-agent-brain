@@ -503,3 +503,39 @@ test.describe('armFleetSeatWake — never throws, and every reason is redacted a
         });
     }
 });
+
+test.describe('armFleetSeatWake — the rotation route class', () => {
+    const CLAUDE_HOME  = '/agents/neo-opus-ada/harness/claude-desktop',
+          CLAUDE_AGENT = Object.freeze({
+              id            : 'neo-opus-ada',
+              harnessType   : 'claude-desktop',
+              githubUsername: 'neo-opus-ada',
+              mcpTarget     : {kind: 'tenant', tenantId: 'local'}
+          });
+
+    test('a Claude Desktop Start arms one SESSION_ROTATE route, addressed to the window it launched', async () => {
+        const plane              = fakePlane({proof: {ok: true, identity: '@neo-opus-ada'}}),
+              address            = deriveHarnessWakeAddress({harnessType: 'claude-desktop', instanceHome: CLAUDE_HOME}),
+              {result, armCalls} = arm({agent: CLAUDE_AGENT, plane, instanceHome: CLAUDE_HOME, routeClass: 'rotation'});
+
+        expect(await result).toMatchObject({state: 'ready', subscriptionId: 'WAKE_SUB:minted', ...address});
+        expect(plane.subscribeCalls()).toEqual([{
+            action               : 'subscribe',
+            trigger              : 'SESSION_ROTATE',
+            filters              : {},
+            harnessTarget        : 'a2a-webhook',
+            harnessTargetMetadata: {adapter: 'osascript', appName: 'Claude', url: `${RECEIVER}/wake`, ...address}
+        }]);
+        expect(armCalls[0].tuple).toEqual({identity: '@neo-opus-ada', instanceAddress: address.instanceAddress, instanceType: 'userDataDir'})
+    });
+
+    test('Claude Desktop arms no wake route, and Codex and Antigravity arm no rotation route until measured', async () => {
+        expect(await arm({agent: CLAUDE_AGENT, instanceHome: CLAUDE_HOME}).result).toBeNull();
+        expect(await arm({routeClass: 'rotation'}).result).toBeNull();
+        expect(await arm({agent: {...AGENT, harnessType: 'antigravity'}, routeClass: 'rotation'}).result).toBeNull()
+    });
+
+    test('an unknown route class is a programming error, not an unarmed seat', async () => {
+        await expect(arm({routeClass: 'bogus'}).result).rejects.toThrow("unknown route class 'bogus'")
+    });
+});
