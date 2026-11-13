@@ -307,8 +307,53 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
 
         for (const seat of snapshot.seats) {
             expect(seat.subscription.state).toBe('unknown');
-            expect(seat.subscription.reason).toContain('unreadable')
+            expect(seat.subscription.reason).toContain('unreadable');
+            expect(seat.rotation).toEqual(seat.subscription)
         }
+    });
+
+    test('a seat\'s rotation is the decision on its newest sunset receipt: completed names both sessions; no record, no report and an unreadable record each say so', async () => {
+        const record = {
+            state       : 'completed',
+            reason      : null,
+            receiptId   : 'MESSAGE:receipt-1',
+            decidedAt   : '2026-11-14T00:10:00.000Z',
+            oldSessionId: 'session-old',
+            newSessionId: 'session-new'
+        };
+
+        const rotationOf = async observations => (await harness({
+            listActiveSubscriptionObservations: () => observations
+        }).readWakeRoutes()).seats.find(seat => seat.agentIdentity === '@neo-fable-clio').rotation;
+
+        expect(await rotationOf([{identity: '@neo-fable-clio', lastPollAt: null, rotation: record}])).toEqual({...record, nextEligibleAt: null});
+        expect(await rotationOf([{identity: '@neo-fable-clio', lastPollAt: null, rotation: {state: 'refused', reason: 'minimum-interval', receiptId: 'MESSAGE:receipt-2', decidedAt: '2026-11-14T00:20:00.000Z', oldSessionId: 'session-old', nextEligibleAt: '2026-11-14T01:00:00.000Z'}}]))
+            .toMatchObject({state: 'refused', reason: 'minimum-interval', newSessionId: null, nextEligibleAt: '2026-11-14T01:00:00.000Z'});
+        expect(await rotationOf([{identity: '@neo-fable-clio', lastPollAt: null, rotation: {state: 'incomplete', reason: 'no-fresh-session'}}]))
+            .toMatchObject({state: 'incomplete', reason: 'no-fresh-session'});
+        expect(await rotationOf([{identity: '@neo-fable-clio', lastPollAt: null, rotation: null}])).toEqual({state: 'none', reason: null});
+        expect(await rotationOf([{identity: '@neo-fable-clio', lastPollAt: null}])).toEqual({state: 'unobserved', reason: null});
+        expect(await rotationOf([])).toEqual({state: 'unobserved', reason: null});
+        expect(await rotationOf([{identity: '@neo-fable-clio', lastPollAt: null, rotation: {state: 'rotated'}}])).toEqual({state: 'unknown', reason: 'rotation record unreadable'})
+    });
+
+    test('the plane reader carries a row\'s rotation as the plane answered it: a record, a null, and silence stay distinct', async () => {
+        const snapshot = await harness({
+            listActiveSubscriptionObservations: createPlaneWakeObservationsReader({callTool: async () => ({
+                identities  : ['@neo-fable-clio', '@neo-opus-ada'],
+                observations: [
+                    {identity: '@neo-fable-clio', lastPollAt: null, pullRoute: null, rotation: {state: 'requested', receiptId: 'MESSAGE:receipt-3'}},
+                    {identity: '@neo-opus-ada',   lastPollAt: null, pullRoute: null, rotation: null}
+                ]
+            })})
+        }).readWakeRoutes();
+
+        expect(snapshot.seats.find(seat => seat.agentIdentity === '@neo-fable-clio').rotation).toMatchObject({state: 'requested', receiptId: 'MESSAGE:receipt-3'});
+        expect(snapshot.seats.find(seat => seat.agentIdentity === '@neo-opus-ada').rotation).toEqual({state: 'none', reason: null});
+
+        const silent = await createPlaneWakeObservationsReader({callTool: async () => ({observations: [{identity: '@neo-fable-clio', lastPollAt: null}]})})();
+
+        expect(silent[0]).not.toHaveProperty('rotation')
     });
 
     test('an active subscription no poll has touched renders lastPollAt null — absence-of-signal, never a verdict', async () => {
