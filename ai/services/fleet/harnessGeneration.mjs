@@ -26,6 +26,8 @@ const
     MAX_REJECTIONS = 20,
     STAGING_PREFIX = '.staging-',
     PLIST_BUDDY    = '/usr/libexec/PlistBuddy',
+    // the selected generation and its rollback survive every retirement
+    KEPT_NEWEST    = 2,
     chains         = new Map();
 
 /**
@@ -352,7 +354,13 @@ async function materialize({directory, family, sourceBundle, source, host, now})
         fs.renameSync(staging, target)
     }
 
-    if (!ledger.admitted.some(entry => entry.id === verdict.id)) {
+    const known = ledger.admitted.find(entry => entry.id === verdict.id);
+
+    if (known?.retiredAt) {
+        // a retired build admitted again has its copy back, so it is no longer retired
+        delete known.retiredAt;
+        writeFileAtomicSync(path.join(directory, LEDGER), JSON.stringify(ledger, null, 4))
+    } else if (!known) {
         ledger.admitted.push({
             id          : verdict.id,
             bundleId    : info.bundleId,
@@ -370,4 +378,49 @@ async function materialize({directory, family, sourceBundle, source, host, now})
 
     const appBundle = path.join(target, appName);
     return {admitted: true, id: verdict.id, appBundle, binaryPath: path.join(appBundle, 'Contents', 'MacOS', info.executable), reason: null}
+}
+
+/**
+ * @summary Removes the copies of a family's admitted generations that nothing holds: every present
+ * generation except the newest two (the selected one and its rollback) and the ones `held` names. A
+ * removed copy's ledger entry stays, stamped `retiredAt`, so the build is never selected or acquired
+ * again. Runs on the family's admission chain, so no admission lands between the check and a removal.
+ * @param {Object} options
+ * @param {String} options.root Absolute store root.
+ * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.
+ * @param {Iterable<String>} [options.held=[]] Generation ids a seat is pinned to.
+ * @param {Function} [options.now] Clock seam.
+ * @returns {Promise<{retired: String[], kept: String[]}>} Ids, newest first.
+ * @throws {Error} `root-must-be-absolute`, `unknown-family` or `ledger-invalid`.
+ */
+export function retireHarnessGenerations({root, family, held = [], now = () => new Date()} = {}) {
+    const
+        directory = familyDirectory(root, family),
+        key       = `${directory}\0`,
+        next      = (chains.get(key) ?? Promise.resolve()).then(() => retire({directory, held: new Set(held), now}));
+
+    chains.set(key, next.catch(() => {}));
+    return next
+}
+
+/** @summary One serialized retirement run; see {@link retireHarnessGenerations}. */
+function retire({directory, held, now}) {
+    const
+        ledger  = readLedger(directory),
+        present = [...ledger.admitted].reverse()
+            .filter(entry => fs.existsSync(path.join(directory, entry.id, entry.appName, 'Contents', 'MacOS', entry.executable))),
+        keep    = new Set([...present.slice(0, KEPT_NEWEST).map(entry => entry.id), ...held]),
+        retired = [];
+
+    for (const entry of present) {
+        if (keep.has(entry.id)) continue;
+
+        fs.rmSync(path.join(directory, entry.id), {recursive: true, force: true});
+        entry.retiredAt = now().toISOString();
+        retired.push(entry.id)
+    }
+
+    if (retired.length > 0) writeFileAtomicSync(path.join(directory, LEDGER), JSON.stringify(ledger, null, 4));
+
+    return {retired, kept: present.filter(entry => keep.has(entry.id)).map(entry => entry.id)}
 }

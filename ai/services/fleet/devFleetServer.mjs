@@ -747,17 +747,18 @@ async function boot() {
         // Each seat reads with its own PAT. This entrypoint owns the one enable switch after the
         // plane proved the viewer, whose observations the plane's intake admits and sends as @system.
         wakeRound = AiConfig.fleet.openWorkWakes && planeClient ? wireFleetOpenWorkWakes({
-            registry    : FleetRegistryService,
-            isEnabled   : () => AiConfig.fleet.openWorkWakes,
-            admitWake   : observation => planeClient.callTool('admit_open_work_wake', observation),
+            registry : FleetRegistryService,
+            isEnabled: () => AiConfig.fleet.openWorkWakes,
+            admitWake: observation => planeClient.callTool('admit_open_work_wake', observation),
             readPresence
         }) : null;
         openWork = wireFleetOpenWorkSource({registry: FleetRegistryService, readPresence, onPulse: wakeRound});
 
         // Nothing but the Fleet ever updates a seat's harness: it fetches and admits every opted-in family's
-        // new builds itself, and a seat adopts one at its next Start.
+        // new builds itself, a seat adopts one at its next Start, and builds no seat holds are retired.
         harnessAcquisition = wireFleetHarnessAcquisition({
             context   : family => lifecycle.harnessAcquisitionContext(family),
+            retire    : family => lifecycle.retireHarnessGenerations(family),
             intervalMs: AiConfig.fleet.harnessGenerations.checkIntervalHours * 3_600_000
         });
 

@@ -7,6 +7,7 @@ import {
     listHarnessGenerations,
     materializeHarnessGeneration,
     readHarnessHostGate,
+    retireHarnessGenerations,
     selectHarnessGeneration
 } from '../../../../../../ai/services/fleet/harnessGeneration.mjs';
 
@@ -131,8 +132,8 @@ test.describe('harnessGeneration', () => {
 
     test('Claude Desktop admission runs its registered probe on the copy and refuses a build that drops the updater gate', async () => {
         const
-            gate         = 'Auto-updates disabled by enterprise policy',
-            markers      = ['/Library/Managed Preferences/com.anthropic.claudefordesktop.plist', 'disableAutoUpdates', gate],
+            gate    = 'Auto-updates disabled by enterprise policy',
+            markers = ['/Library/Managed Preferences/com.anthropic.claudefordesktop.plist', 'disableAutoUpdates', gate],
             // every host step but the probe, so the family's own probe runs
             {probe, ...claude} = build({bundleId: 'com.anthropic.claudefordesktop', teamId: 'Q6L2SF6YDW', executable: 'Claude'}),
             claudeSource = asar => {
@@ -201,6 +202,51 @@ test.describe('harnessGeneration', () => {
 
         expect(listHarnessGenerations({root, family: 'codex-desktop'}).map(({id}) => id)).toEqual([older.id]);
         expect(selectHarnessGeneration({root, family: 'codex-desktop'}).id).toBe(older.id)
+    });
+
+    /** @summary Admits `count` builds of one source, oldest first. */
+    const admitBuilds = async count => {
+        const source = makeSource(roots), admitted = [];
+
+        for (let i = 0; i < count; i++) {
+            admitted.push(await materializeHarnessGeneration({
+                root, family: 'codex-desktop', sourceBundle: source,
+                seams: build({shortVersion: `26.11${i}.0`, buildVersion: String(26000 + i), cdhash: String(i).repeat(64)})
+            }))
+        }
+
+        return admitted
+    };
+
+    test('retirement keeps the selected generation, its rollback and every held one, removes the other copies and stamps their ledger entries', async () => {
+        const [g0, g1, g2, g3, g4] = await admitBuilds(5), at = new Date('2026-11-13T03:00:00Z');
+
+        expect(await retireHarnessGenerations({root, family: 'codex-desktop', held: [g1.id], now: () => at}))
+            .toEqual({retired: [g2.id, g0.id], kept: [g4.id, g3.id, g1.id]});
+
+        expect(listHarnessGenerations({root, family: 'codex-desktop'}).map(({id}) => id)).toEqual([g4.id, g3.id, g1.id]);
+        expect(selectHarnessGeneration({root, family: 'codex-desktop'}).id, 'a retirement never moves the selection').toBe(g4.id);
+        expect(fs.existsSync(path.join(familyDir(), g2.id))).toBe(false);
+        expect(ledger().admitted, 'the ledger keeps every admission').toHaveLength(5);
+        expect(ledger().admitted.filter(entry => entry.retiredAt).map(entry => [entry.id, entry.retiredAt]))
+            .toEqual([[g0.id, at.toISOString()], [g2.id, at.toISOString()]]);
+
+        expect(await retireHarnessGenerations({root, family: 'codex-desktop', held: [g1.id]})).toEqual({retired: [], kept: [g4.id, g3.id, g1.id]})
+    });
+
+    test('a retired build admitted again has its copy back without its retiredAt stamp, and never displaces the selection', async () => {
+        const [g0, , g2] = await admitBuilds(3);
+
+        await retireHarnessGenerations({root, family: 'codex-desktop'});
+        expect(ledger().admitted[0]).toMatchObject({id: g0.id, retiredAt: expect.any(String)});
+
+        const again = await materializeHarnessGeneration({
+            root, family: 'codex-desktop', sourceBundle: makeSource(roots), seams: build({shortVersion: '26.110.0', buildVersion: '26000', cdhash: '0'.repeat(64)})
+        });
+
+        expect(again).toMatchObject({admitted: true, id: g0.id});
+        expect(ledger().admitted[0].retiredAt).toBeUndefined();
+        expect(selectHarnessGeneration({root, family: 'codex-desktop'}).id).toBe(g2.id)
     });
 
     test('a published copy whose seal no longer verifies is reported, never replaced', async () => {

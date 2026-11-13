@@ -180,5 +180,40 @@ test.describe('wireFleetHarnessAcquisition', () => {
             {family: 'claude-desktop', state: 'not-opted-in', reason: 'Claude\'s updater policy is not in force'},
             {family: 'codex-desktop', state: 'not-opted-in'}
         ])
+    });
+
+    test('each opted-in family retires after its acquisition, a failed one included; a retirement that keeps everything or throws is recorded beside the check', async () => {
+        const order = [], handle = wire({
+            context  : contextFor(['antigravity', 'claude-desktop', 'codex-desktop']),
+            acquirers: {
+                'antigravity'   : acquirer('antigravity', order, () => ({status: 'admitted', version: '2.31.2'})),
+                'claude-desktop': acquirer('claude-desktop', order, () => { throw Object.assign(new Error('HTTP 503'), {code: 'record-fetch-failed'}) }),
+                'codex-desktop' : acquirer('codex-desktop', order, () => ({status: 'up-to-date', version: '26.1106.51428'}))
+            },
+            retire   : async family => {
+                order.push([`retire:${family}`]);
+                if (family === 'codex-desktop') throw new Error('ledger-invalid');
+                return family === 'antigravity'
+                    ? {retired: ['g'.repeat(64)], kept: []}
+                    : {retired: [], kept: [], reason: 'the lease of seat \'seat\' could not be read'}
+            }
+        });
+
+        handles.push(handle);
+        await handle.pulse();
+
+        for (const family of ['antigravity', 'claude-desktop', 'codex-desktop']) {
+            const acquired = order.findIndex(([step]) => step === family), retired = order.findIndex(([step]) => step === `retire:${family}`);
+
+            expect(acquired, family).toBeGreaterThanOrEqual(0);
+            expect(retired, `${family} retires after its own acquisition`).toBeGreaterThan(acquired)
+        }
+
+        const [antigravity, claude, codex] = handle.status();
+
+        expect(antigravity).toMatchObject({state: 'checked', outcome: 'admitted', retired: ['g'.repeat(64)]});
+        expect(antigravity.retireReason).toBeUndefined();
+        expect(claude).toMatchObject({state: 'failed', reason: 'record-fetch-failed', retired: [], retireReason: 'the lease of seat \'seat\' could not be read'});
+        expect(codex).toMatchObject({state: 'checked', outcome: 'up-to-date', retired: [], retireReason: 'ledger-invalid'})
     })
 });

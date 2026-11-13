@@ -3695,6 +3695,29 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         expect(calls, 'no admission ran and no ledger was written').toEqual([])
     });
 
+    test('retirement holds what the seat lifecycle names, every record pin and every lease on disk; an unreadable lease keeps everything', async () => {
+        const {home} = installSeat('claude-desktop'), store = (claudeGenerationCopies(), FleetLifecycleService.harnessGenerationStore), calls = [];
+
+        store.retire = async ({family, held}) => {
+            calls.push({family, held: [...held].sort()});
+            return {retired: ['d'.repeat(64)], kept: []}
+        };
+
+        FleetLifecycleService.processes.set('other', {id: 'other', harnessType: 'claude-desktop', harnessGeneration: {generationId: 'b'.repeat(64)}});
+        writeLease(home, {harnessGenerationId: 'a'.repeat(64)});
+
+        expect(await FleetLifecycleService.retireHarnessGenerations('claude-desktop')).toEqual({retired: ['d'.repeat(64)], kept: []});
+        expect(calls).toEqual([{family: 'claude-desktop', held: ['a'.repeat(64), 'b'.repeat(64)]}]);
+
+        fs.writeFileSync(path.join(home, LEASE_FILE), '{"pid": 42');
+
+        expect(await FleetLifecycleService.retireHarnessGenerations('claude-desktop'))
+            .toEqual({retired: [], kept: [], reason: "the lease of seat 'seat' could not be read"});
+        expect(calls, 'nothing is retired while a pin is unknown').toHaveLength(1);
+
+        FleetLifecycleService.processes.delete('other')
+    });
+
     test('a fresh Fleet server re-adopts a seat running from its leased generation, opted in or not; an id the ledger has not admitted voids the lease', () => {
         for (const [name, leasedId] of [['admitted', 'a'.repeat(64)], ['unknown', 'c'.repeat(64)]]) {
             const {home, profile} = installSeat('claude-desktop'), binary = claudeGenerationCopies().admit('a'.repeat(64));
