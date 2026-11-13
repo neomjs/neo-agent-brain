@@ -11,9 +11,10 @@ export const RUNTIME_REFERENCE_LEASE = '.runtime-references.lock';
 const heldDirectories = new WeakMap();
 
 /**
- * @summary How long a seat Start waits for the lease before refusing. A healthy retirement pass holds
- * it for seconds (a payload verify takes about 6 s, a census at most 10 s), and the cockpit's own round
- * trip gives up at 30 s. 20 s keeps the refusal inside the window the seat row can still show.
+ * @summary How long a seat Start waits for the lease itself before refusing. A healthy retirement pass
+ * holds it for seconds (a payload verify takes about 6 s, a census at most 10 s). The wait begins after
+ * repository preparation and dependency installation, so the cockpit's 30 s round trip shows the
+ * refusal only when those finished within about 10 s; otherwise the Start still ends at the bound.
  */
 export const RUNTIME_REFERENCE_START_WAIT_MS = 20000;
 
