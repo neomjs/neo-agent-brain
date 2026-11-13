@@ -50,6 +50,9 @@ const report  = out => JSON.parse(readFileSync(path.join(out, 'report.json'), 'u
       elapsed = ({window}) => Date.parse(window.endedAt) - Date.parse(window.startedAt);
 
 test.describe('ai/scripts/benchmark/plane-sampler (CLI)', () => {
+    // One arm at a time: each starts real processes, and three at once would load the workers beside it
+    test.describe.configure({mode: 'serial'});
+
     let dir;
 
     test.beforeAll(() => {
