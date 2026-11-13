@@ -637,8 +637,9 @@ class FleetManager extends Base {
     }
 
     /**
-     * @summary Arms the wake route of a seat {@link startAgent} has just started, and records the
-     * outcome on the seat's lifecycle record so its status says whether a peer can wake it.
+     * @summary Arms the wake and rotation routes of a seat {@link startAgent} has just started, and records
+     * both on the seat's lifecycle record, so its status says whether a peer can wake it and whether the
+     * receiver can open its fresh session.
      *
      * Never fails the start it follows: a refusal or an error becomes `wakeRoute: {state: 'unarmed',
      * reason}` beside a running seat. The receiver coordinates arrive through {@link wakeStateOptions}
@@ -646,7 +647,7 @@ class FleetManager extends Base {
      * @param {String} agentId Registry agent id.
      * @param {Object} status The lifecycle status `startAgent` produced.
      * @param {AbortSignal} [startSignal] The same lifecycle-owned pending attempt.
-     * @returns {Promise<Object>} `status`, plus `wakeRoute` when a GUI wake applies to the seat.
+     * @returns {Promise<Object>} `status`, plus `wakeRoute` and `rotationRoute` where each applies to the seat.
      */
     async armSeatWake(agentId, status, startSignal) {
         const
@@ -694,8 +695,13 @@ class FleetManager extends Base {
             }
         }
 
-        // Arming can outlive the launch it was started for; the record takes it only from that launch.
-        if (wakeRoute && !startSignal?.aborted) lifecycle.setWakeRoute?.(agentId, wakeRoute, {pid: status?.pid, startedAt: status?.startedAt});
+        // Arming can outlive the launch it was started for; the record takes both routes only from that launch.
+        if (!startSignal?.aborted) {
+            const launch = {pid: status?.pid, startedAt: status?.startedAt};
+
+            if (wakeRoute)     lifecycle.setWakeRoute?.(agentId, wakeRoute, launch);
+            if (rotationRoute) lifecycle.setRotationRoute?.(agentId, rotationRoute, launch)
+        }
 
         if (!wakeRoute && !rotationRoute) return status;
 
