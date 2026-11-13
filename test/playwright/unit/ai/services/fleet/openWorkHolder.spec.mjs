@@ -195,20 +195,22 @@ test.describe('openWorkHolder — an outside PR pushed past a seat\'s review is 
         }
     });
 
-    test('a standing judgment outranks an earlier comment, a comment alone names its seat, a comment on the new head clears it until the next push, and a requested seat joins a change request (AC-2)', () => {
-        expect(holderOf(pushed({reviews: [by(A, 'COMMENTED'), by(B, 'CHANGES_REQUESTED')], opinions: [by(B, 'CHANGES_REQUESTED')]})))
-            .toEqual({role: 'reviewer', kind: 'review', ids: [B]});
+    test('a comment alone names its seat, and a requested seat joins a change request (AC-2)', () => {
         expect(holderOf(pushed({reviews: [by(A, 'COMMENTED')]}))).toEqual({role: 'reviewer', kind: 'review', ids: [A]});
-
-        // B commented on the new head while its change request stands on the old one: nobody holds it until the next push
-        expect(holderOf(pushed({reviews: [by(B, 'COMMENTED', true)], opinions: [by(B, 'CHANGES_REQUESTED')]})))
-            .toEqual({role: 'none', kind: null, ids: []});
-        expect(holderOf(pushed({reviews: [by(B, 'COMMENTED')], opinions: [by(B, 'CHANGES_REQUESTED')]})))
-            .toEqual({role: 'reviewer', kind: 'review', ids: [B]});
-
         expect(holderOf(pushed({requested: [C], ...past(B, 'CHANGES_REQUESTED')}))).toEqual({role: 'reviewer', kind: 'review', ids: [C, B]});
         // a stale approval is no blocker: a review a maintainer requested stands alone beside it
         expect(holderOf(pushed({requested: [C], ...past(B, 'APPROVED')}))).toEqual({role: 'reviewer', kind: 'review', ids: [C]})
+    });
+
+    test('A commented and B requested changes on H1: H2 is B\'s, nobody\'s once B comments on it while A\'s comment remains, and H3 is B\'s again (AC-2)', () => {
+        const
+            stands = [by(B, 'CHANGES_REQUESTED')],
+            onH2   = [by(A, 'COMMENTED'), by(B, 'COMMENTED', true)];
+
+        expect(holderOf(pushed({reviews: [by(A, 'COMMENTED'), by(B, 'CHANGES_REQUESTED')], opinions: stands}))).toEqual({role: 'reviewer', kind: 'review', ids: [B]});
+        expect(holderOf(pushed({reviews: onH2, opinions: stands}))).toEqual({role: 'none', kind: null, ids: []});
+        expect(holderOf(pushed({requested: [C], reviews: onH2, opinions: stands})), 'a requested seat still holds it').toEqual({role: 'reviewer', kind: 'review', ids: [C]});
+        expect(holderOf(pushed({reviews: [by(A, 'COMMENTED'), by(B, 'COMMENTED')], opinions: stands}))).toEqual({role: 'reviewer', kind: 'review', ids: [B]})
     });
 
     test('with no seat on an earlier head an outside PR stays untouched, and run approval, a seat\'s own PR and an approval on the new head keep their routes (AC-3)', () => {

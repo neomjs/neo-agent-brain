@@ -51,7 +51,9 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         earlier      = list => [...new Set(list.filter(item => !item.onHead && !item.bot && isSeat(item.reviewer) &&
             !reviewedHere.has(item.reviewer)).map(item => item.reviewer))],
         judges       = earlier(opinions ?? []),
-        engaged      = judges.length ? judges : earlier(reviews),
+        // A judgment standing on an earlier head outranks a comment even after its seat reviewed this one
+        stands       = (opinions ?? []).some(opinion => !opinion.onHead && !opinion.bot && isSeat(opinion.reviewer)),
+        engaged      = stands ? judges : earlier(reviews),
         untouched    = !requested.length && !reviews.some(review => review.onHead && !review.bot) && !engaged.length,
         maintainer   = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation),
         eligible     = owner?.kind === 'outside' && !draft && !bot && authorType !== 'Bot' && !maintainer;
