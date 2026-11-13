@@ -86,7 +86,7 @@ test.describe('acquireHarnessArchive', () => {
         });
 
         expect(result).toMatchObject({status: 'admitted', reason: null, verification: {byteLength: bytes.length, digest: createHash('sha256').update(bytes).digest('hex')}});
-        expect(admitted).toEqual([{root, family: 'claude-desktop', sourceBundle: expect.stringMatching(/\.update-staging-[^/]+\/extracted\/App\.app$/), source: ARCHIVE_URL}]);
+        expect(admitted).toEqual([{root, family: 'claude-desktop', sourceBundle: expect.stringMatching(/\.update-staging-[^/]+\/extracted\/App\.app$/), source: ARCHIVE_URL, expectedShortVersion: '2.0.0'}]);
         expect(fs.readdirSync(path.join(root, 'claude-desktop')).filter(name => name.startsWith('.update-staging-'))).toEqual([])
     });
 
