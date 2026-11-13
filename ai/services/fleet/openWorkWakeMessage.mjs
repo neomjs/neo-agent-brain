@@ -6,8 +6,8 @@
  * The producer runs host-side and decides which wakes to send. The plane decides what a wake says and sends it as
  * `@system`. The observation is made of tokens, never text: a repository, a number, a head, a kind, an episode, a
  * recipient, for `repair-ci` check names, for `unblocked` the issue the merge unblocked, and for `holder-unreachable`
- * the holder it escalates. The plane composes the subject and body from them, so no caller puts free text under the
- * system sender.
+ * and `holder-silent` the holder they escalate. The plane composes the subject and body from them, so no caller puts
+ * free text under the system sender.
  */
 
 /**
@@ -25,7 +25,8 @@ export const OPEN_WORK_WAKE_REASONS = Object.freeze({
     'post-merge'        : 'your pull request was merged',
     unblocked           : 'a merge unblocked your ticket',
     unowned             : "no seat owns this pull request's next action",
-    'holder-unreachable': "the seat holding this pull request's next action has no deliverable wake route"
+    'holder-unreachable': "the seat holding this pull request's next action has no deliverable wake route",
+    'holder-silent'     : "the seat holding this pull request's next action has not acted on its delivered wake"
 });
 
 /**
@@ -35,8 +36,15 @@ export const OPEN_WORK_WAKE_REASONS = Object.freeze({
  */
 const ESCALATION_ASKS = Object.freeze({
     unowned             : 'No seat is named as its author: route the next action to a seat, or take it yourself.',
-    'holder-unreachable': "The holder's own wake waits for its route: reach the holder another way, or take the action yourself."
+    'holder-unreachable': "The holder's own wake waits for its route: reach the holder another way, or take the action yourself.",
+    'holder-silent'     : "The holder's wake arrived hours ago: reach the holder another way, or take the action yourself."
 });
+
+/**
+ * @summary The escalations that name the holder they escalate.
+ * @member {Set<String>} OPEN_WORK_HOLDER_KINDS
+ */
+export const OPEN_WORK_HOLDER_KINDS = new Set(['holder-unreachable', 'holder-silent']);
 
 const
     // GitHub's own limits: an owner of at most 39 characters, a name of at most 100
@@ -115,10 +123,10 @@ export function validateOpenWorkObservation(args) {
     } else if (kind !== 'unblocked' && unblocks !== null) {
         errors.push('unblocks belongs to unblocked only')
     }
-    if (kind === 'holder-unreachable' && (typeof holder !== 'string' || !IDENTITY.test(holder) || holder === to)) {
+    if (OPEN_WORK_HOLDER_KINDS.has(kind) && (typeof holder !== 'string' || !IDENTITY.test(holder) || holder === to)) {
         errors.push('holder must be the escalated holder as one @identity, never the recipient')
-    } else if (kind !== 'holder-unreachable' && holder !== null) {
-        errors.push('holder belongs to holder-unreachable only')
+    } else if (!OPEN_WORK_HOLDER_KINDS.has(kind) && holder !== null) {
+        errors.push('holder belongs to holder-unreachable and holder-silent only')
     }
 
     if (!errors.length && !validEpisode({repo, number, head, kind, episode, unblocks})) {
@@ -141,7 +149,7 @@ export function validateOpenWorkObservation(args) {
     return errors.length
         ? {observation: null, errors}
         : {observation: {repo, number, head, kind, episode, to, failedChecks: kind === 'repair-ci' ? failedChecks : null,
-            ...(kind === 'unblocked' ? {unblocks} : {}), ...(kind === 'holder-unreachable' ? {holder} : {})}, errors}
+            ...(kind === 'unblocked' ? {unblocks} : {}), ...(OPEN_WORK_HOLDER_KINDS.has(kind) ? {holder} : {})}, errors}
 }
 
 /**

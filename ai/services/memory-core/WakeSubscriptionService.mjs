@@ -109,9 +109,9 @@ class WakeSubscriptionService extends Base {
     }
 
     /**
-     * The wake-delivery read behind `who_is_online`'s wake axis; `null` reads the configured records
-     * directory (`readWakeDelivery`). A test injects a reader bound to its own directory instead of
-     * mutating the shared config.
+     * The wake-delivery read behind `who_is_online`'s wake axis and {@link #readMessageDelivery}; `null`
+     * reads the configured records directory (`readWakeDelivery`). A test injects a reader bound to its
+     * own directory instead of mutating the shared config.
      * @member {Function|null} wakeDeliveryReadFn=null
      * @protected
      */
@@ -973,6 +973,19 @@ class WakeSubscriptionService extends Base {
         }
 
         return pools
+    }
+
+    /**
+     * @summary Whether each wake message arrived, from the wake receiver's own dispatch records through
+     * the one reader the wake axis uses. Records that are unreadable or undeclared leave every message
+     * `unknown`; a message in no record reads `undelivered` (`projectMessageDelivery`).
+     * @param {String[]} messageIds Wake message ids.
+     * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, messages: Object}>}
+     */
+    async readMessageDelivery(messageIds) {
+        const {deliveryReadable, deliveryReadReason, messages} = await (this.wakeDeliveryReadFn || readWakeDelivery)({messageIds});
+
+        return {deliveryReadable, deliveryReadReason, messages}
     }
 
     /**

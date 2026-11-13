@@ -17,7 +17,8 @@ import {
 const
     RECORD_URL = 'https://formulae.brew.sh/api/cask/claude.json',
     COMMIT     = 'ce4f8dd2e25346b37909530556abd6e2e7b00206',
-    ZIP_URL    = `https://downloads.claude.ai/releases/darwin/universal/5.11492.0/Claude-${COMMIT}.zip`;
+    zipUrl     = version => `https://downloads.claude.ai/releases/darwin/universal/${version}/Claude-${COMMIT}.zip`,
+    ZIP_URL    = zipUrl('5.11492.0');
 
 /**
  * @summary A cask record in the shape Homebrew's API serves for `claude`, for the bytes given.
@@ -42,7 +43,7 @@ const caskRecord = (bytes, overrides = {}) => ({
 function vendorFetch(record, bytes) {
     const fetchImpl = async url => {
         if (url === RECORD_URL) return {ok: true, status: 200, text: async () => JSON.stringify(record)};
-        if (url === ZIP_URL) {
+        if (url === record.url) {
             fetchImpl.downloads++;
             return new Response(bytes, {status: 200})
         }
@@ -54,25 +55,34 @@ function vendorFetch(record, bytes) {
 }
 
 /**
- * @summary Writes a minimal `Claude.app` (its executable only) into `directory`.
+ * @summary Writes a minimal `Claude.app` into `directory`: its executable, and the version its Info.plist would
+ * carry in `Contents/version`.
  * @param {String} directory
+ * @param {String} [version='5.11492.0']
  * @returns {String} The bundle path.
  */
-function makeClaudeBundle(directory) {
+function makeClaudeBundle(directory, version = '5.11492.0') {
     const bundle = path.join(directory, 'Claude.app');
 
     fs.mkdirSync(path.join(bundle, 'Contents', 'MacOS'), {recursive: true});
     fs.writeFileSync(path.join(bundle, 'Contents', 'MacOS', 'Claude'), '#!/bin/sh\n', {mode: 0o755});
+    fs.writeFileSync(path.join(bundle, 'Contents', 'version'), version);
     return bundle
 }
 
-/** @summary Admission seams that pass a Claude 5.11492.0 copy without touching codesign, Gatekeeper or a probe. */
-const claudeAdmission = ({root, family, sourceBundle, source}) => materializeHarnessGeneration({
-    root, family, sourceBundle, source,
+/** @summary The version a test bundle carries. */
+const bundleVersion = bundle => fs.readFileSync(path.join(bundle, 'Contents', 'version'), 'utf8');
+
+/**
+ * @summary The real admission, with host seams that read each copy's own version (its cdhash follows it)
+ * instead of touching codesign, Gatekeeper or a probe.
+ */
+const claudeAdmission = options => materializeHarnessGeneration({
+    ...options,
     seams: {
         copyBundle      : (src, target) => fs.cpSync(src, target, {recursive: true}),
-        readBundleInfo  : () => ({bundleId: 'com.anthropic.claudefordesktop', shortVersion: '5.11492.0', buildVersion: '5.11492.0', executable: 'Claude'}),
-        inspectSignature: () => ({verified: true, teamId: 'Q6L2SF6YDW', cdhash: 'c'.repeat(64)}),
+        readBundleInfo  : bundle => ({bundleId: 'com.anthropic.claudefordesktop', shortVersion: bundleVersion(bundle), buildVersion: bundleVersion(bundle), executable: 'Claude'}),
+        inspectSignature: bundle => ({verified: true, teamId: 'Q6L2SF6YDW', cdhash: createHash('sha256').update(bundleVersion(bundle)).digest('hex')}),
         assessGatekeeper: () => true,
         probe           : async () => ({available: true, reason: null})
     }
@@ -88,6 +98,29 @@ test.describe('claudeDesktopUpdate', () => {
     test.afterEach(() => {
         fs.rmSync(root, {recursive: true, force: true})
     });
+
+    /**
+     * @summary Seeds a selected generation at `seeded`, then acquires twice from a record advertising
+     * `advertised` for a zip whose bundle carries `actual`.
+     */
+    async function acquireOverSeed({seeded, advertised, actual}) {
+        const
+            store     = path.join(root, 'generations'),
+            bytes     = Buffer.from(`claude-${actual}-zip`),
+            fetchImpl = vendorFetch(caskRecord(bytes, {version: `${advertised},${COMMIT}`, url: zipUrl(advertised)}), bytes),
+            acquire   = () => acquireClaudeDesktopUpdate({
+                root                 : store,
+                fetchImpl,
+                extractArchive       : (_archivePath, destinationDir) => makeClaudeBundle(destinationDir, actual),
+                materializeGeneration: claudeAdmission
+            });
+
+        const seed = await claudeAdmission({root: store, family: 'claude-desktop', sourceBundle: makeClaudeBundle(path.join(root, 'seed'), seeded)});
+
+        expect(seed.admitted, 'the seeded generation is selected').toBe(true);
+
+        return {first: await acquire(), second: await acquire(), fetchImpl, store}
+    }
 
     test('reads the candidate a well-formed record names, its digest in lowercase hex', () => {
         const digest = 'D43FCE37CEA2366581D5126FE07322F15C3A32C4C30E626DBD9FD54145ED39B1';
@@ -174,6 +207,28 @@ test.describe('claudeDesktopUpdate', () => {
 
         expect(again).toMatchObject({status: 'up-to-date', generation: null});
         expect(fetchImpl.downloads, 'the admitted build is never downloaded twice').toBe(1)
+    });
+
+    test('a record naming a version its bundle does not carry changes nothing: rejected before publication, the selection stays, the zip is not fetched again', async () => {
+        const
+            {first, second, fetchImpl, store} = await acquireOverSeed({seeded: '2.0.0', advertised: '3.0.0', actual: '1.0.0'}),
+            ledger = readHarnessGenerationLedger({root: store, family: 'claude-desktop'});
+
+        expect(first).toMatchObject({status: 'rejected', reason: 'bundle-version-mismatch'});
+        expect(ledger.admitted.map(generation => generation.shortVersion)).toEqual(['2.0.0']);
+        expect(ledger.rejected.at(-1)).toMatchObject({shortVersion: '1.0.0', source: zipUrl('3.0.0'), reason: 'bundle-version-mismatch'});
+        expect(selectHarnessGeneration({root: store, family: 'claude-desktop'}).shortVersion).toBe('2.0.0');
+        expect(second).toMatchObject({status: 'already-rejected'});
+        expect(fetchImpl.downloads).toBe(1)
+    });
+
+    test('the same record over a bundle that carries its version is admitted, selected and fetched once', async () => {
+        const {first, second, fetchImpl, store} = await acquireOverSeed({seeded: '2.0.0', advertised: '3.0.0', actual: '3.0.0'});
+
+        expect(first).toMatchObject({status: 'admitted'});
+        expect(selectHarnessGeneration({root: store, family: 'claude-desktop'}).shortVersion).toBe('3.0.0');
+        expect(second).toMatchObject({status: 'up-to-date'});
+        expect(fetchImpl.downloads).toBe(1)
     });
 
     test('bytes that do not match the record\'s SHA-256 are never extracted or admitted', async () => {

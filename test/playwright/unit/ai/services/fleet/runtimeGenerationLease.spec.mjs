@@ -48,6 +48,25 @@ test('Stop cancels a waiting Start without releasing the current holder', async 
     expect(held.release()).toBe(true);
 });
 
+test('a bounded wait names a holder that never releases and leaves it in place', async () => {
+    const held = holdRuntimeGenerationReferences({directory: root});
+    try {
+        const error = await waitForRuntimeGenerationReferences({directory: root, deadlineMs: 50}).catch(caught => caught);
+        expect(error).toMatchObject({code: 'RUNTIME_REFERENCES_HELD', holder: {owner: 'fleet-runtime-references', pid: process.pid}});
+        expect(error.holder).not.toHaveProperty('ownerToken');
+        expect(error.message).toContain(`pid ${process.pid}`);
+        held.assertCurrent();
+    } finally { held.release(); }
+});
+
+test('contention that ends inside the bound still enters', async () => {
+    const first   = holdRuntimeGenerationReferences({directory: root}), next = contender();
+    const pending = waitForRuntimeGenerationReferences({directory: root, deadlineMs: 5000, acquireLease: next.acquireLease});
+    await next.blocked;
+    expect(first.release()).toBe(true);
+    expect((await pending).release()).toBe(true);
+});
+
 test('unknown or redirected custody refuses instead of waiting or claiming vacancy', async () => {
     await fs.writeFile(path.join(root, RUNTIME_REFERENCE_LEASE), 'corrupt');
     await expect(waitForRuntimeGenerationReferences({directory: root})).rejects.toMatchObject({code: 'FILE_LEASE_HELD', holder: null});

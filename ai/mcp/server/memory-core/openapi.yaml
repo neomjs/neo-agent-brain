@@ -3401,10 +3401,49 @@ paths:
                 holder:
                   type: string
                   nullable: true
-                  description: "`holder-unreachable` only: the escalated holder's `@identity`, never the recipient."
+                  description: "`holder-unreachable` and `holder-silent` only: the escalated holder's `@identity`, never the recipient."
       responses:
         '200':
           description: The `add_message` receipt of the composed wake.
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # The Fleet host's read-back of its admitted wakes, `extended` for the same reason as the intake.
+  /mailbox/open-work/delivery:
+    post:
+      summary: "Read whether each admitted open-work wake arrived; use when the Fleet host checks a holder wake before escalating it."
+      operationId: read_open_work_wake_delivery
+      x-neo-tool-tier: extended
+      x-pass-as-object: true
+      description: "Admitted only from the Fleet's human operator. Answers each message from the wake receiver's own dispatch records: `delivered` with the first delivery time, `failed`, `skipped`, `unknown` while its fate is open or the records cannot be read, or `undelivered` when no record carries it."
+      tags: [Mailbox]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [messageIds]
+              properties:
+                messageIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: string
+                  description: "Wake message ids, as the intake's receipt names them."
+      responses:
+        '200':
+          description: "`{deliveryReadable, deliveryReadReason, messages}`, `messages` keyed by message id as `{state, at}`."
           content:
             application/json:
               schema:

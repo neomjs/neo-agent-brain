@@ -17,10 +17,12 @@ import {
  * read: the app's own update feed needs the installation's device id, and the download link answers automated
  * clients with a bot challenge. The versioned zip under `downloads.claude.ai` is served freely, but its name
  * carries the build's commit, which nothing first-party announces. Homebrew's public cask record names that zip
- * and its SHA-256 within hours of a release, so the record is the pointer, and an untrusted one. It only decides
- * whether to download: its URL must have the vendor's release shape and carry the record's own version and
- * commit, and the bytes must match its digest before anything is extracted. Admission then proves the bundle
- * itself (Team ID, codesign, Gatekeeper, the runtime probe), exactly as it proves an installed build.
+ * and its SHA-256 within hours of a release, so the record is the pointer, and an untrusted one. It decides
+ * whether to download and which version to expect: its URL must have the vendor's release shape and carry the
+ * record's own version and commit, and the bytes must match its digest before anything is extracted. Admission
+ * then proves the bundle itself (Team ID, codesign, Gatekeeper, the runtime probe), exactly as it proves an
+ * installed build, and refuses one whose signed version is not the record's, so a record that misnames its
+ * build can cost a download but never changes the selection.
  */
 
 const

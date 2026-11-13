@@ -1,17 +1,18 @@
-import {test, expect}                                                        from '@playwright/test';
-import fs                                                                    from 'node:fs/promises';
-import os                                                                    from 'node:os';
-import path                                                                  from 'node:path';
-import {importSeatMemory}                                                    from '../../../../ai/services/fleet/seatMemoryImport.mjs';
-import {CREDENTIAL_FAMILIES}                                                 from '../../../../ai/services/fleet/redactCredentials.mjs';
-import {LAUNCHABLE_HARNESS_TYPES, deriveCodexHome}                           from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
-import {deriveAgentInstanceHome}                                             from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
-import {readCodexModelCatalog}                                               from '../../../../ai/services/fleet/codexModelCatalog.mjs';
-import {createManagedAgentWorkspacePlan}                                     from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
-import {startAgentProvisioned as startProvisioned}                           from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
-import {resolveSeatGitIdentity}                                              from '../../../../ai/services/fleet/seatGitIdentity.mjs';
-import {supportsTenantMcpTarget}                                             from '../../../../src/fleet/contract/harnessTypes.mjs';
-import {holdRuntimeGenerationReferences, waitForRuntimeGenerationReferences} from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
+import {test, expect}                              from '@playwright/test';
+import fs                                          from 'node:fs/promises';
+import os                                          from 'node:os';
+import path                                        from 'node:path';
+import {importSeatMemory}                          from '../../../../ai/services/fleet/seatMemoryImport.mjs';
+import {CREDENTIAL_FAMILIES}                       from '../../../../ai/services/fleet/redactCredentials.mjs';
+import {LAUNCHABLE_HARNESS_TYPES, deriveCodexHome} from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
+import {deriveAgentInstanceHome}                   from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
+import {readCodexModelCatalog}                     from '../../../../ai/services/fleet/codexModelCatalog.mjs';
+import {createManagedAgentWorkspacePlan}           from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import {startAgentProvisioned as startProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {resolveSeatGitIdentity}                    from '../../../../ai/services/fleet/seatGitIdentity.mjs';
+import {supportsTenantMcpTarget}                   from '../../../../src/fleet/contract/harnessTypes.mjs';
+import {holdRuntimeGenerationReferences, RUNTIME_REFERENCE_START_WAIT_MS,
+        waitForRuntimeGenerationReferences}                                   from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
 
 const runtimeRoots = new Set();
 /** @summary Supplies real disposable lease custody while runtime execution itself remains stubbed. */
@@ -131,8 +132,8 @@ function makeLifecycle({
                 registryDirectory : '/native/config/projects'
             }
         },
-        getInstanceRoot          : () => '/instances',
-        resolveHarnessGeneration : async () => null,
+        getInstanceRoot         : () => '/instances',
+        resolveHarnessGeneration: async () => null,
         // the default catalog read answers without a harness: no seat home here has a Codex login, and no CLI is there
         authRequiredForHome      : () => true,
         getHarnessBinaryPath     : harnessType => `/nonexistent/${harnessType}`,
@@ -320,6 +321,28 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             await waiting;
             abort.abort();
             expect(await pending).toMatchObject({canceled: true, reason: 'stop-requested'});
+            expect(prepare.calls).toHaveLength(0);
+            expect(lifecycle.calls.start).toHaveLength(0);
+            expect(lifecycle.calls.reserve).toHaveLength(0);
+            held.assertCurrent();
+        } finally { held.release(); }
+    });
+
+    test('a Start whose runtime lease never frees refuses within its bound and names the holder', async () => {
+        const lifecycle  = makeLifecycle({agents: repoAgent('a')}), prepare = makePrepareWorkspace();
+        const generation = await runtimeFixture();
+        lifecycle.installedRuntime = {...generation, generation};
+        const held = holdRuntimeGenerationReferences({directory: path.dirname(generation.directory)});
+        let requested;
+        try {
+            const pending = startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed',
+                ensureRepo: makeEnsureRepo(), prepareWorkspace: prepare,
+                acquireRuntimeReferences(options) {
+                    requested = options.deadlineMs;
+                    return waitForRuntimeGenerationReferences({...options, deadlineMs: 50});
+                }});
+            await expect(pending).rejects.toMatchObject({code: 'RUNTIME_REFERENCES_HELD', holder: {pid: process.pid}});
+            expect(requested).toBe(RUNTIME_REFERENCE_START_WAIT_MS);
             expect(prepare.calls).toHaveLength(0);
             expect(lifecycle.calls.start).toHaveLength(0);
             expect(lifecycle.calls.reserve).toHaveLength(0);
