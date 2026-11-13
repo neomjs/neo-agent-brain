@@ -1259,6 +1259,48 @@ test.describe('openWorkWakes — an owed reply wakes beside the holder, once per
         expect(Object.values(answered.ledger.holding).map(entry => entry.wake.kind)).not.toContain('holder-silent')
     });
 
+    test('a page that slides past the owed turn mints no second reply; a member reply, then a later turn, does', () => {
+        const
+            run   = journey(),
+            pr    = turns => [{ci: 'pending', turns}],
+            first = Array.from({length: 10}, (_, i) => said(i + 1)),
+            slid  = [...first.slice(1), said(11)];
+
+        run.step(0, pr([said(-1, GPT, true)]));
+        expect(replies(run.step(11, pr(first)))).toEqual([expect.objectContaining({to: ADA, episode: iso(1)})]);
+        expect(replies(run.step(12, pr(first))), 'unchanged page').toEqual([]);
+        expect(replies(run.step(13, pr(slid))), 'the latest-ten page dropped the owed turn').toEqual([]);
+
+        expect(replies(run.step(14, pr([...slid.slice(1), said(13, ADA, true)])))).toEqual([]);
+        expect(replies(run.step(15, pr([...slid.slice(2), said(13, ADA, true), said(14)]))))
+            .toEqual([expect.objectContaining({to: ADA, episode: iso(14)})])
+    });
+
+    test('a reply carried to a new head keeps its receipt: no second wake, and delivered silence still escalates (#1651)', () => {
+        const
+            run       = journey(),
+            roster    = [ADA, GPT],
+            H2        = 'b'.repeat(40),
+            owed      = [said(-5), said(0, GPT, true), said(1)],
+            pr        = (turns, head = HEAD) => [{ci: 'pending', head, turns}],
+            escalated = result => result.wakes.filter(wake => wake.kind === 'holder-silent'),
+            verdict   = state => ({rotationSeats: roster, deliveries: {'MESSAGE:reply': {state, at: iso(2)}}});
+
+        run.step(0, pr(owed.slice(0, 2)), {}, {rotationSeats: roster});
+        expect(replies(run.step(1, pr(owed), {}, {rotationSeats: roster}))).toEqual([expect.objectContaining({to: ADA})]);
+        Object.values(run.ledger().holding).find(entry => entry.wake.kind === 'respond-comment').messageId = 'MESSAGE:reply';
+
+        // an hour after delivery the PR is pushed: the reply moves to the new head with its receipt, waking nobody
+        const pushed = run.step(62, pr(owed, H2), {}, verdict('delivered'));
+        expect(pushed.wakes).toEqual([]);
+        expect(Object.values(pushed.ledger.holding).find(({wake}) => wake.kind === 'respond-comment'))
+            .toMatchObject({status: 'admitted', messageId: 'MESSAGE:reply', wake: {head: H2}});
+
+        expect(escalated(run.step(2 + 4 * 60, pr(owed, H2), {}, verdict('unknown'))), 'an unknown delivery certifies nothing').toEqual([]);
+        expect(escalated(run.step(2 + 4 * 60 + 1, pr(owed, H2), {}, verdict('delivered'))))
+            .toEqual([expect.objectContaining({to: GPT, role: 'rotation', holder: ADA, head: H2})])
+    });
+
     test('an untouched outside PR\'s triage covers every turn before it, and a later turn wakes the seat the triage woke (AC-1)', () => {
         const
             roster = [ADA, GPT],

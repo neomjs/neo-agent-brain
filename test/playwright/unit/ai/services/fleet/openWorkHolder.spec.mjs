@@ -256,6 +256,22 @@ test.describe('openWorkHolder — an outside comment owes a reply, beside the ho
         expect(responderOf(row({turns: [them(1), them(3)]}), {since: turn(2).at})).toEqual(reply('author', ['@neo-opus-ada'], 3))
     });
 
+    test('a turn whose author is gone is no outside human, and a held episode outlives a page that slid past it', () => {
+        // GitHub may name no author: such a turn is neither a question nor an answer, while a member turn still counts
+        expect(responderOf(row({turns: [us(1), turn(2, null)]}))).toBeNull();
+        expect(responderOf(row({turns: [us(1), turn(2, null), them(3)]}))).toEqual(reply('author', ['@neo-opus-ada'], 3));
+        expect(responderOf(row({turns: [them(1), turn(2, null, true)]}))).toBeNull();
+
+        // ten later outside turns pushed the held one off the page, and no member turn shows: still the held episode
+        const slid = Array.from({length: 10}, (_, i) => them(i + 2));
+        expect(responderOf(row({turns: slid}), {held: turn(1).at})).toEqual(reply('author', ['@neo-opus-ada'], 1));
+        expect(responderOf(row({turns: slid})), 'nothing held').toEqual(reply('author', ['@neo-opus-ada'], 2));
+
+        // a member turn after the held one ends it, and the next outside turn opens another
+        expect(responderOf(row({turns: [...slid.slice(2), us(12)]}), {held: turn(1).at})).toBeNull();
+        expect(responderOf(row({turns: [...slid.slice(3), us(12), them(13)]}), {held: turn(1).at})).toEqual(reply('author', ['@neo-opus-ada'], 13))
+    });
+
     test('a seat\'s own PR is its author\'s to answer, whatever else holds it (AC-3)', () => {
         for (const overrides of [{ci: 'red'}, judged('APPROVED'), judged('CHANGES_REQUESTED'), {requested: ['@neo-gpt']}]) {
             expect(responderOf(row({...overrides, turns: [them(1)]}))).toEqual(reply('author', ['@neo-opus-ada'], 1))

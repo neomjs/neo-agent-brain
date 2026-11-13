@@ -183,8 +183,10 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             prior   = episode && holding[slot]?.wake?.episode !== episode ? undefined : holding[slot],
             settled = episode && Object.values(holding).find(({wake}) =>
                 wake.pr === row.key && wake.to === seat && wake.kind === kind && wake.episode === episode),
+            // A settled wake's receipt moves with it, or its delivered silence could never be read on the new head
             entry   = prior ?? {wake: wakeOf(row, seat, role, kind, episode ?? state.observedAt),
-                status: settled?.status ?? (rowBaseline ? 'baseline' : 'pending')};
+                status: settled?.status ?? (rowBaseline ? 'baseline' : 'pending'),
+                ...(settled?.status === 'admitted' && settled.messageId ? {messageId: settled.messageId} : {})};
 
         current.add(slot);
         holding[slot] = entry;
@@ -206,10 +208,13 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
 
     /**
      * Holds the reply an outside comment is owed. Nobody engaged means an untouched outside PR: its admitted triage
-     * covers the turns before it, and a later turn goes to the seat the triage woke.
+     * covers the turns before it, and a later turn goes to the seat the triage woke. The episode already held stays
+     * the episode while no member turn after it shows, so a conversation page that slides mints no second reply.
      */
     const respond = (row, rowBaseline) => {
-        let responder = responderOf(row);
+        const held = Object.values(holding).find(({wake}) => wake.pr === row.key && wake.kind === 'respond-comment')?.wake.episode ?? null;
+
+        let responder = responderOf(row, {held});
 
         if (!responder || !REASONS[responder.kind]) return;
 
@@ -218,7 +223,7 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         if (role === 'rotation') {
             const triage = holding[JSON.stringify([row.repo, row.number, row.head, 'rotation', 'triage-outside'])];
 
-            responder = triage?.status === 'admitted' && native(triage.wake.to) ? responderOf(row, {since: triage.wake.episode}) : null;
+            responder = triage?.status === 'admitted' && native(triage.wake.to) ? responderOf(row, {held, since: triage.wake.episode}) : null;
 
             if (!responder) return;
 
