@@ -1160,3 +1160,30 @@ test.describe('openWorkWakes — a holder silent after a delivered wake escalate
         expect(Object.values(lone.ledger.holding).find(entry => entry.wake.kind === 'holder-silent').wake.to).not.toBe(GPT)
     });
 });
+
+test.describe('openWorkWakes — an outside PR pushed past a seat\'s review wakes that seat, never the rotation (#1642)', () => {
+    test('triage on the first head, the seat\'s change request, then a green push wakes the judge with review (AC-3)', () => {
+        const
+            EUCLID  = '@neo-gpt-euclid',
+            H2      = 'b'.repeat(40),
+            roster  = [ADA, GPT, EUCLID],
+            outside = {owner: {kind: 'outside', seat: null, login: 'contributor'}},
+            judge   = onHead => ({reviewer: EUCLID, state: 'CHANGES_REQUESTED', onHead}),
+            judged  = onHead => ({reviews: [judge(onHead)], opinions: [judge(onHead)]}),
+            summary = result => result.wakes.map(({to, role, kind}) => ({to, role, kind})),
+            run     = journey();
+
+        run.step(0, [{...outside, ci: 'pending'}], {}, {rotationSeats: roster});
+        expect(summary(run.step(1, [{...outside, ci: 'green'}], {}, {rotationSeats: roster})).map(({role, kind}) => ({role, kind})))
+            .toEqual([{role: 'rotation', kind: 'triage-outside'}]);
+
+        // the seat's change request on the first head is the outside author's turn: nobody to wake
+        expect(run.step(2, [{...outside, ci: 'green', ...judged(true)}], {}, {rotationSeats: roster}).wakes).toEqual([]);
+
+        // the author pushes: pending wakes nobody, green wakes the judge
+        expect(run.step(3, [{...outside, head: H2, ci: 'pending', ...judged(false)}], {}, {rotationSeats: roster}).wakes).toEqual([]);
+        expect(summary(run.step(4, [{...outside, head: H2, ci: 'green', ...judged(false)}], {}, {rotationSeats: roster})))
+            .toEqual([{to: EUCLID, role: 'reviewer', kind: 'review'}]);
+        expect(run.step(5, [{...outside, head: H2, ci: 'green', ...judged(false)}], {}, {rotationSeats: roster}).wakes, 'once per head').toEqual([])
+    });
+});
