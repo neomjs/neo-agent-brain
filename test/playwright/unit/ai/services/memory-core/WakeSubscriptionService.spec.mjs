@@ -3710,6 +3710,30 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 });
             });
 
+            test('without readable records a pull seat is still concluded by its own poll; a pull failure beside a push route stays unknown', async () => {
+                // A pull route needs no receiver record, so an unconfigured or unreadable records directory must
+                // not hide a seat whose listener went silent from the rows the Fleet routes by.
+                const
+                    pull   = {trigger: 'SENT_TO_ME', harnessTarget: 'none', lastPollAt: iso(T0ms - 30 * 60 * 1000)},
+                    reason = `listener silent: no poll since ${pull.lastPollAt} and no turn in progress`,
+                    blind  = path.join(recordsDir, 'records-file');
+
+                for (const id of ['@neo-pull-only', '@neo-pull-and-push']) { seedAgent(id); seedActivity(id) }
+                route('@neo-pull-only',     'WAKE_SUB:pull-only',  pull);
+                route('@neo-pull-and-push', 'WAKE_SUB:mixed-pull', pull);
+                route('@neo-pull-and-push', 'WAKE_SUB:mixed-push');
+
+                await fs.writeFile(blind, '');
+
+                for (const read of [() => readWakeDelivery({recordsDir: ''}), () => readWakeDelivery({recordsDir: blind})]) {
+                    WakeSubscriptionService.wakeDeliveryReadFn = read;
+
+                    expect((await WakeSubscriptionService.whoIsOnline({now: new Date(T0)})).axes.wake.capability.state).toBe('degraded');
+                    expect((await verboseRow('@neo-pull-only')).wake).toEqual({state: 'undeliverable', reason});
+                    expect((await verboseRow('@neo-pull-and-push')).wake.state).toBe('unknown')
+                }
+            });
+
             test('a process that declares no records directory says so, rather than calling the records unreadable', async () => {
                 seedAgent('@neo-wake-undeclared');
                 seedActivity('@neo-wake-undeclared');
