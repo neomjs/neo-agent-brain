@@ -2114,10 +2114,10 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         };
 
         expect(FleetLifecycleService.harnessAcquisitionContext('codex-desktop')).toEqual({
-            optedIn: true, root: '/nonexistent/fleet-spec-harness-generations', installedBundle: '/Vendor/ChatGPT.app'
+            optedIn: true, reason: null, root: '/nonexistent/fleet-spec-harness-generations', installedBundle: '/Vendor/ChatGPT.app'
         });
         expect(FleetLifecycleService.harnessAcquisitionContext('antigravity')).toEqual({
-            optedIn: false, root: '/nonexistent/fleet-spec-harness-generations', installedBundle: '/Vendor/Antigravity.app'
+            optedIn: false, reason: null, root: '/nonexistent/fleet-spec-harness-generations', installedBundle: '/Vendor/Antigravity.app'
         })
     });
 
@@ -3675,7 +3675,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         expect(spawn.calls).toEqual([])
     });
 
-    test('an opted-in Claude Start refuses while its host gate does not hold, before any admission, and spawns nothing', async () => {
+    test('an opted-in Claude family whose host gate does not hold is the vendor\'s: a Start launches the installed bundle and admits nothing', async () => {
         const {spawn} = installSeat('claude-desktop'), copies = claudeGenerationCopies(), store = FleetLifecycleService.harnessGenerationStore, calls = [];
 
         copies.admit('a'.repeat(64));
@@ -3685,11 +3685,13 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         FleetLifecycleService.harnessGenerationOptIns = {'claude-desktop': true};
         FleetLifecycleService.harnessHostGate         = ({family}) => ({ready: false, reason: `the ${family} policy is not in force`});
 
-        const refusal = "'claude-desktop' cannot start from admitted harness generations: the claude-desktop policy is not in force.";
+        expect(await FleetLifecycleService.resolveHarnessGeneration('claude-desktop')).toBeNull();
+        expect(FleetLifecycleService.harnessAcquisitionContext('claude-desktop')).toMatchObject({optedIn: false, reason: 'the claude-desktop policy is not in force'});
 
-        expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT})).toThrow(refusal);
-        await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'seat', harnessType: 'claude-desktop'})).rejects.toThrow(refusal);
-        expect(spawn.calls).toEqual([]);
+        FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+
+        expect(spawn.calls[0].command, 'the installed binary, never the admitted copy').toBe(process.execPath);
+        expect(FleetLifecycleService.status('seat').harnessGeneration ?? null).toBeNull();
         expect(calls, 'no admission ran and no ledger was written').toEqual([])
     });
 

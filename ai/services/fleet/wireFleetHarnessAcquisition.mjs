@@ -1,5 +1,6 @@
-import {acquireAntigravityUpdate}  from './antigravityUpdate.mjs';
-import {acquireCodexDesktopUpdate} from './codexDesktopUpdate.mjs';
+import {acquireAntigravityUpdate}   from './antigravityUpdate.mjs';
+import {acquireClaudeDesktopUpdate} from './claudeDesktopUpdate.mjs';
+import {acquireCodexDesktopUpdate}  from './codexDesktopUpdate.mjs';
 import {
     HARNESS_GENERATION_FAMILIES,
     selectHarnessGeneration
@@ -16,11 +17,15 @@ import {
 
 /** Each family's acquisition, and the candidate version its result names. A family without one has no source yet. */
 export const HARNESS_ACQUIRERS = Object.freeze({
-    'antigravity'  : Object.freeze({
+    'antigravity'   : Object.freeze({
         acquire: ({root, installedBundle}) => acquireAntigravityUpdate({root, ...(installedBundle && {appBundle: installedBundle})}),
         version: result => result?.check?.candidate?.version ?? null
     }),
-    'codex-desktop': Object.freeze({
+    'claude-desktop': Object.freeze({
+        acquire: ({root, installedBundle}) => acquireClaudeDesktopUpdate({root, ...(installedBundle && {appBundle: installedBundle})}),
+        version: result => result?.check?.candidate?.version ?? null
+    }),
+    'codex-desktop' : Object.freeze({
         acquire: ({root, installedBundle}) => acquireCodexDesktopUpdate({root, ...(installedBundle && {appBundle: installedBundle})}),
         version: result => result?.candidate?.shortVersion ?? null
     })
@@ -37,8 +42,9 @@ const MAX_TIMER_MS = 2_147_483_647;
  * Runs for one family never overlap, and a run that throws is recorded for its family without stopping
  * the others. A family that is not opted in, or has no acquisition, is never fetched.
  * @param {Object} options
- * @param {Function} options.context `(family) => {optedIn, root, installedBundle}`, normally
- * `FleetLifecycleService#harnessAcquisitionContext`, so the job and a Start read one opt-in.
+ * @param {Function} options.context `(family) => {optedIn, reason, root, installedBundle}`, normally
+ * `FleetLifecycleService#harnessAcquisitionContext`, so the job and a Start read one opt-in; `reason` says why
+ * a family is not opted in when the host, not the leaf, decided it.
  * @param {Number} options.intervalMs Milliseconds between runs.
  * @param {Number} [options.bootDelayMs=BOOT_DELAY_MS] Delay before the first run.
  * @param {Object} [options.acquirers=HARNESS_ACQUIRERS] `{[family]: {acquire, version}}`.
@@ -71,9 +77,9 @@ export function wireFleetHarnessAcquisition({
         if (stopped || running.has(family)) return running.get(family) ?? Promise.resolve(status.get(family));
 
         const run = (async () => {
-            const {optedIn, root, installedBundle} = context(family), acquirer = acquirers[family];
+            const {optedIn, reason, root, installedBundle} = context(family), acquirer = acquirers[family];
 
-            if (!optedIn)  return {family, state: 'not-opted-in'};
+            if (!optedIn)  return {family, state: 'not-opted-in', ...(reason && {reason})};
             if (!acquirer) return {family, state: 'no-source'};
 
             const lastCheckAt = now().toISOString();

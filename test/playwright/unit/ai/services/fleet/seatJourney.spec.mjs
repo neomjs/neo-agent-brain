@@ -173,9 +173,9 @@ test.describe('ai/services/fleet/seatJourney — judgements', () => {
         const fleet = {phase: 'stopped', refusedStarts: 0, starts: 0, stops: []}, open = () => Date.now() >= opensAt;
 
         return Object.assign(fleet, {
-            defineAgent       : async () => ({}),
-            setRepo           : async () => ({}),
-            startAgent        : async () => {
+            defineAgent: async () => ({}),
+            setRepo    : async () => ({}),
+            startAgent : async () => {
                 if (!open()) {
                     fleet.refusedStarts++;
                     throw new Error('Fleet launch continuity is not ready.')
@@ -357,6 +357,8 @@ test.describe('ai/services/fleet/seatJourney — end to end against a fleet serv
                 NEO_AGENT_IDENTITY          : VIEWER,
                 NEO_NL_PORT                 : String(nlPort),
                 NEO_FLEET_CLAUDE_DESKTOP_BIN: standIn,
+                // pinned on every host: a host's Claude updater policy must not move the stand-in onto harness generations
+                NEO_FLEET_HARNESS_GENERATIONS_CLAUDE_DESKTOP: 'false',
                 // pinned on every host: an installed ChatGPT app must not be what makes Codex Desktop start
                 NEO_FLEET_CODEX_DESKTOP_BIN: codex.binary,
                 NEO_FLEET_CODEX_BIN        : codex.cli,
