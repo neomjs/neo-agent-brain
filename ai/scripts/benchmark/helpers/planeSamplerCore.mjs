@@ -117,7 +117,7 @@ export function summarizeService(samples) {
     return {
         samples: samples.length,
         restarts,
-        heapGiB: spread(samples.map(sample => sample.anonBytes), 2 ** 30),
+        heapGiB: spread(samples.map(sample => sample.anonBytes), 1024 * 1024 * 1024),
         cores  : spread(cores),
         bytes  : totals
     }

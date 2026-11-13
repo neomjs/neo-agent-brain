@@ -58,7 +58,7 @@ async function main(options) {
               gaps: Object.fromEntries(services.map(({service}) => [service, 0])),
               rows: Object.fromEntries(services.map(({service}) => [service, []]))
           },
-          volumes    = async () => parseVolumeSizes((await run('docker', ['system', 'df', '-v'], {maxBuffer: 16 * 2 ** 20})).stdout, options.project);
+          volumes    = async () => parseVolumeSizes((await run('docker', ['system', 'df', '-v'], {maxBuffer: 16 * 1024 * 1024})).stdout, options.project);
 
     await mkdir(options.out, {recursive: true});
 
