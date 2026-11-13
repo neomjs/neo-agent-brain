@@ -430,6 +430,53 @@ test.describe('a failed turn neither loses its wake nor leaves the seat deaf', (
         await listen({event: 'StopFailure', error: 'rate_limit', answers: [{pending: 0, watermark: 11}], onSleep: (count, table) => table.delete(OLDER.pid)});
 
         expect(readState()).toMatchObject({watermark: 11, delivered: {sessionId: 'session-newer', from: 10}})
+    });
+
+    test('a turn ending in a session that lost the seat neither clears nor sets the owner\'s failure', async () => {
+        const owner = {owner: {sessionId: 'session-newer', session: NEWER}, listener: null, watermark: 11, source: SOURCE};
+
+        writeState({...owner, failure: {error: 'authentication_failed', count: 1}});
+        expect((await listen({event: 'Stop'})).outcome.reason).toBe('superseded');
+        expect(readState().failure).toEqual({error: 'authentication_failed', count: 1});
+
+        writeState(owner);
+        expect((await listen({event: 'StopFailure', error: 'authentication_failed'})).outcome.reason).toBe('superseded');
+        expect(readState().failure).toBeUndefined()
+    });
+
+    test('an auth failure stands down the listener already running, even mid-poll, and the wake waits for sign-in', async () => {
+        const
+            FAILER = {pid: 903, ppid: OLDER.pid, startedAt: 'Fri Oct 2 12:20:00 2026', command: 'node wakeListenerHook.mjs'},
+            table  = new Map([[OLDER.pid, OLDER], [NEWER.pid, NEWER], [LISTENER.pid, LISTENER], [FAILER.pid, FAILER]]);
+
+        let release, polling;
+
+        const pending = new Promise(resolve => {release = resolve}),
+              started = new Promise(resolve => {polling = resolve});
+
+        writeState({owner: {sessionId: 'session-older', session: OLDER}, listener: null, watermark: 10, source: SOURCE});
+
+        // This session's Stop arms the listener, which records itself and is mid-poll when the turn below fails.
+        const running = listen({procs: table, answers: [pending], onPoll: polling});
+
+        await started;
+
+        // The operator prompts the same session, and that turn fails on its sign-in.
+        expect((await listen({procs: table, event: 'UserPromptSubmit', pid: FAILER.pid})).outcome.reason).toBe('already-owner');
+        expect((await listen({procs: table, event: 'StopFailure', error: 'authentication_failed', pid: FAILER.pid})).outcome.reason).toMatch(/authentication_failed/);
+
+        release({pending: 1, digest: 'D', watermark: 11});
+
+        expect((await running).outcome).toEqual({exit: 0, reason: 'superseded'});
+        expect(readState()).toMatchObject({watermark: 10, listener: null, failure: {error: 'authentication_failed', count: 1}});
+
+        // Signed in again, the next turn that reaches Stop delivers the pending events exactly once.
+        const recovered = await listen({procs: table, pid: FAILER.pid, answers: [{pending: 1, digest: 'D', watermark: 11}]});
+
+        expect(recovered.outcome).toEqual({exit: 2, digest: 'D'});
+        expect(recovered.polls).toEqual([10]);
+        expect(readState()).toMatchObject({watermark: 11, delivered: {sessionId: 'session-older', from: 10}});
+        expect(readState().failure).toBeUndefined()
     })
 });
 
