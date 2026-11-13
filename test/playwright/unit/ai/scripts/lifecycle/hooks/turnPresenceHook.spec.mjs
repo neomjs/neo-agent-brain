@@ -33,7 +33,8 @@ import {generateKimiSeatConfig}                  from '../../../../../../../ai/s
 import {
     CAPACITY_ACTIONS,
     readClaudeUsageCapacity,
-    recordClaudeTurnPresence
+    recordClaudeTurnPresence,
+    sessionTurnStore
 } from '../../../../../../../ai/scripts/lifecycle/hooks/claude/turnPresenceHook.mjs';
 
 const
@@ -634,5 +635,72 @@ test.describe('the Claude hook\'s capacity reading', () => {
         expect(calls).toHaveLength(1);
         expect(calls[0]).toMatchObject({action: 'terminal', terminalState: 'aborted', source: 'claude-stop-failure', note: 'claude StopFailure authentication_failed'});
         expect(calls[0].capacity).toBeUndefined()
+    })
+});
+
+/**
+ * Without a turn id the plane joins the seat's newest turn. A session that lost the seat to one prompted later
+ * would then close or extend the newer session's turn, and the seat would read idle mid-turn.
+ */
+test.describe('turnPresenceHook — a session names its own turn', () => {
+    const EVENTS = {start: 'UserPromptSubmit', progress: 'PostToolUse', terminal: 'StopFailure'};
+
+    const memoryStore = () => {
+        const ids = new Map();
+
+        return {ids, read: id => ids.get(id) ?? null, write: (id, turnId) => ids.set(id, turnId), remove: id => ids.delete(id)}
+    };
+
+    const emit = (turnStore, calls, sessionId, actionArg) => recordClaudeTurnPresence({
+        actionArg,
+        capacity   : null,
+        deadlineMs : 500,
+        env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
+        hookPayload: {session_id: sessionId, hook_event_name: EVENTS[actionArg], ...(actionArg === 'terminal' ? {error: 'authentication_failed'} : {})},
+        mintTurnId : () => `turn-of-${sessionId}`,
+        plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+        record     : async args => {calls.push(args); return {status: 'recorded'}},
+        turnStore
+    });
+
+    test('a failed turn in a session that lost the seat closes its own turn, never the newer session\'s', async () => {
+        const turnStore = memoryStore(), calls = [];
+
+        await emit(turnStore, calls, 'session-a', 'start');
+        await emit(turnStore, calls, 'session-b', 'start');
+        await emit(turnStore, calls, 'session-a', 'progress');
+        await emit(turnStore, calls, 'session-a', 'terminal');
+
+        expect(calls.map(call => [call.action, call.turnId])).toEqual([
+            ['start',    'turn-of-session-a'],
+            ['start',    'turn-of-session-b'],
+            ['progress', 'turn-of-session-a'],
+            ['terminal', 'turn-of-session-a']
+        ]);
+        expect([...turnStore.ids]).toEqual([['session-b', 'turn-of-session-b']])
+    });
+
+    test('a session with no stored turn id joins the newest turn, as before', async () => {
+        const calls = [];
+
+        await emit(memoryStore(), calls, 'session-a', 'terminal');
+
+        expect(calls[0].turnId).toBeUndefined()
+    });
+
+    test('the default store keeps one file per session in the directory it is given', () => {
+        const dir   = fs.mkdtempSync(path.join(os.tmpdir(), 'turn-store-')),
+              store = sessionTurnStore(dir);
+
+        try {
+            store.write('session/a', 'turn-1');
+            expect(store.read('session/a')).toBe('turn-1');
+            expect(fs.readdirSync(dir)).toEqual([`${encodeURIComponent('session/a')}.json`]);
+
+            store.remove('session/a');
+            expect(store.read('session/a')).toBeNull()
+        } finally {
+            fs.rmSync(dir, {force: true, recursive: true})
+        }
     })
 });

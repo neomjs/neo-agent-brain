@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs     from 'node:fs';
+import os     from 'node:os';
 import path   from 'node:path';
 import {
     readHookPayload,
@@ -17,6 +18,43 @@ import {resolveUserDataDir}                          from './seatModelGuardHook.
  * @type {Set<String>}
  */
 export const CAPACITY_ACTIONS = new Set(['start']);
+
+/**
+ * @summary Keeps the turn id a session minted at its prompt, one small file per session, so the turn's
+ * progress and its end name that turn. Without an id the plane joins the seat's newest turn, which a session
+ * prompted later owns. The files live in the OS temp directory, which the OS prunes. Every failure is
+ * swallowed: a missing id falls back to the newest turn, as before.
+ * @param {String} [dir] Defaults to `neo-turn-presence` in the OS temp directory.
+ * @returns {{read: Function, write: Function, remove: Function}} Keyed by the hook payload's `session_id`.
+ */
+export function sessionTurnStore(dir = path.join(os.tmpdir(), 'neo-turn-presence')) {
+    const file = sessionId => path.join(dir, `${encodeURIComponent(sessionId)}.json`);
+
+    return {
+        read(sessionId) {
+            try {
+                return JSON.parse(fs.readFileSync(file(sessionId), 'utf8')).turnId ?? null
+            } catch {
+                return null
+            }
+        },
+        write(sessionId, turnId) {
+            try {
+                fs.mkdirSync(dir, {recursive: true});
+                fs.writeFileSync(file(sessionId), JSON.stringify({turnId}))
+            } catch {
+                // The turn's later events then join the newest turn.
+            }
+        },
+        remove(sessionId) {
+            try {
+                fs.rmSync(file(sessionId), {force: true})
+            } catch {
+                // The OS prunes what is left.
+            }
+        }
+    }
+}
 
 /**
  * @summary Reads the Desktop app's newest plan-usage sample as this seat's capacity reading.
@@ -142,22 +180,30 @@ function resolveNote({action, hookPayload} = {}) {
  * @param {String|Date|Number} [options.now] Clock override for tests.
  * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from the seat leaves when absent.
  * @param {Function} [options.record] Transport seam.
+ * @param {Object} [options.turnStore] The session's turn ids; {@link sessionTurnStore} when absent.
+ * @param {Function} [options.mintTurnId=crypto.randomUUID] Mints a turn id at the session's prompt.
  * @returns {Promise<Object>} `{status}` — `recorded`, or `skipped` with a reason.
  */
 export async function recordClaudeTurnPresence({
     actionArg,
     capacity,
     deadlineMs,
-    env = process.env,
+    env        = process.env,
     hookPayload,
     now,
     plane,
-    record
+    record,
+    turnStore  = sessionTurnStore(),
+    mintTurnId = crypto.randomUUID
 } = {}) {
-    const action  = resolveAction({actionArg, hookPayload}),
-          reading = CAPACITY_ACTIONS.has(action) ? capacity === undefined ? readClaudeUsageCapacity({env}) : capacity : null;
+    const action    = resolveAction({actionArg, hookPayload}),
+          reading   = CAPACITY_ACTIONS.has(action) ? capacity === undefined ? readClaudeUsageCapacity({env}) : capacity : null,
+          sessionId = typeof hookPayload?.session_id === 'string' && hookPayload.session_id ? hookPayload.session_id : null,
+          turnId    = !sessionId ? undefined : action === 'start' ? mintTurnId() : turnStore.read(sessionId) ?? undefined;
 
-    return recordTurnPresenceFromHook({
+    if (action === 'start' && turnId) turnStore.write(sessionId, turnId);
+
+    const result = await recordTurnPresenceFromHook({
         action,
         ...(reading ? {capacity: reading} : {}),
         deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(ASYNC_ACTIONS.has(action) ? {async: true} : {registrationMs: SYNC_REGISTRATION_MS}),
@@ -167,9 +213,14 @@ export async function recordClaudeTurnPresence({
         now,
         plane     : plane ?? await readPlaneConfig(),
         source    : resolveSource({action, hookPayload}),
+        ...(turnId ? {turnId} : {}),
         ...(normalizeHookEventName(hookPayload) === 'StopFailure' ? {terminalState: 'aborted'} : {}),
         ...(record ? {record} : {})
     });
+
+    if (action === 'terminal' && sessionId) turnStore.remove(sessionId);
+
+    return result
 }
 
 async function main() {
