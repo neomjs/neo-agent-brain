@@ -23,6 +23,7 @@ import {
     HUMAN_INPUT_DEFER_BOUND,
     SESSION_ROTATE_EVENT_TYPE,
     WAKE_DIGEST_EVENT_TYPE,
+    hasReceiptIdentity,
     isHumanInputDefer,
     isSessionRotation,
     routeAdmits
@@ -541,6 +542,11 @@ export function createWakeReceiver({
                 schemaVersion !== envelope.schemaVersion
             ) {
                 return writeJson(response, 409, {error: 'signed-route-mismatch'});
+            }
+            // A rotation's identity is its receipt. Records are keyed by event id, so an id chosen
+            // apart from the receipt would let one handover open two sessions.
+            if (isSessionRotation(envelope) && !hasReceiptIdentity(envelope)) {
+                return writeJson(response, 409, {error: 'rotation-receipt-mismatch'});
             }
 
             const sourceEventIds = Array.isArray(envelope?.payload?.sourceEventIds)

@@ -12,8 +12,10 @@ import {
     SESSION_ROTATE_EVENT_TYPE,
     admittedEventType,
     evaluateHumanInput,
+    hasReceiptIdentity,
     isHumanInputDefer,
     isSessionRotation,
+    rotationEventId,
     rotationPrompt,
     routeAdmits
 } from '../../../../../../ai/daemons/wake/sessionRotation.mjs';
@@ -107,11 +109,33 @@ test.describe('ai/daemons/wake/sessionRotation — the contract', () => {
     });
 
     test('the idle clock is read from IOHIDSystem without a grant', () => {
-        const ioreg = stdout => () => ({stdout});
+        const idle  = '  | "HIDIdleTime" = 61000000000\n',
+              ioreg = result => () => ({status: 0, signal: null, ...result});
 
-        expect(readHumanIdleMs({platform: 'darwin', spawnSyncFn: ioreg('  | "HIDIdleTime" = 61000000000\n')})).toBe(61_000);
-        expect(readHumanIdleMs({platform: 'darwin', spawnSyncFn: ioreg('no idle key here')})).toBeNull();
-        expect(readHumanIdleMs({platform: 'linux', spawnSyncFn: ioreg('"HIDIdleTime" = 1')})).toBeNull()
+        expect(readHumanIdleMs({platform: 'darwin', spawnSyncFn: ioreg({stdout: idle})})).toBe(61_000);
+        expect(readHumanIdleMs({platform: 'darwin', spawnSyncFn: ioreg({stdout: 'no idle key here'})})).toBeNull();
+        expect(readHumanIdleMs({platform: 'linux', spawnSyncFn: ioreg({stdout: idle})})).toBeNull()
+    });
+
+    test('a failed, killed or timed-out read is no observation, even with numeric output', () => {
+        const idle = '  | "HIDIdleTime" = 61000000000\n';
+
+        for (const failed of [
+            {status: 1, signal: null, stdout: idle},
+            {status: null, signal: 'SIGTERM', stdout: idle},
+            {status: null, signal: null, error: new Error('spawnSync ioreg ETIMEDOUT'), stdout: idle}
+        ]) {
+            expect(readHumanIdleMs({platform: 'darwin', spawnSyncFn: () => failed}), JSON.stringify(failed)).toBeNull()
+        }
+    });
+
+    test('a rotation\'s event id is its receipt\'s, so one receipt is one record', () => {
+        const envelope = rotationEnvelope();
+
+        expect(envelope.eventId).toBe(rotationEventId('MESSAGE:r1'));
+        expect(hasReceiptIdentity(envelope)).toBe(true);
+        expect(hasReceiptIdentity(rotationEnvelope({eventId: 'session-rotate:other'}))).toBe(false);
+        expect(hasReceiptIdentity(rotationEnvelope({payload: {prompt: PROMPT}}))).toBe(false)
     });
 });
 
@@ -146,8 +170,42 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
         }));
 
         expect(result).toEqual({outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE});
-        expect(calls).toHaveLength(0)
+        expect(typedPaste(calls)).toHaveLength(0)
     });
+
+    test('the idle clock is read last: after the pid lookup and the dialog probe, before the first keystroke', async () => {
+        const order  = [];
+        const result = await dispatchLocalWake(rotationRecord(), quietEffects({
+            resolveGuiInstancePid: async () => { order.push('pid'); return 4242 },
+            readHumanIdleMs      : () => { order.push('idle'); return HUMAN_INPUT_QUIET_MS },
+            spawnAsync           : async (command, args) => {
+                order.push(args.some(arg => String(arg).includes('keystroke "v"')) ? 'type' : 'probe');
+                return ''
+            }
+        }));
+
+        expect(result).toBe('delivered');
+        expect(order).toEqual(['pid', 'probe', 'idle', 'type'])
+    });
+
+    for (const stage of ['pid lookup', 'dialog probe']) {
+        test(`activity that resumes during the ${stage} defers the rotation`, async () => {
+            const calls  = [];
+            let   busy   = false;
+            const result = await dispatchLocalWake(rotationRecord(), quietEffects({
+                resolveGuiInstancePid: async () => { if (stage === 'pid lookup') busy = true; return 4242 },
+                readHumanIdleMs      : () => busy ? 0 : HUMAN_INPUT_QUIET_MS,
+                spawnAsync           : async (command, args) => {
+                    calls.push({command, args});
+                    if (stage === 'dialog probe') busy = true;
+                    return ''
+                }
+            }));
+
+            expect(result).toEqual({outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE});
+            expect(typedPaste(calls)).toHaveLength(0)
+        });
+    }
 
     test('an unreadable idle clock defers rather than guesses', async () => {
         const result = await dispatchLocalWake(rotationRecord(), quietEffects({readHumanIdleMs: () => null}));
@@ -285,6 +343,27 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
         expect(await again.json()).toMatchObject({status: 'duplicate'});
         await receiver.drain();
         expect(dispatched).toHaveLength(1)
+    });
+
+    test('one receipt rotates once: another event id for the same receipt is refused, a new receipt rotates', async () => {
+        expect((await post('WAKE_SUB:rotate', rotationEnvelope())).status).toBe(202);
+        await receiver.drain();
+
+        const relabelled = await post('WAKE_SUB:rotate', rotationEnvelope({eventId: 'session-rotate:MESSAGE:r1-again'})),
+              noReceipt  = await post('WAKE_SUB:rotate', rotationEnvelope({eventId: 'session-rotate:', payload: {prompt: PROMPT}}));
+
+        expect(relabelled.status).toBe(409);
+        expect(await relabelled.json()).toEqual({error: 'rotation-receipt-mismatch'});
+        expect(noReceipt.status).toBe(409);
+
+        const next = rotationEnvelope({
+            eventId: rotationEventId('MESSAGE:r2'),
+            payload: {receiptMessageId: 'MESSAGE:r2', oldSessionId: 'session-old-2', reason: 'sunset_restart', prompt: PROMPT}
+        });
+
+        expect((await post('WAKE_SUB:rotate', next)).status).toBe(202);
+        await receiver.drain();
+        expect(dispatched.map(record => record.envelope.payload.receiptMessageId)).toEqual(['MESSAGE:r1', 'MESSAGE:r2'])
     });
 
     test('the context gate never holds a rotation back: it exists because the session is full', async () => {

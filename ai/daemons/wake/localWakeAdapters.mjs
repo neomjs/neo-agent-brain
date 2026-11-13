@@ -690,19 +690,13 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record}) 
 
     // A rotation opens a session in one seat's window and submits a prompt there. It needs the app's
     // fresh-session shortcut and the seat's own instance, never the app-name default target, and it
-    // types only after a quiet minute of keyboard and pointer (`sessionRotation.mjs`).
+    // types only after a quiet minute of keyboard and pointer, read at the typing boundary below.
     if (rotation) {
         if (!resolvedMeta.freshSessionShortcut) {
             return {outcome: 'failed', outcomeReason: `session-rotate-without-fresh-session-shortcut:${appName}`}
         }
         if (addressType !== 'pid' && addressType !== 'userDataDir') {
             return {outcome: 'failed', outcomeReason: 'session-rotate-requires-addressed-instance'}
-        }
-
-        const humanInput = evaluateHumanInput(await effects.readHumanIdleMs());
-
-        if (humanInput.action === 'defer') {
-            return {outcome: 'deferred', outcomeReason: humanInput.reason}
         }
     }
 
@@ -739,6 +733,16 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record}) 
             effects.log.warn?.(
                 `[Wake Receiver] dialog gate could not probe ${record.subscriptionId}; delivering fail-open`
             );
+        }
+    }
+
+    // The human-input read comes last, after every awaited preparation: a quiet reading taken before
+    // the pid lookup or the dialog probe can be stale by the first keystroke.
+    if (rotation) {
+        const humanInput = evaluateHumanInput(await effects.readHumanIdleMs());
+
+        if (humanInput.action === 'defer') {
+            return {outcome: 'deferred', outcomeReason: humanInput.reason}
         }
     }
 
@@ -1211,7 +1215,12 @@ export function readHumanIdleMs({spawnSyncFn = spawnSync, platform = process.pla
     if (platform !== 'darwin') return null;
 
     const result = spawnSyncFn('ioreg', ['-r', '-c', 'IOHIDSystem', '-d', '1'], {encoding: 'utf8', timeout: 2000});
-    const match  = /"HIDIdleTime"\s*=\s*(\d+)/.exec(result?.stdout || '');
+
+    // Only a clean exit is an observation: a failed, killed or timed-out read can still carry numeric
+    // output, and a partial idle time must not pass the gate.
+    if (!result || result.error || result.signal || result.status !== 0) return null;
+
+    const match = /"HIDIdleTime"\s*=\s*(\d+)/.exec(result.stdout || '');
 
     return match ? Math.floor(Number(match[1]) / 1e6) : null
 }

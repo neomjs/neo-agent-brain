@@ -96,6 +96,30 @@ export function isSessionRotation(envelope) {
 }
 
 /**
+ * @summary The one event id a rotation for this receipt may carry, so a re-emission is the same record.
+ * @param {String} receiptMessageId The sunset handover's message id.
+ * @returns {String}
+ */
+export function rotationEventId(receiptMessageId) {
+    return `session-rotate:${receiptMessageId}`
+}
+
+/**
+ * @summary Whether a rotation names its receipt and carries that receipt's event id.
+ *
+ * The receiver keys its records by event id, so an id chosen apart from the receipt would let one
+ * handover open two sessions.
+ *
+ * @param {Object} envelope A `session/rotate` envelope.
+ * @returns {Boolean}
+ */
+export function hasReceiptIdentity(envelope) {
+    const receipt = envelope?.payload?.receiptMessageId;
+
+    return typeof receipt === 'string' && receipt.length > 0 && envelope.eventId === rotationEventId(receipt)
+}
+
+/**
  * @summary The first prompt a rotation types into the fresh session, or `null` when it carries none.
  * @param {Object} envelope A `session/rotate` envelope.
  * @returns {String|null}
