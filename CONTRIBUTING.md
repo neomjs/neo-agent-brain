@@ -105,13 +105,12 @@ the shared skill substrate on npm. Inside this repository:
 * `learn/**` contains Agent OS guides and [Architecture Decision Records](learn/agentos/decisions/);
 * `test/**` owns every unit, integration, and deployment fixture.
 
-1. **Looking for somewhere to start?** For a first PR, take an issue labelled
-   <a href="../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">good first issue</a>:
-   comment on one to claim it (see 3). No approval round needed; they are already approved.
-   **After your first merged PR**, move on to
-   <a href="../../issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22">help wanted</a>
-   or an unassigned open issue, the same way. Good first issues stay reserved for first-time contributors, so there is
-   always a way in for the next person.
+1. **Looking for somewhere to start?** Take an issue labelled
+   <a href="../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">good first issue</a>
+   or <a href="../../issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22">help wanted</a>: comment on one to claim it (see 3).
+   No approval round needed; they are already approved. Most carry both labels, and both are open to you whether this
+   is your first pull request or your tenth. Good first issue means the ticket holds everything you need to finish it;
+   it is no promise that the work is small. An unassigned open issue works the same way.
 2. For anything else, please ***always*** create a new issue inside our <a href="../../issues">Issues Tracker</a> first
    and wait for approval. This ensures that your idea fits the scope of the project and makes it less likely to get a
    rejected PR. We will do our best to reply to new tickets within 7d max. In case we don't, feel free to bump the ticket.
@@ -120,8 +119,8 @@ the shared skill substrate on npm. Inside this repository:
    maintainer confirms the assignment. You can open a PR without being assigned, but we merge the first approve-worthy PR
    for a ticket, so if someone else holds it or gets there first, your work may not land. An assignment is what protects
    your time.
-   To keep the project moving, if a ticket is assigned and we do not receive any feedback from the assignee (e.g. via a
-   comment) within 7 days, the ticket may get re-assigned to make it available for other contributors.
+   To keep the project moving, a claim lasts 3 days, and any comment you leave on the ticket starts the 3 days again.
+   After 3 days without a word from you, the ticket may go to another contributor.
 4. Please make sure that pull requests are always related to an issue inside our <a href="../../issues">Issues Tracker</a>.
 5. Please create PRs for the `dev` branch, not for `main`.
 6. Please do not copy code from other frameworks or libraries.
