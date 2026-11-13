@@ -359,9 +359,13 @@ test.describe('ai/services/fleet/seatJourney — end to end against a fleet serv
                 NEO_FLEET_CLAUDE_DESKTOP_BIN: standIn,
                 // pinned on every host: a host's Claude updater policy must not move the stand-in onto harness generations
                 NEO_FLEET_HARNESS_GENERATIONS_CLAUDE_DESKTOP: 'false',
-                // pinned on every host: an installed ChatGPT app must not be what makes Codex Desktop start
-                NEO_FLEET_CODEX_DESKTOP_BIN: codex.binary,
-                NEO_FLEET_CODEX_BIN        : codex.cli,
+                // pinned on every host: an installed ChatGPT app must not be what makes Codex Desktop start,
+                // and the stand-in is never taken for an admitted build
+                NEO_FLEET_CODEX_DESKTOP_BIN                : codex.binary,
+                NEO_FLEET_CODEX_BIN                        : codex.cli,
+                NEO_FLEET_HARNESS_GENERATIONS_CODEX_DESKTOP: 'false',
+                // HOME is the host's, so without this a Start that admits would write the host's harness store
+                NEO_FLEET_HARNESS_GENERATIONS_ROOT         : path.join(root, 'harnesses'),
                 ...(process.env.NEO_CHROMA_PORT_TEST ? {NEO_CHROMA_PORT_TEST: process.env.NEO_CHROMA_PORT_TEST} : {})
             };
 
