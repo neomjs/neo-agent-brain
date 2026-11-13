@@ -23,6 +23,7 @@ import {
 } from './readActiveWakeSubscriptionIdentities.mjs';
 import {projectIdentityWakeReachability} from './wakeDeliveryProjection.mjs';
 import {readWakeDelivery}                from './wakeDeliveryReader.mjs';
+import {ownOpenWorkOf}                   from './openWorkCopyStore.mjs';
 import {
     activeWakeSubscriptionStatusSql,
     isActiveWakeSubscriptionStatus,
@@ -2182,10 +2183,11 @@ class WakeSubscriptionService extends Base {
             };
         }
 
+        // the caller's own open work rides a digest that its events made; it is state, so it makes none itself
         return {
             subscriptionId,
             pending,
-            digest        : buildWakeDigest(caller, {messages, tasks, permissions, heartbeats}),
+            digest        : buildWakeDigest(caller, {messages, tasks, permissions, heartbeats}, {openWork: ownOpenWorkOf(caller)}),
             digestPriority: messages.length > 0 ? getHighestWakePriority(messages) : 'normal',
             eventsReplayed: events.length,
             watermark     : lastLogId

@@ -96,6 +96,7 @@ import {wireFleetHarnessAcquisition}                                     from '.
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
 import {fileStore, wireFleetOpenWorkSource}                              from './wireFleetOpenWorkSource.mjs';
 import {wireFleetOpenWorkWakes}                                          from './wireFleetOpenWorkWakes.mjs';
+import {wireFleetOpenWorkCopy}                                           from './wireFleetOpenWorkCopy.mjs';
 import {wireFleetRecentTurnsSource}                                      from './wireFleetRecentTurnsSource.mjs';
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
@@ -754,7 +755,12 @@ async function boot() {
             readDelivery: messageIds => planeClient.callTool('read_open_work_wake_delivery', {messageIds}),
             readPresence
         }) : null;
-        openWork = wireFleetOpenWorkSource({registry: FleetRegistryService, readPresence, onPulse: wakeRound});
+
+        // The same session publishes each pulse's projection to the plane, whose copy every seat's digest reads.
+        const copyRound = planeClient ? wireFleetOpenWorkCopy({publish: args => planeClient.callTool('publish_open_work_copy', args)}) : null;
+
+        openWork = wireFleetOpenWorkSource({registry: FleetRegistryService, readPresence,
+            onPulse: state => Promise.all([wakeRound?.(state), copyRound?.(state)])});
 
         // Nothing but the Fleet ever updates a seat's harness: it fetches and admits every opted-in family's
         // new builds itself, and a seat adopts one at its next Start.

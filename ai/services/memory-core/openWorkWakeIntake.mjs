@@ -5,6 +5,7 @@ import WakeSubscriptionService                                          from './
 import {SYSTEM_SENDER}                                                  from '../../graph/mailboxRoots.mjs';
 import {normalizeAgentIdentityNodeId}                                   from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {composeOpenWorkWake, validateOpenWorkObservation}               from '../fleet/openWorkWakeMessage.mjs';
+import {ownOpenWorkOf, writeOpenWorkCopy}                               from './openWorkCopyStore.mjs';
 
 /**
  * @module ai/services/memory-core/openWorkWakeIntake
@@ -13,19 +14,24 @@ import {composeOpenWorkWake, validateOpenWorkObservation}               from '..
  * `@system`, so the wake reads as a system observation: not the operator's own message, not operator steering, and
  * not first in its recipient's drain. `add_message` cannot reach this sender, and this intake accepts no text.
  * The same session reads back whether each admitted wake arrived, which is what certifies a silent holder.
+ *
+ * The same session publishes the projection's copy after each pulse ({@link publishOpenWorkCopy}), and each seat
+ * reads its own entry ({@link readOwnOpenWork}); the store is `openWorkCopyStore.mjs`.
  */
 
 /** @summary The most wake messages one delivery read answers. */
 const MAX_MESSAGE_IDS = 100;
 
 /**
- * @summary The verified caller, admitted only when it is the Fleet's human operator.
+ * @summary The verified caller, admitted only when it is the Fleet's human operator: the gate every host-to-plane
+ * open-work write passes, the wakes and the copy alike.
  * @param {String} surface The calling function, for an unavailable graph.
  * @param {String} action What the caller asked to do, for an unbound identity.
+ * @param {String} [admitted='open-work wakes are'] What the refusal names as admitted.
  * @returns {{db: Object, operator: String}} The graph and the operator's identity node id.
  * @private
  */
-function operatorOf(surface, action) {
+function operatorOf(surface, action, admitted = 'open-work wakes are') {
     const
         db     = GraphService.requireDb(surface),
         caller = RequestContextService.getAgentIdentityNodeId();
@@ -37,7 +43,7 @@ function operatorOf(surface, action) {
     const operator = normalizeAgentIdentityNodeId(caller);
 
     if (!isHumanOperatorIdentity(db, operator)) {
-        throw new Error(`Refused: open-work wakes are admitted from the Fleet's human operator only, not from ${operator}.`)
+        throw new Error(`Refused: ${admitted} admitted from the Fleet's human operator only, not from ${operator}.`)
     }
 
     return {db, operator}
@@ -87,4 +93,32 @@ export async function readOpenWorkWakeDelivery({messageIds} = {}) {
     }
 
     return WakeSubscriptionService.readMessageDelivery(messageIds)
+}
+
+/**
+ * @summary Publishes the Fleet's open-work copy from the Fleet's human operator. The verified caller is the
+ * publisher, so the publication replaces only that publisher's entries. A tracked identity the graph does not hold
+ * as an agent is refused and named; a malformed publication writes nothing.
+ * @param {Object} args `{observedAt, coverage, reason, tracked, seats}`, per `openWorkCopyStore#writeOpenWorkCopy`.
+ * @returns {Promise<{publishedAt: String, tracked: Number, refused: Array<{seat: String, reason: String}>}>}
+ */
+export async function publishOpenWorkCopy(args) {
+    const {db, operator} = operatorOf('publishOpenWorkCopy', 'publish the open-work copy', 'the open-work copy is');
+
+    return writeOpenWorkCopy(operator, args, {isAgent: seat => resolvePrincipalClass(db, seat) === 'agent'})
+}
+
+/**
+ * @summary The caller's own open work from the plane's copy, with its freshness. It binds to the verified identity
+ * and takes no seat, so no caller reads another seat's work.
+ * @returns {Promise<Object>} `openWorkCopyStore#ownOpenWorkOf`'s answer for the caller.
+ */
+export async function readOwnOpenWork() {
+    const caller = RequestContextService.getAgentIdentityNodeId();
+
+    if (!caller) {
+        throw RequestContextService.unboundIdentityError('read own open work')
+    }
+
+    return ownOpenWorkOf(normalizeAgentIdentityNodeId(caller))
 }

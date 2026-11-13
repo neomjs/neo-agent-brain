@@ -12,7 +12,7 @@ import {OPEN_WORK_FAILED_CHECKS}                         from '../github-workflo
 import {fileStore, seatReaders}                          from './wireFleetOpenWorkSource.mjs';
 import {HOLDER_SILENT_MS, planOpenWorkWakes, wakeGateOf} from './openWorkWakes.mjs';
 import {OPEN_WORK_HOLDER_KINDS}                          from './openWorkWakeMessage.mjs';
-import {openWorkFreshness}                               from './fleetOpenWorkSource.mjs';
+import {openWorkFreshness}                               from './openWorkFreshness.mjs';
 
 const
     ROUTES_TTL_MS     = 5 * 60 * 1000,

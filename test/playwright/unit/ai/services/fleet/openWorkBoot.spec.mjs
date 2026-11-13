@@ -9,8 +9,8 @@ function bootSlice({enabled = true, plane = true, start}) {
     const begin = source.indexOf('        // Claim the transport before starting an observer'),
         end     = source.indexOf('        // AWAITED plane teardown', begin);
     if (begin < 0 || end < 0) throw new Error('Fleet boot statement anchors changed');
-    let wakeOptions;
-    const events = [], round = () => {},
+    let wakeOptions, onPulse;
+    const events = [], pulses = [], round = state => { pulses.push(['wake', state]) },
         seams    = {
             startFleetBridgeServer     : async options => { events.push('listen'); return start?.(options) ?? {close() {}} },
             settleFleetBridge          : async () => ({state: 'ready', port: 1, action: 'verified', publicKeySha256: '0123456789abcdef'}),
@@ -28,13 +28,14 @@ function bootSlice({enabled = true, plane = true, start}) {
             planeCredential                      : null,
             FleetRegistryService                 : {}, RequestContextService: {run() {}},
             wireFleetOpenWorkWakes               : options => { wakeOptions = options; events.push('wake'); return round },
-            wireFleetOpenWorkSource              : options => { events.push(['observe', options.onPulse]); return {} },
+            wireFleetOpenWorkCopy                : () => { events.push('copy'); return state => { pulses.push(['copy', state]) } },
+            wireFleetOpenWorkSource              : options => { onPulse = options.onPulse; events.push('observe'); return {} },
             readGithubToken                      : () => null, readPresence: async () => ({}),
             assertFleetViewerMcAuthorizationClass: () => null,
             console                              : {log() {}, warn() {}}, port: 1, bearerToken: 'fixture', viewer: {}, origins: []
         },
         run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork, harnessAcquisition; ${source.slice(begin, end)} })()`);
-    return {events, round, config: seams.AiConfig, wakeOptions: () => wakeOptions, run: () => run(...Object.values(seams))}
+    return {events, pulses, config: seams.AiConfig, wakeOptions: () => wakeOptions, pulse: state => onPulse(state), run: () => run(...Object.values(seams))}
 }
 
 /** @summary Read the actual cleanup function so a refactor cannot leave one exit undrained. */
@@ -64,13 +65,16 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         expect(h.events).toEqual(['listen'])
     });
 
-    test('only an enabled plane-mode owner connects the one observer to a wake round', async () => {
+    test('only an enabled plane-mode owner connects the one observer to a wake round; any plane session publishes the copy', async () => {
         for (const [enabled, plane, wakes] of [[false, true, false], [true, false, false], [true, true, true]]) {
-            const h = bootSlice({enabled, plane});
+            const h = bootSlice({enabled, plane}), state = {observedAt: 'pulse'};
             await h.run();
             // the harness acquisition is wired after the observer in every mode, reading the lifecycle's context
             const acquire = ['acquire', {family: 'codex-desktop', optedIn: false}, 6 * 3_600_000];
-            expect(h.events).toEqual(wakes ? ['listen', 'wake', ['observe', h.round], acquire] : ['listen', ['observe', null], acquire]);
+            expect(h.events).toEqual(['listen', ...wakes ? ['wake'] : [], ...plane ? ['copy'] : [], 'observe', acquire]);
+            // one pulse reaches the wake round when it is wired and the copy whenever a plane session exists
+            await h.pulse(state);
+            expect(h.pulses).toEqual([...wakes ? [['wake', state]] : [], ...plane ? [['copy', state]] : []]);
             if (wakes) {
                 // the round reads routes from the shared verbose presence read, never a terse-only field
                 expect(typeof h.wakeOptions().readPresence).toBe('function');

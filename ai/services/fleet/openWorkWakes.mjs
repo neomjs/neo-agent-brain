@@ -23,7 +23,7 @@
  * Each wakes one rotation seat per head, and that seat is never the holder it escalates.
  */
 import {createHash}                                            from 'node:crypto';
-import {openWorkFreshness}                                     from './fleetOpenWorkSource.mjs';
+import {openWorkFreshness}                                     from './openWorkFreshness.mjs';
 import {holderOf}                                              from './openWorkHolder.mjs';
 import {OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf} from './openWorkWakeMessage.mjs';
 import {OPEN_WORK_QUERY_COSTS}                                 from '../github-workflow/queries/openWorkQueries.mjs';
