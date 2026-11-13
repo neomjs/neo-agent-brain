@@ -177,3 +177,53 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
             .toEqual({role: 'author', kind: 'address-changes', ids: ['@neo-opus-ada']})
     });
 });
+
+test.describe('openWorkHolder — an outside PR pushed past a seat\'s review is that seat\'s Round 2 (#1642)', () => {
+    const
+        A      = '@neo-gpt',
+        B      = '@neo-gpt-euclid',
+        C      = '@neo-opus-vega',
+        by     = (reviewer, state, onHead=false) => ({reviewer, state, onHead}),
+        pushed = overrides => row({owner: outside, ...overrides}),
+        past   = (reviewer, state) => ({reviews: [by(reviewer, state)], opinions: [by(reviewer, state)]});
+
+    test('past a seat\'s change request or approval, the new head waits on its CI, a red one is the author\'s and a green one the seat\'s (AC-1)', () => {
+        for (const state of ['CHANGES_REQUESTED', 'APPROVED']) {
+            expect(holderOf(pushed({ci: 'pending', ...past(B, state)})), state).toEqual({role: 'none', kind: null, ids: []});
+            expect(holderOf(pushed({ci: 'red', ...past(B, state)})), state).toEqual({role: 'author', kind: 'repair-ci', ids: []});
+            expect(holderOf(pushed({...past(B, state)})), state).toEqual({role: 'reviewer', kind: 'review', ids: [B]})
+        }
+    });
+
+    test('a comment alone names its seat, and a requested seat joins a change request (AC-2)', () => {
+        expect(holderOf(pushed({reviews: [by(A, 'COMMENTED')]}))).toEqual({role: 'reviewer', kind: 'review', ids: [A]});
+        expect(holderOf(pushed({requested: [C], ...past(B, 'CHANGES_REQUESTED')}))).toEqual({role: 'reviewer', kind: 'review', ids: [C, B]});
+        // a stale approval is no blocker: a review a maintainer requested stands alone beside it
+        expect(holderOf(pushed({requested: [C], ...past(B, 'APPROVED')}))).toEqual({role: 'reviewer', kind: 'review', ids: [C]})
+    });
+
+    test('A commented and B requested changes on H1: H2 is B\'s, nobody\'s once B comments on it while A\'s comment remains, and H3 is B\'s again (AC-2)', () => {
+        const
+            stands = [by(B, 'CHANGES_REQUESTED')],
+            onH2   = [by(A, 'COMMENTED'), by(B, 'COMMENTED', true)];
+
+        expect(holderOf(pushed({reviews: [by(A, 'COMMENTED'), by(B, 'CHANGES_REQUESTED')], opinions: stands}))).toEqual({role: 'reviewer', kind: 'review', ids: [B]});
+        expect(holderOf(pushed({reviews: onH2, opinions: stands}))).toEqual({role: 'none', kind: null, ids: []});
+        expect(holderOf(pushed({requested: [C], reviews: onH2, opinions: stands})), 'a requested seat still holds it').toEqual({role: 'reviewer', kind: 'review', ids: [C]});
+        expect(holderOf(pushed({reviews: [by(A, 'COMMENTED'), by(B, 'COMMENTED')], opinions: stands}))).toEqual({role: 'reviewer', kind: 'review', ids: [B]})
+    });
+
+    test('with no seat on an earlier head an outside PR stays untouched, and run approval, a seat\'s own PR and an approval on the new head keep their routes (AC-3)', () => {
+        const login = by('login:tobiu', 'CHANGES_REQUESTED');
+
+        expect(holderOf(pushed({reviews: [login], opinions: [login]}))).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(holderOf(pushed({reviews: [{...by('login:copilot', 'COMMENTED'), bot: true}]}))).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(holderOf(pushed({ci: 'pending', runApproval: 'action_required', ...past(B, 'CHANGES_REQUESTED')})))
+            .toEqual({role: 'rotation', kind: 'approve-runs', ids: []});
+        // a seat's own PR keeps route-review: its author answers the review before requesting it again
+        expect(holderOf(row({...past(B, 'CHANGES_REQUESTED')}))).toEqual({role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']});
+        expect(holderOf(pushed({reviews: [by(A, 'APPROVED', true)], opinions: [by(A, 'APPROVED', true), by(B, 'CHANGES_REQUESTED')]})))
+            .toEqual({role: 'operator', kind: 'merge', ids: []});
+        expect(holderOf(pushed({...past(B, 'CHANGES_REQUESTED'), partial: true}))).toEqual({role: 'unknown', kind: null, ids: []})
+    });
+});
