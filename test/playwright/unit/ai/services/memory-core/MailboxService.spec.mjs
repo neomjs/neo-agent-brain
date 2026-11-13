@@ -7961,10 +7961,85 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         expect(body).not.toContain(toAgent);
         expect((await fromSystem('@bob')).map(row => row.subject)).toEqual(['[asks expired · 1] to @operator: the deadline passed without an answer']);
         expect(stored(bobs).task.state).toBe('Expired');
+        // each ask the notice names records it, so no later sweep names it again
+        expect([first, second].map(id => stored(id).expiryNotice)).toEqual([notice.messageId, notice.messageId]);
 
         await MailboxService.sweepExpiredTasks();
 
         expect(await fromSystem('@alice')).toHaveLength(1)
+    });
+
+    /** Makes the acceptance of the next `times` expiry notices fail, as an unavailable message WAL would. */
+    function failNoticeAcceptance(times) {
+        const
+            accept = MailboxService.addMessage,
+            state  = {attempts: 0, restore: () => delete MailboxService.addMessage};
+
+        MailboxService.addMessage = async function(args, options) {
+            if (String(args?.subject).startsWith('[asks expired') && ++state.attempts <= times) {
+                throw new Error('message WAL unavailable')
+            }
+
+            return accept.call(this, args, options)
+        };
+
+        return state
+    }
+
+    test('#1677 AC-4: a notice whose send fails stays owed, and the next sweep sends it once without touching the expiry', async () => {
+        await seedHumanRecipients();
+
+        const
+            asked   = await ask('@operator', {subject: 'which scope?', task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z'}}),
+            failure = failNoticeAcceptance(1);
+
+        try {
+            expect((await MailboxService.sweepExpiredTasks()).sweptCount).toBe(1);
+
+            // the expiry stands and the notice is owed
+            expect(stored(asked)).toMatchObject({expiryNotice: 'owed', task: {state: 'Expired'}});
+            expect(await fromSystem('@alice')).toEqual([]);
+
+            // an idle sweep sends what is owed
+            expect((await MailboxService.sweepExpiredTasks()).sweptCount).toBe(0);
+
+            const [notice, ...others] = await fromSystem('@alice');
+
+            expect(others).toEqual([]);
+            expect(notice.subject).toBe('[asks expired · 1] to @operator: the deadline passed without an answer');
+            expect(stored(asked)).toMatchObject({expiryNotice: notice.messageId, task: {state: 'Expired'}});
+
+            // accepted: no later sweep sends it again
+            await MailboxService.sweepExpiredTasks();
+
+            expect(await fromSystem('@alice')).toHaveLength(1);
+            expect(failure.attempts).toBe(2)
+        } finally {
+            failure.restore()
+        }
+    });
+
+    test('#1677 AC-4: a notice still owed after the span the ask was allowed to wait is no longer sent', async () => {
+        await seedHumanRecipients();
+
+        const
+            asked   = await ask('@operator', {task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z'}}),
+            failure = failNoticeAcceptance(1);
+
+        try {
+            await MailboxService.sweepExpiredTasks()
+        } finally {
+            failure.restore()
+        }
+
+        // the expiry now lies further back than the retry span
+        GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.lastModifiedAt', ?) WHERE id = ?`)
+            .run(new Date(Date.now() - mailboxAiConfig.mailbox.humanAskTtlMs - 60000).toISOString(), asked);
+
+        await MailboxService.sweepExpiredTasks();
+
+        expect(await fromSystem('@alice')).toEqual([]);
+        expect(stored(asked).expiryNotice).toBe('owed')
     });
 });
 
