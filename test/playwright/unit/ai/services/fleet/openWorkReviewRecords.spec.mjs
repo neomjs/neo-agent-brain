@@ -184,7 +184,7 @@ test('the existing producer supplies provider scope and persists bounded witness
     expect(second.snapshot.rows[`${REPO}#7`].reviewRecords).toMatchObject({historyCoverage: 'partial', approvals: [{requestState: 'paired'}]});
     expect(second.transitions).toEqual([]);
     expect(projectOpenWork(second, {now: () => Date.parse(at(22))}).awaitingMerge[0].reviewRecords.approvals[0].id).toBe('PRR_1');
-    expect(openWorkQueryCost(OPEN_WORK_SNAPSHOT).formulaCost).toBe(3);
+    expect(openWorkQueryCost(OPEN_WORK_SNAPSHOT).formulaCost).toBe(4);
 });
 
 test('provider page bounds cap retained facts without certifying an evicted prefix', () => {

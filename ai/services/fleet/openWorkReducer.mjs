@@ -77,6 +77,31 @@ function reviewerOf(reviewer, identities) {
 }
 
 /**
+ * The author associations that make a commenter a member of the repository, like a seat.
+ * @type {String[]}
+ */
+const MEMBERS = Object.freeze(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+/**
+ * @summary One comment or submitted review as a turn of the PR's conversation: when, by whom, and whether a
+ * member (a seat or a repository member) or someone outside took it. A review never submitted has no time and
+ * is no turn.
+ * @param {Object} item A comment or review node.
+ * @param {String|null} at Its `createdAt` or `submittedAt`.
+ * @param {{byLogin: Function}} identities
+ * @returns {{at: String, by: String|null, member: Boolean, bot?: true}|null}
+ * @private
+ */
+function turnOf(item, at, identities) {
+    if (typeof at !== 'string' || !at) return null;
+
+    const by = reviewerOf(item?.author, identities);
+
+    return {at, by, member: Boolean(by?.startsWith('@')) || MEMBERS.includes(item?.authorAssociation),
+        ...(item?.author?.__typename === 'Bot' ? {bot: true} : {})}
+}
+
+/**
  * @summary A connection's nodes, and whether they are all of them. A connection without its
  * `pageInfo`, or one with a remaining page along its pagination direction, is known only as far as it shows.
  * @param {Object} connection
@@ -97,9 +122,10 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  * @param {Object} [source] Acquisition identity; absent for legacy inputs.
  * @param {String} [source.apiBase] Provider API identity from the existing reader.
  * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner, requested,
- *     reviews, opinions, reviewRecords, requestsComplete, opinionsComplete, partial}`. `title` is the forge's
- *     prose with whitespace collapsed, or `null`; it names the PR and is never a transition. Optional
- *     original review records keep their own history coverage and never change current-work completeness.
+ *     reviews, opinions, reviewRecords, turns, requestsComplete, opinionsComplete, partial}`. `title` is the forge's
+ *     prose with whitespace collapsed, or `null`; it names the PR and is never a transition. Optional original
+ *     review records keep their own history coverage, and `turns` holds only the conversation's latest page; neither
+ *     changes current-work completeness.
  */
 export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
     const
@@ -117,6 +143,10 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         // each reviewer's latest review (a comment included), and their standing approval or change request
         reviewed  = reviews.nodes.map(judged),
         opined    = opinions.nodes.map(judged),
+        // the conversation's latest comments and submitted reviews, oldest first
+        turns     = [...connectionOf(node.comments).nodes.map(item => turnOf(item, item?.createdAt, identities)),
+            ...connectionOf(node.reviews).nodes.map(item => turnOf(item, item?.submittedAt, identities))]
+            .filter(Boolean).sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : 0),
         // an item naming no reviewer is unknown, so its list is known only as far as it resolves
         requestsComplete = requests.complete && requested.every(Boolean),
         reviewsComplete  = reviews.complete && reviewed.every(review => review.reviewer),
@@ -143,6 +173,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         reviews          : reviewed.filter(review => review.reviewer),
         opinions         : opined.filter(opinion => opinion.reviewer),
         reviewRecords    : normalizeReviewRecords(node, apiBase),
+        turns,
         requestsComplete,
         opinionsComplete,
         partial          : !requestsComplete || !reviewsComplete || !opinionsComplete || !suites.complete

@@ -21,10 +21,15 @@
  * route were not `unreachable`. A `holder-silent` slot is an admitted holder wake the receiver recorded `delivered`,
  * whose action is still open {@link HOLDER_SILENT_MS} later: silence is certified from a delivery, never an attempt.
  * Each wakes one rotation seat per head, and that seat is never the holder it escalates.
+ *
+ * An owed reply to an outside comment is planned beside the holder, under its own slot, and escalates as a holder's
+ * wake does. Its episode is the owed turn's time, so the slot starts over when a member answers and a later outside
+ * turn is owed. An untouched outside PR's triage covers every turn before it; a later turn goes to the seat that
+ * triaged it.
  */
 import {createHash}                                            from 'node:crypto';
 import {openWorkFreshness}                                     from './openWorkFreshness.mjs';
-import {holderOf}                                              from './openWorkHolder.mjs';
+import {holderOf, responderOf}                                 from './openWorkHolder.mjs';
 import {OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf} from './openWorkWakeMessage.mjs';
 import {OPEN_WORK_QUERY_COSTS}                                 from '../github-workflow/queries/openWorkQueries.mjs';
 
@@ -165,6 +170,70 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         }
     };
 
+    /**
+     * Holds one native seat's slot for an action on the row's head. An explicit episode binds the slot: when the
+     * episode moves, the same seat owes the same kind again, and when only the head moves, the new head's slot keeps
+     * what the episode already settled. A pending wake waits for its seat's route, and meanwhile the rotation hears
+     * that it waits; it hears the same of an admitted wake the seat left unanswered {@link HOLDER_SILENT_MS} after
+     * delivery.
+     */
+    const holdSeat = (row, seat, role, kind, rowBaseline, episode = null) => {
+        const
+            slot    = JSON.stringify([row.repo, row.number, row.head, seat, kind]),
+            prior   = episode && holding[slot]?.wake?.episode !== episode ? undefined : holding[slot],
+            settled = episode && Object.values(holding).find(({wake}) =>
+                wake.pr === row.key && wake.to === seat && wake.kind === kind && wake.episode === episode),
+            // A settled wake's receipt moves with it, or its delivered silence could never be read on the new head
+            entry   = prior ?? {wake: wakeOf(row, seat, role, kind, episode ?? state.observedAt),
+                status: settled?.status ?? (rowBaseline ? 'baseline' : 'pending'),
+                ...(settled?.status === 'admitted' && settled.messageId ? {messageId: settled.messageId} : {})};
+
+        current.add(slot);
+        holding[slot] = entry;
+
+        if (!rowBaseline && entry.status === 'pending') {
+            if (routeOf(seat) !== 'unreachable') {
+                holding[slot] = {...entry, status: 'admitted'};
+                wakes.push(entry.wake)
+            } else {
+                rotate(row, 'holder-unreachable', seat)
+            }
+        } else if (entry.status === 'admitted' &&
+            (silent(entry) || holding[rotationSlot(row, 'holder-silent', seat)]?.status === 'admitted')) {
+            // The seat's wake arrived, and the action it asked for is still open. A sent escalation stays held
+            // while it is, even through a round that could not read the delivery, so it is never sent twice.
+            rotate(row, 'holder-silent', seat)
+        }
+    };
+
+    /**
+     * Holds the reply an outside comment is owed. Nobody engaged means an untouched outside PR: its admitted triage
+     * covers the turns before it, and a later turn goes to the seat the triage woke. The episode already held stays
+     * the episode while no member turn after it shows, so a conversation page that slides mints no second reply.
+     */
+    const respond = (row, rowBaseline) => {
+        const held = Object.values(holding).find(({wake}) => wake.pr === row.key && wake.kind === 'respond-comment')?.wake.episode ?? null;
+
+        let responder = responderOf(row, {held});
+
+        if (!responder || !REASONS[responder.kind]) return;
+
+        let {role, ids} = responder;
+
+        if (role === 'rotation') {
+            const triage = holding[JSON.stringify([row.repo, row.number, row.head, 'rotation', 'triage-outside'])];
+
+            responder = triage?.status === 'admitted' && native(triage.wake.to) ? responderOf(row, {held, since: triage.wake.episode}) : null;
+
+            if (!responder) return;
+
+            role = 'reviewer';
+            ids  = [triage.wake.to]
+        }
+
+        for (const seat of ids.filter(native)) holdSeat(row, seat, role, responder.kind, rowBaseline, responder.episode)
+    };
+
     for (const row of Object.values(state.snapshot.rows)) {
         if (!hasIdentity(row)) continue;
 
@@ -186,6 +255,8 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         delete baselines[row.key];
         decided.add(row.key);
 
+        respond(row, rowBaseline);
+
         if (holder.role === 'rotation' && REASONS[holder.kind]) {
             rotate(row, holder.kind);
             continue
@@ -201,31 +272,8 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             holder.role === 'author' && row.owner?.kind === 'seat'
             ? holder.ids.filter(native) : [];
 
-        for (const seat of seats) {
-            if (!REASONS[holder.kind]) continue;
-
-            const
-                slot  = JSON.stringify([row.repo, row.number, row.head, seat, holder.kind]),
-                prior = holding[slot],
-                entry = prior ?? {wake: wakeOf(row, seat, holder.role, holder.kind, state.observedAt), status: rowBaseline ? 'baseline' : 'pending'};
-
-            current.add(slot);
-            holding[slot] = entry;
-
-            if (!rowBaseline && entry.status === 'pending') {
-                if (routeOf(seat) !== 'unreachable') {
-                    holding[slot] = {...entry, status: 'admitted'};
-                    wakes.push(entry.wake)
-                } else {
-                    // The holder's wake waits for its route; meanwhile the rotation hears that it waits
-                    rotate(row, 'holder-unreachable', seat)
-                }
-            } else if (entry.status === 'admitted' &&
-                (silent(entry) || holding[rotationSlot(row, 'holder-silent', seat)]?.status === 'admitted')) {
-                // The holder's wake arrived, and the action it asked for is still open. A sent escalation stays held
-                // while it is, even through a round that could not read the delivery, so it is never sent twice.
-                rotate(row, 'holder-silent', seat)
-            }
+        if (REASONS[holder.kind]) {
+            for (const seat of seats) holdSeat(row, seat, holder.role, holder.kind, rowBaseline)
         }
     }
 

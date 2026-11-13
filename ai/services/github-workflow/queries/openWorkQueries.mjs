@@ -112,6 +112,32 @@ export const OPEN_WORK_SNAPSHOT = `
               }
             }
           }
+          comments(last: 10) {
+            pageInfo {
+              hasPreviousPage
+            }
+            nodes {
+              createdAt
+              authorAssociation
+              author {
+                __typename
+                login
+              }
+            }
+          }
+          reviews(last: 10) {
+            pageInfo {
+              hasPreviousPage
+            }
+            nodes {
+              submittedAt
+              authorAssociation
+              author {
+                __typename
+                login
+              }
+            }
+          }
           timelineItems(last: 20, itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, REVIEW_DISMISSED_EVENT]) {
             pageInfo {
               hasPreviousPage
@@ -321,7 +347,7 @@ export const OPEN_WORK_FAILED_CHECKS = `
 
 /**
  * @summary Published GraphQL formula estimates for the static pulse documents, not timeout-cost bounds.
- * Snapshot has the search plus five connections for up to 50 PRs: round((1 + 50 * 5) / 100) = 3.
+ * Snapshot has the search plus seven connections for up to 50 PRs: round((1 + 50 * 7) / 100) = 4.
  * Terminal has one connection; the published minimum is one. Unblocked reads 10 closing issues, 50
  * blocked issues each, and two lists on each of those: round((1 + 10 + 500 + 500) / 100) = 10, which a
  * live read measured too. The gate also uses measured maxima.
@@ -334,9 +360,9 @@ export const OPEN_WORK_FAILED_CHECKS = `
  * @type {Object[]}
  */
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
-    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 3}),
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 4}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
-    Object.freeze({queryHash: 'dd32c5ca7fac2494379b94fb28cfc37a1d2df150e15e832c031fb88316b46dad', formulaCost: 3}),
+    Object.freeze({queryHash: 'e2a61fa613f90f1616a16922f9be32201f58774a7c4d64bd88cffd71b5309284', formulaCost: 3}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10})
 ]);
 
