@@ -3760,9 +3760,13 @@ class MailboxService extends Base {
         };
 
         if (task !== undefined) {
-            messageProperties.task = task && typeof task === 'object' && !Array.isArray(task)
+            // `expiredAt` is the expiry sweep's stamp alone: the recent-expiry read trusts it, so a caller's is dropped.
+            const isTaskObject               = task && typeof task === 'object' && !Array.isArray(task),
+                  {expiredAt, ...callerTask} = isTaskObject ? task : {};
+
+            messageProperties.task = isTaskObject
                 ? {
-                    ...task,
+                    ...callerTask,
                     assignee: getCanonicalTaskAssigneeForTarget(to, db, {admitHuman: true})
                 }
                 : task;
@@ -4603,10 +4607,10 @@ class MailboxService extends Base {
                     WHERE json_extract(n.data, '$.label') = 'MESSAGE'
                     ORDER BY ${orderBy}`).all(viewParams);
 
-            return this._buildCountsProjection({
-                matchedRows,
-                resolvedIdentityAliases
-            });
+            return {
+                ...this._buildCountsProjection({matchedRows, resolvedIdentityAliases}),
+                ...(expiredSince ? {expiredSince} : {})
+            };
         }
 
         const

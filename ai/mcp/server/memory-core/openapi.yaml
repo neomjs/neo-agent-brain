@@ -2988,6 +2988,9 @@ paths:
                       totalCount:
                         type: integer
                         description: "Rows matching the applied filter."
+                      expiredSince:
+                        type: string
+                        description: "With `expiredWithinSpan`: the window start the server applied."
                       unreadCount:
                         type: integer
                         description: "Matched messages with `readAt == null` (`'counts'` projection)."
