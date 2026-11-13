@@ -3455,6 +3455,90 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  # The Fleet host's publication of its open-work projection, `extended` like the intake beside it.
+  /mailbox/open-work/copy:
+    post:
+      summary: "Publish the Fleet's open-work copy that seats' wake digests read; use when the Fleet host finishes a pulse."
+      operationId: publish_open_work_copy
+      x-neo-tool-tier: extended
+      x-pass-as-object: true
+      description: "Admitted only from the Fleet's human operator. The verified caller is the publisher: the publication replaces that publisher's entries whole and leaves every other publisher's untouched. A tracked identity the plane does not hold as an agent is refused and named in the answer. A malformed publication writes nothing, so the previous copy stays and ages by its own `observedAt`. The copy lives in the plane's process; a restart empties it until the next pulse."
+      tags: [Mailbox]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [observedAt, coverage, tracked]
+              properties:
+                observedAt:
+                  type: string
+                  description: The producer's last pulse, an ISO time; every entry ages by it.
+                coverage:
+                  type: string
+                  enum: [complete, partial, stale]
+                  description: The pulse's coverage.
+                reason:
+                  type: string
+                  nullable: true
+                  description: The producer's reason for a partial or stale pulse.
+                tracked:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: string
+                  description: "Every `@identity` the publication covers. A tracked seat without rows reads as no open work, an untracked one as `untracked`."
+                seats:
+                  type: object
+                  description: "`{[@identity]: {authored, reviewing}}` for tracked seats: rows `{repo, number, title, ci, verdict, stale, holder: {role, kind}}`, at most 100 per list."
+      responses:
+        '200':
+          description: "`{publishedAt, tracked, refused}`: the entries written, and each refused identity with its reason."
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mailbox/open-work/own:
+    post:
+      summary: "Read your own open pull requests and requested reviews from the Fleet's copy; use when orienting at session start."
+      operationId: read_own_open_work
+      x-neo-tool-tier: read
+      x-pass-as-object: true
+      x-annotations:
+        readOnlyHint: true
+      description: "Bound to the verified caller and takes no seat, so it answers only the caller's own entry. `ok` within 5 minutes of the producer's last pulse, then `stale`, and `unavailable` past 60 minutes or before any copy reached the plane. An identity the copy does not track reads `untracked`, never empty. The wake digest renders the same answer."
+      tags: [Mailbox]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+      responses:
+        '200':
+          description: "`{state, observedAt, publishedAt, coverage, reason, authored, reviewing}`, or `{state, observedAt, reason}` when unavailable or untracked."
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /turn-presence/record:
     post:
       summary: "Write a start, progress, or terminal turn-presence heartbeat; use when hooks or seats report active session liveness."

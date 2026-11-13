@@ -269,9 +269,12 @@ const expectedMemoryCoreToolTiers = {
     get_nl_transaction                     : 'extended',
     mark_nl_transaction_replayed           : 'extended',
     admit_nl_actions                       : 'extended',
-    // The Fleet host's open-work intake and its delivery read-back, not agent tools.
+    // The Fleet host's open-work intake, its delivery read-back and its copy's publication, not agent tools.
     admit_open_work_wake                   : 'extended',
     read_open_work_wake_delivery           : 'extended',
+    publish_open_work_copy                 : 'extended',
+    // a seat's read of its own entry in that copy
+    read_own_open_work                     : 'read',
     healthcheck                            : 'read',
     get_community_source_health            : 'read',
     get_mcp_tool_handbook                  : 'read',
@@ -345,7 +348,8 @@ const memoryCoreDangerousReadForbidden = [
     'purge_session',
     'grant_permission',
     'revoke_permission',
-    'delete_message'
+    'delete_message',
+    'publish_open_work_copy'
 ];
 
 /**
