@@ -684,12 +684,13 @@ class ConfigBase extends ConfigProvider {
                      */
                     antigravity: leaf(true, 'NEO_FLEET_HARNESS_GENERATIONS_ANTIGRAVITY', 'boolean'),
                     /**
-                     * Claude Desktop seats start from the selected generation, and only while the host
-                     * turns Claude's own updater off by policy (`disableAutoUpdates`); without it, every
-                     * Start refuses and names the profile that turns it off.
+                     * Claude Desktop seats start from the selected generation while the host turns Claude's
+                     * own updater off by policy (`disableAutoUpdates`), and from the installed bundle, which
+                     * that updater keeps current, while it does not. On by default, so on every host one
+                     * updater owns Claude: the Fleet's where the policy is in force, the vendor's elsewhere.
                      * @type {boolean}
                      */
-                    claudeDesktop: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_CLAUDE_DESKTOP', 'boolean'),
+                    claudeDesktop: leaf(true, 'NEO_FLEET_HARNESS_GENERATIONS_CLAUDE_DESKTOP', 'boolean'),
                     /**
                      * Codex Desktop seats start from the selected generation, the app and its bundled
                      * CLI from the same copy.

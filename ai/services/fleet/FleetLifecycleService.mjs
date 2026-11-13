@@ -537,9 +537,9 @@ class FleetLifecycleService extends Base {
     harnessGenerationStore = null
 
     /**
-     * The host check an opted-in family's Start makes before it admits or selects a generation, with
-     * `readHarnessHostGate`'s signature (`({family}) => {ready, reason}`). Defaults to it; injectable so unit
-     * specs never read the host's managed preferences.
+     * The host check that decides whether an opted-in family's seats run its generations or its installed
+     * bundle, with `readHarnessHostGate`'s signature (`({family}) => {ready, reason}`). Defaults to it;
+     * injectable so unit specs never read the host's managed preferences.
      * @member {Function|null} harnessHostGate=null
      */
     harnessHostGate = null
@@ -3485,15 +3485,34 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary Whether a GUI family starts its seats from admitted harness generations: its
-     * `fleet.harnessGenerations` leaf, unless `harnessGenerationOptIns` overrides it.
+     * @summary Whether a GUI family starts its seats from admitted harness generations, and why not when the
+     * host decided: its `fleet.harnessGenerations` leaf (unless `harnessGenerationOptIns` overrides it), then
+     * its host gate. A host that does not let the family's seats run generations (Claude Desktop without its
+     * updater policy) leaves the family to the vendor's own updater, and its seats start from the installed bundle.
+     * @param {String} harnessType
+     * @returns {{optedIn: Boolean, reason: String|null}} `reason` is the host gate's.
+     * @private
+     */
+    harnessGenerationOwnership(harnessType) {
+        const leafOn = Object.hasOwn(HARNESS_GENERATION_FAMILIES, harnessType) &&
+            (this.harnessGenerationOptIns?.[harnessType] ?? AiConfig.fleet.harnessGenerations[HARNESS_BINARY_LEAF_KEYS[harnessType]]) === true;
+
+        if (!leafOn) return {optedIn: false, reason: null};
+
+        const {ready, reason} = (this.harnessHostGate || readHarnessHostGate)({family: harnessType});
+
+        return {optedIn: ready, reason: ready ? null : reason}
+    }
+
+    /**
+     * @summary Whether a GUI family starts its seats from admitted harness generations
+     * ({@link harnessGenerationOwnership}).
      * @param {String} harnessType
      * @returns {Boolean}
      * @private
      */
     harnessGenerationsOptedIn(harnessType) {
-        return Object.hasOwn(HARNESS_GENERATION_FAMILIES, harnessType) &&
-            (this.harnessGenerationOptIns?.[harnessType] ?? AiConfig.fleet.harnessGenerations[HARNESS_BINARY_LEAF_KEYS[harnessType]]) === true
+        return this.harnessGenerationOwnership(harnessType).optedIn
     }
 
     /**
@@ -3516,14 +3535,15 @@ class FleetLifecycleService extends Base {
 
     /**
      * @summary What the Fleet's background acquisition needs for one GUI family, from the same reads a Start
-     * makes: whether the family starts its seats from admitted generations, the store root, and the installed
-     * `.app` that serves as the vendor feed's reference bundle until a generation is selected.
+     * makes: whether the family starts its seats from admitted generations (and the host's reason when it does
+     * not), the store root, and the installed `.app` that serves as the vendor feed's reference bundle until a
+     * generation is selected.
      * @param {String} harnessType
-     * @returns {{optedIn: Boolean, root: String, installedBundle: String|null}}
+     * @returns {{optedIn: Boolean, reason: String|null, root: String, installedBundle: String|null}}
      */
     harnessAcquisitionContext(harnessType) {
         return {
-            optedIn        : this.harnessGenerationsOptedIn(harnessType),
+            ...this.harnessGenerationOwnership(harnessType),
             root           : this.getHarnessGenerationRoot(),
             installedBundle: appBundleOf(this.getHarnessBinaryPath(harnessType))
         }
@@ -3544,31 +3564,16 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary Refuses an opted-in family whose host does not let its seats run generations, before any
-     * admission or ledger write: Claude Desktop's seats need its own updater off by policy.
-     * @param {String} harnessType
-     * @throws {Error} Naming the family and what the host lacks.
-     * @private
-     */
-    assertHarnessHostGate(harnessType) {
-        const {ready, reason} = (this.harnessHostGate || readHarnessHostGate)({family: harnessType});
-
-        if (!ready) throw new Error(`FleetLifecycleService: '${harnessType}' cannot start from admitted harness generations: ${reason}.`)
-    }
-
-    /**
      * @summary The generation an opted-in family's next Start launches, admitting nothing: its newest admitted
-     * generation, or `null` when the family has not opted in. A Start reaches it through
-     * {@link resolveHarnessGeneration}, which bootstraps a family that holds none from its installed build.
+     * generation, or `null` when the family has not opted in or its host leaves it to the vendor's updater.
+     * A Start reaches it through {@link resolveHarnessGeneration}, which bootstraps a family that holds none
+     * from its installed build.
      * @param {String} harnessType
      * @returns {Object|null} One of {@link harnessGenerationsOf}.
-     * @throws {Error} When the family opted in and its host gate does not hold ({@link assertHarnessHostGate}),
-     * or when it holds no admitted generation; then it names the latest rejection.
+     * @throws {Error} When the family opted in and holds no admitted generation; it names the latest rejection.
      */
     selectedHarnessGeneration(harnessType) {
         if (!this.harnessGenerationsOptedIn(harnessType)) return null;
-
-        this.assertHarnessHostGate(harnessType);
 
         const [selected] = this.harnessGenerationsOf(harnessType);
 
@@ -3587,15 +3592,13 @@ class FleetLifecycleService extends Base {
      * family's `harnessBinaries` path, only bootstraps: it goes through admission while the family holds no
      * generation, once per version and process. After that the Fleet's acquisition is the family's only source,
      * so an older installed bundle never displaces a newer admitted build. An opted-in Start never falls back
-     * to the installed bundle.
+     * to the installed bundle; a family its host leaves to the vendor's updater admits nothing at all.
      * @param {String} harnessType
      * @returns {Promise<Object|null>}
-     * @throws {Error} As {@link selectedHarnessGeneration}; a host gate that does not hold refuses before admission.
+     * @throws {Error} As {@link selectedHarnessGeneration}.
      */
     async resolveHarnessGeneration(harnessType) {
         if (!this.harnessGenerationsOptedIn(harnessType)) return null;
-
-        this.assertHarnessHostGate(harnessType);
 
         const
             store     = this.getHarnessGenerationStore(),

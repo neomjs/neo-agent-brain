@@ -158,9 +158,27 @@ test.describe('wireFleetHarnessAcquisition', () => {
         expect(wireFleetHarnessAcquisition({context, intervalMs: 1000, bootDelayMs: Infinity})).toBe(null)
     });
 
-    test('Codex and Antigravity have an acquisition; Claude Desktop has none until its source lands', () => {
-        expect(Object.keys(HARNESS_ACQUIRERS)).toEqual(['antigravity', 'codex-desktop']);
+    test('every GUI family has an acquisition, and each names its candidate\'s version', () => {
+        expect(Object.keys(HARNESS_ACQUIRERS)).toEqual(['antigravity', 'claude-desktop', 'codex-desktop']);
         expect(HARNESS_ACQUIRERS['codex-desktop'].version({candidate: {shortVersion: '26.1103.60933'}})).toBe('26.1103.60933');
-        expect(HARNESS_ACQUIRERS.antigravity.version({check: {candidate: {version: '2.31.0'}}})).toBe('2.31.0')
+        expect(HARNESS_ACQUIRERS.antigravity.version({check: {candidate: {version: '2.31.0'}}})).toBe('2.31.0');
+        expect(HARNESS_ACQUIRERS['claude-desktop'].version({check: {candidate: {version: '5.11492.0'}}})).toBe('5.11492.0')
+    });
+
+    test('a family its host leaves to the vendor\'s updater is skipped with the host\'s reason, and never fetched', async () => {
+        const calls = [], handle = wire({
+            context  : family => ({optedIn: false, reason: family === 'claude-desktop' ? 'Claude\'s updater policy is not in force' : null, root: ROOT, installedBundle: null}),
+            acquirers: {'claude-desktop': acquirer('claude-desktop', calls, () => ({status: 'admitted'}))}
+        });
+
+        handles.push(handle);
+        await handle.pulse();
+
+        expect(calls).toEqual([]);
+        expect(handle.status()).toEqual([
+            {family: 'antigravity', state: 'not-opted-in'},
+            {family: 'claude-desktop', state: 'not-opted-in', reason: 'Claude\'s updater policy is not in force'},
+            {family: 'codex-desktop', state: 'not-opted-in'}
+        ])
     })
 });

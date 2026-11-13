@@ -249,7 +249,8 @@ export function readHarnessBundleInfo(appBundle) {
 /**
  * @summary Copies a candidate bundle into the family's store and admits it only if, ON THE COPY, its
  * bundle id and signing Team ID match the family's vendor, `codesign --verify --deep --strict` and
- * the Gatekeeper assessment pass, and the family's capability probe answers `available`.
+ * the Gatekeeper assessment pass, its signed short version is the one its source advertised (when the
+ * source advertised one), and the family's capability probe answers `available`.
  * An admitted copy is published by one atomic rename to `<root>/<family>/<id>/`; an interrupted
  * run leaves only a staging directory, which is never selectable and is swept by the family's next
  * run. A rejection records its reason in the ledger and never changes the selection.
@@ -258,13 +259,17 @@ export function readHarnessBundleInfo(appBundle) {
  * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.
  * @param {String} options.sourceBundle Absolute path of the candidate `.app`.
  * @param {String} [options.source='installed'] Provenance recorded with the verdict (e.g. a feed URL).
+ * @param {String|null} [options.expectedShortVersion=null] The version the source advertised. Selection follows
+ * admission order, so a build that carries another version is refused before publication.
  * @param {Object} [options.seams] Replaces any of `copyBundle`, `readBundleInfo`, `inspectSignature`,
  * `assessGatekeeper` and `probe` (`({binaryPath}) => {available, reason}`).
  * @param {Function} [options.now] Clock seam.
  * @returns {Promise<{admitted: Boolean, id: String|null, appBundle: String|null, binaryPath: String|null, reason: String|null}>}
  * @throws {Error} `root-must-be-absolute`, `unknown-family`, `source-must-be-an-app-bundle` or `ledger-invalid`.
  */
-export function materializeHarnessGeneration({root, family, sourceBundle, source = 'installed', seams = {}, now = () => new Date()} = {}) {
+export function materializeHarnessGeneration({
+    root, family, sourceBundle, source = 'installed', expectedShortVersion = null, seams = {}, now = () => new Date()
+} = {}) {
     const directory = familyDirectory(root, family);
 
     if (typeof sourceBundle !== 'string' || !path.isAbsolute(sourceBundle) || !sourceBundle.endsWith('.app')) {
@@ -274,14 +279,14 @@ export function materializeHarnessGeneration({root, family, sourceBundle, source
     const
         key  = `${directory}\0`,
         next = (chains.get(key) ?? Promise.resolve()).then(() =>
-            materialize({directory, family, sourceBundle, source, host: {...HOST_SEAMS, probe: FAMILY_PROBES[family], ...seams}, now}));
+            materialize({directory, family, sourceBundle, source, expectedShortVersion, host: {...HOST_SEAMS, probe: FAMILY_PROBES[family], ...seams}, now}));
 
     chains.set(key, next.catch(() => {}));
     return next
 }
 
 /** @summary One serialized admission run; see {@link materializeHarnessGeneration}. */
-async function materialize({directory, family, sourceBundle, source, host, now}) {
+async function materialize({directory, family, sourceBundle, source, expectedShortVersion, host, now}) {
     fs.mkdirSync(directory, {recursive: true, mode: 0o700});
 
     const ledger = readLedger(directory);
@@ -334,6 +339,7 @@ async function materialize({directory, family, sourceBundle, source, host, now})
         return reject('identity-invalid')
     }
 
+    if (expectedShortVersion !== null && verdict.shortVersion !== expectedShortVersion) return reject('bundle-version-mismatch');
     if (!await attempt('assessGatekeeper', stagedApp)) return reject('gatekeeper-rejected');
     if (typeof host.probe !== 'function')              return reject('family-probe-unavailable');
 

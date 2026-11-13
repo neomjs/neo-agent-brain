@@ -98,7 +98,7 @@ test.describe('harnessGeneration', () => {
         const current = await materializeHarnessGeneration({root, family: 'codex-desktop', sourceBundle: source, seams: build()});
         const next    = {shortVersion: '26.1110.1', buildVersion: '26000', cdhash: 'd'.repeat(64)};
 
-        for (const [seams, reason] of [
+        for (const [seams, reason, options = {}] of [
             [build({...next, bundleId: 'com.example.other'}),            'bundle-identity-mismatch'],
             [build({...next, verified: false}),                          'signature-invalid'],
             [build({...next, teamId: 'AAAAAAAAAA'}),                     'team-identity-mismatch'],
@@ -107,16 +107,17 @@ test.describe('harnessGeneration', () => {
             [build({...next, probe: () => ({available: false, reason: 'updater-disable-predicate-missing'})}),
                                                                          'probe-refused:updater-disable-predicate-missing'],
             [build({...next, probe: () => { throw new Error('boom') }}), 'probe-refused:error'],
-            [{...build(next), copyBundle: () => { throw new Error('disk full') }}, 'copy-failed']
+            [{...build(next), copyBundle: () => { throw new Error('disk full') }}, 'copy-failed'],
+            [build(next), 'bundle-version-mismatch', {expectedShortVersion: '26.1110.2'}]
         ]) {
-            const result = await materializeHarnessGeneration({root, family: 'codex-desktop', sourceBundle: source, seams});
+            const result = await materializeHarnessGeneration({root, family: 'codex-desktop', sourceBundle: source, seams, ...options});
 
             expect(result, reason).toMatchObject({admitted: false, appBundle: null, binaryPath: null, reason});
             expect(staging(), reason).toEqual([]);
             expect(selectHarnessGeneration({root, family: 'codex-desktop'}).id, reason).toBe(current.id)
         }
 
-        expect(ledger().rejected.map(entry => entry.reason)).toHaveLength(8);
+        expect(ledger().rejected.map(entry => entry.reason)).toHaveLength(9);
         expect(ledger().admitted).toHaveLength(1)
     });
 
