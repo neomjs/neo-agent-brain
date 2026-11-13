@@ -1798,7 +1798,8 @@ class FleetLifecycleService extends Base {
             exitCode         : record.exitCode,
             exitedAt         : record.exitedAt,
             stderrBytes      : record.stderrBytes ?? 0,
-            authRequired     : this.authRequiredForHome(record.harnessType, record.authHome) ?? this.authRequiredFromListener(record.runtimeStart?.identity),
+            // A recorded auth failure outranks the marker, which proves a credential exists, not that it works.
+            authRequired     : this.authRequiredFromListener(record.runtimeStart?.identity) || this.authRequiredForHome(record.harnessType, record.authHome),
             instanceHome     : record.instanceHome ?? null,
             authHome         : record.authHome ?? null,
             launchCommand    : record.launchCommand ?? null,

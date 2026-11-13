@@ -1500,6 +1500,42 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         fs.rmSync(homeDir, {recursive: true, force: true});
     });
 
+    test('status() lets a recorded auth failure outrank a credentials file, and a healthy seat keeps what its marker says', () => {
+        // A CLI credentials file proves a credential exists, not that it works: the marker answered false and
+        // the listener's authentication_failed was never read.
+        const
+            homeDir   = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-status-auth-')),
+            authHome  = path.join(homeDir, 'auth-home'),
+            listeners = path.join(homeDir, LISTENER_STATE_RELATIVE),
+            original  = FleetLifecycleService.authRequiredFromListener;
+
+        fs.mkdirSync(authHome, {recursive: true});
+        fs.writeFileSync(path.join(authHome, '.credentials.json'), '{}');
+        fs.mkdirSync(listeners, {recursive: true});
+        FleetLifecycleService.authRequiredFromListener = identity => original.call(FleetLifecycleService, identity, {homeDir});
+
+        try {
+            install({agents: {a: agentDef('a')}, creds: {}});
+            FleetLifecycleService.start('a');
+
+            const record    = FleetLifecycleService.processes.get('a'),
+                  authAfter = (harnessType, listener) => {
+                      fs.writeFileSync(path.join(listeners, 'neo-seat.json'), JSON.stringify(listener));
+                      Object.assign(record, {harnessType, authHome, runtimeStart: {identity: '@neo-seat'}});
+
+                      return FleetLifecycleService.status('a').authRequired
+                  };
+
+            expect(authAfter('claude-code',    {failure: {error: 'authentication_failed', count: 1}})).toBe(true);
+            expect(authAfter('claude-code',    {watermark: 10})).toBe(false);
+            expect(authAfter('claude-desktop', {failure: {error: 'authentication_failed', count: 1}})).toBe(true);
+            expect(authAfter('claude-desktop', {watermark: 10})).toBe(null)
+        } finally {
+            FleetLifecycleService.authRequiredFromListener = original;
+            fs.rmSync(homeDir, {recursive: true, force: true})
+        }
+    });
+
     test('the version probe runs under the SAME minimal env as the supervised child — no ambient-secret leak through the auxiliary subprocess', () => {
         const spawn     = install({agents: {a: agentDef('a')}, creds: {}}),
               execCalls = [];
