@@ -17,10 +17,25 @@ import {ownOpenWorkOf, writeOpenWorkCopy}                               from './
  *
  * The same session publishes the projection's copy after each pulse ({@link publishOpenWorkCopy}), and each seat
  * reads its own entry ({@link readOwnOpenWork}); the store is `openWorkCopyStore.mjs`.
+ *
+ * One wake is one task, so a repeated admission answers the first receipt instead of writing again. The Fleet retries
+ * a submission whose answer it lost, and that write may already have landed. The record lives in this process: a
+ * plane restart between a lost answer and its retry can still write a wake twice.
  */
 
-/** @summary The most wake messages one delivery read answers. */
-const MAX_MESSAGE_IDS = 100;
+const
+    // The most wake messages one delivery read answers
+    MAX_MESSAGE_IDS = 100,
+    // The admissions a repeat can answer, newest last: days of wakes at the Fleet's pace
+    MAX_ADMISSIONS  = 2000,
+    admissions      = new Map();
+
+/**
+ * @summary Forget every admission, so the next one of the same wake writes again.
+ */
+export function resetOpenWorkWakeAdmissions() {
+    admissions.clear()
+}
 
 /**
  * @summary The verified caller, admitted only when it is the Fleet's human operator: the gate every host-to-plane
@@ -52,7 +67,8 @@ function operatorOf(surface, action, admitted = 'open-work wakes are') {
 /**
  * @summary Admits one open-work observation from the Fleet's human operator, composes its wake and sends it as
  * `@system`. The caller, the observation and the recipient are all checked before anything is written. The caller
- * is recorded as `task.observedBy`, read from the verified request identity, never from the arguments.
+ * is recorded as `task.observedBy`, read from the verified request identity, never from the arguments. A repeat of
+ * the same wake answers the first receipt.
  * @param {Object} args `{repo, number, head, kind, episode, to, failedChecks, unblocks, holder}`, per `validateOpenWorkObservation`.
  * @returns {Promise<Object>} The `addMessage` receipt; its `messageId` is what {@link readOpenWorkWakeDelivery} answers for.
  */
@@ -71,10 +87,19 @@ export async function admitOpenWorkWake(args) {
 
     const {task, ...message} = composeOpenWorkWake(observation);
 
-    return RequestContextService.run(
+    // A repeat answers the first receipt, even while that write is in flight; a failed write keeps nothing
+    if (admissions.has(task.id)) return admissions.get(task.id);
+
+    const admission = RequestContextService.run(
         {agentIdentityNodeId: SYSTEM_SENDER.id, principalClass: 'system', sessionId: 'open-work-wakes'},
         () => MailboxService.addMessage({...message, task: {...task, observedBy}}, {deferProjection: true})
-    )
+    );
+
+    admissions.set(task.id, admission);
+    admission.catch(() => admissions.get(task.id) === admission && admissions.delete(task.id));
+    admissions.size > MAX_ADMISSIONS && admissions.delete(admissions.keys().next().value);
+
+    return admission
 }
 
 /**
