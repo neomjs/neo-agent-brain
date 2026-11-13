@@ -50,6 +50,13 @@ export const FAILURE_EVENT = 'StopFailure';
 export const TRANSIENT_FAILURES = new Set(['overloaded', 'rate_limit', 'server_error', 'unknown']);
 
 /**
+ * `StopFailure` errors only the operator repairs: the seat's account is signed out, refused or unpaid.
+ * Fleet reads one in the seat's listener record as the seat needing its sign-in.
+ * @type {Set<String>}
+ */
+export const AUTH_FAILURES = new Set(['account_on_hold', 'authentication_failed', 'billing_error', 'cloud_credential_error', 'oauth_org_not_allowed']);
+
+/**
  * Executables the harness may run a hook command through before it reaches `node`.
  * @type {Set<String>}
  */
