@@ -19,7 +19,8 @@ export const FLEET_COCKPIT_SOURCES = Object.freeze({
         lifecycle  : 'fleet:lifecycle',
         wake       : 'fleet:wakeState',
         throttle   : 'fleet:throttleState',
-        presence   : 'fleet:presenceState'
+        presence   : 'fleet:presenceState',
+        rotation   : 'fleet:sessionRotation'
     });
 
 /** @type {ReadonlyArray<string>} */
@@ -34,5 +35,6 @@ export const FLEET_COCKPIT_EVENT_TYPES = Object.freeze([
     'issue-activity',
     'lane-claim',
     'work-stall',
-    'source-degraded'
+    'source-degraded',
+    'session-rotation'
 ]);
