@@ -556,6 +556,14 @@ export function buildTaskDefinitions({
             pidFileName    : 'dated-items-overdue.pid',
             expectedCommand: 'DatedItemsOverdue',
             serviceTask    : true
+        },
+        // In-process container-plane lane that expires A2A Tasks past their `task.expiresAt`. The entry
+        // exists for the persisted state envelope (`lastRunAt` and the last run's `sweptCount`).
+        'task-expiry-sweep': {
+            label          : 'Task expiry sweep',
+            pidFileName    : 'task-expiry-sweep.pid',
+            expectedCommand: 'TaskExpirySweep',
+            serviceTask    : true
         }
     };
 

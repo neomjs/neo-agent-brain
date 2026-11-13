@@ -2118,7 +2118,13 @@ class ConfigBase extends ConfigProvider {
                      * not paged: a cloud deployment has no operator to gate. Hourly surfaces a silent
                      * vector-loss in hours, not weeks. `<= 0` disables the lane.
                      */
-                    dataIntegritySweepCheckMs        : leaf(HOUR_MS, 'NEO_ORCHESTRATOR_DATA_INTEGRITY_SWEEP_INTERVAL_MS', 'number')
+                    dataIntegritySweepCheckMs        : leaf(HOUR_MS, 'NEO_ORCHESTRATOR_DATA_INTEGRITY_SWEEP_INTERVAL_MS', 'number'),
+                    /**
+                     * Cadence of the Task expiry sweep: the container-plane lane that moves A2A Tasks
+                     * past their `task.expiresAt` to `Expired`. It bounds how long a Task stays open
+                     * after its deadline; one run is one statement over the graph. `<= 0` disables the lane.
+                     */
+                    taskExpirySweepMs                : leaf(10 * 60 * 1000, 'NEO_ORCHESTRATOR_TASK_EXPIRY_SWEEP_INTERVAL_MS', 'number')
                 },
                 /**
                  * Chroma daemon recycle policy. The orchestrator kills and respawns the supervised

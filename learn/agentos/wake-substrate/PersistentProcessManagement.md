@@ -106,7 +106,6 @@ The heartbeat lane needs no separate install step: once the Orchestrator is runn
 The Orchestrator records every lane outcome through `HealthService.recordTaskOutcome(...)`. The heartbeat lane emits `INFO`-level log lines only when something happens — these are the durable observability signals:
 
 - **Stale lock cleared:** `Clearing stale concurrency lock (<age>ms old)` — only when a producer-side lock outlived its TTL.
-- **TTL sweep:** `sweep: <N> task(s) transitioned to Expired` — only when N > 0.
 - **Sunset recovery:** `Phase 1 Recovery Triggered for <identity>. Reason: ...` — only when the sunset detector fires.
 - **Idle-out nudge:** `Idle-out nudge triggered for <identity>` — only when the per-identity idle threshold trips.
 - **All-agent-idle:** `AllAgentIdle detected: <signal>` — only when the trio-wide idle predicate holds.
@@ -283,7 +282,7 @@ Per [#10780](https://github.com/neomjs/neo/issues/10780): before re-enabling Dre
 - **Orchestrator entry-point wrapper:** `ai/daemons/orchestrator/daemon.mjs` (Neo bootstrap + signal handlers + start invocation; the launchd / systemd target)
 - **Orchestrator daemon class:** `ai/daemons/orchestrator/Orchestrator.mjs` (Neo-singleton; #11009; owns the `poll()` scheduler)
 - **Heartbeat lane class:** `ai/daemons/orchestrator/services/SwarmHeartbeatService.mjs` (Neo-singleton; #10789; folded into the Orchestrator as a scheduled lane per #11766)
-- **Heartbeat lane dependencies:** `checkSunsetted.mjs`, `resumeHarness.mjs`, `wakeSafetyGate.mjs`, `sweepExpiredTasks.mjs`, `heartbeatLock.mjs`, `idleOutNudge.mjs`, `checkAllAgentIdle.mjs`, `trioWakeCooldown.mjs`
+- **Heartbeat lane dependencies:** `checkSunsetted.mjs`, `resumeHarness.mjs`, `wakeSafetyGate.mjs`, `heartbeatLock.mjs`, `idleOutNudge.mjs`, `checkAllAgentIdle.mjs`, `trioWakeCooldown.mjs`
 - **Heartbeat fold ADR:** [ADR 0014](../decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md) — classifies the `swarm-heartbeat` lane as `local-only`
 - **Parent epic:** [#10671](https://github.com/neomjs/neo/issues/10671) — Substrate-restart recovery (two-mode: idle-out + sunset)
 - **Implementation tickets:** [#10789](https://github.com/neomjs/neo/issues/10789) — SwarmHeartbeatService Neo-singleton; [#11766](https://github.com/neomjs/neo/issues/11766) — fold into the Orchestrator

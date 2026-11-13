@@ -118,6 +118,7 @@ export const TASK_AUTHORITY_BY_NAME = Object.freeze({
     'heavy-maintenance-starvation-watchdog': ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'data-integrity-sweep'                 : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'dated-items-overdue'                  : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
+    'task-expiry-sweep'                    : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'boot-identity-fact'                   : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'deployment-state-bridge'              : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'freeze-reprobe'                       : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane

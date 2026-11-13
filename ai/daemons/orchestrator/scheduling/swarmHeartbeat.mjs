@@ -91,7 +91,7 @@ export function getDueTask({state, now, swarmHeartbeatIntervalMs}) {
  * with no provider supplied, no identity is gated.
  * - **`'disabled'`** — returns `[]` plus an info log. Downstream `pulse()` skips per-identity
  *   work (sunset detection, idle-out nudge) while identity-agnostic substrate maintenance
- *   (TTL sweep, all-agent-idle detection, liveness touch) still runs.
+ *   (all-agent-idle detection, liveness touch) still runs.
  *
  * Cloud/fork safety: external workspaces never silently fan out to maintainer identities.
  * Every source is per-MC-instance derived (each deployment's MC has its own nodes, A2A

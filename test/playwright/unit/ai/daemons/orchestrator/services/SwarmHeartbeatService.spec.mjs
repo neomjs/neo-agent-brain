@@ -31,8 +31,8 @@ import {test, expect} from '@playwright/test';
  *
  * Covers: `beforeSetIdentity` normalization + null-on-empty fork-safety,
  * concurrency-lock skip-vs-clear, sunset-detection-routes-to-resumeHarness, gate-tripped
- * blocks high-authority dispatch, idle-out-nudge routing, push-capable bypass,
- * sweep-failure isolation within `pulse()`.
+ * blocks high-authority dispatch, idle-out-nudge routing, push-capable bypass, and that
+ * `pulse()` runs no Task expiry sweep (the container-plane `task-expiry-sweep` lane owns it).
  *
  * After the core.Base contract restoration: `initAsync()` is identity-agnostic
  * (peer-service `.ready()` calls only — no `process.env` reads, no `isInitialized`
@@ -53,7 +53,7 @@ import {test, expect} from '@playwright/test';
  * has no try/finally.
  *
  * Stubbing strategy: SwarmHeartbeatService exposes test-stubbable instance-method seams
- * (`checkHeartbeatLock`, `clearHeartbeatLock`, `sweepExpiredTasks`, `checkGateOpen`,
+ * (`checkHeartbeatLock`, `clearHeartbeatLock`, `checkGateOpen`,
  * `readGate`, `checkSunsetted`, `resumeHarness`, `idleOutNudge`, `checkAllAgentIdle`,
  * `swarmWakeCooldown`, `runScript`, `runScriptJson`, `runCmd`, `getUnreadCount`,
  * `getIssuesCount`, `isPushCapable`,
@@ -143,7 +143,6 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         SwarmHeartbeatService.touchLivenessFile = async () => {};
         SwarmHeartbeatService.checkHeartbeatLock = async () => ({active: false, stale: false, ageMs: 0});
         SwarmHeartbeatService.clearHeartbeatLock = async () => {};
-        SwarmHeartbeatService.sweepExpiredTasks  = async () => ({sweptCount: 0});
         SwarmHeartbeatService.checkGateOpen      = async () => true;
         SwarmHeartbeatService.readGate           = async () => ({state: 'enabled', reason: '', trippedAt: null, trippedBy: null});
         SwarmHeartbeatService.checkSunsetted     = async () => null;
@@ -221,7 +220,7 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         await SwarmHeartbeatService.pulse();
 
         // Zero per-identity iterations — the lane silently no-ops (no identity leak).
-        // Substrate maintenance (sweep, all-agent-idle) still ran.
+        // Substrate maintenance (all-agent-idle) still ran.
         expect(sunsetChecks).toEqual([]);
     });
 
@@ -229,27 +228,27 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         applyDefaultStubs();
         SwarmHeartbeatService.checkHeartbeatLock = async () => ({active: true, stale: false, ageMs: 1000});
 
-        const sweepCalls = [];
-        SwarmHeartbeatService.sweepExpiredTasks = async () => { sweepCalls.push(Date.now()); return {sweptCount: 0} };
+        const sunsetChecks = [];
+        SwarmHeartbeatService.checkSunsetted = async identity => { sunsetChecks.push(identity); return null };
 
         await SwarmHeartbeatService.pulse();
 
-        expect(sweepCalls.length).toBe(0); // Active lock → early return; no sweep dispatched.
+        expect(sunsetChecks).toEqual([]); // Active lock → early return; no detector step runs.
     });
 
-    test('pulse() clears stale lock and continues to sweep', async () => {
+    test('pulse() clears stale lock and continues to the detector steps', async () => {
         applyDefaultStubs();
         let releaseCalled = false;
         SwarmHeartbeatService.checkHeartbeatLock = async () => ({active: false, stale: true, ageMs: 999_999});
         SwarmHeartbeatService.clearHeartbeatLock = async () => { releaseCalled = true };
 
-        const sweepCalls = [];
-        SwarmHeartbeatService.sweepExpiredTasks = async () => { sweepCalls.push(Date.now()); return {sweptCount: 0} };
+        const sunsetChecks = [];
+        SwarmHeartbeatService.checkSunsetted = async identity => { sunsetChecks.push(identity); return null };
 
         await SwarmHeartbeatService.pulse();
 
         expect(releaseCalled).toBe(true);
-        expect(sweepCalls.length).toBe(1);
+        expect(sunsetChecks).toEqual(['@test']);
     });
 
     test('pulse() skips fresh-session-spawn when wake safety gate is closed', async () => {
@@ -421,7 +420,7 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
 
         await SwarmHeartbeatService.pulse();
 
-        // Zero per-identity iterations; substrate maintenance (sweep, all-agent-idle) still ran.
+        // Zero per-identity iterations; substrate maintenance (all-agent-idle) still ran.
         expect(sunsetChecks).toEqual([]);
     });
 
@@ -616,18 +615,19 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         expect(idleCalls).toEqual([[]]);
     });
 
-    test('pulse() isolates a sweep failure locally and continues to the detector steps (#11996 cycle-3 shape)', async () => {
+    test('pulse() runs no Task expiry sweep: the container-plane task-expiry-sweep lane owns it (#1679)', async () => {
         applyDefaultStubs();
-        SwarmHeartbeatService.sweepExpiredTasks = async () => { throw new Error('substrate down') };
-        SwarmHeartbeatService.checkSunsetted    = async () => ({sunsetted: false, recommended_action: 'idle_out_nudge'});
+        const originalSweep = MailboxService.sweepExpiredTasks;
+        let   sweepCalls    = 0;
+        MailboxService.sweepExpiredTasks = async () => { sweepCalls++; return {success: true, sweptCount: 0} };
 
-        const nudgeCalls = [];
-        SwarmHeartbeatService.idleOutNudge = async (...args) => { nudgeCalls.push(args) };
+        try {
+            await SwarmHeartbeatService.pulse();
+        } finally {
+            MailboxService.sweepExpiredTasks = originalSweep;
+        }
 
-        // Sweep throws but is caught by the inner try/catch around the sweep step;
-        // pulse() does not propagate the error and proceeds to the detector routing.
-        await expect(SwarmHeartbeatService.pulse()).resolves.toBeUndefined();
-        expect(nudgeCalls).toEqual([['@test']]);
+        expect(sweepCalls).toBe(0);
     });
 
     test('pulse() has no cadence emitter: an identity the detector did not flag receives no pulse, however quiet its A2A traffic', async () => {

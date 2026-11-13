@@ -438,6 +438,27 @@ const taskRegistry = [
                 sourcePath: hooks?.datedItemsSourcePath
             });
         }
+    },
+    {
+        // The Task expiry sweep: moves A2A Tasks past their `task.expiresAt` to `Expired`. It needs
+        // the graph, so the container plane owns it; the host-edge heartbeat that carried it is graphless.
+        taskName        : 'task-expiry-sweep',
+        executionKind   : 'in-process-async',
+        maintenanceClass: 'lightweight-signal',
+        backpressure    : 'none',
+        dependencies    : [],
+        getDueTask({state, now, intervals}) {
+            const lastRunAt  = state['task-expiry-sweep']?.lastRunAt ?? 0;
+            const intervalMs = intervals.taskExpirySweep;
+            if (intervalMs > 0 && now - lastRunAt >= intervalMs) {
+                return {
+                    taskName: 'task-expiry-sweep',
+                    source  : 'periodic-task-expiry-sweep',
+                    reason  : `periodic-task-expiry-sweep:${intervalMs}`
+                };
+            }
+            return null;
+        }
     }
 ];
 

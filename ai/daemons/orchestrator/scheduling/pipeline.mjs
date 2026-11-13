@@ -151,6 +151,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
                 remConsolidationWatchdogCheck          : config.orchestrator.intervals.remConsolidationWatchdogCheckMs,
                 heavyMaintenanceStarvationWatchdogCheck: config.orchestrator.intervals.heavyMaintenanceStarvationWatchdogCheckMs,
                 dataIntegritySweepCheck                : config.orchestrator.intervals.dataIntegritySweepCheckMs,
+                taskExpirySweep                        : config.orchestrator.intervals.taskExpirySweepMs,
                 temporalSummary                        : config.temporalSummary.aggregationIntervalMs
             },
             enables: {
@@ -195,7 +196,8 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             embedDrainLivenessAlarmDispatcher      : orchestrator.embedDrainLivenessAlarmDispatcher,
             remConsolidationLivenessAlarmDispatcher: orchestrator.remConsolidationLivenessAlarmDispatcher,
             dataIntegrityDiagnosisService          : orchestrator.dataIntegrityDiagnosisService,
-            datedItemsOverdueSendMessage           : orchestrator.datedItemsOverdueSendMessage?.bind(orchestrator)
+            datedItemsOverdueSendMessage           : orchestrator.datedItemsOverdueSendMessage?.bind(orchestrator),
+            sweepExpiredTasks                      : orchestrator.sweepExpiredTasks?.bind(orchestrator)
         },
         runtime: {
             goldenPathRepoEnrichmentEnabled: orchestrator.goldenPathRepoEnrichmentEnabled,
@@ -551,7 +553,8 @@ function executeInProcessCandidate({candidate, activeHeavyTask, services, runtim
             repoEnrichmentEnabled: runtime.goldenPathRepoEnrichmentEnabled
         }),
         'swarm-heartbeat'    : (taskName, reason) => runSwarmHeartbeatTask({taskName, reason, services}),
-        'dated-items-overdue': (taskName, reason) => runDatedItemsOverdueTask({taskName, reason, services, runtime})
+        'dated-items-overdue': (taskName, reason) => runDatedItemsOverdueTask({taskName, reason, services, runtime}),
+        'task-expiry-sweep'  : (taskName, reason) => runTaskExpirySweepTask({taskName, reason, services, runtime})
     };
 
     const executeFn = runners[candidate.taskName];
@@ -574,7 +577,7 @@ function executeInProcessCandidate({candidate, activeHeavyTask, services, runtim
         });
     }
 
-    if (candidate.taskName === 'swarm-heartbeat' || candidate.taskName === 'dated-items-overdue') {
+    if (candidate.taskName === 'swarm-heartbeat' || candidate.taskName === 'dated-items-overdue' || candidate.taskName === 'task-expiry-sweep') {
         return executeFn(candidate.taskName, candidate.trigger.reason);
     }
 
@@ -808,6 +811,39 @@ async function runDatedItemsOverdueTask({taskName, reason, services, runtime}) {
             sentCount  : outcome.sentCount,
             failedCount: outcome.failedCount
         });
+    } catch (e) {
+        const state = services.taskStateService.getTaskState(taskName);
+        if (state) state.lastReason = e.message;
+        services.taskStateService.markFailed(taskName, 1);
+        services.healthService?.recordTaskOutcome?.(taskName, 'failed', {
+            reason,
+            error   : e.message,
+            failedAt: new Date().toISOString()
+        });
+    }
+}
+
+/**
+ * @summary Runs one pass of the `task-expiry-sweep` lane and records how many Tasks it expired.
+ * A failed sweep is recorded on the lane and never reaches the other lanes; the next run sweeps
+ * whatever is due by then.
+ * @param {Object} options
+ * @param {String} options.taskName
+ * @param {String} options.reason
+ * @param {Object} options.services Needs `sweepExpiredTasks`, `taskStateService` and `healthService`.
+ * @param {Object} options.runtime Needs `writeLog`.
+ * @returns {Promise<void>}
+ */
+async function runTaskExpirySweepTask({taskName, reason, services, runtime}) {
+    services.taskStateService.markStarted(taskName, reason);
+    services.healthService?.recordTaskOutcome?.(taskName, 'running', {reason, startedAt: new Date().toISOString()});
+    try {
+        const {sweptCount} = await services.sweepExpiredTasks(),
+              completedAt  = new Date().toISOString();
+
+        sweptCount > 0 && runtime.writeLog('INFO', `[Orchestrator] task-expiry-sweep: ${sweptCount} Task(s) transitioned to Expired`);
+        services.taskStateService.markCompleted(taskName, {completedAt, sweptCount});
+        services.healthService?.recordTaskOutcome?.(taskName, 'completed', {reason, completedAt, sweptCount});
     } catch (e) {
         const state = services.taskStateService.getTaskState(taskName);
         if (state) state.lastReason = e.message;

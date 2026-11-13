@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 /**
- * @summary CLI invoker for `MailboxService.sweepExpiredTasks` consumed by the swarm heartbeat.
+ * @summary Manual CLI invoker for `MailboxService.sweepExpiredTasks`.
  *
  * Runs the maintenance bulk-UPDATE that transitions
  * stale `Submitted` / `Working` / `InputRequired` tasks past their `task.expiresAt` to
- * `Expired`. The Orchestrator swarm-heartbeat lane (`ai/daemons/SwarmHeartbeatService.mjs`)
- * now calls `MailboxService.sweepExpiredTasks()` directly each pulse; this CLI
- * wrapper is preserved for manual debugging.
+ * `Expired`. The Orchestrator's container-plane `task-expiry-sweep` lane runs the same
+ * sweep on its cadence; this CLI wrapper is preserved for manual debugging.
  *
  * Output: a single JSON line on stdout containing `{success, sweptCount}` so a CLI caller
  * can capture the count for observability without parsing free-form prose.
