@@ -1,5 +1,5 @@
-import {expect, test} from '@playwright/test';
-import {holderOf}     from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
+import {expect, test}          from '@playwright/test';
+import {holderOf, responderOf} from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
 
 const
     seat    = {kind: 'seat', seat: '@neo-opus-ada', login: 'neo-opus-ada'},
@@ -225,5 +225,55 @@ test.describe('openWorkHolder — an outside PR pushed past a seat\'s review is 
         expect(holderOf(pushed({reviews: [by(A, 'APPROVED', true)], opinions: [by(A, 'APPROVED', true), by(B, 'CHANGES_REQUESTED')]})))
             .toEqual({role: 'operator', kind: 'merge', ids: []});
         expect(holderOf(pushed({...past(B, 'CHANGES_REQUESTED'), partial: true}))).toEqual({role: 'unknown', kind: null, ids: []})
+    });
+});
+
+test.describe('openWorkHolder — an outside comment owes a reply, beside the holder (#1630)', () => {
+    const
+        turn  = (minute, by, member = false, bot = false) => ({at: `2026-11-11T10:${String(minute).padStart(2, '0')}:00Z`, by, member, ...(bot ? {bot: true} : {})}),
+        them  = minute => turn(minute, 'login:contributor'),
+        us    = (minute, by = '@neo-gpt') => turn(minute, by, true),
+        reply = (role, ids, minute) => ({role, kind: 'respond-comment', ids, episode: turn(minute).at});
+
+    test('the earliest outside turn after the latest member turn is owed; a member reply ends it and a later outside turn opens another (AC-2)', () => {
+        expect(responderOf(row({turns: []}))).toBeNull();
+        expect(responderOf(row({turns: [us(1)]}))).toBeNull();
+        expect(responderOf(row({turns: [them(1), us(2)]}))).toBeNull();
+        expect(responderOf(row({turns: [us(1), them(2), them(3)]}))).toEqual(reply('author', ['@neo-opus-ada'], 2));
+        expect(responderOf(row({turns: [us(1), them(2), us(3), them(4)]}))).toEqual(reply('author', ['@neo-opus-ada'], 4));
+
+        // a bot's turn is neither a question nor an answer
+        expect(responderOf(row({turns: [them(1), turn(2, 'login:ci', false, true)]}))).toEqual(reply('author', ['@neo-opus-ada'], 1));
+        expect(responderOf(row({turns: [us(1), turn(2, 'login:ci', false, true)]}))).toBeNull();
+
+        // no conversation read, a draft or a bot's PR owes nothing
+        expect(responderOf(row({}))).toBeNull();
+        expect(responderOf(row({draft: true, turns: [them(1)]}))).toBeNull();
+        expect(responderOf(row({bot: true, turns: [them(1)]}))).toBeNull();
+
+        // turns an instant already covers are not owed again; a later one is
+        expect(responderOf(row({turns: [them(1)]}), {since: turn(1).at})).toBeNull();
+        expect(responderOf(row({turns: [them(1), them(3)]}), {since: turn(2).at})).toEqual(reply('author', ['@neo-opus-ada'], 3))
+    });
+
+    test('a seat\'s own PR is its author\'s to answer, whatever else holds it (AC-3)', () => {
+        for (const overrides of [{ci: 'red'}, judged('APPROVED'), judged('CHANGES_REQUESTED'), {requested: ['@neo-gpt']}]) {
+            expect(responderOf(row({...overrides, turns: [them(1)]}))).toEqual(reply('author', ['@neo-opus-ada'], 1))
+        }
+    });
+
+    test('an outside PR goes to the seat that spoke last, then a requested seat, then a seat that judged it, and otherwise the rotation (AC-1, AC-2)', () => {
+        const pr = overrides => row({owner: outside, ...overrides});
+
+        expect(responderOf(pr({turns: [us(1, '@neo-gpt-euclid'), us(2), them(3)], requested: ['@neo-opus-vega']})))
+            .toEqual(reply('reviewer', ['@neo-gpt'], 3));
+        // a repository member without a seat answers, yet names nobody a wake can reach
+        expect(responderOf(pr({turns: [turn(1, 'login:tobiu', true), them(2)], requested: ['@neo-opus-vega']})))
+            .toEqual(reply('reviewer', ['@neo-opus-vega'], 2));
+        expect(responderOf(pr({turns: [them(1)], ci: 'red', ...judged('CHANGES_REQUESTED', false)})))
+            .toEqual(reply('reviewer', ['@neo-gpt'], 1));
+        expect(responderOf(pr({turns: [them(1)], ci: 'red'}))).toEqual(reply('rotation', [], 1));
+        expect(responderOf(pr({turns: [them(1)], reviews: [{reviewer: 'login:copilot', state: 'COMMENTED', onHead: true, bot: true}]})))
+            .toEqual(reply('rotation', [], 1))
     });
 });

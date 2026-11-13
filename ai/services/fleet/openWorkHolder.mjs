@@ -25,6 +25,9 @@
  *
  * A head that reports no CI (`ci: null`) never turns green, so its merge chip reads GitHub's `CLEAN`
  * instead, still beside the approval on the head: a repository that requires no review is CLEAN without one.
+ *
+ * An outside comment owes a reply ({@link responderOf}) beside whatever holds the PR, never in its place: a
+ * contributor's question is no less owed while the head is red or a merge waits.
  */
 
 /**
@@ -106,6 +109,40 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
     }
 
     return {role: 'none', kind: null, ids: []}
+}
+
+/**
+ * @summary The reply an outside comment is owed, and the seat that owes it. The owed turn is the earliest outside
+ * comment or review after the conversation's latest member turn; its time is the episode, so a member's reply ends
+ * it and the next outside turn opens another. A bot's turn is neither. The PR's author seat answers its own PR;
+ * otherwise the seat that spoke last, then a requested seat, then a seat that judged or reviewed it, and with none
+ * the rotation. `turns` holds only the conversation's latest page, and decides on what it shows: an older page can
+ * only hold earlier turns.
+ * @param {Object} row An open row of the producer's snapshot.
+ * @param {Object} [options]
+ * @param {String|null} [options.since=null] An instant whose earlier turns are already covered, as a triage covers
+ *     the turns it woke a seat for; only a later outside turn is owed.
+ * @returns {{role: 'author'|'reviewer'|'rotation', kind: 'respond-comment', ids: String[], episode: String}|null}
+ */
+export function responderOf({draft, owner, bot = false, authorType = null, requested = [], reviews = [], opinions = [], turns}, {since = null} = {}) {
+    if (draft || bot || authorType === 'Bot' || !Array.isArray(turns)) return null;
+
+    const
+        people = turns.filter(turn => !turn.bot && Number.isFinite(Date.parse(turn.at))),
+        last   = people.findLast(turn => turn.member),
+        after  = Math.max(last ? Date.parse(last.at) : -Infinity, since ? Date.parse(since) : -Infinity),
+        owed   = people.find(turn => !turn.member && Date.parse(turn.at) > after);
+
+    if (!owed) return null;
+
+    const reply = (role, ids) => ({role, kind: 'respond-comment', ids, episode: owed.at});
+
+    if (owner?.kind === 'seat' && isSeat(owner.seat)) return reply('author', [owner.seat]);
+
+    const seat = people.findLast(turn => turn.member && isSeat(turn.by))?.by ?? requested.find(isSeat) ??
+        [...opinions, ...reviews].find(item => !item.bot && isSeat(item.reviewer))?.reviewer;
+
+    return seat ? reply('reviewer', [seat]) : reply('rotation', [])
 }
 
 export default holderOf;

@@ -22,6 +22,7 @@ export const OPEN_WORK_WAKE_REASONS = Object.freeze({
     'route-review'      : 'CI is green; request a reviewer for your head',
     'triage-outside'    : 'an untouched outside contributor pull request has finished CI',
     'approve-runs'      : 'an outside contributor pull request has workflow runs awaiting approval',
+    'respond-comment'   : 'an outside comment on the pull request awaits a reply',
     'post-merge'        : 'your pull request was merged',
     unblocked           : 'a merge unblocked your ticket',
     unowned             : "no seat owns this pull request's next action",

@@ -562,8 +562,8 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         const result = gate(observed);
         expect(result).toMatchObject({holds: true, certification: {version: 1, policy: 'open-work-operational-estimate-v1'}});
         const bucket = result.certification.buckets.find(item => item.resetAt === iso(420));
-        expect(bucket).toMatchObject({measured: 36, estimated: 0, unattributed: 9, unattributedCalls: 3, decision: 'operational-estimate'});
-        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 3, reservePerCall: 3}));
+        expect(bucket).toMatchObject({measured: 36, estimated: 0, unattributed: 12, unattributedCalls: 3, decision: 'operational-estimate'});
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 4, reservePerCall: 4}));
         observed.pulses.at(-1).seats[0].outcome = 'failed';
         expect(gate(observed).holds).toBe(false);
     });
@@ -635,7 +635,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         later.quota[0] = classified({...later.quota[0], remaining: 920});
         let result = gate(observed), bucket = result.certification?.buckets.find(row => row.resetAt === iso(60));
         expect(result.holds).toBe(true);
-        expect(bucket).toMatchObject({estimated: 300, decision: 'reported-user-total', userTotal: {used: 80, remaining: 920}});
+        expect(bucket).toMatchObject({estimated: 400, decision: 'reported-user-total', userTotal: {used: 80, remaining: 920}});
         // Same-millisecond failure after that successful response defeats its claimed coverage.
         later.costUnknown = true;
         later.quota.push(classified({...later.quota[0], cost: 0, calls: 1, failed: 1, unknown: true},
@@ -1185,5 +1185,93 @@ test.describe('openWorkWakes — an outside PR pushed past a seat\'s review wake
         expect(summary(run.step(4, [{...outside, head: H2, ci: 'green', ...judged(false)}], {}, {rotationSeats: roster})))
             .toEqual([{to: EUCLID, role: 'reviewer', kind: 'review'}]);
         expect(run.step(5, [{...outside, head: H2, ci: 'green', ...judged(false)}], {}, {rotationSeats: roster}).wakes, 'once per head').toEqual([])
+    });
+});
+
+test.describe('openWorkWakes — an owed reply wakes beside the holder, once per episode (#1630)', () => {
+    const
+        said    = (minute, by = 'login:contributor', member = false) => ({at: iso(minute), by, member}),
+        outside = {kind: 'outside', seat: null, login: 'contributor'},
+        replies = result => result.wakes.filter(wake => wake.kind === 'respond-comment');
+
+    test('a seat\'s PR wakes its author once per owed turn beside the repair its red head holds; a first observation baselines (AC-2, AC-3)', () => {
+        const run = journey();
+
+        expect(replies(run.step(0, [{ci: 'red', turns: [said(-5)]}]))).toEqual([]);
+        expect(replies(run.step(1, [{ci: 'red', turns: [said(-5), said(0, GPT, true)]}]))).toEqual([]);
+
+        const owed = [said(-5), said(0, GPT, true), said(1), said(2)];
+
+        expect(replies(run.step(2, [{ci: 'red', turns: owed}])))
+            .toEqual([expect.objectContaining({to: ADA, role: 'author', kind: 'respond-comment', episode: iso(1)})]);
+        expect(replies(run.step(3, [{ci: 'red', turns: owed}])), 'once per episode').toEqual([]);
+
+        // answered, then owed again on the same head: a new episode
+        expect(replies(run.step(4, [{ci: 'red', turns: [...owed, said(3, ADA, true), said(4)]}])))
+            .toEqual([expect.objectContaining({to: ADA, episode: iso(4)})]);
+        expect(replies(run.step(5, [{ci: 'red', turns: [...owed, said(3, ADA, true), said(4), said(5, ADA, true)]}]))).toEqual([]);
+        expect(Object.keys(run.ledger().holding).filter(slot => slot.includes('respond-comment')), 'an answered slot leaves the ledger').toEqual([])
+    });
+
+    test('an outside PR\'s reply goes to the seat that engaged it, and an unreachable one escalates like any holder (AC-2)', () => {
+        const
+            run = journey(),
+            pr  = turns => [{owner: outside, ci: 'red', reviews: [opinion('CHANGES_REQUESTED', false)], opinions: [opinion('CHANGES_REQUESTED', false)], turns}];
+
+        run.step(0, pr([]), {}, {rotationSeats: [ADA]});
+        expect(replies(run.step(1, pr([said(1)]), {}, {rotationSeats: [ADA]})))
+            .toEqual([expect.objectContaining({to: GPT, role: 'reviewer', episode: iso(1)})]);
+
+        // a push leaves the owed turn as it was: the new head's slot keeps that it woke, and no second wake follows
+        const pushed = [{...pr([said(1)])[0], head: 'b'.repeat(40)}];
+
+        expect(replies(run.step(2, pushed, {}, {rotationSeats: [ADA]})), 'once per episode across heads').toEqual([]);
+        expect(Object.values(run.ledger().holding).filter(({wake}) => wake.kind === 'respond-comment'))
+            .toEqual([expect.objectContaining({status: 'admitted', wake: expect.objectContaining({head: 'b'.repeat(40), episode: iso(1)})})]);
+
+        const unreachable = run.step(3, [{...pr([said(1), said(2, GPT, true), said(3)])[0], head: 'b'.repeat(40)}], {},
+            {rotationSeats: [ADA], routeOf: seat => seat === GPT ? 'unreachable' : 'reachable'});
+
+        expect(unreachable.wakes).toEqual([expect.objectContaining({to: ADA, kind: 'holder-unreachable', holder: GPT})])
+    });
+
+    test('a reply its seat leaves unanswered four hours after delivery escalates like a silent holder, and the answer retires it (#1651)', () => {
+        const
+            run       = journey(),
+            roster    = [ADA, GPT],
+            options   = {rotationSeats: roster, deliveries: {'MESSAGE:reply': {state: 'delivered', at: iso(2)}}},
+            owed      = [said(-5), said(0, GPT, true), said(1)],
+            pr        = turns => [{ci: 'pending', turns}],
+            escalated = result => result.wakes.filter(wake => wake.kind === 'holder-silent');
+
+        // a pending head holds nothing, so the owed reply is the seat's only slot
+        run.step(0, pr(owed.slice(0, 2)), {}, {rotationSeats: roster});
+        expect(replies(run.step(1, pr(owed), {}, {rotationSeats: roster}))).toEqual([expect.objectContaining({to: ADA, role: 'author'})]);
+        Object.values(run.ledger().holding).find(entry => entry.wake.kind === 'respond-comment').messageId = 'MESSAGE:reply';
+
+        expect(escalated(run.step(2 + 4 * 60 - 1, pr(owed), {}, options)), 'one minute short of four hours').toEqual([]);
+        expect(escalated(run.step(2 + 4 * 60, pr(owed), {}, options)))
+            .toEqual([expect.objectContaining({to: GPT, role: 'rotation', holder: ADA})]);
+        expect(escalated(run.step(2 + 5 * 60, pr(owed), {}, options)), 'once per head').toEqual([]);
+
+        // the seat answers: the reply's slot closes, and the escalation's slot with it
+        const answered = run.step(2 + 6 * 60, pr([...owed, said(6 * 60, ADA, true)]), {}, options);
+        expect(Object.values(answered.ledger.holding).map(entry => entry.wake.kind)).not.toContain('holder-silent')
+    });
+
+    test('an untouched outside PR\'s triage covers every turn before it, and a later turn wakes the seat the triage woke (AC-1)', () => {
+        const
+            roster = [ADA, GPT],
+            run    = journey(),
+            pr     = turns => [{owner: outside, ci: 'red', turns}],
+            triage = run.step(0, pr([said(-1)]), {}, {rotationSeats: roster}).wakes;
+
+        expect(triage).toEqual([expect.objectContaining({kind: 'triage-outside'})]);
+        expect(replies(run.step(1, pr([said(-1)]), {}, {rotationSeats: roster})), 'the triage covers the earlier turn').toEqual([]);
+
+        // the contributor writes again after the triage, and no seat has answered
+        expect(replies(run.step(2, pr([said(-1), said(2)]), {}, {rotationSeats: roster})))
+            .toEqual([expect.objectContaining({to: triage[0].to, role: 'reviewer', kind: 'respond-comment', episode: iso(2)})]);
+        expect(replies(run.step(3, pr([said(-1), said(2), said(3)]), {}, {rotationSeats: roster})), 'once per episode').toEqual([])
     });
 });

@@ -378,3 +378,32 @@ test.describe('openWorkReducer — the owner is the body line, never a silent lo
         expect(p1.vanished).toEqual([])
     });
 });
+
+test.describe('openWorkReducer — the conversation a row carries (#1630)', () => {
+    test('comments and submitted reviews become one oldest-first list of turns: a member by seat or association, a bot marked, an unsubmitted review dropped', () => {
+        const
+            user = (login, authorAssociation) => ({authorAssociation, author: {__typename: 'User', login}}),
+            row  = normalizePullRequest({
+                ...node(),
+                comments: {pageInfo: {hasPreviousPage: false}, nodes: [
+                    {createdAt: '2026-11-11T17:39:00Z', ...user('contributor', 'CONTRIBUTOR')},
+                    {createdAt: '2026-11-11T09:00:00Z', ...user('neo-gpt', 'NONE')},
+                    {createdAt: '2026-11-11T10:00:00Z', authorAssociation: 'NONE', author: {__typename: 'Bot', login: 'github-actions'}}
+                ]},
+                reviews: {pageInfo: {hasPreviousPage: true}, nodes: [
+                    {submittedAt: '2026-11-11T12:00:00Z', ...user('tobiu', 'MEMBER')},
+                    {submittedAt: null, ...user('contributor', 'CONTRIBUTOR')}
+                ]}
+            }, identities);
+
+        expect(row.turns).toEqual([
+            {at: '2026-11-11T09:00:00Z', by: '@neo-gpt', member: true},
+            {at: '2026-11-11T10:00:00Z', by: 'login:github-actions', member: false, bot: true},
+            {at: '2026-11-11T12:00:00Z', by: 'login:tobiu', member: true},
+            {at: '2026-11-11T17:39:00Z', by: 'login:contributor', member: false}
+        ]);
+        // an earlier page of the conversation never makes the row partial
+        expect(row.partial).toBe(false);
+        expect(normalizePullRequest(node(), identities).turns).toEqual([])
+    });
+});
