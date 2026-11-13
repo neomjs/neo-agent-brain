@@ -15,13 +15,14 @@ import {
     proveSeatForgeAccount,
     resolveSeatGitIdentity
 }                                                        from './seatGitIdentity.mjs';
-import {readSeatModelCatalog, unofferedDeclaration}                            from './seatModelCatalog.mjs';
-import {bindAntigravityProject}                                                from './antigravityProjectBinding.mjs';
-import {probeAntigravityRuntime, verifyAntigravityProfileListener}             from './probeAntigravityRuntime.mjs';
-import {excludeManagedWorkspaceFiles}                                          from './excludeManagedWorkspaceFiles.mjs';
-import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences} from './runtimeGenerationLease.mjs';
-import path                                                                    from 'node:path';
-import {fileURLToPath}                                                         from 'node:url';
+import {readSeatModelCatalog, unofferedDeclaration}                from './seatModelCatalog.mjs';
+import {bindAntigravityProject}                                    from './antigravityProjectBinding.mjs';
+import {probeAntigravityRuntime, verifyAntigravityProfileListener} from './probeAntigravityRuntime.mjs';
+import {excludeManagedWorkspaceFiles}                              from './excludeManagedWorkspaceFiles.mjs';
+import {assertRuntimeGenerationReferences, RUNTIME_REFERENCE_START_WAIT_MS,
+        waitForRuntimeGenerationReferences}                                    from './runtimeGenerationLease.mjs';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 const DEFAULT_AGENTOS_RUNTIME_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -742,8 +743,10 @@ async function provisionAgent({
     // A Claude Desktop seat's profile rows carry one launch grant per enabled server, reserved before the rows
     // are written. The lifecycle activates them once the seat runs and is leased; a Start that fails before
     // that revokes them, so a row written here never admits a child of a seat this Start did not launch.
+    // A holder that never releases refuses this Start by name instead of holding it forever.
     const runtimeReferenceGuard = installedRuntime
-        ? await acquireRuntimeReferences({directory: path.dirname(installedRuntime.generation.directory), signal: startSignal})
+        ? await acquireRuntimeReferences({directory: path.dirname(installedRuntime.generation.directory), signal: startSignal,
+            deadlineMs: RUNTIME_REFERENCE_START_WAIT_MS})
         : null;
 
     let reservation, prepared, memory, status;
