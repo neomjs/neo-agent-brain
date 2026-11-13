@@ -627,13 +627,14 @@ test.describe('the Claude hook\'s capacity reading', () => {
             actionArg  : 'terminal',
             deadlineMs : 500,
             env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
-            hookPayload: {hook_event_name: 'StopFailure', error: 'authentication_failed', last_assistant_message: 'Invalid API key'},
+            hookPayload: {session_id: 'session-a', hook_event_name: 'StopFailure', error: 'authentication_failed', last_assistant_message: 'Invalid API key'},
             plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
-            record     : async args => {calls.push(args); return {status: 'recorded'}}
+            record     : async args => {calls.push(args); return {status: 'recorded'}},
+            turnStore  : {read: () => 'turn-1', write: () => {}, remove: () => {}}
         });
 
         expect(calls).toHaveLength(1);
-        expect(calls[0]).toMatchObject({action: 'terminal', terminalState: 'aborted', source: 'claude-stop-failure', note: 'claude StopFailure authentication_failed'});
+        expect(calls[0]).toMatchObject({action: 'terminal', terminalState: 'aborted', source: 'claude-stop-failure', note: 'claude StopFailure authentication_failed', turnId: 'turn-1'});
         expect(calls[0].capacity).toBeUndefined()
     })
 });
@@ -680,11 +681,30 @@ test.describe('turnPresenceHook — a session names its own turn', () => {
         expect([...turnStore.ids]).toEqual([['session-b', 'turn-of-session-b']])
     });
 
-    test('a session with no stored turn id joins the newest turn, as before', async () => {
+    test('a failed turn whose stored id is missing or unreadable closes nothing, so the newer session\'s turn stays open', async () => {
+        for (const lose of [file => fs.rmSync(file), file => fs.writeFileSync(file, '{not json')]) {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'turn-store-')), turnStore = sessionTurnStore(dir), calls = [];
+
+            try {
+                await emit(turnStore, calls, 'session-a', 'start');
+                lose(path.join(dir, 'session-a.json'));
+                await emit(turnStore, calls, 'session-b', 'start');
+
+                expect(await emit(turnStore, calls, 'session-a', 'terminal')).toMatchObject({status: 'skipped'});
+                expect(calls.map(call => [call.action, call.turnId])).toEqual([['start', 'turn-of-session-a'], ['start', 'turn-of-session-b']]);
+                expect(turnStore.read('session-b')).toBe('turn-of-session-b')
+            } finally {
+                fs.rmSync(dir, {force: true, recursive: true})
+            }
+        }
+    });
+
+    test('progress with no stored turn id still joins the newest turn, as before', async () => {
         const calls = [];
 
-        await emit(memoryStore(), calls, 'session-a', 'terminal');
+        await emit(memoryStore(), calls, 'session-a', 'progress');
 
+        expect(calls).toHaveLength(1);
         expect(calls[0].turnId).toBeUndefined()
     });
 

@@ -23,7 +23,8 @@ export const CAPACITY_ACTIONS = new Set(['start']);
  * @summary Keeps the turn id a session minted at its prompt, one small file per session, so the turn's
  * progress and its end name that turn. Without an id the plane joins the seat's newest turn, which a session
  * prompted later owns. The files live in the OS temp directory, which the OS prunes. Every failure is
- * swallowed: a missing id falls back to the newest turn, as before.
+ * swallowed: progress without an id joins the newest turn, as before, and a failed turn's end without one
+ * records nothing ({@link recordClaudeTurnPresence}).
  * @param {String} [dir] Defaults to `neo-turn-presence` in the OS temp directory.
  * @returns {{read: Function, write: Function, remove: Function}} Keyed by the hook payload's `session_id`.
  */
@@ -200,6 +201,12 @@ export async function recordClaudeTurnPresence({
           reading   = CAPACITY_ACTIONS.has(action) ? capacity === undefined ? readClaudeUsageCapacity({env}) : capacity : null,
           sessionId = typeof hookPayload?.session_id === 'string' && hookPayload.session_id ? hookPayload.session_id : null,
           turnId    = !sessionId ? undefined : action === 'start' ? mintTurnId() : turnStore.read(sessionId) ?? undefined;
+
+    // Without its session's own id a terminal event would close the seat's newest turn, which a session
+    // prompted later may own, so the failed turn is left to expire instead
+    if (action === 'terminal' && !turnId) {
+        return {status: 'skipped', reason: 'no turn id stored for this session, and the newest turn may be another session\'s'}
+    }
 
     if (action === 'start' && turnId) turnStore.write(sessionId, turnId);
 
