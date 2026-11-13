@@ -2,7 +2,9 @@ import {expect, test} from '@playwright/test';
 import {
     projectIdentityWakeReachability,
     projectMessageDelivery,
-    projectWakeDelivery
+    projectPullRouteVerdict,
+    projectWakeDelivery,
+    PULL_ROUTE_SILENCE_MS
 } from '../../../../../../ai/services/memory-core/wakeDeliveryProjection.mjs';
 
 /**
@@ -127,7 +129,7 @@ test.describe('projectWakeDelivery — per-subscription delivery outcome', () =>
 
     test('a delivery followed only by a run of skips is no longer evidence that a wake lands', () => {
         const minute = n => `2026-09-25T00:0${n}:01.000Z`,
-            records = n => [at('delivered', {dispatchFinishedAt: minute(0)}),
+            records  = n => [at('delivered', {dispatchFinishedAt: minute(0)}),
                 ...Array.from({length: n}, (_, i) => at('skipped', {acceptedAt: minute(i + 1), dispatchFinishedAt: minute(i + 1)}))],
             stale = projectWakeDelivery(records(3))['WAKE_SUB:sub-a'];
 
@@ -301,4 +303,48 @@ test.describe('projectMessageDelivery — did one particular wake arrive?', () =
         expect(projectMessageDelivery([at('delivered'), carrying('delivered', ['constructor'])], ['MESSAGE:m', 'toString']))
             .toEqual({'MESSAGE:m': {state: 'undelivered', at: null}, toString: {state: 'undelivered', at: null}});
     });
+});
+
+/**
+ * A pull route has no dispatcher, so no receiver record ever concludes it: its seat polls it. Its own
+ * last poll and the seat's turn presence conclude it instead, so a seat left without a listener (a crash,
+ * a killed process, a failed turn no rewake cures) reads deaf instead of `unknown`.
+ */
+test.describe('projectPullRouteVerdict — a pull route concluded by its own poll', () => {
+    const
+        NOW        = Date.parse('2026-11-13T12:00:00.000Z'),
+        polledAgo  = ms => new Date(NOW - ms).toISOString(),
+        stale      = polledAgo(PULL_ROUTE_SILENCE_MS + 1),
+        inProgress = {fresh: true},
+        finished   = {fresh: false};
+
+    test('a poll inside the silence bound reads reachable', () => {
+        expect(projectPullRouteVerdict({lastPollAt: polledAgo(PULL_ROUTE_SILENCE_MS), now: NOW})).toEqual({state: 'reachable'})
+    });
+
+    test('a stale poll during a fresh turn reads reachable: the seat handed its listener to that turn', () => {
+        expect(projectPullRouteVerdict({lastPollAt: stale, presence: inProgress, now: NOW})).toEqual({state: 'reachable'})
+    });
+
+    test('a stale poll with no turn in progress reads unreachable and names the last poll', () => {
+        for (const presence of [null, finished]) {
+            expect(projectPullRouteVerdict({lastPollAt: stale, presence, now: NOW}), JSON.stringify(presence)).toEqual({
+                state            : 'unreachable',
+                lastAttemptedAt  : stale,
+                lastOutcomeReason: `listener silent: no poll since ${stale} and no turn in progress`
+            })
+        }
+    });
+
+    test('a route that never polled stays unconcluded', () => {
+        expect(projectPullRouteVerdict({lastPollAt: null, now: NOW})).toBe(null)
+    });
+
+    test('a pull-only seat whose route is silent reads undeliverable, and stays unknown beside a route nobody concluded', () => {
+        const silent = projectPullRouteVerdict({lastPollAt: stale, now: NOW});
+
+        expect(projectIdentityWakeReachability([{id: 'pull'}], {pull: silent}))
+            .toEqual({state: 'undeliverable', reason: silent.lastOutcomeReason, consecutiveFailures: undefined});
+        expect(projectIdentityWakeReachability([{id: 'pull'}, {id: 'push'}], {pull: silent})).toEqual({state: 'unknown'})
+    })
 });

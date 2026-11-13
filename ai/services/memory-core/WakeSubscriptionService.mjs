@@ -22,9 +22,12 @@ import {
     readActiveWakeSubscriptionObservations,
     readWakeRoutesByIdentity
 } from './readActiveWakeSubscriptionIdentities.mjs';
-import {projectIdentityWakeReachability} from './wakeDeliveryProjection.mjs';
-import {readWakeDelivery}                from './wakeDeliveryReader.mjs';
-import {ownOpenWorkOf}                   from './openWorkCopyStore.mjs';
+import {
+    projectIdentityWakeReachability,
+    projectPullRouteVerdict
+} from './wakeDeliveryProjection.mjs';
+import {readWakeDelivery} from './wakeDeliveryReader.mjs';
+import {ownOpenWorkOf}    from './openWorkCopyStore.mjs';
 import {
     activeWakeSubscriptionStatusSql,
     isActiveWakeSubscriptionStatus,
@@ -827,7 +830,7 @@ class WakeSubscriptionService extends Base {
               generatedAt       = new Date(nowMs).toISOString(),
               operatorPresence  = OperatorPresenceService.getOperatorPresence(nowMs),
               reviewTrail       = this._readReviewLifecycleLoad(nowMs),
-              wake              = await this._readWakeReachability(),
+              wake              = await this._readWakeReachability({now: nowMs}),
               axes              = this._composedAxesEnvelope(generatedAt, reviewTrail, wake);
 
         // Snapshot once per projection. The registry is request-live and deletes its entry on fresh
@@ -871,10 +874,13 @@ class WakeSubscriptionService extends Base {
                     reviewLoad: reviewTrail.available
                         ? (reviewTrail.byReviewer.get(row.identity) ?? {loops: [], open: 0, returned: 0})
                         : null,
-                    // unreadable records read `unknown`, never reachable; the wake envelope names why
+                    // unreadable records read `unknown` unless the seat's pull routes alone concluded it; the
+                    // wake envelope names why
                     wake: wake.available
                         ? (wake.byIdentity.get(row.identity) ?? {state: 'unsubscribed'})
-                        : {state: 'unknown', reason: wake.reason},
+                        : (wake.byIdentity?.get(row.identity)?.state ?? 'unknown') !== 'unknown'
+                            ? wake.byIdentity.get(row.identity)
+                            : {state: 'unknown', reason: wake.reason},
                     capacity: capacityByIdentity.get(row.identity)
                 }))
             };
@@ -921,7 +927,8 @@ class WakeSubscriptionService extends Base {
             } : {}),
             // Sparse like reviewLoad: a rostered seat no wake reaches, with the receiver's own last
             // reason, and one whose every route the sender withdrew, with the refusal they share.
-            // Omitted whole when the records are unreadable, so absence never reads reachable.
+            // Omitted whole when the records are unreadable, so absence never reads reachable; the verbose rows
+            // still carry what a seat's pull routes alone concluded.
             ...(wake.available ? Object.fromEntries(['undeliverable', 'withdrawn'].map(state => [state, Object.fromEntries(
                 projected
                     .map(row => [row.identity, wake.byIdentity.get(row.identity)])
@@ -996,12 +1003,15 @@ class WakeSubscriptionService extends Base {
      * @summary Whether a wake can reach each subscribed identity: the wake receiver's own dispatch
      * records (the reader `healthcheck` uses) joined to the identities' wake routes. An
      * unreadable record set, or an unreadable subscription scan, is `available: false` with its
-     * reason, and the wake axis then reads degraded, never healthy.
-     * @returns {Promise<Object>} `{available: true, byIdentity: Map<identity, reachability>}` or
-     *     `{available: false, reason}`.
+     * reason, and the wake axis then reads degraded, never healthy. The receiver writes no record for
+     * a pull route, so its own poll and its seat's turn presence conclude it ({@link _withPullVerdicts}).
+     * @param {Object} [options]
+     * @param {Number|Date} [options.now=Date.now()] The projection's clock.
+     * @returns {Promise<Object>} `{available: true, byIdentity: Map<identity, reachability>}`, or
+     *     `{available: false, reason, byIdentity?}`: unreadable records still project what pull routes concluded.
      * @protected
      */
-    async _readWakeReachability() {
+    async _readWakeReachability({now = Date.now()} = {}) {
         let delivery, routes;
 
         try {
@@ -1013,16 +1023,46 @@ class WakeSubscriptionService extends Base {
             return {available: false, reason: 'the wake subscriptions could not be read'}
         }
 
-        if (!delivery.deliveryReadable) {
-            return {available: false, reason: delivery.deliveryReadReason === 'unconfigured'
+        // A pull route is concluded by its own poll and its seat's turn, which need no receiver record, so it is
+        // concluded even when the records are unreadable; only push routes then stay unknown.
+        const readable   = delivery.deliveryReadable,
+              byIdentity = new Map([...routes].map(([identity, own]) =>
+                  [identity, projectIdentityWakeReachability(own, this._withPullVerdicts(identity, own, readable ? delivery.subscriptions : {}, now))]));
+
+        if (!readable) {
+            return {available: false, byIdentity, reason: delivery.deliveryReadReason === 'unconfigured'
                 ? 'this process declares no wake receiver records directory'
                 : 'the wake receiver\'s dispatch records are unreadable from this process'}
         }
 
-        return {
-            available : true,
-            byIdentity: new Map([...routes].map(([identity, own]) => [identity, projectIdentityWakeReachability(own, delivery.subscriptions)]))
-        }
+        return {available: true, byIdentity}
+    }
+
+    /**
+     * @summary Adds a verdict for each of an identity's pull routes, which no receiver record concludes:
+     * the route's own last poll and its seat's newest turn conclude it ({@link projectPullRouteVerdict}).
+     * @param {String} identity The routes' holder.
+     * @param {Object[]} routes The holder's routes, `{id, withdrawn, pull, lastPollAt}`.
+     * @param {Object} verdicts The receiver's verdicts, by subscription id.
+     * @param {Number|Date} now The projection's clock.
+     * @returns {Object} The verdicts, with one more per pull route its poll concludes.
+     * @protected
+     */
+    _withPullVerdicts(identity, routes, verdicts, now) {
+        const pulls = routes.filter(route => route.pull && !route.withdrawn);
+
+        if (pulls.length === 0) return verdicts;
+
+        const presence = TurnPresenceService.getFreshTurnPresence(identity, now),
+              merged   = {...verdicts};
+
+        pulls.forEach(route => {
+            const verdict = projectPullRouteVerdict({lastPollAt: route.lastPollAt, presence, now});
+
+            if (verdict) merged[route.id] = verdict
+        });
+
+        return merged
     }
 
     /**

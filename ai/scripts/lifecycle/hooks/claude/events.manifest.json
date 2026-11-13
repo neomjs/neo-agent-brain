@@ -28,7 +28,11 @@
     "decision cannot run in the background; the 2 s timeout bounds it.",
     "seatModelGuardHook is ours: on a Desktop seat whose account picked another model family, prompt blocks",
     "(exit 2) and stop records the family the seat ran. Both arms are local file reads, so 2 s and",
-    "5 s bound them; a timeout lets the prompt run."
+    "5 s bound them; a timeout lets the prompt run.",
+    "StopFailure runs instead of Stop when a turn ends on an API error, so it carries the Stop listener",
+    "entry byte for byte: without it a failed turn leaves the seat with no listener. Its exit 2 rewakes",
+    "the session as on Stop. turnPresenceHook closes that turn as aborted there,",
+    "synchronously within 2 s, because a failed turn never reaches add_memory, which closes the others."
   ],
   "events": {
     "PreToolUse": [
@@ -103,6 +107,23 @@
             "type": "command",
             "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/seatModelGuardHook.mjs\" stop",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/wakeListenerHook.mjs\"",
+            "asyncRewake": true,
+            "timeout": 86400
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/turnPresenceHook.mjs\" terminal",
+            "timeout": 2
           },
           {
             "type": "command",

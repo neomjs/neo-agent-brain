@@ -3617,6 +3617,27 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 expect((await verboseRow('@neo-wake-fine')).wake).toEqual({state: 'reachable'});
             });
 
+            test('a pull seat whose listener went silent reads undeliverable; a recent poll or a turn in progress reads reachable', async () => {
+                // A pull route has no receiver record: a seat that lost its listener read `unknown` while the
+                // Fleet kept routing work to it.
+                const
+                    pull      = lastPollAt => ({trigger: 'SENT_TO_ME', harnessTarget: 'none', lastPollAt}),
+                    stalePoll = iso(T0ms - 30 * 60 * 1000);
+
+                for (const id of ['@neo-pull-silent', '@neo-pull-busy', '@neo-pull-polling']) { seedAgent(id); seedActivity(id) }
+                route('@neo-pull-silent',  'WAKE_SUB:pull-silent',  pull(stalePoll));
+                route('@neo-pull-busy',    'WAKE_SUB:pull-busy',    pull(stalePoll));
+                route('@neo-pull-polling', 'WAKE_SUB:pull-polling', pull(iso(T0ms - 30 * 1000)));
+                seedBeacon('@neo-pull-busy');
+
+                const reason = `listener silent: no poll since ${stalePoll} and no turn in progress`;
+
+                expect((await WakeSubscriptionService.whoIsOnline({now: new Date(T0)})).undeliverable).toEqual({'@neo-pull-silent': reason});
+                expect((await verboseRow('@neo-pull-silent')).wake).toEqual({state: 'undeliverable', reason});
+                expect((await verboseRow('@neo-pull-busy')).wake).toEqual({state: 'reachable'});
+                expect((await verboseRow('@neo-pull-polling')).wake).toEqual({state: 'reachable'});
+            });
+
             test('one route that lands is enough; a failing route beside one without records, a route never concluded, and no route read reachable-not: unknown, unknown, unsubscribed', async () => {
                 for (const id of ['@neo-wake-two', '@neo-wake-half', '@neo-wake-new', '@neo-wake-none']) { seedAgent(id); seedActivity(id) }
                 route('@neo-wake-two',  'WAKE_SUB:two-old');
@@ -3687,6 +3708,30 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                     state : 'unknown',
                     reason: 'the wake receiver\'s dispatch records are unreadable from this process'
                 });
+            });
+
+            test('without readable records a pull seat is still concluded by its own poll; a pull failure beside a push route stays unknown', async () => {
+                // A pull route needs no receiver record, so an unconfigured or unreadable records directory must
+                // not hide a seat whose listener went silent from the rows the Fleet routes by.
+                const
+                    pull   = {trigger: 'SENT_TO_ME', harnessTarget: 'none', lastPollAt: iso(T0ms - 30 * 60 * 1000)},
+                    reason = `listener silent: no poll since ${pull.lastPollAt} and no turn in progress`,
+                    blind  = path.join(recordsDir, 'records-file');
+
+                for (const id of ['@neo-pull-only', '@neo-pull-and-push']) { seedAgent(id); seedActivity(id) }
+                route('@neo-pull-only',     'WAKE_SUB:pull-only',  pull);
+                route('@neo-pull-and-push', 'WAKE_SUB:mixed-pull', pull);
+                route('@neo-pull-and-push', 'WAKE_SUB:mixed-push');
+
+                await fs.writeFile(blind, '');
+
+                for (const read of [() => readWakeDelivery({recordsDir: ''}), () => readWakeDelivery({recordsDir: blind})]) {
+                    WakeSubscriptionService.wakeDeliveryReadFn = read;
+
+                    expect((await WakeSubscriptionService.whoIsOnline({now: new Date(T0)})).axes.wake.capability.state).toBe('degraded');
+                    expect((await verboseRow('@neo-pull-only')).wake).toEqual({state: 'undeliverable', reason});
+                    expect((await verboseRow('@neo-pull-and-push')).wake.state).toBe('unknown')
+                }
             });
 
             test('a process that declares no records directory says so, rather than calling the records unreadable', async () => {

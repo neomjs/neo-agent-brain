@@ -1,5 +1,6 @@
 import {execFile, execFileSync, spawn}                                                    from 'child_process';
 import fs                                                                                 from 'fs';
+import os                                                                                 from 'os';
 import path                                                                               from 'path';
 import {isDeepStrictEqual}                                                                from 'node:util';
 import AiConfig                                                                           from '../../config.mjs';
@@ -10,6 +11,8 @@ import {listHarnessTypes, resolveHarnessSeatSettings}                           
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}                           from './mcpServers.mjs';
 import {OPERATOR_PRESENCE_PATH_ENV_VAR, operatorPresenceRecordPath}                       from './operatorPresenceRecord.mjs';
 import {deriveAgentInstanceHome}                                                          from './deriveAgentInstanceHome.mjs';
+import {toBareIdentity}                                                                   from '../../daemons/wake/armSeatWakeRoute.mjs';
+import {AUTH_FAILURES, LISTENER_STATE_RELATIVE}                                           from '../../scripts/lifecycle/hooks/claude/wakeListenerHook.mjs';
 import {deriveCodexHome, deriveHarnessLaunchSpec, guiProfileDir}                          from './deriveHarnessLaunchSpec.mjs';
 import {readCodexSeatSettings}                                                            from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                                           from './deriveNodeRuntimeEnv.mjs';
@@ -1746,7 +1749,8 @@ class FleetLifecycleService extends Base {
      *     is the LIVE per-home
      *     auth-marker heuristic for curated launches (`true` = the operator-owned per-home login has
      *     not happened yet; recomputed each read so a completed login flips it without a restart);
-     *     `null` for raw-launch / untracked agents. `instanceHome` + `launchCommand` name the GUI or
+     *     for a family without a marker, `true` while its listener record holds an auth-class turn failure
+     *     ({@link authRequiredFromListener}); `null` otherwise and for raw-launch / untracked agents. `instanceHome` + `launchCommand` name the GUI or
      *     CLI launch vessel; marker families also expose the distinct `authHome` + `authCommand`
      *     pair consumed by the operator-owned login handoff. These absolute paths are intentionally
      *     safe for the dev-only unauthenticated loopback Fleet bridge: they expose no auth contents.
@@ -1794,7 +1798,8 @@ class FleetLifecycleService extends Base {
             exitCode         : record.exitCode,
             exitedAt         : record.exitedAt,
             stderrBytes      : record.stderrBytes ?? 0,
-            authRequired     : this.authRequiredForHome(record.harnessType, record.authHome),
+            // A recorded auth failure outranks the marker, which proves a credential exists, not that it works.
+            authRequired     : this.authRequiredFromListener(record.runtimeStart?.identity) || this.authRequiredForHome(record.harnessType, record.authHome),
             instanceHome     : record.instanceHome ?? null,
             authHome         : record.authHome ?? null,
             launchCommand    : record.launchCommand ?? null,
@@ -2097,6 +2102,28 @@ class FleetLifecycleService extends Base {
         if (!marker || !authHome) return null;
 
         return !fs.existsSync(path.join(authHome, marker));
+    }
+
+    /**
+     * @summary Whether a seat's last turn ended on an error only the operator repairs, read from the seat's
+     * wake listener record. A Desktop seat has no auth marker ({@link authRequiredForHome} answers `null`), and
+     * a signed-out seat cannot report itself, so the `StopFailure` error its listener kept is the evidence.
+     * Answers `true` or `null`, never `false`: a record without an auth failure does not prove a sign-in.
+     * @param {String|null} identity The seat's GitHub login, with or without `@`.
+     * @param {Object} [options]
+     * @param {String} [options.homeDir=os.homedir()] The host home the seat's listener writes under.
+     * @returns {Boolean|null}
+     */
+    authRequiredFromListener(identity, {homeDir = os.homedir()} = {}) {
+        if (typeof identity !== 'string' || !identity) return null;
+
+        try {
+            const record = JSON.parse(fs.readFileSync(path.join(homeDir, LISTENER_STATE_RELATIVE, `${toBareIdentity(identity)}.json`), 'utf8'));
+
+            return AUTH_FAILURES.has(record?.failure?.error) ? true : null
+        } catch {
+            return null
+        }
     }
 
     /**

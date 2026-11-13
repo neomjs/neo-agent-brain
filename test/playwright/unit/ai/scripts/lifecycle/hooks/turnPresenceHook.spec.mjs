@@ -33,7 +33,8 @@ import {generateKimiSeatConfig}                  from '../../../../../../../ai/s
 import {
     CAPACITY_ACTIONS,
     readClaudeUsageCapacity,
-    recordClaudeTurnPresence
+    recordClaudeTurnPresence,
+    sessionTurnStore
 } from '../../../../../../../ai/scripts/lifecycle/hooks/claude/turnPresenceHook.mjs';
 
 const
@@ -331,10 +332,15 @@ test.describe('turnPresenceHook — progress runs in the background, start befor
             buckets.flatMap(bucket => bucket.hooks.filter(entry => entry.command.includes(PRESENCE)).map(entry => ({event, entry})))),
         commandFor      = action => `/usr/bin/env node "$(git rev-parse --show-toplevel)${PRESENCE}" ${action}`;
 
-    test('progress is async with no timeout; start is synchronous within its 2 s bound; both keep their commands', () => {
+    test('progress is async with no timeout; start and the failed turn\'s terminal are synchronous within their 2 s bound; all keep their commands', () => {
         const byEvent = Object.fromEntries(presenceEntries(MANIFEST.events).map(({event, entry}) => [event, entry]));
 
-        expect(Object.keys(byEvent).sort()).toEqual(['PostToolUse', 'UserPromptSubmit']);
+        expect(Object.keys(byEvent).sort()).toEqual(['PostToolUse', 'StopFailure', 'UserPromptSubmit']);
+
+        // A failed turn never reaches `add_memory`, which closes a turn on the server.
+        expect(byEvent.StopFailure.async, 'an async terminal can land after the next turn started').toBeUndefined();
+        expect(byEvent.StopFailure.timeout).toBe(2);
+        expect(byEvent.StopFailure.command).toBe(commandFor('terminal'));
 
         expect(byEvent.PostToolUse.async, 'PostToolUse would block every tool call on presence').toBe(true);
         expect('timeout' in byEvent.PostToolUse, 'PostToolUse carries a timeout the harness never enforces').toBe(false);
@@ -359,10 +365,12 @@ test.describe('turnPresenceHook — progress runs in the background, start befor
             }),
             byEvent    = Object.fromEntries(presenceEntries(settings.hooks).map(({event, entry}) => [event, entry]));
 
-        expect(presenceEntries(settings.hooks)).toHaveLength(2);
+        expect(presenceEntries(settings.hooks)).toHaveLength(3);
         expect(byEvent.PostToolUse.async).toBe(true);
         expect('timeout' in byEvent.PostToolUse).toBe(false);
         expect(byEvent.UserPromptSubmit).toEqual({type: 'command', command: commandFor('start'), timeout: 2});
+        // A seat projected before StopFailure was wired has no entry there; reconciliation adds the synchronous terminal.
+        expect(byEvent.StopFailure).toEqual({type: 'command', command: commandFor('terminal'), timeout: 2});
         expect(settings.hooks.PostToolUse.flatMap(bucket => bucket.hooks)).toContainEqual(operator)
     })
 });
@@ -610,5 +618,109 @@ test.describe('the Claude hook\'s capacity reading', () => {
 
         expect([...CAPACITY_ACTIONS]).toEqual(['start']);
         expect(calls.map(call => [call.action, call.capacity])).toEqual([['start', capacity], ['progress', undefined]])
+    });
+
+    test('a StopFailure closes the failed turn as aborted and names its error', async () => {
+        const calls = [];
+
+        await recordClaudeTurnPresence({
+            actionArg  : 'terminal',
+            deadlineMs : 500,
+            env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
+            hookPayload: {session_id: 'session-a', hook_event_name: 'StopFailure', error: 'authentication_failed', last_assistant_message: 'Invalid API key'},
+            plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+            record     : async args => {calls.push(args); return {status: 'recorded'}},
+            turnStore  : {read: () => 'turn-1', write: () => {}, remove: () => {}}
+        });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({action: 'terminal', terminalState: 'aborted', source: 'claude-stop-failure', note: 'claude StopFailure authentication_failed', turnId: 'turn-1'});
+        expect(calls[0].capacity).toBeUndefined()
+    })
+});
+
+/**
+ * Without a turn id the plane joins the seat's newest turn. A session that lost the seat to one prompted later
+ * would then close or extend the newer session's turn, and the seat would read idle mid-turn.
+ */
+test.describe('turnPresenceHook — a session names its own turn', () => {
+    const EVENTS = {start: 'UserPromptSubmit', progress: 'PostToolUse', terminal: 'StopFailure'};
+
+    const memoryStore = () => {
+        const ids = new Map();
+
+        return {ids, read: id => ids.get(id) ?? null, write: (id, turnId) => ids.set(id, turnId), remove: id => ids.delete(id)}
+    };
+
+    const emit = (turnStore, calls, sessionId, actionArg) => recordClaudeTurnPresence({
+        actionArg,
+        capacity   : null,
+        deadlineMs : 500,
+        env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
+        hookPayload: {session_id: sessionId, hook_event_name: EVENTS[actionArg], ...(actionArg === 'terminal' ? {error: 'authentication_failed'} : {})},
+        mintTurnId : () => `turn-of-${sessionId}`,
+        plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+        record     : async args => {calls.push(args); return {status: 'recorded'}},
+        turnStore
+    });
+
+    test('a failed turn in a session that lost the seat closes its own turn, never the newer session\'s', async () => {
+        const turnStore = memoryStore(), calls = [];
+
+        await emit(turnStore, calls, 'session-a', 'start');
+        await emit(turnStore, calls, 'session-b', 'start');
+        await emit(turnStore, calls, 'session-a', 'progress');
+        await emit(turnStore, calls, 'session-a', 'terminal');
+
+        expect(calls.map(call => [call.action, call.turnId])).toEqual([
+            ['start',    'turn-of-session-a'],
+            ['start',    'turn-of-session-b'],
+            ['progress', 'turn-of-session-a'],
+            ['terminal', 'turn-of-session-a']
+        ]);
+        expect([...turnStore.ids]).toEqual([['session-b', 'turn-of-session-b']])
+    });
+
+    test('a failed turn whose stored id is missing or unreadable closes nothing, so the newer session\'s turn stays open', async () => {
+        for (const lose of [file => fs.rmSync(file), file => fs.writeFileSync(file, '{not json')]) {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'turn-store-')), turnStore = sessionTurnStore(dir), calls = [];
+
+            try {
+                await emit(turnStore, calls, 'session-a', 'start');
+                lose(path.join(dir, 'session-a.json'));
+                await emit(turnStore, calls, 'session-b', 'start');
+
+                expect(await emit(turnStore, calls, 'session-a', 'terminal')).toMatchObject({status: 'skipped'});
+                expect(calls.map(call => [call.action, call.turnId])).toEqual([['start', 'turn-of-session-a'], ['start', 'turn-of-session-b']]);
+                expect(turnStore.read('session-b')).toBe('turn-of-session-b')
+            } finally {
+                fs.rmSync(dir, {force: true, recursive: true})
+            }
+        }
+    });
+
+    test('progress with no stored turn id still joins the newest turn, as before', async () => {
+        const calls = [];
+
+        await emit(memoryStore(), calls, 'session-a', 'progress');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].turnId).toBeUndefined()
+    });
+
+    test('the default store keeps one file per session in the directory it is given', () => {
+        const dir   = fs.mkdtempSync(path.join(os.tmpdir(), 'turn-store-')),
+              store = sessionTurnStore(dir);
+
+        try {
+            store.write('session/a', 'turn-1');
+            expect(store.read('session/a')).toBe('turn-1');
+            expect(fs.readdirSync(dir)).toEqual([`${encodeURIComponent('session/a')}.json`]);
+
+            store.remove('session/a');
+            expect(store.read('session/a')).toBeNull()
+        } finally {
+            fs.rmSync(dir, {force: true, recursive: true})
+        }
     })
 });

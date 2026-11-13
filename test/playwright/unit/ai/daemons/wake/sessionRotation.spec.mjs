@@ -298,6 +298,8 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
 
     test.afterEach(async () => {
         await new Promise(resolve => receiver.server.close(resolve));
+        // A 202 answers before its record is written: let the serial drain settle before the directory goes.
+        await receiver.drain();
         await fs.rm(stateDir, {recursive: true, force: true})
     });
 

@@ -74,13 +74,16 @@ const ACTIVE_OBSERVATIONS_SQL = `
  * The durable fleet-wide wake routes, one row per subscription and nothing aggregated: the join key
  * between an identity and the wake receiver's per-subscription dispatch records. A route is an
  * active subscription or one the sender withdrew, which its owner can resume; a retired row is no
- * route. `refusal` is the receiver's last refusal of the route, as the sender recorded it.
+ * route. `refusal` is the receiver's last refusal of the route, as the sender recorded it. A pull
+ * route has no receiver record at all, so it carries its own last poll, which concludes it instead.
  */
 const ROUTES_SQL = `
     SELECT id,
            json_extract(data, '$.properties.agentIdentity') AS agentIdentity,
            ${resolvedWakeSubscriptionStatusSql()} = '${WITHDRAWN_WAKE_SUBSCRIPTION_STATUS}' AS withdrawn,
-           json_extract(data, '$.properties.lastRefusal') AS refusal
+           json_extract(data, '$.properties.lastRefusal') AS refusal,
+           ${PULL_ROUTE_SQL} AS pull,
+           json_extract(data, '$.properties.lastPollAt') AS lastPollAt
     FROM Nodes
     WHERE json_extract(data, '$.label') = 'WAKE_SUBSCRIPTION'
       AND ${reusableWakeSubscriptionStatusSql()}
@@ -191,21 +194,27 @@ function latestStamp(held, stamped) {
  * @param {Object} [options]
  * @param {Object} [options.graphService] Injectable service exposing `ready()` + `db`; defaults to
  *     the memory-core `GraphService` singleton, imported lazily.
- * @returns {Promise<Map<String, Object[]>>} identity → its routes, `{id, withdrawn, refusal}`.
+ * @returns {Promise<Map<String, Object[]>>} identity → its routes, `{id, withdrawn, refusal, pull, lastPollAt}`.
  * @throws {Error} When no read surface is reachable.
  */
 export async function readWakeRoutesByIdentity({graphService = null} = {}) {
     const
         {sqlite, items} = await graphReadSurfaces(graphService),
         byIdentity      = new Map(),
-        add             = (identity, id, withdrawn, refusal) => {
+        add             = (identity, id, withdrawn, refusal, pull, lastPollAt) => {
             if (typeof identity === 'string' && identity !== '' && typeof id === 'string' && id !== '') {
-                byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), {id, withdrawn: Boolean(withdrawn), refusal: refusal || null}])
+                byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), {
+                    id,
+                    withdrawn : Boolean(withdrawn),
+                    refusal   : refusal || null,
+                    pull      : Boolean(pull),
+                    lastPollAt: lastPollAt || null
+                }])
             }
         }
 
     if (sqlite) {
-        for (const row of sqlite.prepare(ROUTES_SQL).all()) add(row.agentIdentity, row.id, row.withdrawn, row.refusal)
+        for (const row of sqlite.prepare(ROUTES_SQL).all()) add(row.agentIdentity, row.id, row.withdrawn, row.refusal, row.pull, row.lastPollAt)
 
         return byIdentity
     }
@@ -219,7 +228,10 @@ export async function readWakeRoutesByIdentity({graphService = null} = {}) {
         const status = node.properties?.status
 
         if (node.label === 'WAKE_SUBSCRIPTION' && isReusableWakeSubscriptionStatus(status)) {
-            add(node.properties?.agentIdentity, node.id, status === WITHDRAWN_WAKE_SUBSCRIPTION_STATUS, node.properties?.lastRefusal)
+            const props = node.properties ?? {};
+
+            add(props.agentIdentity, node.id, status === WITHDRAWN_WAKE_SUBSCRIPTION_STATUS, props.lastRefusal,
+                props.trigger === 'SENT_TO_ME' && props.harnessTarget === PULL_HARNESS_TARGET, props.lastPollAt)
         }
     }
 

@@ -198,25 +198,30 @@ test.describe('readActiveWakeSubscriptionObservations — the redacted poll-rece
 })
 
 test.describe('readWakeRoutesByIdentity — the join to the receiver records', () => {
-    test('reads one durable row per active or withdrawn route, grouped by holder, with its refusal and nothing aggregated in SQL', async () => {
+    test('reads one durable row per active or withdrawn route, grouped by holder, with its refusal, its pull flag and its last poll, nothing aggregated in SQL', async () => {
         const service = graphServiceDouble({
             rows: [
-                {id: 'WAKE_SUB:a', agentIdentity: '@neo-opus-vega', withdrawn: 0, refusal: null},
-                {id: 'WAKE_SUB:b', agentIdentity: '@neo-opus-vega', withdrawn: 1, refusal: 'not-in-receiver-manifest'},
-                {id: 'WAKE_SUB:c', agentIdentity: '@neo-gpt-emmy',  withdrawn: 0, refusal: null},
-                {id: 'WAKE_SUB:d', agentIdentity: '',               withdrawn: 0, refusal: null}
+                {id: 'WAKE_SUB:a', agentIdentity: '@neo-opus-vega', withdrawn: 0, refusal: null, pull: 0, lastPollAt: null},
+                {id: 'WAKE_SUB:b', agentIdentity: '@neo-opus-vega', withdrawn: 1, refusal: 'not-in-receiver-manifest', pull: 0, lastPollAt: null},
+                {id: 'WAKE_SUB:c', agentIdentity: '@neo-gpt-emmy',  withdrawn: 0, refusal: null, pull: 1, lastPollAt: '2026-11-13T09:48:31.000Z'},
+                {id: 'WAKE_SUB:d', agentIdentity: '',               withdrawn: 0, refusal: null, pull: 0, lastPollAt: null}
             ]
         })
 
         expect(await readWakeRoutesByIdentity({graphService: service})).toEqual(new Map([
-            ['@neo-opus-vega', [{id: 'WAKE_SUB:a', withdrawn: false, refusal: null}, {id: 'WAKE_SUB:b', withdrawn: true, refusal: 'not-in-receiver-manifest'}]],
-            ['@neo-gpt-emmy',  [{id: 'WAKE_SUB:c', withdrawn: false, refusal: null}]]
+            ['@neo-opus-vega', [
+                {id: 'WAKE_SUB:a', withdrawn: false, refusal: null, pull: false, lastPollAt: null},
+                {id: 'WAKE_SUB:b', withdrawn: true,  refusal: 'not-in-receiver-manifest', pull: false, lastPollAt: null}
+            ]],
+            ['@neo-gpt-emmy',  [{id: 'WAKE_SUB:c', withdrawn: false, refusal: null, pull: true, lastPollAt: '2026-11-13T09:48:31.000Z'}]]
         ]))
 
         const [sql] = service.statements
 
         expect(sql).toContain("json_extract(data, '$.label') = 'WAKE_SUBSCRIPTION'")
         expect(sql).toContain("COALESCE(json_extract(data, '$.properties.status'), 'active') IN ('active', 'degraded')")
+        expect(sql).toContain("json_extract(data, '$.properties.harnessTarget')")
+        expect(sql).toContain("json_extract(data, '$.properties.lastPollAt')")
         expect(sql).not.toContain('GROUP BY')
     })
 
@@ -226,13 +231,15 @@ test.describe('readWakeRoutesByIdentity — the join to the receiver records', (
                 {id: 'WAKE_SUB:live',    label: 'WAKE_SUBSCRIPTION', properties: {status: 'active',   agentIdentity: '@neo-opus-vega'}},
                 {id: 'WAKE_SUB:gone',    label: 'WAKE_SUBSCRIPTION', properties: {status: 'degraded', agentIdentity: '@neo-opus-vega', lastRefusal: 'not-in-receiver-manifest'}},
                 {id: 'WAKE_SUB:retired', label: 'WAKE_SUBSCRIPTION', properties: {status: 'retired',  agentIdentity: '@neo-opus-vega'}},
+                {id: 'WAKE_SUB:pull',    label: 'WAKE_SUBSCRIPTION', properties: {status: 'active',   agentIdentity: '@neo-opus-vega', trigger: 'SENT_TO_ME', harnessTarget: 'none', lastPollAt: '2026-11-13T09:48:31.000Z'}},
                 {id: 'MESSAGE:x',        label: 'MESSAGE',           properties: {agentIdentity: '@neo-opus-vega'}}
             ]
         })
 
         expect(await readWakeRoutesByIdentity({graphService: service})).toEqual(new Map([['@neo-opus-vega', [
-            {id: 'WAKE_SUB:live', withdrawn: false, refusal: null},
-            {id: 'WAKE_SUB:gone', withdrawn: true,  refusal: 'not-in-receiver-manifest'}
+            {id: 'WAKE_SUB:live', withdrawn: false, refusal: null, pull: false, lastPollAt: null},
+            {id: 'WAKE_SUB:gone', withdrawn: true,  refusal: 'not-in-receiver-manifest', pull: false, lastPollAt: null},
+            {id: 'WAKE_SUB:pull', withdrawn: false, refusal: null, pull: true, lastPollAt: '2026-11-13T09:48:31.000Z'}
         ]]]))
 
         await expect(readWakeRoutesByIdentity({graphService: graphServiceDouble()}))

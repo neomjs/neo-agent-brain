@@ -1291,7 +1291,14 @@ test.describe('the real Claude manifest — contract properties of the shipped f
 
         expect(wired(manifest.events, 'SessionStart'), 'SessionStart never wires the listener').toEqual([]);
 
-        ['Stop', 'UserPromptSubmit'].forEach(event => {
+        // A turn that ends on an API error runs StopFailure instead of Stop, so without this entry the
+        // seat keeps no listener after it. Exit 2 here rewakes the session, as it does on Stop.
+        const failure = wired(manifest.events, 'StopFailure');
+
+        expect(failure, 'StopFailure wires the listener exactly once').toHaveLength(1);
+        expect(failure[0]).toEqual(stop[0]);
+
+        ['Stop', 'StopFailure', 'UserPromptSubmit'].forEach(event => {
             expect(wired(settings.hooks, event), `${event} keeps the listener entry through reconciliation`).toEqual(wired(manifest.events, event))
         });
 

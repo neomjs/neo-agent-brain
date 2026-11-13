@@ -1666,7 +1666,7 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
             // that stood in for the other:
             //
             //   1. the Engine template hydrates its own PreToolUse guard  (initClaudeSettings)
-            //   2. the Brain manifest reconciles the four Agent-OS events (projectSeatHooks)
+            //   2. the Brain manifest reconciles the Agent-OS events (projectSeatHooks)
             //
             // Either half alone leaves a seat that looks configured. Only the union is a wired seat,
             // so the union is what gets asserted — against a real git repository, because the
@@ -1722,7 +1722,7 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
             const composed = JSON.parse(await fs.readFile(path.join(claudeDir, 'settings.json'), 'utf-8'));
 
             expect(Object.keys(composed.hooks).sort())
-                .toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit']);
+                .toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'UserPromptSubmit']);
 
             // The Engine's entry survived the Brain's pass — neither authority overwrote the other.
             expect(JSON.stringify(composed.hooks.PreToolUse)).toContain('rgReplaceGuardHook');

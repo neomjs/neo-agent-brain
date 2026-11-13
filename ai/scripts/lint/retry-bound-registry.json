@@ -60,6 +60,13 @@
             "witness": "`10 ** decimals` is decimal-place rounding: the exponent is a formatting precision argument, not an attempt counter. No loop encloses it.",
             "note": "Classified because every growth expression is gated, not because it was suspected."
         },
+        "ai/scripts/lifecycle/hooks/claude/wakeListenerHook.mjs#failureBackoffMs:4c83c958": {
+            "kind": "retry-growth",
+            "lifetime": "persisted",
+            "boundCarrier": "max-delay",
+            "witness": "`Math.min(maxBackoffMs, ...)` in the same expression; test/playwright/unit/ai/scripts/lifecycle/hooks/wakeListenerHook.spec.mjs",
+            "note": "The failure count lives in the seat's listener record across turns until one reaches Stop, so the cap is what bounds each re-arm's wait."
+        },
         "ai/scripts/setup/revisionConfigDiff.mjs#evaluateStatic:fbde6d8c": {
             "kind": "not-a-retry",
             "witness": "The static AST evaluator applies a BinaryExpression's `**` operator once to the declared left/right operands; no retry loop, attempt counter, or persisted growth state encloses it.",

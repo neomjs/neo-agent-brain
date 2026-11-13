@@ -24,6 +24,7 @@ import {verifyBridgeToken}                                                      
 import {generateAntigravityMcpFiles}                                                                 from '../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
 import {createBridgeVerifierPayload}                                                                 from '../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
 import {holdRuntimeGenerationReferences}                                                             from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
+import {LISTENER_STATE_RELATIVE}                                                                     from '../../../../ai/scripts/lifecycle/hooks/claude/wakeListenerHook.mjs';
 import {bindCurrentRuntime, readRuntimeGeneration, runtimeGenerationArguments, runtimeGenerationPin} from '../../../../ai/services/fleet/runtimeGeneration.mjs';
 import {addEscapingLink, changePayloadBytes, removeSealed, sealRuntimeGeneration}                    from './services/fleet/fixtures/sealedRuntimeGeneration.mjs';
 
@@ -1473,6 +1474,66 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         expect(FleetLifecycleService.status('peer2').authRequired).toBe(false); // marker present: recomputed live
 
         fs.rmSync(root, {recursive: true, force: true});
+    });
+
+    test('a seat whose last turn failed on an auth error reads authRequired from its listener record; any other failure stays unknown', () => {
+        // A Desktop seat has no auth marker, so its sign-in state read null even while it was signed out.
+        // The engine's own StopFailure error, kept in the seat's listener record, is the first positive evidence.
+        const
+            homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-listener-')),
+            dir     = path.join(homeDir, LISTENER_STATE_RELATIVE),
+            write   = (login, content) => fs.writeFileSync(path.join(dir, `${login}.json`), content);
+
+        fs.mkdirSync(dir, {recursive: true});
+        write('neo-signed-out',   JSON.stringify({failure: {error: 'authentication_failed', count: 1}}));
+        write('neo-rate-limited', JSON.stringify({failure: {error: 'rate_limit', count: 2}}));
+        write('neo-healthy',      JSON.stringify({watermark: 10}));
+        write('neo-garbled',      '{not json');
+
+        expect(FleetLifecycleService.authRequiredFromListener('neo-signed-out', {homeDir})).toBe(true);
+        expect(FleetLifecycleService.authRequiredFromListener('@neo-signed-out', {homeDir})).toBe(true);
+
+        for (const login of ['neo-rate-limited', 'neo-healthy', 'neo-garbled', 'neo-absent', null]) {
+            expect(FleetLifecycleService.authRequiredFromListener(login, {homeDir}), String(login)).toBe(null)
+        }
+
+        fs.rmSync(homeDir, {recursive: true, force: true});
+    });
+
+    test('status() lets a recorded auth failure outrank a credentials file, and a healthy seat keeps what its marker says', () => {
+        // A CLI credentials file proves a credential exists, not that it works: the marker answered false and
+        // the listener's authentication_failed was never read.
+        const
+            homeDir   = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-status-auth-')),
+            authHome  = path.join(homeDir, 'auth-home'),
+            listeners = path.join(homeDir, LISTENER_STATE_RELATIVE),
+            original  = FleetLifecycleService.authRequiredFromListener;
+
+        fs.mkdirSync(authHome, {recursive: true});
+        fs.writeFileSync(path.join(authHome, '.credentials.json'), '{}');
+        fs.mkdirSync(listeners, {recursive: true});
+        FleetLifecycleService.authRequiredFromListener = identity => original.call(FleetLifecycleService, identity, {homeDir});
+
+        try {
+            install({agents: {a: agentDef('a')}, creds: {}});
+            FleetLifecycleService.start('a');
+
+            const record    = FleetLifecycleService.processes.get('a'),
+                  authAfter = (harnessType, listener) => {
+                      fs.writeFileSync(path.join(listeners, 'neo-seat.json'), JSON.stringify(listener));
+                      Object.assign(record, {harnessType, authHome, runtimeStart: {identity: '@neo-seat'}});
+
+                      return FleetLifecycleService.status('a').authRequired
+                  };
+
+            expect(authAfter('claude-code',    {failure: {error: 'authentication_failed', count: 1}})).toBe(true);
+            expect(authAfter('claude-code',    {watermark: 10})).toBe(false);
+            expect(authAfter('claude-desktop', {failure: {error: 'authentication_failed', count: 1}})).toBe(true);
+            expect(authAfter('claude-desktop', {watermark: 10})).toBe(null)
+        } finally {
+            FleetLifecycleService.authRequiredFromListener = original;
+            fs.rmSync(homeDir, {recursive: true, force: true})
+        }
     });
 
     test('the version probe runs under the SAME minimal env as the supervised child — no ambient-secret leak through the auxiliary subprocess', () => {
