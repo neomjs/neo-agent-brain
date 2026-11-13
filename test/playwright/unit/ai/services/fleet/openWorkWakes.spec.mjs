@@ -1090,3 +1090,73 @@ test.describe('openWorkWakes — an action whose holder cannot act escalates to 
         expect(quiet.step(1, [{ci: 'green', requested: [GPT]}], {}, {rotationSeats: roster, routeOf: only(GPT), quiet: true}).wakes).toEqual([])
     });
 });
+
+test.describe('openWorkWakes — a holder silent after a delivered wake escalates to a rotation seat, never the holder (#1651)', () => {
+    const
+        EUCLID    = '@neo-gpt-euclid',
+        JULIA     = '@neo-gemini-julia',
+        HOURS     = 60,
+        roster    = [ADA, GPT, EUCLID, JULIA],
+        review    = {ci: 'green', requested: [GPT]},
+        delivered = minute => ({'MESSAGE:review': {state: 'delivered', at: iso(minute)}}),
+        summary   = result => result.wakes.map(({to, role, kind, holder = null}) => ({to, role, kind, holder}));
+
+    /** @summary A journey whose review wake to GPT was admitted at minute 1, with the receipt the round records on it. */
+    function reviewed(seats = roster) {
+        const run = journey();
+
+        run.step(0, [{ci: 'pending'}], {}, {rotationSeats: seats});
+        expect(summary(run.step(1, [review], {}, {rotationSeats: seats}))).toEqual([{to: GPT, role: 'reviewer', kind: 'review', holder: null}]);
+        Object.values(run.ledger().holding).find(entry => entry.wake.to === GPT).messageId = 'MESSAGE:review';
+
+        return run
+    }
+
+    test('the holder\'s slot still open four hours after its wake was delivered wakes one rotation seat with that holder, once (AC-2)', () => {
+        const run = reviewed(), options = {rotationSeats: roster, deliveries: delivered(2)};
+
+        expect(run.step(2 + 4 * HOURS - 1, [review], {}, options).wakes, 'one minute short of four hours').toEqual([]);
+
+        const silent = run.step(2 + 4 * HOURS, [review], {}, options);
+
+        expect(summary(silent)).toEqual([{to: expect.any(String), role: 'rotation', kind: 'holder-silent', holder: GPT}]);
+        expect(silent.wakes[0].to).not.toBe(GPT);
+        expect(run.step(2 + 5 * HOURS, [review], {}, options).wakes, 'once per head').toEqual([]);
+        // a delivery read that fails after the escalation went out keeps it: the recovered read sends nothing twice
+        expect(run.step(2 + 5 * HOURS + 1, [review], {}, {rotationSeats: roster, deliveries: null}).wakes, 'unread').toEqual([]);
+        expect(run.step(2 + 5 * HOURS + 2, [review], {}, options).wakes, 'read again').toEqual([]);
+
+        // the holder acts: its slot closes, and the escalation's slot with it
+        const acted = run.step(2 + 6 * HOURS, [{ci: 'green', ...{reviews: [opinion('APPROVED')], opinions: [opinion('APPROVED')]}}], {}, options);
+        expect(Object.values(acted.ledger.holding).map(entry => entry.wake.kind)).not.toContain('holder-silent')
+    });
+
+    test('a failed, skipped, undelivered or unknown wake, an unread verdict or a slot without a receipt never escalates (AC-2)', () => {
+        for (const verdict of ['failed', 'skipped', 'undelivered', 'unknown']) {
+            const run = reviewed();
+            expect(run.step(10 * HOURS, [review], {}, {rotationSeats: roster, deliveries: {'MESSAGE:review': {state: verdict, at: iso(2)}}}).wakes, verdict).toEqual([])
+        }
+        expect(reviewed().step(10 * HOURS, [review], {}, {rotationSeats: roster, deliveries: null}).wakes, 'unread').toEqual([]);
+
+        const unreceipted = journey();
+        unreceipted.step(0, [{ci: 'pending'}], {}, {rotationSeats: roster});
+        unreceipted.step(1, [review], {}, {rotationSeats: roster});
+        expect(unreceipted.step(10 * HOURS, [review], {}, {rotationSeats: roster, deliveries: delivered(2)}).wakes, 'no receipt').toEqual([])
+    });
+
+    test('the silent holder is never the recipient, even while its own route answers; a roster of only the holder stays pending (AC-3)', () => {
+        const
+            offset = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'holder-silent'])).digest().readUInt32BE(0) % 4,
+            others = [ADA, EUCLID, JULIA],
+            seats  = [...others.slice(0, offset), GPT, ...others.slice(offset)];
+
+        // the fixture's premise: the holder sits exactly where the hash lands
+        expect(seats[offset]).toBe(GPT);
+        expect(summary(reviewed(seats).step(5 * HOURS, [review], {}, {rotationSeats: seats, deliveries: delivered(2), routeOf: () => 'reachable'})))
+            .toEqual([{to: seats[(offset + 1) % 4], role: 'rotation', kind: 'holder-silent', holder: GPT}]);
+
+        const lone = reviewed([GPT]).step(5 * HOURS, [review], {}, {rotationSeats: [GPT], deliveries: delivered(2)});
+        expect(lone.wakes).toEqual([]);
+        expect(Object.values(lone.ledger.holding).find(entry => entry.wake.kind === 'holder-silent').wake.to).not.toBe(GPT)
+    });
+});

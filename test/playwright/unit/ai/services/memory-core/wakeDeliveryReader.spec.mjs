@@ -219,6 +219,45 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
         await fs.rm(root, {recursive: true, force: true});
     });
 
+    test('answers one verdict per wake message from the same read, and each joined call gets its own', async () => {
+        const root    = await tmpRoot(),
+              records = path.join(root, 'records');
+
+        await writeRecord(records, {
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:a', state: 'delivered', sourceEventIds: ['MESSAGE:a', 'MESSAGE:b'],
+            acceptedAt: '2026-11-13T00:00:00.000Z', dispatchFinishedAt: '2026-11-13T00:00:01.000Z'
+        });
+
+        const [first, second, plain] = await Promise.all([
+            readWakeDelivery({recordsDir: records, messageIds: ['MESSAGE:a', 'MESSAGE:x']}),
+            readWakeDelivery({recordsDir: records, messageIds: ['MESSAGE:b']}),
+            readWakeDelivery({recordsDir: records})
+        ]);
+
+        expect(first.messages).toEqual({
+            'MESSAGE:a': {state: 'delivered', at: '2026-11-13T00:00:01.000Z'},
+            'MESSAGE:x': {state: 'undelivered', at: null}
+        });
+        expect(second.messages).toEqual({'MESSAGE:b': {state: 'delivered', at: '2026-11-13T00:00:01.000Z'}});
+        expect(first.subscriptions['WAKE_SUB:a'].state, 'the subscription verdict rides along').toBe('reachable');
+        expect(plain.messages, 'no ids asked, no messages answered').toBeUndefined();
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
+
+    test('a records directory that is unreadable or undeclared leaves every message unknown; an absent one is undelivered', async () => {
+        const root = await tmpRoot();
+
+        await fs.writeFile(path.join(root, 'records'), 'not a directory');
+
+        for (const [recordsDir, state] of [[path.join(root, 'records'), 'unknown'], ['', 'unknown'], [path.join(root, 'never-created'), 'undelivered']]) {
+            expect((await readWakeDelivery({recordsDir, messageIds: ['MESSAGE:m']})).messages, recordsDir || 'undeclared')
+                .toEqual({'MESSAGE:m': {state, at: null}})
+        }
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
+
     test('an undeclared records directory reads unconfigured, distinct from a declared empty one', async () => {
         const result = await readWakeDelivery({recordsDir: ''});
 

@@ -1,5 +1,6 @@
 /**
- * @summary Projects the wake receiver's own dispatch records into a per-subscription delivery verdict.
+ * @summary Projects the wake receiver's own dispatch records into delivery verdicts: per subscription, per identity and
+ * per wake message.
  *
  * **The gap this fills:** every wake surface in the substrate projects the seat's *intent* —
  * `status: 'active'`, `armed: true`, `harnessTarget: 'a2a-webhook'` — and none of them projected the
@@ -189,6 +190,51 @@ export function projectWakeDelivery(records = []) {
     }
 
     return projected;
+}
+
+/**
+ * How strongly one record speaks for a message nothing delivered: a fate still open (a pending, unrecognised or
+ * receiver-restart `unknown` record) outranks a concluded `failed`, which outranks a `skipped`.
+ */
+const MESSAGE_RANK = {undelivered: 0, skipped: 1, failed: 2, unknown: 3, delivered: 4};
+
+/**
+ * @summary Projects receiver dispatch records into one verdict per wake message: did this particular wake arrive?
+ * @description A wake message's id is its source event id (`CoalescingEngineService#_getSourceEventId`), so a record
+ * speaks for every message in its `sourceEventIds`: one digest can carry several messages, and one message can ride
+ * several routes. One `delivered` record is enough, and the verdict keeps the first delivery. Without one, a fate
+ * still open reads `unknown`, since the wake may yet land; otherwise `failed` outranks `skipped`. A message in no
+ * record reads `undelivered`. Records that could not be read (`null`) leave every message `unknown`: a question that
+ * could not be asked has no negative answer.
+ * @param {Object[]|null} records Receiver records in any order, or null when they could not be read.
+ * @param {String[]} [messageIds=[]]
+ * @returns {Object.<String, {state: 'delivered'|'failed'|'skipped'|'unknown'|'undelivered', at: String|null}>}
+ * Keyed by message id; `at` is the first delivery, or the newest attempt when nothing delivered.
+ */
+export function projectMessageDelivery(records, messageIds = []) {
+    const verdicts = Object.fromEntries(messageIds.filter(id => typeof id === 'string' && id.length > 0)
+        .map(id => [id, {state: Array.isArray(records) ? 'undelivered' : 'unknown', at: null}]));
+
+    for (const record of Array.isArray(records) ? records : []) {
+        const
+            state = Object.hasOwn(MESSAGE_RANK, record?.state) && record.state !== 'undelivered' ? record.state : 'unknown',
+            when  = attemptTime(record) || null;
+
+        for (const id of Array.isArray(record?.sourceEventIds) ? record.sourceEventIds : []) {
+            if (!Object.hasOwn(verdicts, id)) continue;
+
+            const verdict = verdicts[id];
+
+            if (MESSAGE_RANK[state] > MESSAGE_RANK[verdict.state]) {
+                verdicts[id] = {state, at: when}
+            } else if (state === verdict.state && when && (!verdict.at ||
+                (state === 'delivered' ? when < verdict.at : when > verdict.at))) {
+                verdict.at = when
+            }
+        }
+    }
+
+    return verdicts
 }
 
 /**

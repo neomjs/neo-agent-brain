@@ -764,3 +764,80 @@ test.describe('wireFleetOpenWorkWakes — escalations reach a rotation seat that
         } finally { fs.rmSync(directory, {recursive: true, force: true}) }
     });
 });
+
+test.describe('wireFleetOpenWorkWakes — a holder is certified silent only from a receiver-confirmed delivery (#1651)', () => {
+    const REPAIR = JSON.stringify(['acme/app', 7, HEAD, SEAT, 'repair-ci']), ROTATION = '@neo-gpt-euclid';
+
+    test('an admitted wake keeps its intake receipt\'s message id; a thrown or id-less attempt keeps none (AC-1)', async () => {
+        const receiptOf = {
+            receipt  : async () => ({messageId: 'MESSAGE:repair', sentAt: iso(1)}),
+            thrown   : async () => { throw new Error('ambiguous send') },
+            'no id'  : async () => ({}),
+            'not one': async () => ({messageId: 42})
+        };
+
+        for (const [name, admitWake] of Object.entries(receiptOf)) {
+            let   minute = 0;
+            const store  = memoryStore(), round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), admitWake, log: {}});
+
+            await round(state(0)); minute = 1;
+            await round(state(1, 'red'));
+
+            const entry = store.read().holding[REPAIR];
+            expect(entry.status, name).toBe('admitted');
+            name === 'receipt' ? expect(entry.messageId).toBe('MESSAGE:repair') : expect(entry, name).not.toHaveProperty('messageId')
+        }
+    });
+
+    test('a delivered wake still unanswered four hours on wakes the rotation with its silent holder, once; a failed or unread one never does (AC-2, AC-3)', async () => {
+        for (const [verdict, expected] of [['delivered', [{kind: 'holder-silent', to: ROTATION, holder: SEAT}]], ['failed', []], ['unreadable', []]]) {
+            const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wake-silent-')), sends = [], asked = [];
+            let   minute    = 0;
+
+            try {
+                const round = wireFleetOpenWorkWakes({
+                    registry    : {getDataDir: () => directory}, gateOf: openGate, now: () => at(minute), rotationSeats: [SEAT, ROTATION],
+                    admitWake   : async message => (sends.push(message), {messageId: `MESSAGE:${sends.length}`}),
+                    readDelivery: async messageIds => {
+                        asked.push(messageIds);
+                        if (verdict === 'unreadable') throw new Error('plane refused');
+                        return {deliveryReadable: true, deliveryReadReason: 'observed',
+                            messages: Object.fromEntries(messageIds.map(id => [id, {state: verdict, at: iso(2)}]))}
+                    },
+                    log: {}
+                });
+
+                await round(state(0)); minute = 1;
+                await round(state(1, 'red'));
+                minute = 100;
+                await round(state(100, 'red'));
+                expect(asked, `${verdict}: a slot younger than four hours is not asked about`).toEqual([]);
+
+                minute = 242;
+                await round(state(242, 'red'));
+                expect(asked, verdict).toEqual([['MESSAGE:1']]);
+                expect(sends.slice(1).map(({kind, to, holder}) => ({kind, to, holder})), verdict).toEqual(expected);
+
+                // the saved escalation survives the next round's ledger check, and is not sent again
+                minute = 243;
+                await round(state(243, 'red'));
+                expect(sends.slice(1), `${verdict} again`).toHaveLength(expected.length);
+                await round.stop()
+            } finally { fs.rmSync(directory, {recursive: true, force: true}) }
+        }
+    });
+
+    test('a saved receipt that is not a message id is refused with the rest of a malformed ledger', async () => {
+        const store = memoryStore(), round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(1),
+            admitWake: async () => ({messageId: 'MESSAGE:repair'}), log: {}});
+
+        await round(state(0));
+        await round(state(1, 'red'));
+
+        const ledger = store.read();
+        ledger.holding[REPAIR].messageId = 'not a message id';
+
+        await expect(createOpenWorkWakeRound({store: memoryStore(ledger), gateOf: openGate, now: () => at(2), admitWake: async () => ({}), log: {}})(state(2, 'red')))
+            .rejects.toThrow(/Malformed open-work wake ledger/)
+    });
+});

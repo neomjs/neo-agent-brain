@@ -25,7 +25,10 @@ import fs                    from 'fs/promises';
 import path                  from 'path';
 import aiConfig              from '../../mcp/server/memory-core/config.mjs';
 import {TERMINAL_STATES}     from '../../daemons/wake/receiverState.mjs';
-import {projectWakeDelivery} from './wakeDeliveryProjection.mjs';
+import {
+    projectMessageDelivery,
+    projectWakeDelivery
+} from './wakeDeliveryProjection.mjs';
 import {
     projectReceiverLiveness,
     readReceiverLiveness
@@ -69,16 +72,21 @@ const directories = new Map();
  * directory: when it last accepted a wake and completed a sweep pass, and how often it started or
  * exited stuck in the last hour. It is read on every call and is `unknown` whenever it cannot be read.
  *
+ * `messageIds` adds `messages`, one verdict per wake message (`projectMessageDelivery`), projected per
+ * call from the shared read; a directory that could not be read leaves every message `unknown`.
+ *
  * @param {Object} [options]
  * @param {String} [options.recordsDir] Records directory; tests isolate through it. Defaults to the
  * `fleet.wakeReceiverRecordsDir` leaf.
- * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object, receiver: Object}>}
+ * @param {String[]} [options.messageIds] Wake message ids to answer a delivery verdict for.
+ * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object, receiver: Object, messages?: Object}>}
  */
-export async function readWakeDelivery({recordsDir} = {}) {
+export async function readWakeDelivery({recordsDir, messageIds} = {}) {
     const directory = recordsDir ?? aiConfig.fleet.wakeReceiverRecordsDir;
 
     if (!directory) {
-        return {deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}, receiver: RECEIVER_UNKNOWN};
+        return {deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}, receiver: RECEIVER_UNKNOWN,
+            ...(messageIds ? {messages: projectMessageDelivery(null, messageIds)} : {})};
     }
 
     let state = directories.get(directory);
@@ -92,7 +100,9 @@ export async function readWakeDelivery({recordsDir} = {}) {
         state.reading = null
     });
 
-    return state.reading
+    const {result, records} = await state.reading;
+
+    return messageIds ? {...result, messages: projectMessageDelivery(result.deliveryReadable ? records : null, messageIds)} : result
 }
 
 /**
@@ -100,7 +110,8 @@ export async function readWakeDelivery({recordsDir} = {}) {
  * records, and project.
  * @param {String} directory
  * @param {Map<String, Object>} held The directory's terminal records, by file name.
- * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object}>}
+ * @returns {Promise<{result: Object, records: Object[]}>} The shared answer, and the records it was
+ * projected from for a caller's per-message verdicts.
  */
 async function readDirectory(directory, held) {
     let entries;
@@ -113,9 +124,9 @@ async function readDirectory(directory, held) {
 
         // ENOENT is a measured absence: nothing has ever been dispatched from here. Anything else
         // is an unanswerable question, and the two must not read the same way.
-        return error?.code === 'ENOENT'
+        return {records: [], result: error?.code === 'ENOENT'
             ? {deliveryReadable: true, deliveryReadReason: 'no-records', subscriptions: {}, receiver: RECEIVER_UNKNOWN}
-            : {deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}, receiver: RECEIVER_UNKNOWN};
+            : {deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}, receiver: RECEIVER_UNKNOWN}};
     }
 
     const
@@ -148,10 +159,10 @@ async function readDirectory(directory, held) {
         listed.has(name) || held.delete(name)
     }
 
-    return {
+    return {records, result: {
         deliveryReadable  : true,
         deliveryReadReason: records.length > 0 ? 'observed' : 'no-records',
         subscriptions     : projectWakeDelivery(records),
         receiver          : projectReceiverLiveness(await readReceiverLiveness(directory), Date.now())
-    };
+    }};
 }

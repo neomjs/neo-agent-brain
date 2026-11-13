@@ -3,16 +3,32 @@
  * @summary Persist holder-action admissions before submitting them to the already verified plane, which composes
  * each wake and sends it as `@system` (`openWorkWakeMessage.mjs`). The existing producer invokes this callback; it
  * owns cadence. The entrypoint owns enablement. An admitted attempt is never proof of delivery, and an ambiguous
- * submission is never replayed.
+ * submission is never replayed. An admission keeps its intake receipt's message id, and only the receiver's record
+ * of that message, read back from the plane, can certify its holder silent.
  */
-import path                            from 'path';
-import {exhaustedUntilOf}              from './capacityThrottleState.mjs';
-import {OPEN_WORK_FAILED_CHECKS}       from '../github-workflow/queries/openWorkQueries.mjs';
-import {fileStore, seatReaders}        from './wireFleetOpenWorkSource.mjs';
-import {planOpenWorkWakes, wakeGateOf} from './openWorkWakes.mjs';
-import {openWorkFreshness}             from './fleetOpenWorkSource.mjs';
+import path                                              from 'path';
+import {exhaustedUntilOf}                                from './capacityThrottleState.mjs';
+import {OPEN_WORK_FAILED_CHECKS}                         from '../github-workflow/queries/openWorkQueries.mjs';
+import {fileStore, seatReaders}                          from './wireFleetOpenWorkSource.mjs';
+import {HOLDER_SILENT_MS, planOpenWorkWakes, wakeGateOf} from './openWorkWakes.mjs';
+import {OPEN_WORK_HOLDER_KINDS}                          from './openWorkWakeMessage.mjs';
+import {openWorkFreshness}                               from './fleetOpenWorkSource.mjs';
 
-const ROUTES_TTL_MS = 5 * 60 * 1000;
+const
+    ROUTES_TTL_MS     = 5 * 60 * 1000,
+    // The plane's bound on one delivery read (`read_open_work_wake_delivery`)
+    DELIVERY_READ_MAX = 100,
+    MESSAGE_ID        = /^MESSAGE:[\w-]{1,100}$/;
+
+/**
+ * @summary An intake receipt's message id, or null for an id-less or malformed receipt.
+ * @param {*} value
+ * @returns {String|null}
+ * @private
+ */
+function messageIdOf(value) {
+    return typeof value === 'string' && MESSAGE_ID.test(value) ? value : null
+}
 
 /** @summary The check-run conclusions and status states that fail a head; pending, stale, neutral and skipped do not. */
 const FAILING = new Set(['ACTION_REQUIRED', 'CANCELLED', 'ERROR', 'FAILURE', 'STARTUP_FAILURE', 'TIMED_OUT']);
@@ -90,7 +106,7 @@ function observationOf(wake, failedChecks) {
     const {repo, number, head, kind, episode, to, unblocks, holder} = wake;
 
     return {repo, number, head, kind, episode, to, failedChecks, ...(kind === 'unblocked' ? {unblocks} : {}),
-        ...(kind === 'holder-unreachable' ? {holder} : {})}
+        ...(OPEN_WORK_HOLDER_KINDS.has(kind) ? {holder} : {})}
 }
 
 /**
@@ -148,7 +164,7 @@ function validateLedger(ledger, now) {
         object = value => value && typeof value === 'object' && !Array.isArray(value),
         text   = value => typeof value === 'string' && value.length > 0,
         // An escalation's holder is part of its identity, and never its recipient
-        holder = value => value.kind === 'holder-unreachable'
+        holder = value => OPEN_WORK_HOLDER_KINDS.has(value.kind)
             ? value.role === 'rotation' && text(value.holder) && value.holder.startsWith('@') && value.holder !== value.to
             : !Object.hasOwn(value, 'holder'),
         wake   = value => object(value) && text(value.repo) && Number.isInteger(value.number) && value.number > 0 &&
@@ -168,6 +184,7 @@ function validateLedger(ledger, now) {
         ledger.certificationRefusal != null && !REFUSAL_CODES.has(ledger.certificationRefusal) ||
         Object.entries(ledger.holding).some(([slot, entry]) => !object(entry) || !wake(entry.wake) ||
             !['baseline', 'pending', 'admitted'].includes(entry.status) ||
+            Object.hasOwn(entry, 'messageId') && (entry.status !== 'admitted' || !messageIdOf(entry.messageId)) ||
             slot !== JSON.stringify([entry.wake.repo, entry.wake.number, entry.wake.head,
                 entry.wake.role === 'rotation' ? 'rotation' : entry.wake.to, entry.wake.kind,
                 ...(entry.wake.holder ? [entry.wake.holder] : [])])) ||
@@ -243,16 +260,36 @@ function freshWake(wake, state, now) {
  * @param {Array<String|Object>|Function} [options.rotationSeats] Participating native seats for rotation actions.
  * @param {Function} [options.readFailedChecks] `(wake) → Promise<String[]|null>`: a `repair-ci` wake's failing
  *     checks, read once before its send. A throw or null sends the wake with the names unknown.
+ * @param {Function} [options.readDelivery] `(messageIds) → Promise<{messages}>`: the same verified plane's delivery
+ *     read, asked only about admitted holder wakes first observed at least `HOLDER_SILENT_MS` ago. A throw or an
+ *     absent answer reads every message unknown, so nobody is certified silent.
  * @param {Object} [options.log] Bounded diagnostics; sender error contents are never logged.
  * @returns {Function} Post-pulse callback with an async stop() method; persistence errors reject.
  */
 export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = async () => null, readExhausted = async () => null,
-    now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true, rotationSeats, readFailedChecks = null, log = console}) {
+    now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true, rotationSeats, readFailedChecks = null,
+    readDelivery = null, log = console}) {
     let running = null, queued = null, stopped = false, routes = null;
 
     /** @summary A failed names read is names-unknown, never a lost wake. */
     const failedChecksFor = async wake => {
         try { return await readFailedChecks?.(wake) ?? null } catch { return null }
+    };
+
+    /**
+     * @summary The delivery verdicts of the admitted holder wakes old enough to have gone silent, oldest first. A wake
+     * is delivered no earlier than its action was first observed, so a younger one is never asked about.
+     */
+    const deliveriesOf = async (ledger, time) => {
+        const ids = Object.values(ledger?.holding ?? {})
+            .filter(entry => entry.status === 'admitted' && entry.wake.role !== 'rotation' && entry.messageId &&
+                Date.parse(entry.wake.episode) <= time - HOLDER_SILENT_MS)
+            .sort((left, right) => left.wake.episode.localeCompare(right.wake.episode))
+            .slice(0, DELIVERY_READ_MAX)
+            .map(entry => entry.messageId);
+
+        if (!ids.length || typeof readDelivery !== 'function') return null;
+        try { return (await readDelivery(ids))?.messages ?? null } catch { return null }
     };
 
     /** @summary Read the route projection and the plan resets only when a plan has eligible work. */
@@ -313,10 +350,11 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
         const withCertification = value => ({
             ...value, ...(activation ? {activation} : {}), certificationRefusal
         });
-        const first = Date.parse(state?.pulses?.[0]?.at),
-            ledger  = stored && !stored.activation && Number.isFinite(first) && Date.parse(stored.pulse) < first ? null : stored,
-            roster  = typeof rotationSeats === 'function' ? rotationSeats() : rotationSeats,
-            args    = {state, ledger, ...(roster !== undefined ? {rotationSeats: roster} : {})};
+        const first    = Date.parse(state?.pulses?.[0]?.at),
+            ledger     = stored && !stored.activation && Number.isFinite(first) && Date.parse(stored.pulse) < first ? null : stored,
+            roster     = typeof rotationSeats === 'function' ? rotationSeats() : rotationSeats,
+            deliveries = await deliveriesOf(ledger, time),
+            args       = {state, ledger, deliveries, ...(roster !== undefined ? {rotationSeats: roster} : {})};
         let plan = planOpenWorkWakes({...args, now: time, quiet: !activation}), expired = 0;
 
         // A newly proven certification survives a later route timeout; this write admits no send.
@@ -340,6 +378,7 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
         await persist(withCertification(plan.ledger));
 
         let sendErrors = 0, disabled = false;
+        const receipts = new Map();
         for (const wake of plan.wakes) {
             // the names read awaits, so enablement and freshness are tested after it, at the send
             const failedChecks = wake.kind === 'repair-ci' && isEnabled() === true ? await failedChecksFor(wake) : null;
@@ -351,11 +390,20 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
                 expired++;
                 continue
             }
-            try { await admitWake(observationOf(wake, failedChecks)) } catch {
+            try {
+                const messageId = messageIdOf((await admitWake(observationOf(wake, failedChecks)))?.messageId);
+                messageId && receipts.set(wake.key, messageId)
+            } catch {
                 sendErrors++;
                 log.error?.('[fleet] open-work wake attempt failed or is ambiguous; admission retained',
                     {pr: wake.pr.slice(0, 160), kind: wake.kind.slice(0, 40)})
             }
+        }
+
+        // One save keeps every receipt on its admitted slot: the id the slot's delivery is read back by
+        if (receipts.size) {
+            await persist(withCertification({...plan.ledger, holding: Object.fromEntries(Object.entries(plan.ledger.holding).map(([slot, entry]) =>
+                [slot, receipts.has(entry.wake.key) ? {...entry, messageId: receipts.get(entry.wake.key)} : entry]))}))
         }
 
         return {admitted: plan.wakes.length, expired, sendErrors, quiet: !activation, reason: certificationRefusal,
@@ -437,6 +485,7 @@ export function undeliverableOf(presence) {
  * @param {Function} options.admitWake The already verified plane's open-work intake.
  * @param {Function} [options.readPresence] The Fleet's shared verbose presence read; one answer per route refresh
  *     gives the route map and the plan resets.
+ * @param {Function} [options.readDelivery] The same verified plane's delivery read of admitted wakes, by message id.
  * @param {Function} [options.now]
  * @param {Function} [options.gateOf] Test seam only.
  * @param {Function} [options.isEnabled] Live entrypoint enablement, checked at effect boundaries.
@@ -445,7 +494,7 @@ export function undeliverableOf(presence) {
  * @param {Object} [options.log]
  * @returns {Function|null} onPulse with stop(), or null without the required registry/intake.
  */
-export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
+export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, readDelivery, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
     if (typeof registry?.getDataDir !== 'function' || typeof admitWake !== 'function') return null;
     let presence = null;
     // The refresh asks both readers at once, so one answer serves both; the next refresh reads fresh
@@ -461,7 +510,7 @@ export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, now, 
             readUndeliverable: async () => undeliverableOf(await answer()),
             readExhausted    : async () => exhaustedUntilOf(await answer(), (now ?? Date.now)())
         } : {}),
-        admitWake, now, gateOf, isEnabled, rotationSeats, log
+        admitWake, readDelivery, now, gateOf, isEnabled, rotationSeats, log
     })
 }
 
