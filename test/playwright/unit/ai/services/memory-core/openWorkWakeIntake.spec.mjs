@@ -115,4 +115,37 @@ test.describe('openWorkWakeIntake', () => {
         owned.add(messageId);
         expect(GraphService.db.nodes.get(messageId).properties.senderPrincipalClass).toBe('human')
     });
+
+    test('the delivery read answers each wake message from the receiver\'s own records, to the operator only', async () => {
+        const
+            [{default: fs}, {default: os}, {default: path}] = await Promise.all([import('fs/promises'), import('os'), import('path')]),
+            {default: wakeSubscriptions}                    = await import('../../../../../../ai/services/memory-core/WakeSubscriptionService.mjs'),
+            {readWakeDelivery}                              = await import('../../../../../../ai/services/memory-core/wakeDeliveryReader.mjs'),
+            {readOpenWorkWakeDelivery}                      = await import('../../../../../../ai/services/memory-core/openWorkWakeIntake.mjs'),
+            records                                         = await fs.mkdtemp(path.join(os.tmpdir(), 'open-work-delivery-')),
+            prior                                           = wakeSubscriptions.wakeDeliveryReadFn;
+
+        await fs.writeFile(path.join(records, 'k1.json'), JSON.stringify({recordKey: 'k1', subscriptionId: 'WAKE_SUB:seat', state: 'delivered',
+            sourceEventIds: ['MESSAGE:delivered'], acceptedAt: '2026-11-13T00:00:00.000Z', dispatchFinishedAt: '2026-11-13T00:00:01.000Z'}));
+        wakeSubscriptions.wakeDeliveryReadFn = options => readWakeDelivery({...options, recordsDir: records});
+
+        try {
+            expect(await as(operator, () => callTool('read_open_work_wake_delivery', {messageIds: ['MESSAGE:delivered', 'MESSAGE:absent']}))).toEqual({
+                deliveryReadable: true, deliveryReadReason: 'observed', messages: {
+                    'MESSAGE:delivered': {state: 'delivered', at: '2026-11-13T00:00:01.000Z'},
+                    'MESSAGE:absent'   : {state: 'undelivered', at: null}
+                }
+            });
+
+            for (const caller of ['@intake-agent', '@intake-outsider', '@intake-not-operator']) {
+                await expect(as(caller, () => readOpenWorkWakeDelivery({messageIds: ['MESSAGE:delivered']})), caller).rejects.toThrow(/human operator only/)
+            }
+            for (const messageIds of [[], ['not-a-message'], Array.from({length: 101}, (_, index) => `MESSAGE:${index}`)]) {
+                await expect(as(operator, () => readOpenWorkWakeDelivery({messageIds})), String(messageIds.length)).rejects.toThrow(/messageIds must be/)
+            }
+        } finally {
+            wakeSubscriptions.wakeDeliveryReadFn = prior;
+            await fs.rm(records, {recursive: true, force: true})
+        }
+    });
 });

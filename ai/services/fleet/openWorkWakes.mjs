@@ -16,15 +16,20 @@
  * saved pulse excludes their original observations on the next round. A merge's `unblocked` wakes, one
  * per issue and assignee seat, follow the same rule, keyed by the pulse whose read resolved them.
  *
- * Two escalations ride the rotation when an action's holder cannot act. An `unowned` PR owes its author an action,
- * but no seat is that author. A `holder-unreachable` slot is a holder wake that would be sent if the holder's route
- * were not `unreachable`. Each wakes one rotation seat per head, and that seat is never the holder it escalates.
+ * Three escalations ride the rotation when an action's holder cannot or does not act. An `unowned` PR owes its author an
+ * action, but no seat is that author. A `holder-unreachable` slot is a holder wake that would be sent if the holder's
+ * route were not `unreachable`. A `holder-silent` slot is an admitted holder wake the receiver recorded `delivered`,
+ * whose action is still open {@link HOLDER_SILENT_MS} later: silence is certified from a delivery, never an attempt.
+ * Each wakes one rotation seat per head, and that seat is never the holder it escalates.
  */
 import {createHash}                                            from 'node:crypto';
 import {openWorkFreshness}                                     from './fleetOpenWorkSource.mjs';
 import {holderOf}                                              from './openWorkHolder.mjs';
 import {OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf} from './openWorkWakeMessage.mjs';
 import {OPEN_WORK_QUERY_COSTS}                                 from '../github-workflow/queries/openWorkQueries.mjs';
+
+/** @summary How long a holder's delivered wake may stay unanswered before its holder reads silent. */
+export const HOLDER_SILENT_MS = 4 * 60 * 60 * 1000;
 
 /**
  * @summary Deterministic rotation seat selection from the participating roster, advancing to the first reachable seat
@@ -94,9 +99,12 @@ function wakeOf(row, seat, role, kind, episode, holder = null) {
  *     resets (`capacityThrottleState.mjs#exhaustedUntilOf`). The rotation passes such a seat over until then, the way it
  *     passes an unreachable one. Work a seat holds as reviewer or author keeps routing through `routeOf` alone.
  * @param {Boolean} [options.quiet=false] Baseline the observed actions without admitting sends.
+ * @param {Object<String, {state: String, at: String|null}>|null} [options.deliveries=null] Delivery verdicts of admitted
+ *     holder wakes, by the message id their slot recorded (`projectMessageDelivery`). Only `delivered` can make a holder
+ *     silent; any other verdict, or none, escalates nothing.
  * @returns {{wakes: Object[], ledger: Object|null}} Inputs are never mutated.
  */
-export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', rotationSeats, exhaustedUntil = null, quiet = false}) {
+export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', rotationSeats, exhaustedUntil = null, quiet = false, deliveries = null}) {
     const
         wakes   = [],
         holding = Object.fromEntries(Object.entries(ledger?.holding ?? {}).map(([key, entry]) =>
@@ -122,7 +130,14 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             .map(item => typeof item === 'string' ? item : item.seat))],
         // A seat waiting for its plan to reset is unreachable for the rotation only; the roster and its offset stay whole
         rotationRoute = seat => exhaustedUntil && Object.hasOwn(exhaustedUntil, seat) && exhaustedUntil[seat] > now
-            ? 'unreachable' : routeOf(seat);
+            ? 'unreachable' : routeOf(seat),
+        // An admitted holder wake the receiver recorded `delivered` at least HOLDER_SILENT_MS ago
+        silent        = ({messageId}) => {
+            const verdict = deliveries && typeof messageId === 'string' && Object.hasOwn(deliveries, messageId) ? deliveries[messageId] : null;
+
+            return verdict?.state === 'delivered' && now - Date.parse(verdict.at) >= HOLDER_SILENT_MS
+        },
+        rotationSlot  = (row, kind, holder) => JSON.stringify([row.repo, row.number, row.head, 'rotation', kind, ...(holder ? [holder] : [])]);
 
     /**
      * Holds one rotation-routed slot: an outside PR's action, or an escalation naming the holder it never picks.
@@ -131,7 +146,7 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
      */
     const rotate = (row, kind, holder = null) => {
         const
-            slot    = JSON.stringify([row.repo, row.number, row.head, 'rotation', kind, ...(holder ? [holder] : [])]),
+            slot    = rotationSlot(row, kind, holder),
             prior   = holding[slot],
             episode = prior?.wake?.episode ?? state.observedAt,
             hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder), status};
@@ -203,6 +218,11 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
                     // The holder's wake waits for its route; meanwhile the rotation hears that it waits
                     rotate(row, 'holder-unreachable', seat)
                 }
+            } else if (entry.status === 'admitted' &&
+                (silent(entry) || holding[rotationSlot(row, 'holder-silent', seat)]?.status === 'admitted')) {
+                // The holder's wake arrived, and the action it asked for is still open. A sent escalation stays held
+                // while it is, even through a round that could not read the delivery, so it is never sent twice.
+                rotate(row, 'holder-silent', seat)
             }
         }
     }

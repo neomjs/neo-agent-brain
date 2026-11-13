@@ -1,6 +1,7 @@
 import {expect, test} from '@playwright/test';
 import {
     projectIdentityWakeReachability,
+    projectMessageDelivery,
     projectWakeDelivery
 } from '../../../../../../ai/services/memory-core/wakeDeliveryProjection.mjs';
 
@@ -253,5 +254,51 @@ test.describe('projectIdentityWakeReachability — one seat across its routes', 
             .toEqual({state: 'withdrawn', reason: 'not-in-receiver-manifest'});
         // an active route the receiver never concluded might still deliver, so it outranks a withdrawn sibling
         expect(projectIdentityWakeReachability([...active('quiet'), withdrawn('older')], verdicts)).toEqual({state: 'unknown'});
+    });
+});
+
+test.describe('projectMessageDelivery — did one particular wake arrive?', () => {
+    // A digest carries every message it coalesced in `sourceEventIds`, and one message can ride several routes
+    const carrying = (state, sourceEventIds, finishedAt = '2026-11-13T00:00:01.000Z') =>
+        at(state, {recordKey: `k-${state}-${sourceEventIds.join()}-${finishedAt}`, sourceEventIds, dispatchFinishedAt: finishedAt});
+
+    test('a message inside a delivered digest reads delivered, at that dispatch', () => {
+        expect(projectMessageDelivery([carrying('delivered', ['MESSAGE:a', 'MESSAGE:b'])], ['MESSAGE:b']))
+            .toEqual({'MESSAGE:b': {state: 'delivered', at: '2026-11-13T00:00:01.000Z'}});
+    });
+
+    test('failed, skipped and absent stay distinct, and none of them reads delivered', () => {
+        expect(projectMessageDelivery([carrying('failed', ['MESSAGE:f']), carrying('skipped', ['MESSAGE:s'])],
+            ['MESSAGE:f', 'MESSAGE:s', 'MESSAGE:none'])).toEqual({
+            'MESSAGE:f'   : {state: 'failed',      at: '2026-11-13T00:00:01.000Z'},
+            'MESSAGE:s'   : {state: 'skipped',     at: '2026-11-13T00:00:01.000Z'},
+            'MESSAGE:none': {state: 'undelivered', at: null}
+        });
+    });
+
+    test('one delivery among several attempts is enough, and its time is the first delivery', () => {
+        expect(projectMessageDelivery([
+            carrying('delivered', ['MESSAGE:m'], '2026-11-13T02:00:00.000Z'),
+            carrying('failed',    ['MESSAGE:m'], '2026-11-13T03:00:00.000Z'),
+            carrying('delivered', ['MESSAGE:m'], '2026-11-13T01:00:00.000Z')
+        ], ['MESSAGE:m'])).toEqual({'MESSAGE:m': {state: 'delivered', at: '2026-11-13T01:00:00.000Z'}});
+    });
+
+    test('without a delivery, a fate still open outranks a concluded failure: the wake may yet land', () => {
+        for (const open of ['pending', 'dispatching', 'unknown', null]) {
+            expect(projectMessageDelivery([carrying('failed', ['MESSAGE:m']), carrying(open, ['MESSAGE:m'])], ['MESSAGE:m'])['MESSAGE:m'].state,
+                String(open)).toBe('unknown')
+        }
+    });
+
+    test('records that could not be read leave every message unknown, never undelivered', () => {
+        expect(projectMessageDelivery(null, ['MESSAGE:m'])).toEqual({'MESSAGE:m': {state: 'unknown', at: null}});
+        expect(projectMessageDelivery([], ['MESSAGE:m']), 'a readable, empty directory is a measured absence')
+            .toEqual({'MESSAGE:m': {state: 'undelivered', at: null}});
+    });
+
+    test('a record speaks only for the messages it carries, and an inherited key is no message', () => {
+        expect(projectMessageDelivery([at('delivered'), carrying('delivered', ['constructor'])], ['MESSAGE:m', 'toString']))
+            .toEqual({'MESSAGE:m': {state: 'undelivered', at: null}, toString: {state: 'undelivered', at: null}});
     });
 });
