@@ -309,18 +309,57 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
 
         try {
             FleetControlBridge.openWorkSource = null;
-            expect((await FleetControlBridge.fleetOpenWork()).questions).toEqual({state: 'unavailable', count: null, reason: 'fleet: no read here lists the open questions without marking them seen'});
+            expect((await FleetControlBridge.fleetOpenWork()).questions).toEqual({
+                state  : 'unavailable', count: null, reason: 'fleet: no read here lists the open questions without marking them seen',
+                expired: {state: 'unavailable', count: null, since: null, reason: 'fleet: no read here lists the expired questions without marking them seen'}
+            });
 
-            wireOperatorComposeWriter({addMessage: () => ({}), observeMessages: args => { calls.push(args); return {totalCount: 7, truncated: true, nextOffset: 1, messages: [{messageId: 'MESSAGE:q'}]} }});
+            wireOperatorComposeWriter({addMessage: () => ({}), observeMessages: args => {
+                calls.push(args);
+                return args.expiredWithinSpan
+                    ? {totalCount: 2, truncated: true, nextOffset: 1, expiredSince: '2026-11-06T21:00:00.000Z', messages: [{messageId: 'MESSAGE:x'}]}
+                    : {totalCount: 7, truncated: true, nextOffset: 1, messages: [{messageId: 'MESSAGE:q'}]}
+            }});
             FleetControlBridge.openWorkSource = {readOpenWork: params => ({state: 'ok', coverage: 'complete', seats: {ada: {}}, params})};
 
             expect(await FleetControlBridge.fleetOpenWork({seat: 'ada'})).toEqual({
-                state: 'ok', coverage: 'complete', seats: {ada: {}}, params: {seat: 'ada'}, questions: {state: 'ok', count: 7, reason: null}
+                state    : 'ok', coverage: 'complete', seats: {ada: {}}, params: {seat: 'ada'},
+                questions: {state: 'ok', count: 7, reason: null, expired: {state: 'ok', count: 2, since: '2026-11-06T21:00:00.000Z', reason: null}}
             });
-            expect(calls).toEqual([expect.objectContaining({limit: 1, offset: 0})])
+            expect(calls).toEqual([
+                expect.objectContaining({limit: 1, offset: 0, taskOrder: 'priority-age'}),
+                expect.objectContaining({limit: 1, offset: 0, taskStates: ['Expired'], expiredWithinSpan: true})
+            ])
         } finally {
             FleetControlBridge.openWorkSource = original
         }
+    });
+
+    test('the expired questions ask the Memory Core for its window and carry its start back; an answer without one is refused', async () => {
+        const calls = [];
+        wireOperatorComposeWriter({
+            addMessage     : () => ({}),
+            observeMessages: args => {
+                calls.push(args);
+                return {totalCount: 2, truncated: false, limit: 50, offset: 0, expiredSince: '2026-11-06T21:00:00.000Z', messages: [{messageId: 'MESSAGE:x', from: '@neo-gpt', to: '@tobiu', task: {state: 'Expired'}, sentAt: '2026-11-01T10:00:00.000Z'}]}
+            }
+        });
+
+        const answer = await FleetControlBridge.fleetOwnQuestions({expired: true});
+
+        expect(calls).toEqual([{box: 'inbox', status: 'all', includeArchived: true, taskStates: ['Expired'], expiredWithinSpan: true, limit: 50, offset: 0}]);
+        expect(answer).toMatchObject({state: 'ok', reason: null, count: 2, since: '2026-11-06T21:00:00.000Z', rows: [expect.objectContaining({messageId: 'MESSAGE:x', taskState: 'Expired'})]});
+        expect(await dispatchFleetRequest({method: 'fleetOwnQuestions', params: {expired: true}, protocol: createFleetWireOffer()}))
+            .toMatchObject({ok: true, state: 'ok', result: {state: 'ok', count: 2, since: '2026-11-06T21:00:00.000Z'}});
+
+        // anything but `true` reads the open questions, unchanged
+        await FleetControlBridge.fleetOwnQuestions({expired: 'yes'});
+        expect(calls.at(-1)).toEqual({box: 'inbox', status: 'all', includeArchived: true, taskStates: ['InputRequired', 'Submitted', 'Working'], taskOrder: 'priority-age', limit: 50, offset: 0});
+
+        // a plane too old for the window answers every expiry it holds, which is never served as the windowed count
+        wireOperatorComposeWriter({addMessage: () => ({}), observeMessages: async () => ({totalCount: 40, truncated: false, messages: []})});
+        expect(await FleetControlBridge.fleetOwnQuestions({expired: true}))
+            .toMatchObject({state: 'unavailable', reason: 'fleet: the expired-questions read answered without its window', count: null, since: null, rows: []})
     });
 
     test('a refused move crosses the whole wire as its code and a fixed reason, in process and from a plane; a lost race as the primitive returned it', async () => {

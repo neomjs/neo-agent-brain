@@ -134,6 +134,7 @@ function hasCompositeMessageSentAtIndex(sqlite) {
  * @param {String[][]} options.taggedConceptGroups Optional AND-of-OR concept filter groups.
  * @param {String[]} [options.taskStates] Optional pre-page Task-state filter.
  * @param {String} [options.taskOrder] Optional Task order.
+ * @param {String} [options.expiredSince] Optional expiry window start; orders newest expiry first.
  * @param {Boolean} [options.useMessageSentAtIndex=false] Whether list count/page may ride `idx_nodes_message_sent_at`.
  * @returns {{cte: String, params: Object, orderBy: String, countSql: String, pageSql: String}}
  * @private
@@ -148,6 +149,7 @@ function buildObservationQuery({
     taggedConceptGroups,
     taskStates,
     taskOrder,
+    expiredSince,
     useMessageSentAtIndex = false
 }) {
     const params = {};
@@ -237,6 +239,11 @@ function buildObservationQuery({
         eligibility.push(`json_extract(n.data, '$.properties.task.state') IN (SELECT value FROM json_each(@taskStates))`)
     }
 
+    if (expiredSince !== undefined) {
+        params.expiredSince = expiredSince;
+        eligibility.push(`datetime(json_extract(n.data, '$.properties.task.expiredAt')) >= datetime(@expiredSince)`)
+    }
+
     const candidateBranches = [];
     const candidateRoute    = (edgeType, variants) => {
         if (!variants) return;
@@ -278,13 +285,16 @@ function buildObservationQuery({
                CASE COALESCE(json_extract(n.data, '$.properties.priority'), 'normal')
                    WHEN 'high' THEN 0 WHEN 'low' THEN 2 ELSE 1
                END AS priorityRank,
-               json_extract(n.data, '$.properties.sentAt') AS sentAt
+               json_extract(n.data, '$.properties.sentAt') AS sentAt,
+               json_extract(n.data, '$.properties.task.expiredAt') AS expiredAt
         FROM eligible JOIN Nodes n ON n.id = eligible.messageId
     )`;
 
-    const orderBy = taskOrder === 'priority-age'
-        ? 'priorityRank ASC, sentAt ASC, messageId ASC'
-        : 'sentAt DESC, messageId DESC';
+    const orderBy = expiredSince !== undefined
+        ? 'expiredAt DESC, messageId DESC'
+        : taskOrder === 'priority-age'
+            ? 'priorityRank ASC, sentAt ASC, messageId ASC'
+            : 'sentAt DESC, messageId DESC';
 
     return {
         cte,
@@ -424,6 +434,8 @@ function projectMessage(row, edges, viewerVariants, includeBody = false) {
  * @param {Number} [options.offset=0] Non-negative continuation offset.
  * @param {String[]} [options.taskStates] Task-state filter, before count and pagination.
  * @param {'priority-age'} [options.taskOrder] Task ordering, valid only with `taskStates`.
+ * @param {String} [options.expiredSince] ISO instant: only Tasks whose `task.expiredAt` is at or after it,
+ *     newest expiry first. Requires `taskStates`; the list envelope carries it back.
  * @param {String[]} [options.fromVariants=[]] Optional server-normalized sender filter.
  * @param {String} [options.threadId] Optional thread filter.
  * @param {String[][]} [options.taggedConceptGroups=[]] AND-of-OR tag filters.
@@ -441,6 +453,7 @@ export function readMailboxObservation({
     offset = 0,
     taskStates,
     taskOrder,
+    expiredSince,
     fromVariants = [],
     threadId,
     taggedConceptGroups = [],
@@ -477,6 +490,9 @@ export function readMailboxObservation({
     if (taskOrder !== undefined && (taskOrder !== 'priority-age' || taskStates === undefined)) {
         throw new TypeError("mailbox observation taskOrder must be 'priority-age' and requires taskStates")
     }
+    if (expiredSince !== undefined && (typeof expiredSince !== 'string' || Number.isNaN(Date.parse(expiredSince)) || taskStates === undefined)) {
+        throw new TypeError('mailbox observation expiredSince must be an ISO instant and requires taskStates')
+    }
     if (messageId !== undefined && (typeof messageId !== 'string' || !messageId)) {
         throw new TypeError('mailbox observation messageId must be a non-empty string')
     }
@@ -492,7 +508,7 @@ export function readMailboxObservation({
 
     return sqlite.transaction(() => {
         if (messageId !== undefined) {
-            const {cte, params} = buildObservationQuery({viewerVariants, grantedInboxVariants, scope, policy, fromVariants, threadId, taggedConceptGroups, taskStates, taskOrder}),
+            const {cte, params} = buildObservationQuery({viewerVariants, grantedInboxVariants, scope, policy, fromVariants, threadId, taggedConceptGroups, taskStates, taskOrder, expiredSince}),
                 row             = sqlite.prepare(`${cte} SELECT messageId, data FROM filtered WHERE messageId = @messageId LIMIT 1`)
                     .get({...params, messageId});
 
@@ -513,6 +529,7 @@ export function readMailboxObservation({
                 taggedConceptGroups,
                 taskStates,
                 taskOrder,
+                expiredSince,
                 useMessageSentAtIndex: isUnfilteredTeamAllList && hasCompositeMessageSentAtIndex(sqlite)
             }),
             totalCount = sqlite.prepare(countSql).get(params).count,
@@ -530,7 +547,8 @@ export function readMailboxObservation({
             truncated,
             nextOffset: truncated ? offset + pageRows.length : null,
             limit,
-            offset
+            offset,
+            ...(expiredSince === undefined ? {} : {expiredSince})
         }
     })()
 }
