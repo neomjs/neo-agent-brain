@@ -693,10 +693,11 @@ class ConfigBase extends ConfigProvider {
                     claudeDesktop: leaf(true, 'NEO_FLEET_HARNESS_GENERATIONS_CLAUDE_DESKTOP', 'boolean'),
                     /**
                      * Codex Desktop seats start from the selected generation, the app and its bundled
-                     * CLI from the same copy.
+                     * CLI from the same copy. On by default: every Codex seat's Start keeps its own
+                     * updater off (`CODEX_SPARKLE_ENABLED=false`), so the Fleet is its only source.
                      * @type {boolean}
                      */
-                    codexDesktop: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_CODEX_DESKTOP', 'boolean'),
+                    codexDesktop: leaf(true, 'NEO_FLEET_HARNESS_GENERATIONS_CODEX_DESKTOP', 'boolean'),
                     /**
                      * Hours between the Fleet's checks for new builds of every opted-in family. The first
                      * check runs shortly after the Fleet server starts; a seat adopts a new build at its
