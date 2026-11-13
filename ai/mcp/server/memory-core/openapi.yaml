@@ -3312,6 +3312,7 @@ paths:
               properties:
                 taskId:
                   type: string
+                  description: "The id of the message that carries the task (`MESSAGE:<uuid>`), not the envelope's `task.id`."
                 newState:
                   type: string
                   enum: [Submitted, Working, InputRequired, Completed, Canceled, Failed, Rejected, AuthRequired, Unknown, Expired, Blocked]

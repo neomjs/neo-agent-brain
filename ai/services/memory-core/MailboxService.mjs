@@ -6413,7 +6413,10 @@ class MailboxService extends Base {
         }
 
         if (!messageNode || getRecordField(messageNode, 'label') !== 'MESSAGE') {
-            throw new Error(`Task not found: ${taskId}`);
+            const expectedIdHint = String(taskId).startsWith('MESSAGE:')
+                ? ''
+                : ' Use the message id (`MESSAGE:<uuid>`) that carries the task, not the envelope task.id.';
+            throw new Error(`Task not found: ${taskId}.${expectedIdHint}`);
         }
 
         if (!storedState.task?.state) {
@@ -6522,8 +6525,24 @@ class MailboxService extends Base {
         }
 
         if (!authorized) {
-            const role  = isOriginator ? 'originator' : 'assignee';
-            const error = new Error(`Unauthorized: ${me} as ${role} cannot transition \`${currentState} → ${newState}\``);
+            const role = isOriginator ? 'originator' : 'assignee';
+            const allowedStates = new Set();
+
+            if (role === 'originator') {
+                if (currentState === 'Submitted') allowedStates.add('Canceled');
+                if (currentState === 'InputRequired') allowedStates.add('Working');
+            }
+            if (role === 'assignee') {
+                if (currentState === 'Submitted') allowedStates.add('Working');
+                if (currentState === 'Working') ['InputRequired', 'Completed', 'Failed'].forEach(state => allowedStates.add(state));
+                if (isHumanAssignee && currentState === 'InputRequired') ['Working', 'Completed'].forEach(state => allowedStates.add(state));
+                if (isRequestPublish && ['Submitted', 'Working', 'InputRequired'].includes(currentState)) allowedStates.add('Rejected');
+                if (isRequestPublish && currentState === 'Submitted' && isPublished) allowedStates.add('Completed');
+            }
+            const allowedHint = allowedStates.size
+                ? `; allowed next state${allowedStates.size === 1 ? '' : 's'} for ${role}: ${[...allowedStates].join(', ')}`
+                : '';
+            const error = new Error(`Unauthorized: ${me} as ${role} cannot transition \`${currentState} → ${newState}\`${allowedHint}`);
             if (isRequestPublish && newState === 'Completed' && !isPublished) {
                 error.code             = 'refused: not-published';
                 error.reason           = `Cannot transition requestPublish Task to Completed while publication state is '${publicationState || 'queued'}' (requires 'published').`;
