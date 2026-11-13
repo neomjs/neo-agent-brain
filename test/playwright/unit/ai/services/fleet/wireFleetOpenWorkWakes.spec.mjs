@@ -367,7 +367,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         expect(Object.values(store.read().holding).map(entry => entry.status)).toEqual(['admitted', 'admitted'])
     });
 
-    test('ambiguous send is admitted once across repeated observations and a restart; logging stays bounded', async () => {
+    test('a failed send is retried on later rounds and across a restart, five attempts at most; logging stays bounded (#1678)', async () => {
         let   minute = 0, attempts = 0;
         const store  = memoryStore(), errors = [], options = {store, gateOf: openGate, now: () => at(minute),
             admitWake: async () => { attempts++; throw new Error('private-token:' + 'x'.repeat(10000)) },
@@ -375,11 +375,70 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         const round = createOpenWorkWakeRound(options);
         await round(state(0)); minute = 1;
         expect(await round(state(1, 'red'))).toMatchObject({admitted: 1, sendErrors: 1});
-        await round(state(1, 'red')); minute = 2; await round(state(2, 'red'));
-        await createOpenWorkWakeRound(options)(state(2, 'red'));
-        expect(attempts).toBe(1); expect(errors).toHaveLength(1);
-        expect(JSON.stringify(errors).length).toBeLessThan(400);
+        expect(Object.values(store.read().holding)[0]).toMatchObject({status: 'pending', attempts: 1});
+
+        for (minute = 2; minute <= 4; minute++) await round(state(minute, 'red'));
+        await createOpenWorkWakeRound(options)(state(5, 'red'));
+        expect(attempts).toBe(5);
+        expect(Object.values(store.read().holding)[0]).toMatchObject({status: 'admitted', attempts: 5});
+
+        minute = 6; await round(state(6, 'red'));
+        expect(attempts, 'given up after the fifth').toBe(5);
+        expect(errors).toHaveLength(5);
+        expect(JSON.stringify(errors).length).toBeLessThan(2000);
         expect(JSON.stringify(errors)).not.toContain('private-token')
+    });
+
+    test('a send the plane refused is never retried (#1678)', async () => {
+        let   minute = 0, attempts = 0;
+        const store  = memoryStore(), round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), log: {error: () => {}},
+            admitWake: async () => { attempts++; throw new Error('Error executing admit_open_work_wake: Refused open-work observation: head must be a full commit id.') }});
+        await round(state(0));
+        for (minute = 1; minute <= 3; minute++) await round(state(minute, 'red'));
+        expect(attempts).toBe(1);
+        expect(Object.values(store.read().holding)[0].status).toBe('admitted')
+    });
+
+    test('a retry after a send whose answer was lost gets the first receipt, so the holder hears once (#1678)', async () => {
+        let   minute = 0;
+        const store  = memoryStore(), written = new Map(), round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), log: {error: () => {}},
+            // The plane keys an admission by its task; here the first answer is lost after the write
+            admitWake: async ({repo, number, head, to, kind, episode}) => {
+                const key = JSON.stringify([repo, number, head, to, kind, episode]), first = !written.has(key);
+                written.set(key, 'MESSAGE:first-write');
+                if (first) throw new Error('timeout');
+                return {messageId: written.get(key)}
+            }});
+        await round(state(0)); minute = 1; await round(state(1, 'red')); minute = 2; await round(state(2, 'red'));
+        expect(written.size).toBe(1);
+        expect(Object.values(store.read().holding)[0]).toMatchObject({status: 'admitted', messageId: 'MESSAGE:first-write', attempts: 1})
+    });
+
+    test('a failed merge wake is held for the next round (#1678)', async () => {
+        let   minute = 0, fail = true;
+        const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), log: {error: () => {}},
+            admitWake: async message => { sends.push(message); if (fail) throw new Error('timeout') }});
+        await round(state(0)); minute = 1;
+        await round(state(1, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [merged(1)]}));
+        expect(store.read().pendingMerges['merge-1']).toMatchObject({kind: 'post-merge', attempts: 1});
+        fail = false; minute = 2;
+        await round(state(2, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: []}));
+        expect(sends.map(send => send.episode)).toEqual(['merge-1', 'merge-1']);
+        expect(store.read().pendingMerges).toEqual({})
+    });
+
+    test('a failed rotation send keeps its attempt count through the re-pick (#1678)', async () => {
+        let   minute = 0, attempts = 0;
+        const store   = memoryStore(), round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), log: {error: () => {}},
+                rotationSeats: [SEAT, '@neo-gpt'], admitWake: async () => { attempts++; throw new Error('timeout') }}),
+            outside = minute => {
+                const value = state(minute, 'green');
+                value.snapshot.rows['acme/app#7'].owner = {kind: 'outside', seat: null, login: 'contributor'};
+                return value
+            };
+        for (minute = 0; minute <= 7; minute++) await round(outside(minute));
+        expect(attempts).toBe(5);
+        expect(Object.values(store.read().holding)[0]).toMatchObject({status: 'admitted', attempts: 5})
     });
 
     test('only explicit unreachable routes defer open actions; cached routes retry on a later pulse', async () => {
@@ -784,7 +843,8 @@ test.describe('wireFleetOpenWorkWakes — a holder is certified silent only from
             await round(state(1, 'red'));
 
             const entry = store.read().holding[REPAIR];
-            expect(entry.status, name).toBe('admitted');
+            // A thrown attempt is re-armed for a later round; an answer without an id still admitted the wake
+            expect(entry.status, name).toBe(name === 'thrown' ? 'pending' : 'admitted');
             name === 'receipt' ? expect(entry.messageId).toBe('MESSAGE:repair') : expect(entry, name).not.toHaveProperty('messageId')
         }
     });

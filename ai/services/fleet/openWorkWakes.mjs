@@ -149,7 +149,9 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             slot    = rotationSlot(row, kind, holder),
             prior   = holding[slot],
             episode = prior?.wake?.episode ?? state.observedAt,
-            hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder), status};
+            // A re-pick keeps the slot's failed submissions counted, so a failing escalation stays bounded
+            hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder), status,
+                ...(prior?.attempts ? {attempts: prior.attempts} : {})};
 
         current.add(slot);
         if (prior?.status === 'admitted') return;

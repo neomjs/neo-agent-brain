@@ -2,9 +2,12 @@
  * @module ai/services/fleet/wireFleetOpenWorkWakes
  * @summary Persist holder-action admissions before submitting them to the already verified plane, which composes
  * each wake and sends it as `@system` (`openWorkWakeMessage.mjs`). The existing producer invokes this callback; it
- * owns cadence. The entrypoint owns enablement. An admitted attempt is never proof of delivery, and an ambiguous
- * submission is never replayed. An admission keeps its intake receipt's message id, and only the receiver's record
- * of that message, read back from the plane, can certify its holder silent.
+ * owns cadence. The entrypoint owns enablement. An admitted attempt is never proof of delivery.
+ *
+ * A failed submission is submitted again on a later round, five attempts at most. The plane answers a repeat of one
+ * wake with its first receipt, so a retry after a lost answer writes nothing new. A refused submission is never
+ * retried. An admission keeps its intake receipt's message id, and only the receiver's record of that message, read
+ * back from the plane, can certify its holder silent.
  */
 import path                                              from 'path';
 import {exhaustedUntilOf}                                from './capacityThrottleState.mjs';
@@ -18,7 +21,33 @@ const
     ROUTES_TTL_MS     = 5 * 60 * 1000,
     // The plane's bound on one delivery read (`read_open_work_wake_delivery`)
     DELIVERY_READ_MAX = 100,
-    MESSAGE_ID        = /^MESSAGE:[\w-]{1,100}$/;
+    MESSAGE_ID        = /^MESSAGE:[\w-]{1,100}$/,
+    // Submissions per wake: a few rounds of a slow or restarting plane
+    RETRY_LIMIT       = 5,
+    // The plane's answer to an observation it will never admit; retrying it changes nothing
+    REFUSED           = /\bRefused\b/;
+
+/**
+ * @summary A wake's or slot's count of failed submissions: absent before the first failure.
+ * @param {*} value
+ * @returns {Boolean}
+ * @private
+ */
+function validAttempts(value) {
+    return Number.isSafeInteger(value) && value >= 1 && value <= RETRY_LIMIT
+}
+
+/**
+ * @summary The record one more failed submission leaves: re-armed with the count, or kept once the count is spent.
+ * @param {Object} record A holding entry or a merge wake.
+ * @param {Object} [rearm] What re-arms the record for the next round, e.g. `{status: 'pending'}`.
+ * @returns {Object}
+ * @private
+ */
+function failedOnce(record, rearm = {}) {
+    const attempts = (record.attempts ?? 0) + 1;
+    return attempts < RETRY_LIMIT ? {...record, ...rearm, attempts} : {...record, attempts}
+}
 
 /**
  * @summary An intake receipt's message id, or null for an id-less or malformed receipt.
@@ -185,10 +214,12 @@ function validateLedger(ledger, now) {
         Object.entries(ledger.holding).some(([slot, entry]) => !object(entry) || !wake(entry.wake) ||
             !['baseline', 'pending', 'admitted'].includes(entry.status) ||
             Object.hasOwn(entry, 'messageId') && (entry.status !== 'admitted' || !messageIdOf(entry.messageId)) ||
+            Object.hasOwn(entry, 'attempts') && !validAttempts(entry.attempts) ||
             slot !== JSON.stringify([entry.wake.repo, entry.wake.number, entry.wake.head,
                 entry.wake.role === 'rotation' ? 'rotation' : entry.wake.to, entry.wake.kind,
                 ...(entry.wake.holder ? [entry.wake.holder] : [])])) ||
         Object.entries(ledger.pendingMerges).some(([id, value]) => !wake(value) ||
+            Object.hasOwn(value, 'attempts') && !validAttempts(value.attempts) ||
             !(value.kind === 'post-merge' && id === value.episode || value.kind === 'unblocked' && id === value.key && text(value.unblocks))) ||
         Object.values(ledger.baselines).some(value => !text(value))) {
         throw new Error('Malformed open-work wake ledger; existing history preserved')
@@ -390,7 +421,11 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
         await persist(withCertification(plan.ledger));
 
         let sendErrors = 0, disabled = false;
-        const receipts = new Map();
+        const
+            receipts = new Map(),
+            failed   = new Set(),
+            slotOf   = new Map(Object.values(plan.ledger.holding).map(entry => [entry.wake.key, entry]));
+
         for (const wake of plan.wakes) {
             // the names read awaits, so enablement and freshness are tested after it, at the send
             const failedChecks = wake.kind === 'repair-ci' && isEnabled() === true ? await failedChecksFor(wake) : null;
@@ -405,17 +440,32 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
             try {
                 const messageId = messageIdOf((await admitWake(observationOf(wake, failedChecks)))?.messageId);
                 messageId && receipts.set(wake.key, messageId)
-            } catch {
+            } catch (error) {
                 sendErrors++;
-                log.error?.('[fleet] open-work wake attempt failed or is ambiguous; admission retained',
+                const
+                    refused = REFUSED.test(String(error?.message ?? '')),
+                    spent   = !refused && failedOnce(slotOf.get(wake.key) ?? wake).attempts >= RETRY_LIMIT;
+
+                refused || failed.add(wake.key);
+                log.error?.(`[fleet] open-work wake attempt failed or is ambiguous; ${refused ? 'refused, not retried' : spent ? 'attempts spent' : 'retried on a later round'}`,
                     {pr: wake.pr.slice(0, 160), kind: wake.kind.slice(0, 40)})
             }
         }
 
-        // One save keeps every receipt on its admitted slot: the id the slot's delivery is read back by
-        if (receipts.size) {
-            await persist(withCertification({...plan.ledger, holding: Object.fromEntries(Object.entries(plan.ledger.holding).map(([slot, entry]) =>
-                [slot, receipts.has(entry.wake.key) ? {...entry, messageId: receipts.get(entry.wake.key)} : entry]))}))
+        // One save keeps every receipt on its admitted slot, the id its delivery is read back by, and re-arms each failed
+        // submission until its attempts are spent: a holding slot as pending, a merge wake among the pending merges
+        if (receipts.size || failed.size) {
+            const merges = plan.wakes.filter(wake => failed.has(wake.key) && !slotOf.has(wake.key))
+                .map(wake => failedOnce(wake)).filter(wake => wake.attempts < RETRY_LIMIT);
+
+            await persist(withCertification({
+                ...plan.ledger,
+                holding: Object.fromEntries(Object.entries(plan.ledger.holding).map(([slot, entry]) => [slot,
+                    receipts.has(entry.wake.key) ? {...entry, messageId: receipts.get(entry.wake.key)} :
+                        failed.has(entry.wake.key) ? failedOnce(entry, {status: 'pending'}) : entry])),
+                pendingMerges: {...plan.ledger.pendingMerges,
+                    ...Object.fromEntries(merges.map(wake => [wake.kind === 'post-merge' ? wake.episode : wake.key, wake]))}
+            }))
         }
 
         return {admitted: plan.wakes.length, expired, sendErrors, quiet: !activation, reason: certificationRefusal,

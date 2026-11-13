@@ -11,7 +11,7 @@ import {SYSTEM_SENDER}       from '../../../../../../ai/graph/mailboxRoots.mjs';
 /** @summary The plane composes the Fleet's open-work wakes and sends them as `@system`, from the operator's session only. */
 test.describe.configure({mode: 'serial'});
 test.describe('openWorkWakeIntake', () => {
-    let MailboxService, GraphService, admitOpenWorkWake, callTool, originalAutoSave, seededSystem = false;
+    let MailboxService, GraphService, admitOpenWorkWake, resetOpenWorkWakeAdmissions, callTool, originalAutoSave, seededSystem = false;
 
     const
         HEAD       = 'b'.repeat(40),
@@ -40,7 +40,7 @@ test.describe('openWorkWakeIntake', () => {
     test.beforeAll(async () => {
         GraphService      = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
         MailboxService    = (await import('../../../../../../ai/services/memory-core/MailboxService.mjs')).default;
-        admitOpenWorkWake = (await import('../../../../../../ai/services/memory-core/openWorkWakeIntake.mjs')).admitOpenWorkWake;
+        ({admitOpenWorkWake, resetOpenWorkWakeAdmissions} = await import('../../../../../../ai/services/memory-core/openWorkWakeIntake.mjs'));
         callTool          = (await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs')).callTool;
         const LifecycleService = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
         await LifecycleService.ready();
@@ -57,9 +57,36 @@ test.describe('openWorkWakeIntake', () => {
         }
     });
 
+    // Each test admits its observations afresh; a repeated admission is its own test
+    test.beforeEach(() => resetOpenWorkWakeAdmissions?.());
+
     test.afterAll(() => {
         GraphService.removeNodes([...owned, ...(seededSystem ? [SYSTEM_SENDER.id] : [])]);
         GraphService.db.autoSave = originalAutoSave
+    });
+
+    test('a repeated admission of one wake answers its first receipt and writes nothing, even while the first is in flight; a failed write keeps no receipt (#1678)', async () => {
+        const
+            args                 = observation({episode: '2026-11-13T05:54:27.971Z'}),
+            [first, overlapping] = await Promise.all([as(operator, () => admitOpenWorkWake(args)), as(operator, () => admitOpenWorkWake(args))]),
+            repeated             = await as(operator, () => admitOpenWorkWake(args)),
+            another              = await as(operator, () => admitOpenWorkWake({...args, episode: '2026-11-13T06:00:00.000Z'}));
+
+        [first, another].forEach(({messageId}) => owned.add(messageId));
+        expect(overlapping.messageId).toBe(first.messageId);
+        expect(repeated.messageId).toBe(first.messageId);
+        expect(another.messageId).not.toBe(first.messageId);
+
+        const addMessage = MailboxService.addMessage, retried = observation({episode: '2026-11-13T07:00:00.000Z'});
+        MailboxService.addMessage = async () => { throw new Error('plane busy') };
+        try {
+            await expect(as(operator, () => admitOpenWorkWake(retried))).rejects.toThrow('plane busy')
+        } finally {
+            MailboxService.addMessage = addMessage
+        }
+        const {messageId} = await as(operator, () => admitOpenWorkWake(retried));
+        owned.add(messageId);
+        expect(messageId).toMatch(/^MESSAGE:/)
     });
 
     test('an operator observation is stored from @system at normal priority, waking its seat, with the operator as observer', async () => {
