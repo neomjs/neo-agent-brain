@@ -7,8 +7,9 @@ const APP_HARNESS_DEFAULTS = Object.freeze({
         tabShortcut: 'i'
     }),
     Claude: Object.freeze({
-        tabShortcut      : '3',
-        focusSeedSequence: 'r-undo'
+        tabShortcut         : '3',
+        focusSeedSequence   : 'r-undo',
+        freshSessionShortcut: 'n'
     })
 });
 
@@ -23,6 +24,10 @@ export function applyHarnessMetadataDefaults(metadata = {}) {
 
     if (result.tabShortcut === undefined && Object.hasOwn(defaults, 'tabShortcut')) {
         result.tabShortcut = defaults.tabShortcut;
+    }
+
+    if (result.freshSessionShortcut === undefined && Object.hasOwn(defaults, 'freshSessionShortcut')) {
+        result.freshSessionShortcut = defaults.freshSessionShortcut;
     }
 
     if (

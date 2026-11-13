@@ -59,6 +59,7 @@ import {
     DEFAULT_CONTEXT_GATE_MAX_TOKENS,
     DEFAULT_CONTEXT_GATE_WARN_TOKENS
 } from './contextGatePolicy.mjs';
+import {admittedEventType} from './sessionRotation.mjs';
 
 import {
     isActiveWakeSubscriptionStatus,
@@ -239,7 +240,7 @@ export function buildWakeReceiverManifest({
           skipped        = [];
 
     for (const subscription of subscriptions) {
-        const {id, status, agentIdentity, harnessTarget, harnessTargetMetadata} = subscription || {};
+        const {id, status, agentIdentity, harnessTarget, harnessTargetMetadata, trigger} = subscription || {};
 
         if (typeof id !== 'string' || !id.startsWith('WAKE_SUB:')) {
             throw new Error(`Subscription id '${id}' is not a WAKE_SUB identifier`);
@@ -320,10 +321,14 @@ export function buildWakeReceiverManifest({
         // than merely unconfigured. The context gate rides the same channel: every route
         // states its gate policy explicitly (generator defaults, caller override merged per key).
         const {contextGate: contextGateOverride, ...adapterConfigExtra} = adapterConfigById[id] || {};
+        // A rotation route admits only `session/rotate`; a wake route carries no field and admits
+        // `wake/digest`, so every manifest published before rotation existed reads unchanged.
+        const admits = admittedEventType({trigger});
 
         routes[id] = {
             agentIdentity,
             signingKey,
+            ...(admits ? {admits} : {}),
             harnessTargetMetadata: receiverMetadata,
             adapterConfig        : {
                 attemptTimeoutMs,

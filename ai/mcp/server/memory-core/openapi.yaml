@@ -3655,8 +3655,8 @@ paths:
                   description: Required for unsubscribe / update / resync / poll-digest / resume / rotate-key; optional for list (single).
                 trigger:
                   type: string
-                  enum: [SENT_TO_ME, TASK_STATE_CHANGED, PERMISSION_GRANTED]
-                  description: Required for subscribe.
+                  enum: [SENT_TO_ME, TASK_STATE_CHANGED, PERMISSION_GRANTED, SESSION_ROTATE]
+                  description: Required for subscribe. `SESSION_ROTATE` delivers no wake; its `a2a-webhook` route admits only the `session/rotate` envelope that opens the seat's fresh session after its sunset handover.
                 filters:
                   type: object
                   description: Optional AND-conjunctive filters over the trigger.

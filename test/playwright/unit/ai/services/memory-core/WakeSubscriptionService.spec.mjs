@@ -1745,7 +1745,7 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
         try {
             await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
                 const {subscriptionId} = await WakeSubscriptionService.subscribe({trigger: 'TASK_STATE_CHANGED', harnessTarget: 'mcp-notifications'});
-                const before = GraphService.db.storage.db.prepare('SELECT MAX(log_id) AS maxId FROM GraphLog').get().maxId || 0;
+                const before           = GraphService.db.storage.db.prepare('SELECT MAX(log_id) AS maxId FROM GraphLog').get().maxId || 0;
 
                 appendTaskEvent({eventId: 'poll-open-work', previousState: 'Submitted', newState: 'Working', lastModifiedAt: '2026-11-13T06:00:00.000Z'});
 
@@ -4495,6 +4495,23 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             // armed by its route; the identity's own stamp came from the other trigger's poll
             expect(byId['claude-fresh'].armed).toEqual({state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: null}});
             expect(typeof byId['claude-fresh'].subscription.lastPollAt).toBe('string');
+        });
+
+        test('a SESSION_ROTATE route is one row per seat, reused on a repeat Start and never merged with a wake route', async () => {
+            const metadata = {adapter: 'osascript', appName: 'Claude', url: BOOT_URL},
+                  rotation = {action: 'subscribe', trigger: 'SESSION_ROTATE', filters: {}, harnessTarget: 'a2a-webhook', harnessTargetMetadata: metadata},
+                  wake     = {...rotation, trigger: 'SENT_TO_ME'};
+
+            GraphService.upsertNode({id: '@neo-rotating-seat', type: 'AGENT', name: '@neo-rotating-seat', properties: {}});
+
+            await RequestContextService.run({agentIdentityNodeId: '@neo-rotating-seat'}, async () => {
+                const first  = await callTool('manage_wake_subscription', rotation),
+                      second = await callTool('manage_wake_subscription', rotation),
+                      other  = await callTool('manage_wake_subscription', wake);
+
+                expect(second).toMatchObject({subscriptionId: first.subscriptionId, status: 'existing'});
+                expect(other.subscriptionId).not.toBe(first.subscriptionId)
+            })
         });
 
         test('an unbound caller is refused — authenticated-caller telemetry, not an open scan', async () => {

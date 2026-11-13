@@ -18,10 +18,11 @@ import {applyHarnessMetadataDefaults} from '../../daemons/wake/hostHarnessMetada
 export {applyHarnessMetadataDefaults, normalizeAgentIdentityNodeId};
 
 const FAMILY_HARNESS_TARGETS = Object.freeze({
+    // The fresh-session shortcut comes from `hostHarnessMetadata.mjs`, the one shortcut table the
+    // receiver's rotation step reads too.
     claude: Object.freeze({
-        adapter             : 'osascript',
-        appName             : 'Claude',
-        freshSessionShortcut: 'n'
+        adapter: 'osascript',
+        appName: 'Claude'
     }),
     gemini: Object.freeze({
         adapter: 'antigravity-cli'

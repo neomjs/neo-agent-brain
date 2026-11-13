@@ -941,3 +941,15 @@ test.describe('runManifestBuilder — the unrouted-seat warning at the consumer 
         }
     })
 });
+
+test.describe('buildWakeReceiverManifest — session rotation routes', () => {
+    test('a SESSION_ROTATE record publishes a route that admits only session/rotate; a wake route carries no field', () => {
+        const rotation   = {...webhookSubscription, id: 'WAKE_SUB:84dfc4da-0000-4000-8000-0000000000c1', trigger: 'SESSION_ROTATE'},
+              {manifest} = buildWakeReceiverManifest({subscriptions: [webhookSubscription, rotation], instance: INSTANCE});
+
+        expect(manifest.routes[rotation.id].admits).toBe('session/rotate');
+        expect(manifest.routes[rotation.id].harnessTargetMetadata.instanceAddress).toBe(INSTANCE.address);
+        // Every manifest published before rotation existed must read unchanged.
+        expect(manifest.routes[webhookSubscription.id]).not.toHaveProperty('admits')
+    })
+});

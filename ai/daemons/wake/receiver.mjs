@@ -19,6 +19,14 @@ import {WakeReceiverState}                       from './receiverState.mjs';
 import {createReceiverLiveness}                  from './receiverLiveness.mjs';
 import {evaluateContextGate, isIdleOnlyEnvelope} from './contextGatePolicy.mjs';
 import {dispatchLocalWake, probeSessionContext}  from './localWakeAdapters.mjs';
+import {
+    HUMAN_INPUT_DEFER_BOUND,
+    SESSION_ROTATE_EVENT_TYPE,
+    WAKE_DIGEST_EVENT_TYPE,
+    isHumanInputDefer,
+    isSessionRotation,
+    routeAdmits
+} from './sessionRotation.mjs';
 import {isEntryModule}                           from '../../services/shared/isEntryModule.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
@@ -180,6 +188,18 @@ export async function loadWakeReceiverManifest(manifestPath) {
         )) {
             throw new Error(`Wake receiver route '${subscriptionId}' has incomplete osascript target metadata`);
         }
+        if (route.admits !== undefined && ![WAKE_DIGEST_EVENT_TYPE, SESSION_ROTATE_EVENT_TYPE].includes(route.admits)) {
+            throw new Error(`Wake receiver route '${subscriptionId}' admits unsupported envelope type '${route.admits}'`);
+        }
+        // A rotation types a whole prompt into a window and submits it, so it is never aimed at a window
+        // chosen by app name: the route must name the seat's own instance.
+        if (route.admits === SESSION_ROTATE_EVENT_TYPE && (
+            adapter !== 'osascript' ||
+            !['userDataDir', 'pid'].includes(metadata.addressType) ||
+            typeof metadata.instanceAddress !== 'string' || metadata.instanceAddress.length === 0
+        )) {
+            throw new Error(`Wake receiver route '${subscriptionId}' admits ${SESSION_ROTATE_EVENT_TYPE} only on an instance-addressed osascript route`);
+        }
     }
 
     return manifest;
@@ -318,9 +338,11 @@ export function createWakeReceiver({
                 // The context gate: after the non-idempotency marker, before the adapter runs.
                 // A defer returns the record to `pending` — the wake waits for the target session
                 // to compact or rotate; the mailbox stays the authority, so nothing is ever lost.
+                // A rotation is exempt: it exists because the session is full, so a size read
+                // could only hold it back from the one act that empties it.
                 const gateConfig = dispatching.route?.adapterConfig?.contextGate;
 
-                if (gateConfig && contextProbe) {
+                if (gateConfig && contextProbe && !isSessionRotation(dispatching.envelope)) {
                     const probe = await track('drain', contextProbe(dispatching)).catch(() => null);
                     const gate  = evaluateContextGate({
                         probe,
@@ -427,11 +449,17 @@ export function createWakeReceiver({
                     // either the seat returns to composer state (deliver, envelope identity intact)
                     // or the bound exhausts into an OBSERVABLE failure. A defer that can park
                     // forever is the silent non-delivery failure mode wearing a polite name.
+                    // The human-input gate shares this contract with its own, longer bound: a
+                    // rotation waits for a quiet keyboard, and a person works for longer than a
+                    // dialog stays open.
                     if (outcome === 'deferred') {
-                        const deferCount = (dispatching.deferCount || 0) + 1;
+                        const deferCount = (dispatching.deferCount || 0) + 1,
+                              humanInput = isHumanInputDefer(outcomeReason),
+                              gateName   = humanInput ? 'human-input' : 'dialog',
+                              bound      = humanInput ? HUMAN_INPUT_DEFER_BOUND : DIALOG_DEFER_BOUND;
 
-                        if (deferCount > DIALOG_DEFER_BOUND) {
-                            const exhausted = `dialog-defer-bound-exhausted:${outcomeReason || 'unknown'}`;
+                        if (deferCount > bound) {
+                            const exhausted = `${gateName}-defer-bound-exhausted:${outcomeReason || 'unknown'}`;
 
                             await watched.transition(record.recordKey, 'dispatching', 'failed', {
                                 outcomeReason     : exhausted,
@@ -439,7 +467,7 @@ export function createWakeReceiver({
                                 dispatchFinishedAt: new Date().toISOString()
                             });
                             logger.error?.(
-                                `[Wake Receiver] dialog gate EXHAUSTED ${record.subscriptionId} after ` +
+                                `[Wake Receiver] ${gateName} gate EXHAUSTED ${record.subscriptionId} after ` +
                                 `${deferCount} deferrals (${outcomeReason}); surfacing as failed — ` +
                                 'the mailbox stays authoritative'
                             );
@@ -451,10 +479,13 @@ export function createWakeReceiver({
                             deferredAt : new Date().toISOString(),
                             deferReason: outcomeReason || 'interactive-dialog-pending'
                         });
-                        logger.warn?.(
-                            `[Wake Receiver] dialog gate DEFERRED ${record.subscriptionId}: a pending ` +
-                            `interactive prompt holds the seat's input path; the wake waits for ` +
-                            `composer state (defer #${deferCount}/${DIALOG_DEFER_BOUND})`
+                        logger.warn?.(humanInput
+                            ? `[Wake Receiver] human-input gate DEFERRED ${record.subscriptionId}: someone is ` +
+                              `using this computer (${outcomeReason}); the rotation waits for a quiet minute ` +
+                              `(defer #${deferCount}/${bound})`
+                            : `[Wake Receiver] dialog gate DEFERRED ${record.subscriptionId}: a pending ` +
+                              `interactive prompt holds the seat's input path; the wake waits for ` +
+                              `composer state (defer #${deferCount}/${bound})`
                         );
                         continue;
                     }
@@ -505,7 +536,7 @@ export function createWakeReceiver({
             if (envelope?.eventId !== eventId ||
                 envelope?.subscriptionId !== subscriptionId ||
                 envelope?.agentIdentity !== route.agentIdentity ||
-                envelope?.eventType !== 'wake/digest' ||
+                envelope?.eventType !== routeAdmits(route) ||
                 envelope?.schemaVersion !== '1.0' ||
                 schemaVersion !== envelope.schemaVersion
             ) {
