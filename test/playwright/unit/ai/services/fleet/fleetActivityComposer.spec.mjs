@@ -141,6 +141,33 @@ test.describe('fleetActivityComposer — composing two truths means composing tw
         expect(capability.reason).toContain('github unreachable')
     });
 
+    test('the rotation slot joins only when its reader is injected, and a blind one degrades the composite like any slot', async () => {
+        const without = await createFleetActivityReadSource({readA2ASnapshot: wired([]), readPrLaneSnapshot: wired([])}).readActivitySnapshot();
+
+        expect(Object.keys(without.capability.slots).sort()).toEqual(['a2a', 'pr-lane']);
+        expect(without.capability.state).toBe('wired');
+
+        const joined = await createFleetActivityReadSource({
+            readA2ASnapshot     : wired([]),
+            readPrLaneSnapshot  : wired([]),
+            readRotationSnapshot: wired([{eventId: 'fleet:sessionRotation:MESSAGE:r1:completed', occurredAt: '2026-11-14T00:30:00.000Z'}])
+        }).readActivitySnapshot();
+
+        expect(Object.keys(joined.capability.slots).sort()).toEqual(['a2a', 'pr-lane', 'rotation']);
+        expect(joined.capability.state).toBe('wired');
+        expect(joined.events.map(event => event.eventId)).toEqual(['fleet:sessionRotation:MESSAGE:r1:completed']);
+
+        const blind = await createFleetActivityReadSource({
+            readA2ASnapshot     : wired([]),
+            readPrLaneSnapshot  : wired([]),
+            readRotationSnapshot: degraded('fleet:sessionRotation', 'the plane reports no rotations')
+        }).readActivitySnapshot();
+
+        expect(blind.capability.state).toBe('degraded');
+        expect(blind.capability.reason).toContain('rotation');
+        expect(blind.capability.reason).toContain('the plane reports no rotations')
+    });
+
     test('BOTH blind → not-wired, not degraded — half a feed and none of it are different facts', async () => {
         const source = createFleetActivityReadSource({
             readA2ASnapshot   : degraded('fleet:a2a', 'mailbox unreadable'),

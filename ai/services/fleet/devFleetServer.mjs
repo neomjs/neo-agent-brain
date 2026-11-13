@@ -474,7 +474,7 @@ async function boot() {
     // to above — one authority per axis, never a second source. Presence joins over the roster's
     // reader; host mode wraps the daemon PID-file liveness read and leaves terminal receipts
     // honestly unbound until a host surface exists for them.
-    wireFleetWakeRoutesSource({
+    const wakeRoutes = wireFleetWakeRoutesSource({
         listAgents                        : () => FleetManager.getLifecycleService().getRegistry().listAgents(),
         resolveViewerIdentity             : () => RequestContextService.getAgentIdentityNodeId(),
         listActiveSubscriptionObservations: FleetManager.wakeStateOptions.listActiveSubscriptionObservations ?? null,
@@ -512,7 +512,9 @@ async function boot() {
     // Each seat's lane outlives the held page and this process: its record lives beside the registry,
     // saved for the mailbox it was read from, so a restart against another plane never shows this one's.
     const laneClaimStore  = fileStore(path.join(FleetRegistryService.getDataDir(), 'lane-claims.json')),
-          laneClaimSource = planeClient ? `plane:${planeBase.replace(/\/+$/, '')}` : 'host';
+          laneClaimSource = planeClient ? `plane:${planeBase.replace(/\/+$/, '')}` : 'host',
+          // the rotation slot reads the wake-routes rows, so the record has one projection
+          readWakeRoutes  = wakeRoutes ? () => wakeRoutes.readWakeRoutes() : null;
 
     if (planeClient) {
         // Plane mode: every seam rides the verified client — no in-process memory-core spin-up at
@@ -526,6 +528,7 @@ async function boot() {
             listMessages         : args => planeClient.listMessages(args),
             readPrLane           : createPlanePrLaneActivityReader(planeClient),
             openWorkProducer     : () => openWork?.producer ?? null,
+            readWakeRoutes,
             resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId(),
             laneClaimStore,
             laneClaimSource
@@ -553,6 +556,7 @@ async function boot() {
                 listMessages         : MailboxService.listMessages.bind(MailboxService),
                 graphService         : GraphService,
                 openWorkProducer     : () => openWork?.producer ?? null,
+                readWakeRoutes,
                 resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId(),
                 laneClaimStore,
                 laneClaimSource
