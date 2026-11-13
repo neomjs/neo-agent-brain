@@ -9,8 +9,9 @@ import {
     CGROUP_READ,
     foldTick,
     parseCgroupRead,
+    parseContainerList,
     parseDuration,
-    parseServiceList,
+    parseVolumeList,
     parseVolumeSizes
 } from './helpers/planeSamplerCore.mjs';
 
@@ -19,7 +20,7 @@ const run = promisify(execFile);
 /**
  * @module ai/scripts/benchmark/plane-sampler
  * @summary Samples the containers of one docker compose project over a window and writes a
- * provenance-stamped report: per service the resident heap, CPU in cores and byte totals, and the
+ * provenance-stamped report: per container the resident heap, CPU in cores and byte totals, and the
  * project's volume sizes at both ends of the window.
  *
  * Every read goes through `docker exec` into the container's own cgroup, so it is the same read on
@@ -46,19 +47,23 @@ const run = promisify(execFile);
 async function main(options) {
     const intervalMs = parseDuration(options.interval),
           windowMs   = parseDuration(options.window),
-          services   = parseServiceList((await run('docker', ['ps', '--filter', `label=com.docker.compose.project=${options.project}`,
+          member     = `label=com.docker.compose.project=${options.project}`,
+          containers = parseContainerList((await run('docker', ['ps', '--filter', member,
               '--format', '{{.Names}}\t{{.Label "com.docker.compose.service"}}'])).stdout);
 
-    if (!services.length) {
+    if (!containers.length) {
         throw new Error(`no running containers in compose project "${options.project}"`)
     }
 
     const samplesLog = path.join(options.out, 'samples.jsonl'),
           series     = {
-              gaps: Object.fromEntries(services.map(({service}) => [service, 0])),
-              rows: Object.fromEntries(services.map(({service}) => [service, []]))
+              gaps: Object.fromEntries(containers.map(({container}) => [container, 0])),
+              rows: Object.fromEntries(containers.map(({container}) => [container, []]))
           },
-          volumes    = async () => parseVolumeSizes((await run('docker', ['system', 'df', '-v'], {maxBuffer: 16 * 1024 * 1024})).stdout, options.project);
+          volumes    = async () => parseVolumeSizes(
+              (await run('docker', ['system', 'df', '-v'], {maxBuffer: 16 * 1024 * 1024})).stdout,
+              parseVolumeList((await run('docker', ['volume', 'ls', '--filter', member,
+                  '--format', '{{.Name}}\t{{.Label "com.docker.compose.volume"}}'])).stdout));
 
     await mkdir(options.out, {recursive: true});
 
@@ -70,29 +75,46 @@ async function main(options) {
     const atStart     = await volumes(),
           startedAtMs = Date.now();
     let stoppedAtMs = null,
-        ticks       = 0;
+        ticks       = 0,
+        wake        = null;
 
-    ['SIGINT', 'SIGTERM'].forEach(signal => process.on(signal, () => { stoppedAtMs ??= Date.now() }));
+    // A stop ends the wait between two ticks at once
+    ['SIGINT', 'SIGTERM'].forEach(signal => process.on(signal, () => {
+        stoppedAtMs ??= Date.now();
+        wake?.()
+    }));
 
     while (stoppedAtMs === null && Date.now() - startedAtMs < windowMs) {
         const tickAt = Date.now();
 
         ticks++;
 
-        const reads = await Promise.all(services.map(({container, service}) =>
+        const reads = await Promise.all(containers.map(({container, service}) =>
             run('docker', ['exec', container, 'sh', '-c', CGROUP_READ])
-                .then(({stdout}) => ({service, atMs: tickAt, ...parseCgroupRead(stdout)}))
-                .catch(error => ({service, atMs: tickAt, gap: error.message.split('\n')[0]}))));
+                .then(({stdout}) => ({container, service, atMs: tickAt, ...parseCgroupRead(stdout)}))
+                .catch(error => ({container, service, atMs: tickAt, gap: error.message.split('\n')[0]}))));
 
         foldTick(series, reads);
         await appendFile(samplesLog, reads.map(read => JSON.stringify(read)).join('\n') + '\n');
-        await new Promise(resolve => setTimeout(resolve, Math.max(0, tickAt + intervalMs - Date.now())))
+
+        // Until the next tick, and never past the window's end
+        await new Promise(resolve => {
+            const timer = setTimeout(resolve, Math.max(0, Math.min(tickAt + intervalMs, startedAtMs + windowMs) - Date.now()));
+
+            wake = () => {
+                clearTimeout(timer);
+                resolve()
+            };
+
+            stoppedAtMs !== null && wake()
+        })
     }
 
     const reportFile = path.join(options.out, 'report.json');
 
     await writeFile(reportFile, JSON.stringify(buildReport({
         command   : `node ai/scripts/benchmark/plane-sampler.mjs ${process.argv.slice(2).join(' ')}`,
+        containers,
         endedAtMs : Date.now(),
         gaps      : series.gaps,
         hardware  : options.hardware,

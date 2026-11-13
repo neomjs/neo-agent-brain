@@ -2,29 +2,44 @@ import {percentile} from './stats.mjs';
 
 /**
  * @module ai/scripts/benchmark/helpers/planeSamplerCore
- * @summary The pure core of the plane sampler: one container's cgroup read in, per-service series
+ * @summary The pure core of the plane sampler: one container's cgroup read in, per-container series
  * and a window report out, in which every figure carries its coverage.
  *
  * **Why a pure module**: the sampler's CLI owns the clock, `docker` and the files. This module owns
  * every rule a unit spec must pin, as data transforms over injected reads. No Neo import, no config
  * read, no clock read.
  *
+ * **The unit is the container.** Cumulative counters belong to one container's lifetime, so a
+ * series is one container's and never a service's: a service with replicas has one entry per
+ * replica, each naming its service, and nothing is summed or differenced across replicas.
+ *
  * **Honesty contract** (after `servingCostCore.mjs`):
  * - resident heap is the cgroup's anonymous memory. File-backed pages are kept beside it and never
  *   added to it: `docker stats` counts the active ones as used memory;
  * - a failed read is a gap and adds no sample, and a missing tick is never interpolated;
- * - a counter that goes backwards is a container restart: its delta is dropped and counted;
- * - a service without samples reports `null` figures, never 0.
+ * - an I/O or network part that failed or is malformed is unknown (`null`), while an empty one (no
+ *   block device, no interface but `lo`) is a measured zero;
+ * - an interval in which any cumulative counter went backwards is a reset, usually a container
+ *   restart: it is dropped whole and counted, so no figure is ever negative or doubled;
+ * - a figure without a usable interval is `null`, never 0, and `intervals` says on how many
+ *   intervals each figure rests.
  */
+
+/**
+ * Printed in place of a part whose read failed.
+ * @type {String}
+ */
+const FAILED = '!!';
 
 /**
  * The read one `docker exec` performs per container and tick. `@@` separates its four parts:
  * `memory.stat`, `cpu.stat`, `io.stat`, and one `rx tx` line per network interface except `lo`.
+ * A part whose read fails prints `!!` instead, so the last command's success cannot hide it.
  * @type {String}
  */
-export const CGROUP_READ = 'cat /sys/fs/cgroup/memory.stat; echo @@; cat /sys/fs/cgroup/cpu.stat; echo @@; ' +
-    'cat /sys/fs/cgroup/io.stat; echo @@; for i in /sys/class/net/*; do [ "${i##*/}" = lo ] || ' +
-    'echo "$(cat $i/statistics/rx_bytes) $(cat $i/statistics/tx_bytes)"; done';
+export const CGROUP_READ = ['memory.stat', 'cpu.stat', 'io.stat'].map(file => `cat /sys/fs/cgroup/${file} || echo '${FAILED}'`).join('; echo @@; ') +
+    `; echo @@; (for i in /sys/class/net/*; do [ "\${i##*/}" = lo ] && continue; rx=$(cat "$i/statistics/rx_bytes") || exit 1; ` +
+    `tx=$(cat "$i/statistics/tx_bytes") || exit 1; echo "$rx $tx"; done) || echo '${FAILED}'`;
 
 /**
  * @summary Parses '90s', '30m', '8h' or '7d' into milliseconds; anything else is refused.
@@ -44,18 +59,24 @@ export function parseDuration(value) {
 /**
  * @summary Parses the output of {@link CGROUP_READ} for one container into one sample.
  *
- * A read without `anon`, `file` or `usage_usec` is not a cgroup v2 read and throws, so the caller
- * records a gap instead of a sample made of `NaN`.
+ * Memory and CPU are required: without `anon`, `file` and `usage_usec` this is no cgroup v2 read and
+ * the call throws, so its caller records a gap. The I/O and network parts are optional knowledge: a
+ * failed or malformed part gives `null` for its two counters, an empty part gives 0.
  * @param {String} text
- * @returns {{anonBytes: Number, fileBytes: Number, cpuUsec: Number, ioReadBytes: Number, ioWriteBytes: Number, netRxBytes: Number, netTxBytes: Number}}
+ * @returns {{anonBytes: Number, fileBytes: Number, cpuUsec: Number, ioReadBytes: Number|null, ioWriteBytes: Number|null, netRxBytes: Number|null, netTxBytes: Number|null}}
  */
 export function parseCgroupRead(text) {
     const [memory = '', cpu = '', io = '', net = ''] = String(text).split('@@\n'),
-          stat    = block => Object.fromEntries(block.trim().split('\n').map(line => line.split(' ')).map(([key, value]) => [key, Number(value)])),
+          lines   = block => block.trim().split('\n').filter(Boolean),
+          stat    = block => Object.fromEntries(lines(block).map(line => line.split(' ')).map(([key, value]) => [key, Number(value)])),
           mem     = stat(memory),
           cpuUsec = stat(cpu).usage_usec,
-          sumIo   = key => [...io.matchAll(new RegExp(`${key}=(\\d+)`, 'g'))].reduce((sum, match) => sum + Number(match[1]), 0),
-          pairs   = net.trim().split('\n').filter(Boolean).map(line => line.split(' ').map(Number));
+          // every device line carries both counters, or the part is not an io.stat
+          devices = lines(io).map(line => [/\brbytes=(\d+)/.exec(line), /\bwbytes=(\d+)/.exec(line)]),
+          ioKnown = devices.every(([read, write]) => read && write),
+          pairs   = lines(net).map(line => line.split(' ').map(Number)),
+          netKnown = pairs.every(pair => pair.length === 2 && pair.every(Number.isFinite)),
+          sum     = (rows, pick) => rows.reduce((total, row) => total + pick(row), 0);
 
     if (![mem.anon, mem.file, cpuUsec].every(Number.isFinite)) {
         throw new Error('not a cgroup v2 read: memory.stat anon and file and cpu.stat usage_usec are required')
@@ -65,58 +86,71 @@ export function parseCgroupRead(text) {
         anonBytes   : mem.anon,
         fileBytes   : mem.file,
         cpuUsec,
-        ioReadBytes : sumIo('rbytes'),
-        ioWriteBytes: sumIo('wbytes'),
-        netRxBytes  : pairs.reduce((sum, [rx]) => sum + rx, 0),
-        netTxBytes  : pairs.reduce((sum, [, tx]) => sum + tx, 0)
+        ioReadBytes : ioKnown  ? sum(devices, ([read])    => Number(read[1]))  : null,
+        ioWriteBytes: ioKnown  ? sum(devices, ([, write]) => Number(write[1])) : null,
+        netRxBytes  : netKnown ? sum(pairs, ([rx])   => rx) : null,
+        netTxBytes  : netKnown ? sum(pairs, ([, tx]) => tx) : null
     }
 }
 
 /**
- * @summary Folds one tick's reads into the per-service series: a read that failed counts as a gap
- * of its service and adds no sample.
+ * @summary Folds one tick's reads into the per-container series: a read that failed counts as a gap
+ * of its container and adds no sample.
  * @param {Object}   series
- * @param {Object}   series.gaps Gap count per service
- * @param {Object}   series.rows Ordered samples per service
- * @param {Object[]} reads       `{service, atMs, ...sample}` or `{service, atMs, gap}`
+ * @param {Object}   series.gaps Gap count per container
+ * @param {Object}   series.rows Ordered samples per container
+ * @param {Object[]} reads       `{container, service, atMs, ...sample}` or `{container, service, atMs, gap}`
  */
 export function foldTick({gaps, rows}, reads) {
-    reads.forEach(read => read.gap ? gaps[read.service]++ : rows[read.service].push(read))
+    reads.forEach(read => read.gap ? gaps[read.container]++ : rows[read.container].push(read))
 }
 
 /**
- * @summary Summarizes one service's ordered samples.
+ * @summary Summarizes one container's ordered samples.
  *
- * Heap figures come from every sample, CPU and byte figures from the deltas between neighbours. A
- * delta across a backwards counter is a restart: dropped and counted, so a restart never reads as
- * negative or doubled use. The percentile is the one definition of `stats.mjs`.
- * @param {Object[]} samples Ordered `{atMs, ...parseCgroupRead}` rows of one service
- * @returns {Object} samples, restarts, heapGiB and cores as `{p50, p95, max}`, and byte totals
+ * Heap figures come from every sample; CPU and byte figures from the intervals between neighbours.
+ * An interval in which any counter known at both ends went backwards is a reset: dropped whole and
+ * counted. A byte counter unknown at either end leaves its interval out of that counter's total.
+ * The percentile is the one definition of `stats.mjs`.
+ * @param {Object[]} samples Ordered `{atMs, ...parseCgroupRead}` rows of one container
+ * @returns {Object} samples, resets, intervals, heapGiB and cores as `{p50, p95, max}`, byte totals
  */
-export function summarizeService(samples) {
-    const cores  = [],
-          totals = {ioReadBytes: 0, ioWriteBytes: 0, netRxBytes: 0, netTxBytes: 0},
-          round  = value => value === null ? null : +value.toFixed(3),
-          spread = (values, scale = 1) => Object.fromEntries([['p50', 0.5], ['p95', 0.95], ['max', 1]]
+export function summarizeContainer(samples) {
+    const cores     = [],
+          counters  = {io: ['ioReadBytes', 'ioWriteBytes'], net: ['netRxBytes', 'netTxBytes']},
+          intervals = {cpu: 0, io: 0, net: 0},
+          totals    = {ioReadBytes: null, ioWriteBytes: null, netRxBytes: null, netTxBytes: null},
+          round     = value => +value.toFixed(3),
+          spread    = (values, scale = 1) => Object.fromEntries([['p50', 0.5], ['p95', 0.95], ['max', 1]]
               .map(([name, p]) => [name, values.length ? round(percentile(values, p) / scale) : null]));
-    let restarts = 0;
+    let resets = 0;
 
     for (let i = 1; i < samples.length; i++) {
-        const prev = samples[i - 1],
-              cur  = samples[i];
+        const prev  = samples[i - 1],
+              cur   = samples[i],
+              known = Object.fromEntries(Object.entries(counters).map(([family, keys]) =>
+                  [family, keys.every(key => prev[key] !== null && cur[key] !== null)]));
 
-        if (cur.cpuUsec < prev.cpuUsec || cur.netTxBytes < prev.netTxBytes) {
-            restarts++;
+        if (cur.cpuUsec < prev.cpuUsec || Object.entries(counters).some(([family, keys]) => known[family] && keys.some(key => cur[key] < prev[key]))) {
+            resets++;
             continue
         }
 
+        intervals.cpu++;
         cores.push((cur.cpuUsec - prev.cpuUsec) / ((cur.atMs - prev.atMs) * 1e3));
-        Object.keys(totals).forEach(key => totals[key] += cur[key] - prev[key])
+
+        Object.entries(counters).forEach(([family, keys]) => {
+            if (known[family]) {
+                intervals[family]++;
+                keys.forEach(key => totals[key] += cur[key] - prev[key])
+            }
+        })
     }
 
     return {
         samples: samples.length,
-        restarts,
+        resets,
+        intervals,
         heapGiB: spread(samples.map(sample => sample.anonBytes), 1024 * 1024 * 1024),
         cores  : spread(cores),
         bytes  : totals
@@ -139,16 +173,33 @@ export function parseDockerSize(size) {
 }
 
 /**
- * @summary Reads one compose project's volume sizes out of `docker system df -v`.
+ * @summary Reads the volumes of a project out of `docker volume ls --filter label=com.docker.compose.project=<project>
+ * --format '{{.Name}}\t{{.Label "com.docker.compose.volume"}}'`.
+ *
+ * Membership is the project's own label, never a name prefix: a prefix also matches a volume of
+ * a project whose name merely starts alike, and misses a volume the project gave a name of its own.
  * @param {String} text
- * @param {String} project
- * @returns {Object} bytes per volume, keyed by the volume's name without the project prefix
+ * @returns {{key: String, name: String}[]} `key` is the volume's name inside the compose file
  */
-export function parseVolumeSizes(text, project) {
-    return Object.fromEntries(text.split('\n')
-        .filter(line => line.startsWith(`${project}_`))
-        .map(line => line.trim().split(/\s+/))
-        .map(columns => [columns[0].slice(project.length + 1), parseDockerSize(columns.at(-1))]))
+export function parseVolumeList(text) {
+    return text.trim().split('\n').filter(Boolean).map(line => {
+        const [name, key] = line.split('\t');
+
+        return {key: key || name, name}
+    })
+}
+
+/**
+ * @summary Looks the listed volumes up in `docker system df -v` by their exact names.
+ * @param {String}   text
+ * @param {Object[]} volumes The result of {@link parseVolumeList}
+ * @returns {Object} bytes per volume key; `null` for a volume the table does not list
+ */
+export function parseVolumeSizes(text, volumes) {
+    const sizes = new Map(text.split('\n').map(line => line.trim().split(/\s+/)).filter(columns => columns.length >= 3)
+        .map(columns => [columns[0], columns.at(-1)]));
+
+    return Object.fromEntries(volumes.map(({key, name}) => [key, sizes.has(name) ? parseDockerSize(sizes.get(name)) : null]))
 }
 
 /**
@@ -156,7 +207,7 @@ export function parseVolumeSizes(text, project) {
  * @param {String} text
  * @returns {{container: String, service: String}[]}
  */
-export function parseServiceList(text) {
+export function parseContainerList(text) {
     return text.trim().split('\n').filter(Boolean).map(line => {
         const [container, service] = line.split('\t');
 
@@ -167,16 +218,18 @@ export function parseServiceList(text) {
 /**
  * @summary Builds the window's report from the folded series. The caller injects every timestamp.
  *
- * A stop counts as early only inside the requested window: a signal after the window is complete is
- * the caller's cleanup.
+ * A window holds a tick at its start and one per full interval inside it, so its expected ticks
+ * round up. A stop counts as early only inside the requested window: a signal after the window is
+ * complete is the caller's cleanup.
  * @param {Object}      data
  * @param {String}      data.command
+ * @param {Object[]}    data.containers    `{container, service}` of every sampled container
  * @param {Number}      data.endedAtMs
- * @param {Object}      data.gaps          Gap count per service
+ * @param {Object}      data.gaps          Gap count per container
  * @param {String}      data.hardware
  * @param {Number}      data.intervalMs
  * @param {String}      data.project
- * @param {Object}      data.rows          Ordered samples per service
+ * @param {Object}      data.rows          Ordered samples per container
  * @param {Number}      data.startedAtMs
  * @param {Number|null} [data.stoppedAtMs] When a stop signal arrived, if one did
  * @param {Number}      data.ticks
@@ -184,7 +237,7 @@ export function parseServiceList(text) {
  * @param {Number}      data.windowMs
  * @returns {Object}
  */
-export function buildReport({command, endedAtMs, gaps, hardware, intervalMs, project, rows, startedAtMs, stoppedAtMs = null, ticks, volumes, windowMs}) {
+export function buildReport({command, containers, endedAtMs, gaps, hardware, intervalMs, project, rows, startedAtMs, stoppedAtMs = null, ticks, volumes, windowMs}) {
     return {
         instrument: 'ai/scripts/benchmark/plane-sampler.mjs',
         command,
@@ -198,9 +251,9 @@ export function buildReport({command, endedAtMs, gaps, hardware, intervalMs, pro
             stoppedEarly: stoppedAtMs !== null && stoppedAtMs - startedAtMs < windowMs
         },
         // A sleeping host or a stalled docker daemon shows here as ticks below the expected count
-        coverage  : {ticks, expectedTicks: Math.floor(windowMs / intervalMs)},
-        services  : Object.fromEntries(Object.keys(rows).map(service =>
-            [service, {...summarizeService(rows[service]), gaps: gaps[service]}])),
+        coverage  : {ticks, expectedTicks: Math.ceil(windowMs / intervalMs)},
+        containers: Object.fromEntries(containers.map(({container, service}) =>
+            [container, {service, ...summarizeContainer(rows[container]), gaps: gaps[container]}])),
         volumes
     }
 }

@@ -19,13 +19,22 @@ cgroup, and writes down how much of the window it saw.
   container of a compose project reads that container's cgroup v2 files (`memory.stat`, `cpu.stat`,
   `io.stat`) and the byte counters of its network interfaces. Its rules are unit-pinned in
   `ai/scripts/benchmark/helpers/planeSamplerCore.mjs`.
+- **The unit is the container.** A cumulative counter belongs to one container's lifetime, so every
+  series is one container's. A service with replicas has one entry per replica, each naming its
+  service; nothing is summed or differenced across replicas.
 - **Resident heap** is `memory.stat`'s `anon`. File-backed bytes are kept beside it in
   `samples.jsonl` and are never added to it.
 - **CPU** is cores: the growth of `usage_usec` between two ticks over the time between them.
-- **Volumes** are the project's volume sizes from `docker system df -v`, at both ends of the window.
-- **Coverage** travels with every report: ticks against expected ticks, gaps per service (a failed
-  read adds no sample and is never interpolated), restarts per service (a counter that went
-  backwards; its delta is dropped), and whether a stop signal cut the window short.
+- **Volumes** are the ones that carry the project's compose label, sized from `docker system df -v`
+  by their exact names, at both ends of the window. A name that merely starts with the project's
+  name is no membership.
+- **Coverage** travels with every report: ticks against expected ticks (a tick at the window's
+  start and one per full interval inside it), gaps per container (a failed read adds no sample and
+  is never interpolated), resets per container (an interval in which any counter went backwards,
+  usually a restart; it is dropped whole), the number of intervals each figure rests on, and
+  whether a stop signal cut the window short.
+- **Unknown is not zero.** An I/O or network part that failed or is malformed is `null`; an empty
+  one is a measured 0. A figure without a usable interval is `null`.
 
 What it leaves out, declared:
 
@@ -35,8 +44,8 @@ What it leaves out, declared:
 - Everything outside the compose project: seats, bridges and the model server. The serving-cost
   meter samples the model server.
 
-A window of ten minutes at 30 seconds holds 19 deltas, so its p95 is its maximum. A p95 that says
-more than the maximum needs a longer window.
+A window of ten minutes at 30 seconds holds 19 intervals, so its p95 is its maximum. A p95 that
+says more than the maximum needs a longer window.
 
 ## Run protocol
 
@@ -46,50 +55,53 @@ node ai/scripts/benchmark/plane-sampler.mjs --project <compose project> --hardwa
 ```
 
 It writes `samples.jsonl` (every tick) and `report.json` into `--out` and nothing anywhere else.
-One run per directory: an existing `samples.jsonl` is refused. A stop signal inside the window
-still writes the report, marked `stoppedEarly`.
+One run per directory: an existing `samples.jsonl` is refused. The run ends with its window, also
+when the interval is longer; a stop signal ends it at once and still writes the report, marked
+`stoppedEarly`.
 
 ## Run ledger
 
 | Run | Hardware (named) | Window | Coverage |
 |---|---|---|---|
-| Reference run, 2026-11-13 05:01:55Z | `apple-m5-max-colima-vz` | 10m at 30s | 20 of 20 ticks, 0 gaps, 0 restarts, not stopped early |
+| Reference run, 2026-11-13 05:52:32Z | `apple-m5-max-colima-vz` | 10m at 30s | 20 of 20 ticks; per container 20 samples, 19 intervals, 0 gaps, 0 resets; not stopped early |
 
 Re-run: `--project neo-local-agent-os --hardware apple-m5-max-colima-vz --window 10m --interval 30s`.
 
 ## Results: reference run
 
-The plane was in normal operation; no load was induced. Heap is in GiB, CPU in cores.
+The plane was in normal operation; no load was induced. Each service ran one container. Heap is in
+GiB, CPU in cores.
 
 | Service | Heap p50 | Heap max | Cores p50 | Cores max |
 |---|---|---|---|---|
-| chroma | 12.800 | 12.801 | 0.002 | 0.240 |
-| orchestrator | 1.750 | 2.143 | 0.130 | 0.393 |
-| mc-server | 1.745 | 1.887 | 0.335 | 0.577 |
-| kb-server | 0.264 | 0.266 | 0.008 | 0.012 |
-| fleet-server | 0.050 | 0.066 | 0.012 | 0.014 |
-| ingress | 0.018 | 0.020 | 0.002 | 0.003 |
+| chroma | 12.783 | 12.783 | 0.002 | 0.161 |
+| mc-server | 1.891 | 1.944 | 0.279 | 0.489 |
+| orchestrator | 0.482 | 0.898 | 0.122 | 0.295 |
+| kb-server | 0.283 | 0.284 | 0.008 | 0.022 |
+| fleet-server | 0.050 | 0.050 | 0.012 | 0.014 |
+| ingress | 0.020 | 0.020 | 0.002 | 0.003 |
 
-The project's 16 volumes held 26.61 GB at the window's end.
+The project owns 14 volumes, which held 26.61 GB at the window's end. Two more volumes carry the
+project's name as a prefix and not its label; they are not counted.
 
-The window shows what one line cannot: the orchestrator's heap moved between 1.75 and 2.14 GiB
-inside ten minutes, and the vector store idles at the median and takes a quarter of a core at its
+The window shows what one line cannot: the orchestrator's heap moved between 0.48 and 0.90 GiB
+inside ten minutes, and the vector store idles at the median and takes a sixth of a core at its
 peak.
 
 ### Beside `docker stats`, the same second
 
-One `docker stats --no-stream` read at 05:01:54Z, against the run's first tick at 05:01:55Z:
+One `docker stats --no-stream` read at 05:52:31Z, against the run's first tick at 05:52:32Z:
 
 | Service | `docker stats` | Sampler: anonymous | Sampler: file-backed |
 |---|---|---|---|
-| chroma | 12.86 GiB | 12.800 GiB | 1.750 GiB |
-| orchestrator | 1.845 GiB | 1.750 GiB | 5.628 GiB |
-| mc-server | 1.709 GiB | 1.669 GiB | 0.176 GiB |
-| kb-server | 276.7 MiB | 0.261 GiB | 0.008 GiB |
-| fleet-server | 54.14 MiB | 0.050 GiB | 0.000 GiB |
-| ingress | 20.23 MiB | 0.018 GiB | 0.001 GiB |
+| chroma | 12.84 GiB | 12.783 GiB | 1.759 GiB |
+| mc-server | 1.937 GiB | 1.896 GiB | 0.187 GiB |
+| orchestrator | 606.6 MiB | 0.517 GiB | 5.628 GiB |
+| kb-server | 298.1 MiB | 0.282 GiB | 0.010 GiB |
+| fleet-server | 54.31 MiB | 0.050 GiB | 0.000 GiB |
+| ingress | 22.03 MiB | 0.020 GiB | 0.001 GiB |
 
-For every service the line lies above the anonymous memory, here by 2 MiB to 95 MiB. The
+For every service the line lies above the anonymous memory, here by 2 MiB to 77 MiB. The
 orchestrator also had 5.6 GiB of file-backed pages at that moment: memory the kernel gives back
 under pressure, and no part of what the service needs.
 
