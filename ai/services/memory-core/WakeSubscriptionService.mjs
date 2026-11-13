@@ -13,7 +13,8 @@ import TurnPresenceService                                                      
 import WebhookDeliveryService                                                                   from './WebhookDeliveryService.mjs';
 import {DELIVERABLE_HARNESS_TARGET, PULL_HARNESS_TARGET, wakeRouteWithdrawalReasonFor}          from '../../daemons/wake/buildReceiverManifest.mjs';
 import {buildWakeDigest, getHighestWakePriority}                                                from '../../daemons/wake/wakeDigestBuilder.mjs';
-import {SESSION_ROTATE_TRIGGER}                                                                 from '../../daemons/wake/sessionRotation.mjs';
+import {holdsWakes, SESSION_ROTATE_TRIGGER}                                                     from '../../daemons/wake/sessionRotation.mjs';
+import {getActiveSessionRotateRoutes, readSunsetReceipt}                                        from '../../daemons/wake/sunsetReceipt.mjs';
 import {HEARTBEAT_PULSE_ENTITY_PREFIX, HEARTBEAT_PULSE_ENTITY_TYPE, match, matchHeartbeatPulse} from './heartbeatPulseEvaluator.mjs';
 import {resolveResidentFamilyById}                                                              from '../graph/agentFamilyResolution.mjs';
 import {PRESENCE_STATES}                                                                        from '../fleet/fleetPresenceStateAdapter.mjs';
@@ -2189,6 +2190,18 @@ class WakeSubscriptionService extends Base {
             logger.warn(`[WakeSubscription] lastPollAt stamp failed for ${subscriptionId}: ${error?.message ?? error}`);
         }
 
+        // A seat whose sunset handover waits for its fresh session gets no wakes in the session that
+        // ended. The watermark stays where the caller holds it, so the fresh session, which inherits
+        // it, receives everything the hold kept.
+        if (this._holdsWakesForRotation(caller)) {
+            return {
+                subscriptionId,
+                pending  : 0,
+                reason   : 'held for the seat\'s session rotation: its newest self-message is a sunset handover',
+                watermark: sinceLogId
+            };
+        }
+
         // A WATERMARK-LESS poll walks no log. `sinceLogId` defaults to 0, and 0 is the "I have no
         // watermark" answer, not "give me rows 1..N": walking from 0 over a long-lived log reads
         // history whose rows are almost all already read, so the shared unread gate in `match()`
@@ -2235,6 +2248,31 @@ class WakeSubscriptionService extends Base {
             eventsReplayed: events.length,
             watermark     : lastLogId
         };
+    }
+
+    /**
+     * @summary Whether the plane holds a seat's wakes for its session rotation ({@link holdsWakes}).
+     * A read that fails delivers: a withheld wake must never be the cost of an unreadable receipt.
+     * @param {String} identity Canonical `@<identity>`.
+     * @param {Number} [now=Date.now()]
+     * @returns {Boolean}
+     * @protected
+     */
+    _holdsWakesForRotation(identity, now = Date.now()) {
+        try {
+            const db       = GraphService.db.storage.db,
+                  windowMs = AiConfig.orchestrator.sessionRotation.windowMs;
+
+            return holdsWakes({
+                hasRotationRoute: getActiveSessionRotateRoutes(db).some(route => route.properties.agentIdentity === identity),
+                read            : readSunsetReceipt(db, identity, {sinceIso: new Date(now - windowMs).toISOString(), nowIso: new Date(now).toISOString()}),
+                now,
+                windowMs
+            })
+        } catch (error) {
+            logger.warn(`[WakeSubscription] the rotation hold could not read ${identity}'s receipt, so its wakes are delivered: ${error?.message ?? error}`);
+            return false
+        }
     }
 
     /**

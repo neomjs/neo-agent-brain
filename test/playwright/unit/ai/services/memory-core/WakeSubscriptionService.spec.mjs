@@ -1737,6 +1737,51 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
         });
     });
 
+    test('poll-digest holds a seat\'s wakes while its sunset receipt waits for a rotation, and the fresh session\'s prompt releases them (#1383)', async () => {
+        const seat   = '@neo-rotation-hold',
+              sqlite = GraphService.db.storage.db,
+              insert = (id, label, properties) => sqlite.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)')
+                  .run(id, seat, JSON.stringify({id, label, type: label, properties}));
+
+        GraphService.upsertNode({id: seat, type: 'AGENT', name: seat, properties: {}});
+
+        try {
+            await RequestContextService.run({agentIdentityNodeId: seat}, async () => {
+                const {subscriptionId} = await WakeSubscriptionService.subscribe({trigger: 'TASK_STATE_CHANGED', harnessTarget: 'mcp-notifications'}),
+                      before           = sqlite.prepare('SELECT MAX(log_id) AS maxId FROM GraphLog').get().maxId || 0,
+                      poll             = () => WakeSubscriptionService.pollDigest({subscriptionId, sinceLogId: before});
+
+                appendTaskEvent({eventId: 'rotation-hold-task', assignee: seat, lastModifiedAt: new Date().toISOString()});
+                insert('MESSAGE:rotation-hold-receipt', 'MESSAGE', {
+                    from          : seat, to: seat, subject: '[sunset]', sentAt: new Date(Date.now() - 60 * 1000).toISOString(),
+                    taggedConcepts: ['sunset-protocol-handover']
+                });
+
+                // Without a route that can rotate the seat, nothing waits for a fresh session.
+                expect((await poll()).pending).toBe(1);
+
+                await callTool('manage_wake_subscription', {
+                    action               : 'subscribe', trigger: 'SESSION_ROTATE', filters: {}, harnessTarget: 'a2a-webhook',
+                    harnessTargetMetadata: {adapter: 'osascript', appName: 'Claude', url: BOOT_URL}
+                });
+
+                const held = await poll();
+
+                expect(held).toMatchObject({pending: 0, watermark: before});
+                expect(held.reason).toContain('session rotation');
+
+                // The fresh session's first prompt: the watermark it inherited still reaches the event.
+                insert(`AGENT_TURN_PRESENCE:${seat}:fresh-turn`, 'AGENT_TURN_PRESENCE', {
+                    agentIdentity: seat, turnId: 'fresh-turn', startedAt: new Date().toISOString(), status: 'active'
+                });
+
+                expect((await poll()).pending).toBe(1)
+            })
+        } finally {
+            sqlite.prepare("DELETE FROM Nodes WHERE id IN ('MESSAGE:rotation-hold-receipt', ?)").run(`AGENT_TURN_PRESENCE:${seat}:fresh-turn`)
+        }
+    });
+
     test('poll-digest renders the caller\'s own open work from the plane\'s copy, and open work alone never makes a poll pending (#762)', async () => {
         const {resetOpenWorkCopy, writeOpenWorkCopy} = await import('../../../../../../ai/services/memory-core/openWorkCopyStore.mjs');
 

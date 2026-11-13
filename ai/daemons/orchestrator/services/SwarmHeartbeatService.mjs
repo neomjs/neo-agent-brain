@@ -31,9 +31,6 @@ import {
     participationByIdentity,
     readAgentIdentityNodes
 } from '../../../graph/agentIdentityParticipation.mjs';
-import {
-    resumeHarness as resumeHarnessScript
-} from '../../../scripts/lifecycle/resumeHarness.mjs';
 import {checkAllAgentIdle as checkAllAgentIdleScript}     from '../../../scripts/lifecycle/checkAllAgentIdle.mjs';
 import {idleOutNudge as idleOutNudgeScript}               from '../../../scripts/lifecycle/idleOutNudge.mjs';
 import WakeSubscriptionService                            from '../../../services/memory-core/WakeSubscriptionService.mjs';
@@ -41,7 +38,6 @@ import wakeDecisionServiceInstance, {WakeDecisionService} from './WakeDecisionSe
 import {swarmWakeCooldown as swarmWakeCooldownScript}     from '../../../scripts/lifecycle/swarmWakeCooldown.mjs';
 import {
     activeWakeSubscriptionStatusSql,
-    isActiveWakeSubscriptionStatus,
     resolvedWakeSubscriptionStatusSql
 } from '../../../services/memory-core/wakeSubscriptionStatusPolicy.mjs';
 import {
@@ -163,7 +159,7 @@ function buildGitHubNotificationPulseId(notifications = []) {
  *
  * Dual-mode lifecycle scripts keep their CLI wrappers for manual use while
  * exposing module entrypoints for the heartbeat lane:
- * `checkSunsetted.mjs`, `resumeHarness.mjs`, `checkAllAgentIdle.mjs`, `idleOutNudge.mjs`,
+ * `checkSunsetted.mjs`, `checkAllAgentIdle.mjs`, `idleOutNudge.mjs`,
  * and `swarmWakeCooldown.mjs` now expose module entrypoints while preserving their CLI
  * wrappers for manual use. The lane calls those exports directly to avoid 2-5s Node
  * startup hops per pulse.
@@ -181,8 +177,8 @@ function buildGitHubNotificationPulseId(notifications = []) {
  * @extends Neo.core.Base
  * @singleton
  * @see ai/daemons/Orchestrator.mjs                        — daemon that owns this scheduled lane
- * @see ai/scripts/lifecycle/checkSunsetted.mjs            — sunset detector (subprocess)
- * @see ai/scripts/lifecycle/resumeHarness.mjs             — fresh-session-spawn dispatcher (subprocess)
+ * @see ai/scripts/lifecycle/checkSunsetted.mjs            — sunset / idle-out detector (direct import)
+ * @see ai/daemons/orchestrator/scheduling/sessionRotation.mjs — the container-plane lane that rotates a sunset
  * @see ai/scripts/lifecycle/wakeSafetyGate.mjs            — fail-closed safety gate (direct import)
  * @see ai/scripts/lifecycle/heartbeatLock.mjs             — concurrency-lock primitive (direct import)
  */
@@ -253,11 +249,6 @@ class SwarmHeartbeatService extends Base {
      * @member {String|null} wakeDaemonDir=null
      */
     wakeDaemonDir = null
-    /**
-     * Resolved harness-state directory injected by the Orchestrator composition root.
-     * @member {String|null} harnessStateDir=null
-     */
-    harnessStateDir = null
 
     /**
      * Normalizes identity to canonical `@<identity>` form. Returns `null` for
@@ -333,9 +324,8 @@ class SwarmHeartbeatService extends Base {
      *      the shell loop's touch-before-lock ordering.
      *   1. Concurrency-lock skip (active lock = expensive work in flight, skip pulse;
      *      stale lock = clear and continue).
-     *   2. Sunset detection via `checkSunsetted.mjs` direct export.
-     *      - sunset=true + gate-open → fresh-session-spawn via `resumeHarness.mjs` direct export.
-     *      - sunset=true + gate-closed → log + skip (no spawn).
+     *   2. Idle-out detection via `checkSunsetted.mjs` direct export. A sunset recommends nothing
+     *      here: the container plane's `session-rotation` lane acts on a seat's handover.
      *      - recommended_action=idle_out_nudge + gate-open + ready → `idleOutNudge.mjs`. The
      *        idle-out nudge IS the heartbeat: the detector flags a seat once per idle stretch,
      *        thirty minutes after its last known activity, and `WakeDecisionService.decideReady`
@@ -373,26 +363,11 @@ class SwarmHeartbeatService extends Base {
             await this.clearHeartbeatLock()
         }
 
-        // Step 2: Sunset / idle-out detection (direct module exports; CLI wrappers preserved for shell consumers).
+        // Step 2: Idle-out detection (direct module exports; CLI wrappers preserved for shell consumers).
+        // A sunset recommends nothing here: the container plane's session-rotation lane acts on it.
         const pulseIdentities = await this.getPulseIdentities();
         for (const identity of pulseIdentities) {
-            const sunsetJson = await this.checkSunsetted(identity);
-            if (sunsetJson?.sunsetted) {
-                if (!await this.checkGateOpen()) {
-                    const gateState = await this.readGate();
-                    logger.warn(`[SwarmHeartbeatService] Wake safety gate closed; skipping fresh-session-spawn for ${identity}. Sunset reason: ${sunsetJson.reason}. Gate reason: ${gateState.reason}`);
-                    continue
-                }
-                logger.info(`[SwarmHeartbeatService] Phase 1 Recovery Triggered for ${identity}. Reason: ${sunsetJson.reason}`);
-                await this.resumeHarness(
-                    identity,
-                    sunsetJson.reason || '',
-                    sunsetJson.originSessionId || '',
-                    sunsetJson.abandonedCount || 0
-                );
-                continue
-            }
-
+            const sunsetJson        = await this.checkSunsetted(identity);
             const recommendedAction = sunsetJson?.recommended_action || 'no_action';
             if (recommendedAction === 'idle_out_nudge') {
                 if (!await this.checkGateOpen()) {
@@ -535,88 +510,6 @@ class SwarmHeartbeatService extends Base {
             logger.error('[SwarmHeartbeatService] checkSunsetted.mjs failed:', err.message);
             return null
         }
-    }
-
-    /**
-     * Test-stubbable seam over `resumeHarness.mjs`'s dual-mode module export.
-     * @param {String} identity
-     * @param {String} reason
-     * @param {String} originSessionId
-     * @param {Number} abandonedCount
-     * @returns {Promise<void>}
-     * @protected
-     */
-    async resumeHarness(identity, reason, originSessionId, abandonedCount) {
-        let harnessTargetMetadata;
-        try {
-            harnessTargetMetadata = await this.getResumeHarnessTargetMetadata(identity);
-        } catch (err) {
-            logger.error(
-                `[SwarmHeartbeatService] Skipping resumeHarness for ${identity}: ` +
-                `failed to resolve wake route metadata (${err.message}).`
-            );
-            return
-        }
-
-        return resumeHarnessScript(identity, reason, originSessionId, abandonedCount, {
-            deploymentMode : AiConfig.orchestrator.deploymentMode,
-            env            : {},
-            harnessStateDir: this.harnessStateDir,
-            harnessTargetMetadata,
-            wakeDaemonDir  : this.wakeDaemonDir
-        })
-    }
-
-    /**
-     * @summary Resolve the active bridge-daemon route metadata used by resumeHarness.
-     *
-     * Central swarm heartbeat runs in the Orchestrator process, not inside the target harness. It
-     * therefore cannot rely on the target harness's process environment for `userDataDir` routing.
-     * The bootstrapped wake subscription is the current route authority: prefer an active
-     * bridge-daemon `SENT_TO_ME` subscription with an instance-address tuple, falling back to the
-     * latest active bridge route so default-instance resumes keep their legacy behavior.
-     *
-     * @param {String} identity Agent identity node id.
-     * @returns {Promise<Object>} Harness target metadata or an empty object when no active route exists.
-     * @throws {Error} When the route lookup itself fails; callers fail closed instead of resuming
-     *     through generic app activation.
-     * @protected
-     */
-    async getResumeHarnessTargetMetadata(identity) {
-        return RequestContextService.run({agentIdentityNodeId: identity}, async () => {
-            const result     = await WakeSubscriptionService.list({});
-            const candidates = (result?.subscriptions || [])
-                .filter(subscription =>
-                    subscription.trigger === 'SENT_TO_ME' &&
-                    subscription.harnessTarget === 'bridge-daemon' &&
-                    isActiveWakeSubscriptionStatus(subscription.status)
-                )
-                .sort((a, b) =>
-                    Date.parse(b.updatedAt || b.createdAt || '') -
-                    Date.parse(a.updatedAt || a.createdAt || '')
-                );
-
-            const addressed = candidates.find(subscription =>
-                this.hasInstanceAddressMetadata(subscription.harnessTargetMetadata || {})
-            );
-
-            return {
-                ...((addressed || candidates[0])?.harnessTargetMetadata || {})
-            };
-        })
-    }
-
-    /**
-     * @summary Whether wake route metadata carries a complete generic instance address.
-     * @param {Object} metadata Harness target metadata.
-     * @returns {Boolean}
-     * @protected
-     */
-    hasInstanceAddressMetadata(metadata = {}) {
-        const addressType = metadata.addressType || (metadata.userDataDir ? 'userDataDir' : null),
-              address     = metadata.instanceAddress || (addressType === 'userDataDir' ? metadata.userDataDir : null);
-
-        return Boolean(addressType && address)
     }
 
     /**

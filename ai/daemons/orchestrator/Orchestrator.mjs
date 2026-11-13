@@ -29,10 +29,13 @@ import {getDueTask as goldenPathGetDueTaskImport}                               
 import {getDueTask as dreamGetDueTaskImport}                                      from './scheduling/dream.mjs';
 import {getDueTask as embedDrainLivenessWatchdogGetDueTaskImport}                 from './scheduling/embedDrainLivenessWatchdog.mjs';
 import {getDueTask as datedItemsOverdueGetDueTaskImport}                          from './scheduling/datedItemsOverdue.mjs';
+import {runSessionRotation}                                                       from './scheduling/sessionRotation.mjs';
 import memoryCoreConfig                                                           from '../../mcp/server/memory-core/config.mjs';
 import {resolveVectorGenerationElectionDir}                                       from '../../services/shared/vector/generationElectionStore.mjs';
 import MailboxService                                                             from '../../services/memory-core/MailboxService.mjs';
 import WakeSubscriptionService                                                    from '../../services/memory-core/WakeSubscriptionService.mjs';
+import WebhookDeliveryService                                                     from '../../services/memory-core/WebhookDeliveryService.mjs';
+import OperatorPresenceService                                                    from '../../services/memory-core/OperatorPresenceService.mjs';
 import RequestContextService                                                      from '../../mcp/server/shared/services/RequestContextService.mjs';
 import {normalizeAgentIdentityNodeId}                                             from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import TaskStateService                                                           from './services/TaskStateService.mjs';
@@ -494,6 +497,25 @@ export class Orchestrator extends Base {
         await GraphService.ready();
         GraphService.requireDb('Orchestrator.sweepExpiredTasks');
         return MailboxService.sweepExpiredTasks()
+    }
+
+    /**
+     * @summary Runs one pass of the `session-rotation` lane: each sunset receipt on this plane's graph
+     * becomes one signed `session/rotate` request to its seat's route. Throws without a graph, like
+     * the expiry sweep, so the lane records the run as failed rather than as a pass over nothing.
+     * @returns {Promise<Object>} The pass's counts.
+     */
+    async rotateSunsetSessions() {
+        await GraphService.ready();
+        GraphService.requireDb('Orchestrator.rotateSunsetSessions');
+        return runSessionRotation({
+            db              : GraphService.db.storage.db,
+            deliver         : (subscription, envelope) => WebhookDeliveryService.deliver(subscription, envelope),
+            operatorPresence: OperatorPresenceService.getOperatorPresence(),
+            windowMs        : AiConfig.orchestrator.sessionRotation.windowMs,
+            minIntervalMs   : AiConfig.orchestrator.sessionRotation.minIntervalMs,
+            writeLog        : this.writeLog.bind(this)
+        })
     }
 
     /**
@@ -1763,6 +1785,10 @@ export class Orchestrator extends Base {
             writeLogFn     : this.writeLog.bind(this)
         });
 
+        // The session-rotation lane signs and sends from this process, so the sender takes the same
+        // attempt bound the Memory Core entrypoint gives it (by reference: see Memory Core's `boot`).
+        WebhookDeliveryService.configure(AiConfig.orchestrator.wakeDispatch);
+
         this.initBootIdentitySource();
         this.initFocusV1ProjectionCollector();
 
@@ -1787,7 +1813,6 @@ export class Orchestrator extends Base {
                 this.swarmHeartbeatService.targetSource    = AiConfig.orchestrator.swarmHeartbeat.targetSource;
                 this.swarmHeartbeatService.explicitTargets = this.swarmHeartbeatExplicitTargets;
                 this.swarmHeartbeatService.wakeDaemonDir   = memoryCoreConfig.wakeDaemon.dataDir;
-                this.swarmHeartbeatService.harnessStateDir = path.join(AiConfig.plane.dataRoot, 'harness-state');
                 await this.swarmHeartbeatService.ready();
             } catch (e) {
                 this.writeLog('ERROR', `[Orchestrator] Swarm heartbeat init failed; lane disabled this run: ${e.message}`);

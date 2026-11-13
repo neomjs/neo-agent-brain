@@ -3,9 +3,8 @@
  * @summary Wake safety gate / circuit breaker.
  *
  * Fail-closed coordination primitive that scheduler/recovery paths
- * (the Orchestrator swarm-heartbeat lane, `resumeHarness.mjs`) MUST consult before taking any
- * high-authority action (fresh-session-spawn, swarm wake dispatch, heartbeat-pulse
- * delivery to a harness UI). When wake delivery is unsafe or unverified, the
+ * (the Orchestrator swarm-heartbeat lane) MUST consult before taking any
+ * high-authority action (swarm wake dispatch, heartbeat-pulse delivery to a harness UI). When wake delivery is unsafe or unverified, the
  * scheduler MUST no-op and report — not spawn, steer, or paste.
  *
  * The wake substrate has multiple layers: A2A storage, unread/list, bootstrap,
@@ -36,7 +35,6 @@
  * code bypasses the gate check. This is operator-only.
  *
  * @see ai/daemons/SwarmHeartbeatService.mjs — gate consumer for heartbeat high-authority dispatch
- * @see ai/scripts/lifecycle/resumeHarness.mjs     — gate consumer (direct fresh-session-spawn)
  * @see ai/scripts/lifecycle/checkSunsetted.mjs    — companion predicate
  * @see test/playwright/unit/ai/scripts/wakeSafetyGate.spec.mjs
  */

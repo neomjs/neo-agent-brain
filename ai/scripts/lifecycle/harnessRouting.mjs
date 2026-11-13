@@ -2,12 +2,9 @@
  * @summary Lightweight harness-routing primitives for wake/resume delivery.
  *
  * The AgentIdentity roster lives in `identityRoots.mjs`; lifecycle dispatchers should derive
- * routable identities from that registry instead of mirroring Neo's maintainer handles. Host-app
- * shortcut defaults live here as well so bridge wake delivery and fresh-session recovery consume
- * one fact table.
+ * routable identities from that registry instead of mirroring Neo's maintainer handles.
  *
  * @see ai/graph/identityRoots.mjs
- * @see ai/scripts/lifecycle/resumeHarness.mjs
  * @see ai/daemons/wake/daemon.mjs
  */
 import {IDENTITIES}                   from '../../graph/identityRoots.mjs';

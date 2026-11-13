@@ -564,6 +564,14 @@ export function buildTaskDefinitions({
             pidFileName    : 'task-expiry-sweep.pid',
             expectedCommand: 'TaskExpirySweep',
             serviceTask    : true
+        },
+        // In-process container-plane lane that turns sunset handovers into fresh sessions. The entry
+        // exists for the persisted state envelope (`lastRunAt` and the last run's counts).
+        'session-rotation': {
+            label          : 'Session rotation',
+            pidFileName    : 'session-rotation.pid',
+            expectedCommand: 'SessionRotation',
+            serviceTask    : true
         }
     };
 

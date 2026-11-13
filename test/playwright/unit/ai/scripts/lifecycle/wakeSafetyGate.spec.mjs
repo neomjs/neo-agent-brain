@@ -28,8 +28,8 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
  * Covers the deny-by-default discipline (missing file → tripped), state-file
  * round-trip (enable / disable / trip), CLI surface (check / reason / show),
  * and the operator override (`WAKE_GATE_OVERRIDE=1`). The gate is consumed by
- * the `SwarmHeartbeatService` heartbeat lane and `resumeHarness.mjs` — those
- * integrations have their own specs; this file isolates the gate primitive.
+ * the `SwarmHeartbeatService` heartbeat lane — that integration has its own
+ * spec; this file isolates the gate primitive.
  */
 test.describe('ai/scripts/wakeSafetyGate', () => {
     const scriptPath = path.resolve(process.cwd(), 'ai/scripts/lifecycle/wakeSafetyGate.mjs');
@@ -43,8 +43,8 @@ test.describe('ai/scripts/wakeSafetyGate', () => {
      * Each test gets its own gate-file path via the `WAKE_GATE_FILE_PATH`
      * env-var override (production unset, tests set explicitly). This avoids
      * the singleton on-disk collision that surfaces under Playwright's
-     * fullyParallel mode — peer specs (e.g. `resumeHarness.spec.mjs`) also
-     * touch the gate file and would race against tests in this describe.
+     * fullyParallel mode — peer specs also touch the gate file and would race
+     * against tests in this describe.
      * Per-test unique tmp paths make the suite hermetic regardless of
      * worker-level parallelism.
      */
