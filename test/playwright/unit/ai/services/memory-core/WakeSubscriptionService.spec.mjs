@@ -1737,6 +1737,41 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
         });
     });
 
+    test('poll-digest renders the caller\'s own open work from the plane\'s copy, and open work alone never makes a poll pending (#762)', async () => {
+        const {resetOpenWorkCopy, writeOpenWorkCopy} = await import('../../../../../../ai/services/memory-core/openWorkCopyStore.mjs');
+
+        resetOpenWorkCopy();
+
+        try {
+            await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+                const {subscriptionId} = await WakeSubscriptionService.subscribe({trigger: 'TASK_STATE_CHANGED', harnessTarget: 'mcp-notifications'});
+                const before = GraphService.db.storage.db.prepare('SELECT MAX(log_id) AS maxId FROM GraphLog').get().maxId || 0;
+
+                appendTaskEvent({eventId: 'poll-open-work', previousState: 'Submitted', newState: 'Working', lastModifiedAt: '2026-11-13T06:00:00.000Z'});
+
+                // before any copy reached the plane, the digest says so instead of showing no work
+                expect((await WakeSubscriptionService.pollDigest({subscriptionId, sinceLogId: before})).digest)
+                    .toContain('Your open work: unavailable (no open-work copy has reached this plane yet).');
+
+                writeOpenWorkCopy('@operator', {
+                    observedAt: new Date().toISOString(), coverage: 'complete', tracked: ['@alice'],
+                    seats     : {'@alice': {authored: [{repo: 'acme/app', number: 7, title: 'a fix', ci: 'green', verdict: 'APPROVED', holder: {role: 'operator', kind: null}}]}}
+                }, {isAgent: () => true});
+
+                const res = await WakeSubscriptionService.pollDigest({subscriptionId, sinceLogId: before});
+
+                expect(res.digest).toMatch(/Your open work \(as of [^)]+\):\n- your PR acme\/app#7 "a fix": CI green, APPROVED; next: operator/);
+
+                const quiet = await WakeSubscriptionService.pollDigest({subscriptionId, sinceLogId: res.watermark});
+
+                expect(quiet.pending, 'open work is state, not an event').toBe(0);
+                expect(quiet.digest).toBeUndefined()
+            })
+        } finally {
+            resetOpenWorkCopy()
+        }
+    });
+
     test('poll-digest stamps observational lastPollAt — a timestamp only, never the client watermark (#17102)', async () => {
         await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
             const {subscriptionId} = await WakeSubscriptionService.subscribe({

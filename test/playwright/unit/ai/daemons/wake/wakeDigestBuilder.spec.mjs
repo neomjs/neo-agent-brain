@@ -1,5 +1,5 @@
-import {test, expect}    from '@playwright/test';
-import {buildWakeDigest} from '../../../../../../ai/daemons/wake/wakeDigestBuilder.mjs';
+import {test, expect}                       from '@playwright/test';
+import {buildWakeDigest, formatOwnOpenWork} from '../../../../../../ai/daemons/wake/wakeDigestBuilder.mjs';
 import {
     WAKE_DEFER_DIRECTIVE,
     WAKE_LANE_DIRECTIVE
@@ -176,4 +176,47 @@ test.describe('ai/daemons/wake/wakeDigestBuilder', () => {
         expect(pureHeartbeat.endsWith(`\n\n${WAKE_LANE_DIRECTIVE}`)).toBe(true);
         expect(pureHeartbeat).not.toContain(WAKE_DEFER_DIRECTIVE);
     });
+});
+
+test.describe('wakeDigestBuilder — the recipient\'s own open work (#762)', () => {
+    const
+        events = {messages: [msg('review this', FRESH)]},
+        pr     = (number, extra = {}) => ({repo: 'acme/app', number, title: `change ${number}`, ci: 'green', verdict: 'APPROVED', stale: false,
+            holder: {role: 'operator', kind: null}, ...extra}),
+        work   = (extra = {}) => ({state: 'ok', observedAt: '2026-11-13T06:00:00.000Z', coverage: 'complete', reason: null,
+            authored: [], reviewing: [], ...extra});
+
+    test('the push path passes no open work, and its digest is unchanged', () => {
+        expect(buildWakeDigest('@alice', events, {})).toBe(buildWakeDigest('@alice', events));
+        expect(formatOwnOpenWork(null)).toBe('');
+        expect(buildWakeDigest('@alice', events)).not.toContain('Your open work')
+    });
+
+    test('a fresh copy names the open pull requests and requested reviews, then the directive', () => {
+        const digest = buildWakeDigest('@alice', events, {openWork: work({
+            authored : [pr(7), pr(8, {ci: 'red', verdict: null, stale: true, holder: {role: 'author', kind: 'repair-ci'}})],
+            reviewing: [pr(9, {title: null})]
+        })});
+
+        expect(digest).toContain('\n\nYour open work (as of 2026-11-13T06:00:00.000Z):\n' +
+            '- your PR acme/app#7 "change 7": CI green, APPROVED; next: operator\n' +
+            '- your PR acme/app#8 "change 8" (stale): CI red; next: author (repair-ci)\n' +
+            '- review requested of you: acme/app#9');
+        expect(digest.endsWith(`\n\n${WAKE_DEFER_DIRECTIVE}`), 'the directive stays last').toBe(true)
+    });
+
+    test('no work, a long list, a stale or partial copy each say what they are', () => {
+        expect(formatOwnOpenWork(work())).toBe('\n\nYour open work (as of 2026-11-13T06:00:00.000Z): no open pull request of yours and no review requested of you.');
+        expect(formatOwnOpenWork(work({authored: Array.from({length: 7}, (_, i) => pr(i + 1))}))).toContain('- your PR acme/app#5 "change 5"');
+        expect(formatOwnOpenWork(work({authored: Array.from({length: 7}, (_, i) => pr(i + 1))}))).toMatch(/- and 2 more$/);
+        expect(formatOwnOpenWork(work({state: 'stale'}))).toContain('(as of 2026-11-13T06:00:00.000Z, stale since 2026-11-13T06:00:00.000Z)');
+        expect(formatOwnOpenWork(work({coverage: 'partial', reason: 'one seat unread'}))).toContain(', partial: one seat unread):')
+    });
+
+    test('an unavailable or untracked copy is named as such, never as no work', () => {
+        expect(formatOwnOpenWork({state: 'unavailable', observedAt: null, reason: 'no open-work copy has reached this plane yet'}))
+            .toBe('\n\nYour open work: unavailable (no open-work copy has reached this plane yet).');
+        expect(formatOwnOpenWork({state: 'untracked', observedAt: null, reason: 'the open-work copy does not track @alice'}))
+            .toBe('\n\nYour open work: untracked (the open-work copy does not track @alice).')
+    })
 });

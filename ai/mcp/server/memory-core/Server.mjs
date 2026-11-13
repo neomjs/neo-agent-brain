@@ -184,6 +184,9 @@ class Server extends BaseServer {
             'admit_open_work_wake',
             // a file read of the wake receiver's records, the reader `who_is_online` uses
             'read_open_work_wake_delivery',
+            // the open-work copy lives in process memory and embeds nothing
+            'publish_open_work_copy',
+            'read_own_open_work',
             'list_messages',
             'get_message',
             'mark_read',

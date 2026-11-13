@@ -10,6 +10,11 @@
  * outside row stays untouched. `operator` and `rotation` are roles that name nobody; the reader
  * that renders or wakes resolves them, so no operator's handle lives here.
  *
+ * An outside author can neither request a review again nor hold a seat, so an outside PR a seat has
+ * reviewed on an earlier head is never untouched again: its next green head is that seat's Round 2.
+ * A standing change request or approval outranks an earlier comment, and a seat that has reviewed the
+ * current head holds nothing until the next push.
+ *
  * The kind distinguishes successive actions held by the same seat: fixing CI, addressing changes,
  * rebasing and routing a review are different episodes even though the author holds each one.
  *
@@ -23,6 +28,14 @@
  */
 
 /**
+ * @summary A native seat's reviewer id; a login without a seat names nobody a wake can reach.
+ * @param {*} id
+ * @returns {Boolean}
+ * @private
+ */
+const isSeat = id => typeof id === 'string' && id.startsWith('@') && id.length > 1;
+
+/**
  * @summary The holder of one open snapshot row; the first rule below that matches wins.
  * @param {Object} row An open row of the producer's snapshot.
  * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown',
@@ -30,12 +43,20 @@
  */
 export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions}) {
     const
-        incomplete = partial || !Array.isArray(opinions),
-        onHead     = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
-        finished   = ci === 'red' || ci === 'green',
-        untouched  = !requested.length && !reviews.some(review => review.onHead && !review.bot),
-        maintainer = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation),
-        eligible   = owner?.kind === 'outside' && !draft && !bot && authorType !== 'Bot' && !maintainer;
+        incomplete   = partial || !Array.isArray(opinions),
+        onHead       = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
+        finished     = ci === 'red' || ci === 'green',
+        reviewedHere = new Set(reviews.filter(review => review.onHead).map(review => review.reviewer)),
+        // The seats that judged or reviewed an earlier head and have not reviewed this one, in their list order
+        earlier      = list => [...new Set(list.filter(item => !item.onHead && !item.bot && isSeat(item.reviewer) &&
+            !reviewedHere.has(item.reviewer)).map(item => item.reviewer))],
+        judges       = earlier(opinions ?? []),
+        // A judgment standing on an earlier head outranks a comment even after its seat reviewed this one
+        stands       = (opinions ?? []).some(opinion => !opinion.onHead && !opinion.bot && isSeat(opinion.reviewer)),
+        engaged      = stands ? judges : earlier(reviews),
+        untouched    = !requested.length && !reviews.some(review => review.onHead && !review.bot) && !engaged.length,
+        maintainer   = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation),
+        eligible     = owner?.kind === 'outside' && !draft && !bot && authorType !== 'Bot' && !maintainer;
 
     // "untouched" and run-approval completeness require a complete read before handing an outside PR to the rotation
     if (eligible && !incomplete && (runApproval === 'action_required' || finished && untouched)) {
@@ -52,6 +73,18 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
 
     if (ci === 'green' && onHead('APPROVED') && mergeable === 'CONFLICTING') {
         return {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
+    }
+
+    // A green outside head pushed past a seat's review is that seat's Round 2; a seat's standing change request joins
+    // any review a maintainer requested, since only that seat can lift it
+    if (eligible && ci === 'green' && !onHead('APPROVED')) {
+        const ids = [...new Set([...requested, ...(requested.length
+            ? earlier(opinions.filter(opinion => opinion.state === 'CHANGES_REQUESTED'))
+            : engaged)])];
+
+        if (ids.length) {
+            return {role: 'reviewer', kind: 'review', ids}
+        }
     }
 
     if (ci === 'green' && requested.length) {

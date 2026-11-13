@@ -15,31 +15,9 @@
  * `unobserved`, never shown as current work.
  */
 
-import {holderOf}            from './openWorkHolder.mjs';
-import {credentialRefusalOf} from './seatGitIdentity.mjs';
-
-const
-    /** @summary Past this since the last pulse, the projection is stale. */
-    STALE_AFTER_MS       = 5 * 60 * 1000,
-    /** @summary Past this, the last answer is too old to show. */
-    UNAVAILABLE_AFTER_MS = 60 * 60 * 1000;
-
-/**
- * @summary Classify an observation with the projection's shared timestamp bounds.
- * @param {String|null} observedAt
- * @param {Object} options
- * @param {Number} options.now Epoch milliseconds.
- * @param {Number} [options.staleAfterMs]
- * @param {Number} [options.unavailableAfterMs]
- * @returns {'ok'|'stale'|'unavailable'} Missing, invalid or future observations are unavailable.
- */
-export function openWorkFreshness(observedAt, {now, staleAfterMs = STALE_AFTER_MS, unavailableAfterMs = UNAVAILABLE_AFTER_MS}) {
-    const age = now - Date.parse(observedAt);
-
-    return !Number.isFinite(age) || age < 0 || age > unavailableAfterMs
-        ? 'unavailable'
-        : age > staleAfterMs ? 'stale' : 'ok'
-}
+import {holderOf}                                                from './openWorkHolder.mjs';
+import {credentialRefusalOf}                                     from './seatGitIdentity.mjs';
+import {openWorkFreshness, STALE_AFTER_MS, UNAVAILABLE_AFTER_MS} from './openWorkFreshness.mjs';
 
 /**
  * @summary The part of a row a holder acts on, with its title, when it was last observed and who holds

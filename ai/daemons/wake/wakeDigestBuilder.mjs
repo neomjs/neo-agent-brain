@@ -6,6 +6,52 @@ const WAKE_PRIORITY_RANKS = {
     high  : 2
 };
 
+/** @summary The most rows one list of the open-work section names; the rest are counted. */
+const OPEN_WORK_ROWS = 5;
+
+/**
+ * @summary One open-work row as the digest names it: repository, number, title, and `stale` when the producer has
+ * not seen it lately.
+ * @param {Object} row
+ * @returns {String}
+ * @private
+ */
+function openWorkRef(row) {
+    return `${row.repo}#${row.number}${row.title ? ` "${row.title}"` : ''}${row.stale ? ' (stale)' : ''}`
+}
+
+/**
+ * @summary The digest's open-work section: the seat's own open pull requests and the reviews requested of it, from
+ * the plane's copy of the Fleet's projection. A stale copy says since when, and an unavailable copy or one that does
+ * not track the seat says that, so none of them reads as "no open work". No answer renders nothing, which keeps the
+ * push path's digests unchanged.
+ * @param {Object|null} openWork `openWorkCopyStore#ownOpenWorkOf`'s answer for the recipient.
+ * @returns {String}
+ */
+export function formatOwnOpenWork(openWork) {
+    if (!openWork) return '';
+
+    if (openWork.state === 'unavailable' || openWork.state === 'untracked') {
+        return `\n\nYour open work: ${openWork.state} (${openWork.reason}).`
+    }
+
+    const
+        lines   = [],
+        partial = openWork.coverage === 'partial' ? `, partial${openWork.reason ? `: ${openWork.reason}` : ''}` : '',
+        stale   = openWork.state === 'stale' ? `, stale since ${openWork.observedAt}` : '',
+        list    = (rows, line) => {
+            rows.slice(0, OPEN_WORK_ROWS).forEach(row => lines.push(line(row)));
+            rows.length > OPEN_WORK_ROWS && lines.push(`- and ${rows.length - OPEN_WORK_ROWS} more`)
+        };
+
+    list(openWork.authored, row => `- your PR ${openWorkRef(row)}: CI ${row.ci ?? 'unknown'}${row.verdict ? `, ${row.verdict}` : ''}` +
+        `; next: ${row.holder?.role ?? 'unknown'}${row.holder?.kind ? ` (${row.holder.kind})` : ''}`);
+    list(openWork.reviewing, row => `- review requested of you: ${openWorkRef(row)}`);
+
+    return `\n\nYour open work (as of ${openWork.observedAt}${stale}${partial}):` +
+        (lines.length ? `\n${lines.join('\n')}` : ' no open pull request of yours and no review requested of you.')
+}
+
 /**
  * @summary Formats an optional live PR-state echo embedded in a heartbeat pulse summary.
  * @param {Object} summary Decoded heartbeat summary.
@@ -110,11 +156,16 @@ function latestByEventTime(events, field) {
  *      this module's string digest. Deliberately separate implementations (Neo singleton vs spawn-only
  *      daemon entrypoint) — repair one, check the other.
  *
+ * The pull path also passes the recipient's own open work, state rather than an event: it renders after the events
+ * ({@link formatOwnOpenWork}) and never makes a digest on its own.
+ *
  * @param {String} identity Recipient agent identity.
  * @param {Object} events `{messages, tasks, permissions, heartbeats}` arrays.
+ * @param {Object} [context]
+ * @param {Object|null} [context.openWork] The recipient's own open work; the push path passes none.
  * @returns {String}
  */
-export function buildWakeDigest(identity, {messages = [], tasks = [], permissions = [], heartbeats = []} = {}) {
+export function buildWakeDigest(identity, {messages = [], tasks = [], permissions = [], heartbeats = []} = {}, {openWork = null} = {}) {
     const N              = messages.length + tasks.length + permissions.length + heartbeats.length,
           digestPriority = getHighestWakePriority(messages);
 
@@ -162,5 +213,5 @@ export function buildWakeDigest(identity, {messages = [], tasks = [], permission
         priority : digestPriority
     });
 
-    return `[WAKE][priority:${digestPriority}] ${N} events for ${identity}: ${breakdown}${directive ? `\n\n${directive}` : ''}`
+    return `[WAKE][priority:${digestPriority}] ${N} events for ${identity}: ${breakdown}${formatOwnOpenWork(openWork)}${directive ? `\n\n${directive}` : ''}`
 }
