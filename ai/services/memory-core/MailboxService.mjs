@@ -35,6 +35,7 @@ import {
 } from './helpers/messageWalStore.mjs';
 import {readAgentIdentityNodes}       from '../../graph/agentIdentityParticipation.mjs';
 import {IDENTITIES}                   from '../../graph/identityRoots.mjs';
+import {SYSTEM_SENDER}                from '../../graph/mailboxRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {SQLITE_IN_CLAUSE_BATCH_SIZE}  from '../../graph/storage/constants.mjs';
 import {
@@ -140,6 +141,8 @@ const
     REQUEST_PUBLISH_FORMAT_SET        = new Set(REQUEST_PUBLISH_FORMATS),
     PUBLICATION_STATE_SET             = new Set(PUBLICATION_STATES),
     TERMINAL_TASK_STATE_SET           = new Set(['Completed', 'Canceled', 'Failed', 'Rejected', 'Expired']),
+    EXPIRABLE_TASK_STATES             = Object.freeze(['Submitted', 'Working', 'InputRequired']),
+    EXPIRED_ASK_NOTICE_LIMIT          = 100,
     FORBIDDEN_SECRET_KEY_LOWER_SET    = new Set(REQUEST_PUBLISH_FORBIDDEN_SECRET_KEYS.map(key => key.toLowerCase())),
     TASK_ENVELOPE_ALLOWED_FIELD_SET   = new Set(['id', 'state', 'assignee', 'expiresAt', 'fallback', 'requestPublish']),
     ADD_MESSAGE_ALLOWED_TOP_KEYS      = new Set([
@@ -748,6 +751,44 @@ function setRecordProperties(record, properties) {
     } else if (record) {
         record.properties = properties;
     }
+}
+
+/**
+ * @summary SQL for "this MESSAGE row is an ask to a human": addressed to a human principal and no `requestPublish`
+ * Task, which keeps its own expiry rule.
+ * @param {String} column The `Nodes.data` column, qualified where the statement aliases the table.
+ * @returns {String}
+ */
+function humanAskSql(column) {
+    return `(
+        json_extract(${column}, '$.properties.requestPublish') IS NULL
+        AND json_extract(${column}, '$.properties.to') IN (
+            SELECT id FROM Nodes
+            WHERE json_extract(data, '$.label') = 'AgentIdentity' AND json_extract(data, '$.properties.accountType') = 'human'
+        )
+    )`
+}
+
+/**
+ * @summary The expiry sweep's row predicate, shared by the SELECT that names the candidates and the UPDATE that
+ * moves them. A non-terminal Task expires once its own `task.expiresAt` has passed (`@now`). An ask to a human
+ * without a usable deadline expires once it was sent before `@humanAskCutoff`.
+ * @param {String} column The `Nodes.data` column, qualified where the statement aliases the table.
+ * @returns {String}
+ */
+function expiredTaskSql(column) {
+    return `
+        json_extract(${column}, '$.label') = 'MESSAGE'
+        AND json_extract(${column}, '$.properties.task.state') IN (${EXPIRABLE_TASK_STATES.map(state => `'${state}'`).join(', ')})
+        AND COALESCE(json_extract(${column}, '$.properties.publication.state'), '') NOT IN ('publishing', 'unresolved')
+        AND (
+            datetime(json_extract(${column}, '$.properties.task.expiresAt')) < datetime(@now)
+            OR (
+                datetime(json_extract(${column}, '$.properties.task.expiresAt')) IS NULL
+                AND datetime(json_extract(${column}, '$.properties.sentAt')) < datetime(@humanAskCutoff)
+                AND ${humanAskSql(column)}
+            )
+        )`
 }
 
 /**
@@ -3659,6 +3700,12 @@ class MailboxService extends Base {
 
             if (messageProperties.task && typeof messageProperties.task === 'object' && !Array.isArray(messageProperties.task)) {
                 messageProperties.taskAssignmentAuthority = TASK_ASSIGNMENT_AUTHORITY;
+
+                // An ask to a human always has a deadline: the sender's, or the configured span after it was sent
+                if (recipientPrincipalClass === 'human' && !isRequestPublish && messageProperties.task.expiresAt == null &&
+                    EXPIRABLE_TASK_STATES.includes(messageProperties.task.state)) {
+                    messageProperties.task.expiresAt = new Date(Date.parse(timestamp) + aiConfig.mailbox.humanAskTtlMs).toISOString()
+                }
             }
         }
         if (isRequestPublish) {
@@ -6652,9 +6699,10 @@ class MailboxService extends Base {
      *    `sweptCount` for observability rather than per-task results.
      *
      * Idempotent: rerunning when no tasks are expired is a no-op (zero `sweptCount`).
-     * Tasks without an `expiresAt` field are unaffected (TTL is opt-in). Tasks already
-     * in terminal states (`Completed` / `Canceled` / `Failed` / `Rejected` / `Expired`)
-     * are untouched.
+     * A Task to an agent without an `expiresAt` field is unaffected. An ask to a human without a
+     * usable one expires `mailbox.humanAskTtlMs` after it was sent, and its originator is told
+     * ({@link #notifyExpiredAskOriginators}). Tasks already in terminal states
+     * (`Completed` / `Canceled` / `Failed` / `Rejected` / `Expired`) are untouched.
      *
      * NOT exposed via MCP tool surface — internal cron primitive only. See
      * `ai/scripts/lifecycle/sweepExpiredTasks.mjs` for the CLI invoker consumed by the heartbeat.
@@ -6671,6 +6719,7 @@ class MailboxService extends Base {
         }
 
         const sqlite           = db.storage.db;
+        const deadlines        = {now: timestamp, humanAskCutoff: new Date(Date.parse(timestamp) - aiConfig.mailbox.humanAskTtlMs).toISOString()};
         const selectCandidates = sqlite.prepare(`
             SELECT
                 n.id AS taskId,
@@ -6682,14 +6731,14 @@ class MailboxService extends Base {
                     json_extract(n.data, '$.properties.from')
                 ) AS originator,
                 json_extract(n.data, '$.properties.task.assignee') AS assignee,
-                json_extract(n.data, '$.properties.taskAssignmentAuthority') AS assignmentAuthority
+                json_extract(n.data, '$.properties.taskAssignmentAuthority') AS assignmentAuthority,
+                json_extract(n.data, '$.properties.task.fallback') AS fallback,
+                json_extract(n.data, '$.properties.to') AS recipient,
+                json_extract(n.data, '$.properties.sentAt') AS sentAt,
+                json_extract(n.data, '$.properties.subject') AS subject,
+                ${humanAskSql('n.data')} AS humanAsk
             FROM Nodes n
-            WHERE
-                json_extract(n.data, '$.label') = 'MESSAGE'
-                AND json_extract(n.data, '$.properties.task.state') IN ('Submitted', 'Working', 'InputRequired')
-                AND COALESCE(json_extract(n.data, '$.properties.publication.state'), '') NOT IN ('publishing', 'unresolved')
-                AND json_extract(n.data, '$.properties.task.expiresAt') IS NOT NULL
-                AND datetime(json_extract(n.data, '$.properties.task.expiresAt')) < datetime(?)
+            WHERE ${expiredTaskSql('n.data')}
             ORDER BY n.id ASC
         `);
         const stmt = sqlite.prepare(`
@@ -6702,24 +6751,19 @@ class MailboxService extends Base {
                         '$.properties.publication.refusalReason', 'refused: expired',
                         '$.properties.task.publication.state', 'refused',
                         '$.properties.task.publication.refusalReason', 'refused: expired',
-                        '$.properties.lastModifiedAt', ?
+                        '$.properties.lastModifiedAt', @now
                     )
                 ELSE
                     json_set(data,
                         '$.properties.task.state', 'Expired',
-                        '$.properties.lastModifiedAt', ?
+                        '$.properties.lastModifiedAt', @now
                     )
             END
-            WHERE
-                json_extract(data, '$.label') = 'MESSAGE'
-                AND json_extract(data, '$.properties.task.state') IN ('Submitted', 'Working', 'InputRequired')
-                AND COALESCE(json_extract(data, '$.properties.publication.state'), '') NOT IN ('publishing', 'unresolved')
-                AND json_extract(data, '$.properties.task.expiresAt') IS NOT NULL
-                AND datetime(json_extract(data, '$.properties.task.expiresAt')) < datetime(?)
+            WHERE ${expiredTaskSql('data')}
         `);
         const sweepTransaction = sqlite.transaction(() => {
-            const candidates = selectCandidates.all(timestamp);
-            const info       = stmt.run(timestamp, timestamp, timestamp);
+            const candidates = selectCandidates.all(deadlines);
+            const info       = stmt.run(deadlines);
 
             if (info.changes !== candidates.length) {
                 throw new Error(
@@ -6739,9 +6783,9 @@ class MailboxService extends Base {
                 })
             }
 
-            return info
+            return {candidates, info}
         });
-        const info = sweepTransaction.immediate();
+        const {candidates, info} = sweepTransaction.immediate();
 
         if (info.changes > 0) {
             // Fast-forward `lastSyncId` so subsequent `syncCache()` calls won't treat our
@@ -6782,9 +6826,60 @@ class MailboxService extends Base {
             }
 
             WakeSubscriptionService.pump().catch(e => logger.error('[wake-pump]', e));
+
+            await this.notifyExpiredAskOriginators(candidates.filter(candidate => candidate.humanAsk))
         }
 
         return { success: true, sweptCount: info.changes }
+    }
+
+    /**
+     * @summary Tells each originator once which of its asks to a human just expired, with the fallback each one stated.
+     *
+     * One message per originator per sweep, sent as the system principal, so the one party who knows
+     * whether an ask still matters can ask again. A failed send is logged and never fails the sweep:
+     * the expiry is already committed.
+     * @param {Object[]} asks Swept candidates: `{taskId, originator, recipient, subject, sentAt, fallback}`.
+     * @returns {Promise<void>}
+     * @protected
+     */
+    async notifyExpiredAskOriginators(asks) {
+        const byOriginator = new Map();
+
+        for (const ask of asks) {
+            if (ask.originator && ask.originator !== SYSTEM_SENDER.id) {
+                byOriginator.set(ask.originator, [...byOriginator.get(ask.originator) || [], ask])
+            }
+        }
+
+        for (const [originator, expired] of byOriginator) {
+            const
+                listed = expired.slice(0, EXPIRED_ASK_NOTICE_LIMIT),
+                lines  = listed.map(ask => `- "${ask.subject}" to ${ask.recipient}, sent ${ask.sentAt} (${ask.taskId}). ` +
+                    (ask.fallback ? `Fallback you stated: ${ask.fallback}` : 'No fallback stated.'));
+
+            expired.length > listed.length && lines.push(`- and ${expired.length - listed.length} more.`);
+
+            try {
+                await RequestContextService.run({
+                    agentIdentityNodeId: SYSTEM_SENDER.id,
+                    principalClass     : 'system',
+                    sessionId          : 'expired-asks'
+                }, () => this.addMessage({
+                    to     : originator,
+                    subject: `[asks expired · ${expired.length}] to ${[...new Set(expired.map(ask => ask.recipient))].sort().join(', ')}: the deadline passed without an answer`,
+                    body   : [
+                        'These asks left the open list at their deadline. Each stays readable in the recipient\'s mailbox as expired.',
+                        '',
+                        ...lines,
+                        '',
+                        'Ask again if one still matters. An ask that needs longer than the default states its own `task.expiresAt`.'
+                    ].join('\n')
+                }))
+            } catch (error) {
+                logger.error(`[MailboxService] expiry notice to ${originator} failed:`, error)
+            }
+        }
     }
 
     /**

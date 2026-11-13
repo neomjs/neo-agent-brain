@@ -2713,7 +2713,7 @@ paths:
                     expiresAt:
                       type: string
                       format: date-time
-                      description: Optional expiry time consumed by the Task TTL sweeper.
+                      description: Optional expiry time consumed by the Task TTL sweeper. A Task to a human that omits it is stored with a default deadline.
                     fallback:
                       type: string
                       minLength: 1

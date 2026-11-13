@@ -949,7 +949,16 @@ class ConfigBase extends ConfigProvider {
                  *
                  * @type {'blocked'|'open'}
                  */
-                defaultReplyPolicy: leaf('open', 'NEO_MAILBOX_DEFAULT_REPLY_POLICY', 'string')
+                defaultReplyPolicy: leaf('open', 'NEO_MAILBOX_DEFAULT_REPLY_POLICY', 'string'),
+                /**
+                 * How long an ask to a human stays open when it states no deadline of its own. A Task
+                 * addressed to a human principal without `expiresAt` is stored with `sentAt` plus this
+                 * span, and the expiry sweep applies the same span to an open one that carries no usable
+                 * deadline. Tasks to agents, broadcasts and `requestPublish` Tasks are not covered.
+                 *
+                 * @type {Number}
+                 */
+                humanAskTtlMs: leaf(7 * 24 * 60 * 60 * 1000, 'NEO_MAILBOX_HUMAN_ASK_TTL_MS', 'number')
             },
             /**
              * Memory sharing policy for multi-tenant isolation.

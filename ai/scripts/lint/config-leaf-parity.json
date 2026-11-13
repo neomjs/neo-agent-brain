@@ -794,6 +794,7 @@
         "loggerRetention.maxTotalBytes",
         "mailbox",
         "mailbox.defaultReplyPolicy",
+        "mailbox.humanAskTtlMs",
         "maxSessionsPerSummarySweep",
         "mcpHttpPort",
         "memorySharing",

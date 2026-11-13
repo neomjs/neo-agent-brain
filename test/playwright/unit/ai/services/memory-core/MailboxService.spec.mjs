@@ -7534,6 +7534,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         GraphService.upsertNode({id: '@guest',    type: 'AgentIdentity', name: 'Guest',    properties: {accountType: 'human'}});
         GraphService.upsertNode({id: '@fleet',    type: 'AgentIdentity', name: 'Fleet',    properties: {accountType: 'system'}});
         GraphService.upsertNode({id: '@nobody',   type: 'AgentIdentity', name: 'Nobody',   properties: {}});
+        GraphService.upsertNode({id: '@system',   type: 'System',        name: 'System Sender', properties: {accountType: 'system'}});
 
         for (const id of ['@operator', '@guest', '@fleet', '@nobody']) {
             await RequestContextService.run({agentIdentityNodeId: id}, () => PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'}));
@@ -7642,7 +7643,8 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         expect(open).toMatchObject({totalCount: 1, truncated: false, nextOffset: null});
         expect(open.messages).toHaveLength(1);
         expect(open.messages[0]).toMatchObject({messageId: older, priority: 'normal', from: '@alice', task: {state: 'InputRequired', assignee: '@operator'}});
-        expect(open.messages[0].task).not.toHaveProperty('expiresAt');
+        // the summary carries the deadline the write stored, here the default one
+        expect(Date.parse(open.messages[0].task.expiresAt)).toBeGreaterThan(Date.now());
 
         // a read receipt is not an answer
         await actAs('@operator', () => MailboxService.markRead({messageId: older}));
@@ -7874,8 +7876,95 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         // expired: out of the open list and count, the plan still on the persisted Task, the assignee untouched
         expect((await openTasks('@operator', {taskStates: ['InputRequired', 'Submitted', 'Working']})).messages.map(row => row.messageId)).toEqual([moved]);
         expect((await actAs('@operator', () => MailboxService.getMessage({messageId: expiring}))).task).toMatchObject({state: 'Expired', fallback: plan, assignee: assigneeBefore});
-        // nothing executed it: @alice received only the one reply
-        expect((await actAs('@alice', () => MailboxService.listMessages({}))).messages.map(row => row.subject)).toEqual(['Re: a question'])
+        // nothing executed it: @alice received the reply and the notice that the ask expired
+        expect((await actAs('@alice', () => MailboxService.listMessages({}))).messages.map(row => row.subject))
+            .toEqual(['[asks expired · 1] to @operator: the deadline passed without an answer', 'Re: a question'])
+    });
+
+    /** Turns a stored ask into one sent `daysAgo` back that carries no deadline, as asks written before the default do. */
+    function backdateWithoutDeadline(messageId, daysAgo) {
+        GraphService.db.storage.db.prepare(`
+            UPDATE Nodes
+            SET data = json_remove(json_set(data, '$.properties.sentAt', ?), '$.properties.task.expiresAt')
+            WHERE id = ?
+        `).run(new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString(), messageId)
+    }
+
+    const
+        stored     = id => GraphService.db.nodes.get(id).properties,
+        fromSystem = identity => actAs(identity, async () => (await MailboxService.listMessages({})).messages.filter(row => row.from === '@system'));
+
+    test('#1677 AC-1: an ask to a human without a deadline is stored with the default one; a stated deadline, other recipients and a terminal Task are stored as sent', async () => {
+        await seedHumanRecipients();
+
+        const
+            asked     = await ask('@operator'),
+            stated    = await ask('@operator', {task: {state: 'InputRequired', expiresAt: '2099-01-01T00:00:00.000Z'}}),
+            toAgent   = await ask('@bob'),
+            toSystem  = await ask('@fleet'),
+            closed    = await ask('@operator', {task: {state: 'Completed'}}),
+            broadcast = await ask('AGENT:*', {task: {state: 'Submitted'}});
+
+        expect(Date.parse(stored(asked).task.expiresAt) - Date.parse(stored(asked).sentAt)).toBe(mailboxAiConfig.mailbox.humanAskTtlMs);
+        expect(readStoredTask(asked).task.expiresAt).toBe(stored(asked).task.expiresAt);
+        expect(stored(stated).task.expiresAt).toBe('2099-01-01T00:00:00.000Z');
+
+        for (const id of [toAgent, toSystem, closed, broadcast]) {
+            expect(stored(id).task).not.toHaveProperty('expiresAt')
+        }
+    });
+
+    test('#1677 AC-2, AC-3: one sweep ends an open ask to a human that carries no deadline once the default has passed, and no other', async () => {
+        await seedHumanRecipients();
+
+        const
+            plan    = 'Unanswered: I take the narrower scope.',
+            old     = await ask('@operator', {task: {state: 'InputRequired', fallback: plan}}),
+            recent  = await ask('@operator'),
+            toAgent = await ask('@bob');
+
+        backdateWithoutDeadline(old, 8);
+        backdateWithoutDeadline(recent, 6);
+        backdateWithoutDeadline(toAgent, 400);
+
+        expect((await MailboxService.sweepExpiredTasks()).sweptCount).toBe(1);
+
+        // gone from the open view and its count; body and plan stay readable; a Task to an agent never expires on its own
+        expect(await openTasks('@operator')).toMatchObject({totalCount: 1, messages: [{messageId: recent}]});
+        expect(await actAs('@operator', () => MailboxService.getMessage({messageId: old}))).toMatchObject({body: 'which one?', task: {state: 'Expired', fallback: plan}});
+        expect(readStoredTask(toAgent).task.state).toBe('InputRequired');
+        expect((await MailboxService.sweepExpiredTasks()).sweptCount).toBe(0)
+    });
+
+    test('#1677 AC-4: one sweep tells each originator once which of its asks to a human expired; a Task to an agent and an idle sweep send nothing', async () => {
+        await seedHumanRecipients();
+
+        const
+            past    = '2020-01-01T00:00:00.000Z',
+            plan    = 'Unanswered: I take the narrower scope.',
+            first   = await ask('@operator', {subject: 'which scope?', task: {state: 'InputRequired', expiresAt: past, fallback: plan}}),
+            second  = await ask('@guest',    {subject: 'which date?',  task: {state: 'InputRequired', expiresAt: past}}),
+            toAgent = await ask('@bob',      {subject: 'which seat?',  task: {state: 'InputRequired', expiresAt: past}}),
+            bobs    = (await actAs('@bob', () => MailboxService.addMessage({to: '@operator', subject: 'which lane?', body: 'a or b?', task: {state: 'Submitted', expiresAt: past}}))).messageId;
+
+        expect((await MailboxService.sweepExpiredTasks()).sweptCount).toBe(4);
+
+        const [notice, ...others] = await fromSystem('@alice');
+
+        expect(others).toEqual([]);
+        expect(notice.subject).toBe('[asks expired · 2] to @guest, @operator: the deadline passed without an answer');
+
+        const {body} = await actAs('@alice', () => MailboxService.getMessage({messageId: notice.messageId}));
+
+        expect(body).toContain(`- "which scope?" to @operator, sent ${stored(first).sentAt} (${first}). Fallback you stated: ${plan}`);
+        expect(body).toContain(`- "which date?" to @guest, sent ${stored(second).sentAt} (${second}). No fallback stated.`);
+        expect(body).not.toContain(toAgent);
+        expect((await fromSystem('@bob')).map(row => row.subject)).toEqual(['[asks expired · 1] to @operator: the deadline passed without an answer']);
+        expect(stored(bobs).task.state).toBe('Expired');
+
+        await MailboxService.sweepExpiredTasks();
+
+        expect(await fromSystem('@alice')).toHaveLength(1)
     });
 });
 
