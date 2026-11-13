@@ -8602,6 +8602,50 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
             ).rejects.toMatchObject({code: 'refused: digest-mismatch'});
         });
 
+        test('transitionTask refusal hint never advertises Completed for an unpublished requestPublish Task', async () => {
+            const payload = buildValidPublishPayload();
+            const created = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () => MailboxService.addMessage({
+                to            : '@tobiu',
+                subject       : '[requestPublish] refusal hint test',
+                body          : payload.text,
+                taggedConcepts: ['requestPublish'],
+                requestPublish: payload
+            }));
+
+            await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                MailboxService.transitionTask({taskId: created.messageId, newState: 'Working'})
+            );
+
+            let error;
+            try {
+                await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionTask({taskId: created.messageId, newState: 'Completed'})
+                );
+            } catch (caught) {
+                error = caught;
+            }
+
+            expect(error?.code).toBe('refused: not-published');
+            expect(error?.message).toBe('Unauthorized: @tobiu as assignee cannot transition `Working → Completed`; allowed next states for assignee: InputRequired, Failed, Rejected');
+        });
+
+        test('transitionTask refusal hint lists both roles when the caller is originator and assignee', async () => {
+            const created = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () => MailboxService.addMessage({
+                to: '@tobiu', subject: 'self-addressed task', body: 'body', task: {state: 'Submitted'}
+            }));
+
+            let error;
+            try {
+                await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionTask({taskId: created.messageId, newState: 'Completed'})
+                );
+            } catch (caught) {
+                error = caught;
+            }
+
+            expect(error?.message).toBe('Unauthorized: @tobiu as originator and assignee cannot transition `Submitted → Completed`; allowed next states for originator and assignee: Canceled, Working');
+        });
+
         test('AC-3: publication state (queued → publishing → published | refused | unresolved) admits only legal moves, stores textAsRequested and textAsPublished, and refuses Task Completed while publication state is not published', async () => {
             const payload = buildValidPublishPayload();
             const created = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
