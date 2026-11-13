@@ -120,8 +120,8 @@ export function projectWakeDelivery(records = []) {
             attemptTime(right).localeCompare(attemptTime(left))
         );
 
-        const verdict = unknownVerdict();
-        let sawDelivered  = false,
+        const verdict      = unknownVerdict();
+        let   sawDelivered = false,
             leadingUnknown = false,
             streakOpen     = true;
 
@@ -235,6 +235,43 @@ export function projectMessageDelivery(records, messageIds = []) {
     }
 
     return verdicts
+}
+
+/**
+ * @summary How long a pull route may go without a poll before its seat counts as having no listener. A
+ * live listener polls every 15 s and backs off to two minutes at most, and its re-arm after a failed turn
+ * waits two minutes at most, so five silent minutes are no back-off of a live listener.
+ * @type {Number}
+ */
+export const PULL_ROUTE_SILENCE_MS = 5 * 60 * 1000;
+
+/**
+ * @summary The verdict for a pull route, which no receiver record concludes: its seat polls it.
+ *
+ * A poll inside {@link PULL_ROUTE_SILENCE_MS} reads reachable. So does a stale poll while the seat's turn
+ * presence is fresh, because a seat hands its listener to the turn a wake started and polls again when
+ * that turn ends. A stale poll with no turn in progress is a seat with no listener: a crashed or killed
+ * session, or a failed turn whose error no rewake cures. A route that never polled stays unconcluded.
+ * @param {Object} [options]
+ * @param {String|null} [options.lastPollAt] The route's last authenticated poll.
+ * @param {Object|null} [options.presence] The seat's newest active turn, `{fresh}`, as
+ *     `TurnPresenceService#getFreshTurnPresence` returns it.
+ * @param {Number|Date} [options.now=Date.now()]
+ * @param {Number} [options.silenceMs=PULL_ROUTE_SILENCE_MS]
+ * @returns {Object|null} A verdict {@link projectIdentityWakeReachability} reads, or `null` when unconcluded.
+ */
+export function projectPullRouteVerdict({lastPollAt, presence, now = Date.now(), silenceMs = PULL_ROUTE_SILENCE_MS} = {}) {
+    const polledAt = Date.parse(lastPollAt ?? '');
+
+    if (!Number.isFinite(polledAt)) return null;
+
+    if (new Date(now).getTime() - polledAt <= silenceMs || presence?.fresh) return {state: 'reachable'};
+
+    return {
+        state            : 'unreachable',
+        lastAttemptedAt  : lastPollAt,
+        lastOutcomeReason: `listener silent: no poll since ${lastPollAt} and no turn in progress`
+    }
 }
 
 /**
