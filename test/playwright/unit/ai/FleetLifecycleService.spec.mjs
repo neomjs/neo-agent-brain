@@ -43,6 +43,7 @@ import {createManagedAgentWorkspacePlan}                                        
 import {startAgentProvisioned}                                                                from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 import {writeFileAtomicSync}                                                                  from '../../../../ai/services/shared/atomicFileWrite.mjs';
 import {createAntigravityLaunchBinding, createCodexLaunchBinding, createDesktopLaunchBinding} from '../../../../ai/services/fleet/launchProfileCustody.mjs';
+import {materializeHarnessGeneration}                                                         from '../../../../ai/services/fleet/harnessGeneration.mjs';
 import {
     createLaunchRequest,
     mintLaunchGrant,
@@ -3625,7 +3626,10 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         }
     });
 
-    /** A store double over real executable Claude Desktop copies under the seat's agents root, listed newest first. */
+    /**
+     * A store double over real executable Claude Desktop copies under the seat's agents root, listed newest first. Their
+     * ledger is written too, so `harnessGenerationStore = null` hands the same copies to the real store.
+     */
     function claudeGenerationCopies() {
         const root = path.join(FleetLifecycleService.instanceRoot, 'harnesses'), generations = [];
 
@@ -3642,8 +3646,11 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 fs.mkdirSync(path.dirname(binaryPath), {recursive: true});
                 fs.symlinkSync(process.execPath, binaryPath);
                 generations.push({id, appBundle, binaryPath, shortVersion: '1.0', buildVersion});
+                fs.writeFileSync(path.join(root, 'claude-desktop', 'ledger.json'), JSON.stringify({version: 1, rejected: [],
+                    admitted: generations.map(entry => ({id: entry.id, appName: 'Claude.app', executable: 'Claude', shortVersion: '1.0', buildVersion: entry.buildVersion}))}));
                 return binaryPath
-            }
+            },
+            present: id => fs.existsSync(path.join(root, 'claude-desktop', id))
         }
     }
 
@@ -3695,27 +3702,104 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         expect(calls, 'no admission ran and no ledger was written').toEqual([])
     });
 
-    test('retirement holds what the seat lifecycle names, every record pin and every lease on disk; an unreadable lease keeps everything', async () => {
-        const {home} = installSeat('claude-desktop'), store = (claudeGenerationCopies(), FleetLifecycleService.harnessGenerationStore), calls = [];
+    test('retirement holds every record pin and every lease pin on disk; a lease that cannot be read, is not the seat\'s own or pins no generation id keeps everything', async () => {
+        const {home} = installSeat('claude-desktop'), copies = claudeGenerationCopies(), [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map(letter => letter.repeat(64));
 
-        store.retire = async ({family, held}) => {
-            calls.push({family, held: [...held].sort()});
-            return {retired: ['d'.repeat(64)], kept: []}
-        };
+        for (const id of [a, b, c, d, e]) copies.admit(id);
+        FleetLifecycleService.harnessGenerationStore = null;
+        FleetLifecycleService.processes.set('other', {id: 'other', harnessGeneration: claudePin(b)});
 
-        FleetLifecycleService.processes.set('other', {id: 'other', harnessType: 'claude-desktop', harnessGeneration: {generationId: 'b'.repeat(64)}});
-        writeLease(home, {harnessGenerationId: 'a'.repeat(64)});
+        const
+            retire     = () => FleetLifecycleService.retireHarnessGenerations('claude-desktop'),
+            unprovable = "the lease of seat 'seat' does not prove its harness generation",
+            raw        = source => () => fs.writeFileSync(path.join(home, LEASE_FILE), source);
 
-        expect(await FleetLifecycleService.retireHarnessGenerations('claude-desktop')).toEqual({retired: ['d'.repeat(64)], kept: []});
-        expect(calls).toEqual([{family: 'claude-desktop', held: ['a'.repeat(64), 'b'.repeat(64)]}]);
+        for (const [name, write, reason] of [
+            ...[42, '', 'not-a-generation-id', null].map(pin => [`pin ${JSON.stringify(pin)}`, () => writeLease(home, {harnessGenerationId: pin}), unprovable]),
+            ['another seat\'s', () => writeLease(home, {agentId: 'other', harnessGenerationId: a}), unprovable],
+            ['JSON null',      raw('null'),       unprovable],
+            ['truncated JSON', raw('{"pid": 42'), "the lease of seat 'seat' could not be read"]
+        ]) {
+            write();
+            expect(await retire(), name).toEqual({retired: [], kept: [e, d, c, b, a], reason})
+        }
 
-        fs.writeFileSync(path.join(home, LEASE_FILE), '{"pid": 42');
+        writeLease(home, {harnessGenerationId: a});
+        expect(await retire(), 'the newest two, the record\'s pin and the lease\'s pin').toEqual({retired: [c], kept: [e, d, b, a]});
 
-        expect(await FleetLifecycleService.retireHarnessGenerations('claude-desktop'))
-            .toEqual({retired: [], kept: [], reason: "the lease of seat 'seat' could not be read"});
-        expect(calls, 'nothing is retired while a pin is unknown').toHaveLength(1);
+        writeLease(home);
+        expect(await retire(), 'a lease without the key pins nothing').toEqual({retired: [a], kept: [e, d, b]});
+        expect([a, b, c].map(copies.present)).toEqual([false, true, false])
+    });
 
-        FleetLifecycleService.processes.delete('other')
+    test('retirement reads the pins when it removes, after the admission queued before it: a pin published while it waits keeps its copy', async () => {
+        installSeat('claude-desktop');
+
+        const copies = claudeGenerationCopies(), [a, b, c] = ['a', 'b', 'c'].map(letter => letter.repeat(64));
+        let release;
+        const gate = new Promise(resolve => release = resolve);
+
+        for (const id of [a, b, c]) copies.admit(id);
+        FleetLifecycleService.harnessGenerationStore = null;
+
+        // an admission still copying, so the retirement queues behind it on the family's chain
+        const
+            admission  = materializeHarnessGeneration({root: FleetLifecycleService.harnessGenerationRoot, family: 'claude-desktop',
+                sourceBundle: '/nowhere/Claude.app', seams: {copyBundle: () => gate, readBundleInfo: () => ({})}}),
+            retirement = FleetLifecycleService.retireHarnessGenerations('claude-desktop');
+
+        FleetLifecycleService.processes.set('other', {id: 'other', harnessGeneration: claudePin(a)});
+        release();
+
+        expect(await admission).toMatchObject({admitted: false, reason: 'bundle-metadata-invalid'});
+        expect(await retirement).toEqual({retired: [], kept: [c, b, a]});
+        expect(copies.present(a)).toBe(true)
+    });
+
+    test('a pending Start keeps every copy, since it selects its build before its record pins it; once it publishes the pin or releases its attempt, retirement goes on', async () => {
+        const
+            {home}          = installSeat('claude-desktop'),
+            copies          = claudeGenerationCopies(),
+            [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map(letter => letter.repeat(64)),
+            retire          = () => FleetLifecycleService.retireHarnessGenerations('claude-desktop'),
+            pending         = {retired: [], reason: "a Start of seat 'seat' is pending"};
+
+        copies.admit(a);
+        FleetLifecycleService.harnessGenerationStore  = null;
+        FleetLifecycleService.harnessGenerationOptIns = {'claude-desktop': true};
+
+        // released: the Start selected a, then ended without a pin
+        let signal = FleetLifecycleService.beginStart('seat');
+
+        try {
+            expect(FleetLifecycleService.selectedHarnessGeneration('claude-desktop').id).toBe(a);
+            copies.admit(b, '2');
+            copies.admit(c, '3');
+            expect(await retire()).toEqual({...pending, kept: [c, b, a]})
+        } finally {
+            FleetLifecycleService.finishStart('seat', signal)
+        }
+
+        expect(await retire()).toEqual({retired: [a], kept: [c, b]});
+
+        // published: the Start selected c, and its record pins c once it launches
+        signal = FleetLifecycleService.beginStart('seat');
+
+        try {
+            const selected = FleetLifecycleService.selectedHarnessGeneration('claude-desktop');
+
+            copies.admit(d, '4');
+            copies.admit(e, '5');
+            expect(await retire()).toEqual({...pending, kept: [e, d, c, b]});
+
+            FleetLifecycleService.processInspectFn = () => ({startedAt: STARTED_AT, command: `${selected.binaryPath} --user-data-dir=${home}`});
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT, remoteMcpCapability: FleetLifecycleService.harnessGenerationLaunch('claude-desktop', selected)})
+        } finally {
+            FleetLifecycleService.finishStart('seat', signal)
+        }
+
+        expect(FleetLifecycleService.status('seat').harnessGeneration).toEqual(claudePin(c, '3'));
+        expect(await retire()).toEqual({retired: [b], kept: [e, d, c]})
     });
 
     test('a fresh Fleet server re-adopts a seat running from its leased generation, opted in or not; an id the ledger has not admitted voids the lease', () => {

@@ -27,7 +27,7 @@ import McpLaunchAdmissionService                                                
 import {LAUNCH_ADMISSION_REASONS}                                                         from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isOnInstance}                                                                     from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}                       from './manageCodexDesktopRuntime.mjs';
-import {HARNESS_GENERATION_FAMILIES, listHarnessGenerations, materializeHarnessGeneration,
+import {HARNESS_GENERATION_FAMILIES, isHarnessGenerationId, listHarnessGenerations, materializeHarnessGeneration,
         readHarnessBundleInfo, readHarnessGenerationLedger, readHarnessHostGate,
         retireHarnessGenerations}                                                          from './harnessGeneration.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                                         from './seatGitIdentity.mjs';
@@ -3567,19 +3567,40 @@ class FleetLifecycleService extends Base {
 
     /**
      * @summary Retires the family's admitted generations nothing holds (`retireHarnessGenerations`). The
-     * seat lifecycle names what is held: every seat record's pin and every lease of the family's seats on
-     * disk, so a seat this server has not adopted yet keeps its build too. A lease that cannot be read
-     * keeps everything, and the result names the seat.
+     * store reads {@link heldHarnessGenerations} on its admission chain, in the step that removes, so a pin
+     * published while the retirement waits keeps its copy. Ownership it cannot prove keeps everything, and
+     * the result names the seat.
      * @param {String} harnessType
      * @returns {Promise<{retired: String[], kept: String[], reason?: String}>}
      */
     async retireHarnessGenerations(harnessType) {
         if (!Object.hasOwn(HARNESS_GENERATION_FAMILIES, harnessType)) return {retired: [], kept: []};
 
+        return this.getHarnessGenerationStore().retire({root: this.getHarnessGenerationRoot(), family: harnessType,
+            held: () => this.heldHarnessGenerations(harnessType)})
+    }
+
+    /**
+     * @summary The family's generation ids the seat lifecycle holds now: every seat record's pin and every
+     * pin a lease of the family's seats declares on disk, so a seat this server has not adopted yet keeps
+     * its build too. A lease declares no pin only by omitting the key, as the Fleet writes it for a seat
+     * launched without a generation.
+     * @param {String} harnessType
+     * @returns {Set<String>}
+     * @throws {Error} Naming the seat whose hold cannot be proved: a pending Start, which selects its build
+     *     before its record pins it, an unreadable lease, or a lease that is not the seat's own or pins no
+     *     generation id.
+     * @private
+     */
+    heldHarnessGenerations(harnessType) {
+        const [pending] = this.pendingStarts.keys();
+
+        if (pending) throw new Error(`a Start of seat '${pending}' is pending`);
+
         const held = new Set();
 
-        for (const record of this.processes.values()) {
-            if (record.harnessType === harnessType && record.harnessGeneration?.generationId) held.add(record.harnessGeneration.generationId)
+        for (const {harnessGeneration} of this.processes.values()) {
+            if (harnessGeneration?.family === harnessType) held.add(harnessGeneration.generationId)
         }
 
         for (const {id} of this.getRegistry().listAgents?.() ?? []) {
@@ -3592,13 +3613,19 @@ class FleetLifecycleService extends Base {
                 lease = JSON.parse(fs.readFileSync(leasePath, 'utf8'))
             } catch (error) {
                 if (error?.code === 'ENOENT') continue;
-                return {retired: [], kept: [], reason: `the lease of seat '${id}' could not be read`}
+                throw new Error(`the lease of seat '${id}' could not be read`)
             }
 
-            if (typeof lease?.harnessGenerationId === 'string') held.add(lease.harnessGenerationId)
+            if (lease?.agentId === id && !Object.hasOwn(lease, 'harnessGenerationId')) continue;
+
+            if (lease?.agentId !== id || !isHarnessGenerationId(lease.harnessGenerationId)) {
+                throw new Error(`the lease of seat '${id}' does not prove its harness generation`)
+            }
+
+            held.add(lease.harnessGenerationId)
         }
 
-        return this.getHarnessGenerationStore().retire({root: this.getHarnessGenerationRoot(), family: harnessType, held})
+        return held
     }
 
     /**

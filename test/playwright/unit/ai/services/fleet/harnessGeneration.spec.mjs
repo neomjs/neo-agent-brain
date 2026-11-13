@@ -222,7 +222,7 @@ test.describe('harnessGeneration', () => {
     test('retirement keeps the selected generation, its rollback and every held one, removes the other copies and stamps their ledger entries', async () => {
         const [g0, g1, g2, g3, g4] = await admitBuilds(5), at = new Date('2026-11-13T03:00:00Z');
 
-        expect(await retireHarnessGenerations({root, family: 'codex-desktop', held: [g1.id], now: () => at}))
+        expect(await retireHarnessGenerations({root, family: 'codex-desktop', held: () => [g1.id], now: () => at}))
             .toEqual({retired: [g2.id, g0.id], kept: [g4.id, g3.id, g1.id]});
 
         expect(listHarnessGenerations({root, family: 'codex-desktop'}).map(({id}) => id)).toEqual([g4.id, g3.id, g1.id]);
@@ -232,13 +232,41 @@ test.describe('harnessGeneration', () => {
         expect(ledger().admitted.filter(entry => entry.retiredAt).map(entry => [entry.id, entry.retiredAt]))
             .toEqual([[g0.id, at.toISOString()], [g2.id, at.toISOString()]]);
 
-        expect(await retireHarnessGenerations({root, family: 'codex-desktop', held: [g1.id]})).toEqual({retired: [], kept: [g4.id, g3.id, g1.id]})
+        expect(await retireHarnessGenerations({root, family: 'codex-desktop', held: () => [g1.id]})).toEqual({retired: [], kept: [g4.id, g3.id, g1.id]})
+    });
+
+    test('retirement reads what is held on the family\'s chain, after the admission queued before it; a read that throws or is missing keeps every copy', async () => {
+        const [g0, g1, g2] = await admitBuilds(3), holds = [];
+        let release;
+        const gate = new Promise(resolve => release = resolve);
+
+        // an admission still copying, so the retirement queues behind it
+        const admission = materializeHarnessGeneration({
+            root, family: 'codex-desktop', sourceBundle: makeSource(roots),
+            seams: {
+                ...build({shortVersion: '26.113.0', buildVersion: '26003', cdhash: '3'.repeat(64)}),
+                copyBundle: async (source, target) => { await gate; fs.cpSync(source, target, {recursive: true}) }
+            }
+        });
+        const retirement = retireHarnessGenerations({root, family: 'codex-desktop', held: () => holds});
+
+        holds.push(g0.id);
+        release();
+
+        const g3 = await admission;
+
+        expect(await retirement, 'the newest two after that admission, and the hold published while waiting').toEqual({retired: [g1.id], kept: [g3.id, g2.id, g0.id]});
+
+        expect(await retireHarnessGenerations({root, family: 'codex-desktop', held: () => { throw new Error('a pin cannot be read') }}))
+            .toEqual({retired: [], kept: [g3.id, g2.id, g0.id], reason: 'a pin cannot be read'});
+        expect(await retireHarnessGenerations({root, family: 'codex-desktop'})).toMatchObject({retired: [], kept: [g3.id, g2.id, g0.id]});
+        expect(fs.existsSync(path.join(familyDir(), g0.id))).toBe(true)
     });
 
     test('a retired build admitted again has its copy back without its retiredAt stamp, and never displaces the selection', async () => {
         const [g0, , g2] = await admitBuilds(3);
 
-        await retireHarnessGenerations({root, family: 'codex-desktop'});
+        await retireHarnessGenerations({root, family: 'codex-desktop', held: () => []});
         expect(ledger().admitted[0]).toMatchObject({id: g0.id, retiredAt: expect.any(String)});
 
         const again = await materializeHarnessGeneration({
