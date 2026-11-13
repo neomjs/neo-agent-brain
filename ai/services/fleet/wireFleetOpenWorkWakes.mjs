@@ -261,8 +261,9 @@ function freshWake(wake, state, now) {
  * @param {Function} [options.readFailedChecks] `(wake) → Promise<String[]|null>`: a `repair-ci` wake's failing
  *     checks, read once before its send. A throw or null sends the wake with the names unknown.
  * @param {Function} [options.readDelivery] `(messageIds) → Promise<{messages}>`: the same verified plane's delivery
- *     read, asked only about admitted holder wakes first observed at least `HOLDER_SILENT_MS` ago. A throw or an
- *     absent answer reads every message unknown, so nobody is certified silent.
+ *     read, asked about every admitted holder wake first observed at least `HOLDER_SILENT_MS` ago, at most
+ *     `DELIVERY_READ_MAX` ids per call. A throw or an absent answer reads that call's messages unknown, so none of
+ *     them is certified silent.
  * @param {Object} [options.log] Bounded diagnostics; sender error contents are never logged.
  * @returns {Function} Post-pulse callback with an async stop() method; persistence errors reject.
  */
@@ -277,19 +278,30 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
     };
 
     /**
-     * @summary The delivery verdicts of the admitted holder wakes old enough to have gone silent, oldest first. A wake
-     * is delivered no earlier than its action was first observed, so a younger one is never asked about.
+     * @summary The delivery verdicts of every admitted holder wake old enough to have gone silent, read each round in
+     * batches of the plane's bound, oldest first: a fixed first batch would starve every wake behind it. A wake is
+     * delivered no earlier than its action was first observed, so a younger one is never asked about. A batch whose
+     * read fails leaves only its own wakes unknown.
      */
     const deliveriesOf = async (ledger, time) => {
         const ids = Object.values(ledger?.holding ?? {})
             .filter(entry => entry.status === 'admitted' && entry.wake.role !== 'rotation' && entry.messageId &&
                 Date.parse(entry.wake.episode) <= time - HOLDER_SILENT_MS)
             .sort((left, right) => left.wake.episode.localeCompare(right.wake.episode))
-            .slice(0, DELIVERY_READ_MAX)
             .map(entry => entry.messageId);
 
         if (!ids.length || typeof readDelivery !== 'function') return null;
-        try { return (await readDelivery(ids))?.messages ?? null } catch { return null }
+
+        const verdicts = {};
+
+        for (let start = 0; start < ids.length; start += DELIVERY_READ_MAX) {
+            try {
+                const messages = (await readDelivery(ids.slice(start, start + DELIVERY_READ_MAX)))?.messages;
+                if (messages && typeof messages === 'object' && !Array.isArray(messages)) Object.assign(verdicts, messages)
+            } catch { /* this batch's wakes stay unknown */ }
+        }
+
+        return verdicts
     };
 
     /** @summary Read the route projection and the plan resets only when a plan has eligible work. */

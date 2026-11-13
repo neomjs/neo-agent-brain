@@ -827,6 +827,58 @@ test.describe('wireFleetOpenWorkWakes — a holder is certified silent only from
         }
     });
 
+    test('every eligible receipt is read each round in plane-sized batches, so a delivered one past the first hundred still escalates; a failed batch leaves only its own ids unknown (AC-2, RA-1)', async () => {
+        /** @summary 101 seat-held PRs: the first hundred turn red at minute 1, the last one at `last`. */
+        const many = (minute, last = 1) => {
+            const rows = Object.fromEntries(Array.from({length: 101}, (_, index) => {
+                const number = index + 1, red = minute >= (number === 101 ? last : 1),
+                    row = {key: `acme/app#${number}`, repo: 'acme/app', number, head: HEAD, owner: {kind: 'seat', seat: SEAT},
+                        ci: red ? 'red' : 'pending', verdict: null, mergeable: 'MERGEABLE', draft: false,
+                        requested: [], reviews: [], opinions: [], partial: false, observedAt: iso(minute)};
+                return [row.key, row]
+            }));
+            return {observedAt: iso(minute), coverage: 'complete', snapshot: {rows, closed: {}}, transitions: [], pulses: [{at: iso(-1500)}, {at: iso(minute)}]}
+        };
+
+        for (const secondBatch of ['answers', 'throws']) {
+            const sends = [], asked = [];
+            let   minute = 0;
+            const round  = createOpenWorkWakeRound({
+                store       : memoryStore(), gateOf: openGate, now: () => at(minute), rotationSeats: [SEAT, ROTATION], log: {},
+                admitWake   : async message => (sends.push(message), {messageId: `MESSAGE:${sends.length}`}),
+                readDelivery: async messageIds => {
+                    asked.push(messageIds.length);
+                    if (secondBatch === 'throws' && asked.length === 2) throw new Error('plane refused');
+                    // the hundred oldest stay undelivered; the youngest, read last, was delivered
+                    return {messages: Object.fromEntries(messageIds.map(id => [id, id === 'MESSAGE:101' ? {state: 'delivered', at: iso(3)} : {state: 'failed', at: null}]))}
+                }
+            });
+
+            await round(many(0, 2)); minute = 1;
+            await round(many(1, 2)); minute = 2;
+            await round(many(2, 2));
+            expect(sends.map(({kind}) => kind), secondBatch).toEqual(Array(101).fill('repair-ci'));
+
+            minute = 250;
+            await round(many(250, 2));
+            expect(asked, `${secondBatch}: one read per hundred eligible receipts`).toEqual([100, 1]);
+
+            const escalations = () => sends.slice(101).map(({kind, to, holder, number}) => ({kind, to, holder, number}));
+
+            expect(escalations(), secondBatch).toEqual(secondBatch === 'answers' ? [{kind: 'holder-silent', to: ROTATION, holder: SEAT, number: 101}] : []);
+
+            // the next round reads every batch again: a recovered read escalates then, and nothing escalates twice
+            minute = 251;
+            await round(many(251, 2));
+            expect(escalations(), `${secondBatch}: next round`).toEqual([{kind: 'holder-silent', to: ROTATION, holder: SEAT, number: 101}]);
+
+            minute = 252;
+            await round(many(252, 2));
+            expect(escalations(), `${secondBatch}: once per head`).toHaveLength(1);
+            await round.stop()
+        }
+    });
+
     test('a saved receipt that is not a message id is refused with the rest of a malformed ledger', async () => {
         const store = memoryStore(), round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(1),
             admitWake: async () => ({messageId: 'MESSAGE:repair'}), log: {}});
