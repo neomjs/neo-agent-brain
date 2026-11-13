@@ -763,9 +763,10 @@ async function boot() {
             onPulse: state => Promise.all([wakeRound?.(state), copyRound?.(state)])});
 
         // Nothing but the Fleet ever updates a seat's harness: it fetches and admits every opted-in family's
-        // new builds itself, and a seat adopts one at its next Start.
+        // new builds itself, a seat adopts one at its next Start, and builds no seat holds are retired.
         harnessAcquisition = wireFleetHarnessAcquisition({
             context   : family => lifecycle.harnessAcquisitionContext(family),
+            retire    : family => lifecycle.retireHarnessGenerations(family),
             intervalMs: AiConfig.fleet.harnessGenerations.checkIntervalHours * 3_600_000
         });
 

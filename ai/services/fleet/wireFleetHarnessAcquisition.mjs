@@ -49,6 +49,9 @@ const MAX_TIMER_MS = 2_147_483_647;
  * @param {Number} [options.bootDelayMs=BOOT_DELAY_MS] Delay before the first run.
  * @param {Object} [options.acquirers=HARNESS_ACQUIRERS] `{[family]: {acquire, version}}`.
  * @param {Function} [options.select=selectHarnessGeneration] Reads the family's selected generation.
+ * @param {Function|null} [options.retire=null] `(family) => Promise<{retired, kept, reason?}>`, normally
+ * `FleetLifecycleService#retireHarnessGenerations`: runs after each opted-in family's acquisition, in the same
+ * turn, so the store never grows past what the seats hold.
  * @param {Function} [options.now] Clock seam.
  * @param {Object} [options.log=console]
  * @returns {{pulse: Function, status: Function, stop: Function}|null} `null` without a context, a positive finite
@@ -60,6 +63,7 @@ export function wireFleetHarnessAcquisition({
     bootDelayMs = BOOT_DELAY_MS,
     acquirers   = HARNESS_ACQUIRERS,
     select      = selectHarnessGeneration,
+    retire      = null,
     now         = () => new Date(),
     log         = console
 } = {}) {
@@ -73,6 +77,17 @@ export function wireFleetHarnessAcquisition({
 
     let stopped = false;
 
+    // A retirement that throws or keeps everything is recorded beside the check, never instead of it.
+    const retireFamily = async family => {
+        try {
+            const {retired = [], reason = null} = await retire(family) ?? {};
+
+            return reason ? {retired, retireReason: reason} : {retired}
+        } catch (error) {
+            return {retired: [], retireReason: error?.code ?? error?.message ?? String(error)}
+        }
+    };
+
     const runFamily = family => {
         if (stopped || running.has(family)) return running.get(family) ?? Promise.resolve(status.get(family));
 
@@ -84,27 +99,30 @@ export function wireFleetHarnessAcquisition({
 
             const lastCheckAt = now().toISOString();
 
-            let result;
+            let entry;
 
             try {
-                result = await acquirer.acquire({root, installedBundle})
+                const result = await acquirer.acquire({root, installedBundle});
+
+                let selectedVersion = null;
+
+                // an unreadable ledger leaves the selection unknown, never the check
+                try { selectedVersion = select({root, family})?.shortVersion ?? null } catch {}
+
+                entry = {family, state: 'checked', lastCheckAt, outcome: result?.status ?? null,
+                    candidateVersion: acquirer.version(result), selectedVersion, reason: result?.reason ?? null}
             } catch (error) {
-                return {family, state: 'failed', lastCheckAt, outcome: null, reason: error?.code ?? error?.message ?? String(error)}
+                entry = {family, state: 'failed', lastCheckAt, outcome: null, reason: error?.code ?? error?.message ?? String(error)}
             }
 
-            let selectedVersion = null;
-
-            // an unreadable ledger leaves the selection unknown, never the check
-            try { selectedVersion = select({root, family})?.shortVersion ?? null } catch {}
-
-            return {family, state: 'checked', lastCheckAt, outcome: result?.status ?? null,
-                candidateVersion: acquirer.version(result), selectedVersion, reason: result?.reason ?? null}
+            return retire ? {...entry, ...await retireFamily(family)} : entry
         })().catch(error => ({family, state: 'failed', outcome: null, reason: error?.message ?? String(error)}))
             .then(entry => {
                 status.set(family, entry);
                 if (entry.state === 'checked' || entry.state === 'failed') {
                     log.log(`[fleet] harness acquisition ${family}: ${entry.state} ${entry.outcome ?? ''} ` +
-                        `(candidate ${entry.candidateVersion ?? '-'}, selected ${entry.selectedVersion ?? '-'})${entry.reason ? `: ${entry.reason}` : ''}`)
+                        `(candidate ${entry.candidateVersion ?? '-'}, selected ${entry.selectedVersion ?? '-'})${entry.reason ? `: ${entry.reason}` : ''}` +
+                        `${entry.retired?.length ? `; retired ${entry.retired.length}` : ''}${entry.retireReason ? `; retirement kept everything: ${entry.retireReason}` : ''}`)
                 }
                 return entry
             })

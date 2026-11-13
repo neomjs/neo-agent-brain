@@ -27,8 +27,9 @@ import McpLaunchAdmissionService                                                
 import {LAUNCH_ADMISSION_REASONS}                                                         from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isOnInstance}                                                                     from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}                       from './manageCodexDesktopRuntime.mjs';
-import {HARNESS_GENERATION_FAMILIES, listHarnessGenerations, materializeHarnessGeneration,
-        readHarnessBundleInfo, readHarnessGenerationLedger, readHarnessHostGate}           from './harnessGeneration.mjs';
+import {HARNESS_GENERATION_FAMILIES, isHarnessGenerationId, listHarnessGenerations, materializeHarnessGeneration,
+        readHarnessBundleInfo, readHarnessGenerationLedger, readHarnessHostGate,
+        retireHarnessGenerations}                                                          from './harnessGeneration.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                                         from './seatGitIdentity.mjs';
 import {runtimeGenerationPin, readRuntimeGeneration, readRuntimeGenerationRecord} from './runtimeGeneration.mjs';
 import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}    from './runtimeGenerationLease.mjs';
@@ -159,7 +160,8 @@ const HARNESS_GENERATION_STORE = Object.freeze({
     list          : listHarnessGenerations,
     materialize   : materializeHarnessGeneration,
     readBundleInfo: readHarnessBundleInfo,
-    readLedger    : readHarnessGenerationLedger
+    readLedger    : readHarnessGenerationLedger,
+    retire        : retireHarnessGenerations
 });
 
 /**
@@ -529,9 +531,9 @@ class FleetLifecycleService extends Base {
     harnessGenerationRoot = null
 
     /**
-     * The store calls an opted-in Start makes, `{materialize, readBundleInfo, readLedger, select}` with
-     * `harnessGeneration.mjs`'s signatures. Defaults to that module; injectable so unit specs never copy,
-     * sign-check or probe a vendor bundle.
+     * The store calls an opted-in Start and a retirement make, `{list, materialize, readBundleInfo,
+     * readLedger, retire}` with `harnessGeneration.mjs`'s signatures. Defaults to that module; injectable so
+     * unit specs never copy, sign-check, probe or delete a vendor bundle.
      * @member {Object|null} harnessGenerationStore=null
      */
     harnessGenerationStore = null
@@ -3561,6 +3563,69 @@ class FleetLifecycleService extends Base {
 
         return this.getHarnessGenerationStore().list({root: this.getHarnessGenerationRoot(), family: harnessType})
             .map(generation => ({family: harnessType, ...generation}))
+    }
+
+    /**
+     * @summary Retires the family's admitted generations nothing holds (`retireHarnessGenerations`). The
+     * store reads {@link heldHarnessGenerations} on its admission chain, in the step that removes, so a pin
+     * published while the retirement waits keeps its copy. Ownership it cannot prove keeps everything, and
+     * the result names the seat.
+     * @param {String} harnessType
+     * @returns {Promise<{retired: String[], kept: String[], reason?: String}>}
+     */
+    async retireHarnessGenerations(harnessType) {
+        if (!Object.hasOwn(HARNESS_GENERATION_FAMILIES, harnessType)) return {retired: [], kept: []};
+
+        return this.getHarnessGenerationStore().retire({root: this.getHarnessGenerationRoot(), family: harnessType,
+            held: () => this.heldHarnessGenerations(harnessType)})
+    }
+
+    /**
+     * @summary The family's generation ids the seat lifecycle holds now: every seat record's pin and every
+     * pin a lease of the family's seats declares on disk, so a seat this server has not adopted yet keeps
+     * its build too. A lease declares no pin only by omitting the key, as the Fleet writes it for a seat
+     * launched without a generation.
+     * @param {String} harnessType
+     * @returns {Set<String>}
+     * @throws {Error} Naming the seat whose hold cannot be proved: a pending Start, which selects its build
+     *     before its record pins it, an unreadable lease, or a lease that is not the seat's own or pins no
+     *     generation id.
+     * @private
+     */
+    heldHarnessGenerations(harnessType) {
+        const [pending] = this.pendingStarts.keys();
+
+        if (pending) throw new Error(`a Start of seat '${pending}' is pending`);
+
+        const held = new Set();
+
+        for (const {harnessGeneration} of this.processes.values()) {
+            if (harnessGeneration?.family === harnessType) held.add(harnessGeneration.generationId)
+        }
+
+        for (const {id} of this.getRegistry().listAgents?.() ?? []) {
+            if (this.getRegistry().getDefinition(id)?.harnessType !== harnessType) continue;
+
+            const leasePath = path.join(deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: id, harnessType}), SEAT_LEASE_FILE);
+            let lease;
+
+            try {
+                lease = JSON.parse(fs.readFileSync(leasePath, 'utf8'))
+            } catch (error) {
+                if (error?.code === 'ENOENT') continue;
+                throw new Error(`the lease of seat '${id}' could not be read`)
+            }
+
+            if (lease?.agentId === id && !Object.hasOwn(lease, 'harnessGenerationId')) continue;
+
+            if (lease?.agentId !== id || !isHarnessGenerationId(lease.harnessGenerationId)) {
+                throw new Error(`the lease of seat '${id}' does not prove its harness generation`)
+            }
+
+            held.add(lease.harnessGenerationId)
+        }
+
+        return held
     }
 
     /**
