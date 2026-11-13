@@ -364,6 +364,8 @@ test.describe('ai/services/fleet/seatJourney — end to end against a fleet serv
                 NEO_FLEET_CODEX_DESKTOP_BIN                : codex.binary,
                 NEO_FLEET_CODEX_BIN                        : codex.cli,
                 NEO_FLEET_HARNESS_GENERATIONS_CODEX_DESKTOP: 'false',
+                // HOME is the host's, so without this a Start that admits would write the host's harness store
+                NEO_FLEET_HARNESS_GENERATIONS_ROOT         : path.join(root, 'harnesses'),
                 ...(process.env.NEO_CHROMA_PORT_TEST ? {NEO_CHROMA_PORT_TEST: process.env.NEO_CHROMA_PORT_TEST} : {})
             };
 

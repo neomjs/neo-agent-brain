@@ -14,7 +14,8 @@ import {materializeHarnessGeneration}            from './harnessGeneration.mjs';
  * overlap; a build the same admitting code already rejected is not fetched again; the archive streams into the
  * family's staging directory under a byte cap while its digest is computed; nothing is extracted unless that
  * digest equals the one the source named; and the one extracted `.app` goes to `materializeHarnessGeneration`,
- * which alone decides admission. A family's acquisition module only says where its candidate comes from.
+ * which alone decides admission and refuses a bundle that does not carry the version the source named. A
+ * family's acquisition module only says where its candidate comes from.
  */
 
 // Physical fs, so Electron's ASAR virtualization never intercepts the staging reads.
@@ -214,7 +215,7 @@ function findExtractedAppBundle(directory, fsImpl) {
  * @param {Object} options
  * @param {String} options.root Absolute store root.
  * @param {String} options.family A harness generation family.
- * @param {String} options.version The candidate's short version.
+ * @param {String} options.version The short version the source names; admission refuses a bundle that carries another.
  * @param {String} options.archiveUrl
  * @param {String} options.algorithm A Node digest name (`sha256`, `sha512`).
  * @param {Buffer} options.expectedDigest The digest the source named.
@@ -277,7 +278,7 @@ export async function acquireHarnessArchive({
         extractArchive(archivePath, extractDir);
 
         const admission = await materializeGeneration({
-            root, family, sourceBundle: findExtractedAppBundle(extractDir, fsImpl), source: archiveUrl
+            root, family, sourceBundle: findExtractedAppBundle(extractDir, fsImpl), source: archiveUrl, expectedShortVersion: version
         });
 
         if (admission.admitted) {

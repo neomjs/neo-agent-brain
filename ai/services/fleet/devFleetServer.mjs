@@ -745,11 +745,13 @@ async function boot() {
         }
 
         // Each seat reads with its own PAT. This entrypoint owns the one enable switch after the
-        // plane proved the viewer, whose observations the plane's intake admits and sends as @system.
+        // plane proved the viewer, whose observations the plane's intake admits and sends as @system,
+        // and whose admitted wakes it reads back from the receiver's records.
         wakeRound = AiConfig.fleet.openWorkWakes && planeClient ? wireFleetOpenWorkWakes({
-            registry : FleetRegistryService,
-            isEnabled: () => AiConfig.fleet.openWorkWakes,
-            admitWake: observation => planeClient.callTool('admit_open_work_wake', observation),
+            registry    : FleetRegistryService,
+            isEnabled   : () => AiConfig.fleet.openWorkWakes,
+            admitWake   : observation => planeClient.callTool('admit_open_work_wake', observation),
+            readDelivery: messageIds => planeClient.callTool('read_open_work_wake_delivery', {messageIds}),
             readPresence
         }) : null;
         openWork = wireFleetOpenWorkSource({registry: FleetRegistryService, readPresence, onPulse: wakeRound});

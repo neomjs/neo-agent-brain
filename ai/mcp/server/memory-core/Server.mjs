@@ -182,6 +182,8 @@ class Server extends BaseServer {
             // The open-work intake ends in the same mailbox WAL write as `add_message`; gating it would
             // drop a wake the Fleet round has already admitted and never replays.
             'admit_open_work_wake',
+            // a file read of the wake receiver's records, the reader `who_is_online` uses
+            'read_open_work_wake_delivery',
             'list_messages',
             'get_message',
             'mark_read',

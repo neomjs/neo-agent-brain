@@ -29,6 +29,8 @@ import {dispatchFleetRequest}      from '../../../../../../ai/services/fleet/dis
 import {readFleetPresenceSnapshot}        from '../../../../../../ai/services/fleet/fleetPresenceStateAdapter.mjs';
 import {operatorPresenceRecordPath}       from '../../../../../../ai/services/fleet/operatorPresenceRecord.mjs';
 import {ManagedWorkspacePreparationError} from '../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs';
+import {holdRuntimeGenerationReferences, RUNTIME_REFERENCE_LEASE,
+        waitForRuntimeGenerationReferences} from '../../../../../../ai/services/fleet/runtimeGenerationLease.mjs';
 
 import {createFleetWireRequest, FLEET_WIRE_RESPONSE_STATES} from '../../../../../../src/fleet/contract/wire.mjs';
 
@@ -803,6 +805,37 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             expect(FleetControlBridge.setRepos({id: 'alice', repos: [{repoSlug: 'x/y'}]}).reason).toMatch(/no working repository/)
         } finally {
             FleetManager.lifecycleService = null
+        }
+    });
+
+    test('a Start stalled on a held runtime lease answers the named holder on the wire, never its token', async () => {
+        const root  = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-runtime-lease-'))), held = holdRuntimeGenerationReferences({directory: root});
+        const token = JSON.parse(fs.readFileSync(path.join(root, RUNTIME_REFERENCE_LEASE), 'utf8')).ownerToken;
+
+        FleetManager.lifecycleService = {
+            beginStart          : () => new AbortController().signal,
+            dependencySkipSignal: () => new AbortController().signal,
+            finishStart() {},
+            getRegistry         : () => ({getAgent: id => ({id})})
+        };
+        FleetManager.managedRoot         = '/managed';
+        FleetManager.provisionAndStartFn = () => waitForRuntimeGenerationReferences({directory: root, deadlineMs: 50});
+        FleetControlBridge.manager       = FleetManager;
+
+        try {
+            const wire = await dispatchFleetRequest(createFleetWireRequest('startAgent', 'alice'), FleetControlBridge);
+
+            expect(wire).toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok,
+                result: {status: 'rejected', code: 'RUNTIME_REFERENCES_HELD'}});
+            expect(wire.result.reason).toContain(`fleet-runtime-references pid ${process.pid}`);
+            expect(JSON.stringify(wire)).not.toContain(token);
+            held.assertCurrent();
+        } finally {
+            held.release();
+            fs.rmSync(root, {recursive: true, force: true});
+            FleetManager.lifecycleService    = null;
+            FleetManager.managedRoot         = null;
+            FleetManager.provisionAndStartFn = null;
         }
     });
 
