@@ -7996,8 +7996,9 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         try {
             expect((await MailboxService.sweepExpiredTasks()).sweptCount).toBe(1);
 
-            // the expiry stands and the notice is owed
-            expect(stored(asked)).toMatchObject({expiryNotice: 'owed', task: {state: 'Expired'}});
+            // the expiry stands, and the notice is still owed: the asks name a planned id nothing accepted
+            expect(stored(asked).task.state).toBe('Expired');
+            expect(stored(asked).expiryNotice).toMatch(/^sending:MESSAGE:/);
             expect(await fromSystem('@alice')).toEqual([]);
 
             // an idle sweep sends what is owed
@@ -8019,7 +8020,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         }
     });
 
-    test('#1677 AC-4: a notice still owed after the span the ask was allowed to wait is no longer sent', async () => {
+    test('#1677 AC-4: a notice stays owed until it is accepted, however long ago its ask expired', async () => {
         await seedHumanRecipients();
 
         const
@@ -8032,14 +8033,98 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
             failure.restore()
         }
 
-        // the expiry now lies further back than the retry span
+        // the expiry now lies further back than the span an ask may wait
         GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.lastModifiedAt', ?) WHERE id = ?`)
             .run(new Date(Date.now() - mailboxAiConfig.mailbox.humanAskTtlMs - 60000).toISOString(), asked);
 
         await MailboxService.sweepExpiredTasks();
 
-        expect(await fromSystem('@alice')).toEqual([]);
-        expect(stored(asked).expiryNotice).toBe('owed')
+        const [notice, ...others] = await fromSystem('@alice');
+
+        expect(others).toEqual([]);
+        expect(stored(asked).expiryNotice).toBe(notice.messageId)
+    });
+
+    /** Makes the next `times` writes of an accepted notice's id onto its asks fail, as a busy graph would. */
+    function failNoticeIdWrite(times) {
+        const
+            storage = GraphService.db.storage,
+            write   = storage.setRecordProperty,
+            state   = {failures: 0, restore: () => { storage.setRecordProperty = write }};
+
+        storage.setRecordProperty = function(table, id, field, value) {
+            if (field === 'expiryNotice' && String(value).startsWith('MESSAGE:') && state.failures < times) {
+                state.failures++;
+                throw new Error('graph write failed')
+            }
+
+            return write.call(this, table, id, field, value)
+        };
+
+        return state
+    }
+
+    test('#1677 AC-4: a notice accepted before its asks could record it is settled by the next sweep and never sent again', async () => {
+        await seedHumanRecipients();
+
+        const
+            asked   = await ask('@operator', {subject: 'which scope?', task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z'}}),
+            sends   = failNoticeAcceptance(0),
+            idWrite = failNoticeIdWrite(1);
+
+        try {
+            await MailboxService.sweepExpiredTasks();
+
+            const [notice, ...others] = await fromSystem('@alice');
+
+            // accepted, but the asks still name the planned id
+            expect(others).toEqual([]);
+            expect(idWrite.failures).toBe(1);
+            expect(stored(asked).expiryNotice).toBe(`sending:${notice.messageId}`);
+
+            await MailboxService.sweepExpiredTasks();
+
+            expect(await fromSystem('@alice')).toHaveLength(1);
+            expect(stored(asked).expiryNotice).toBe(notice.messageId);
+            expect(sends.attempts).toBe(1)
+        } finally {
+            idWrite.restore();
+            sends.restore()
+        }
+    });
+
+    test('#1677 AC-4: a notice the message WAL accepted before the graph projected it is settled from the WAL and never sent again', async () => {
+        await seedHumanRecipients();
+
+        const
+            asked   = await ask('@operator', {task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z'}}),
+            sends   = failNoticeAcceptance(0),
+            idWrite = failNoticeIdWrite(1);
+
+        // the notice is the only message this sweep sends, so its projection is the one that fails
+        MailboxService._projectMessageWalRecord = async () => { throw new Error('graph busy') };
+
+        try {
+            await MailboxService.sweepExpiredTasks()
+        } finally {
+            delete MailboxService._projectMessageWalRecord;
+            idWrite.restore()
+        }
+
+        try {
+            const noticeId = stored(asked).expiryNotice.replace(/^sending:/, '');
+
+            // durable in the message WAL, not yet in the graph
+            expect(noticeId).toMatch(/^MESSAGE:/);
+            expect(await fromSystem('@alice')).toEqual([]);
+
+            await MailboxService.sweepExpiredTasks();
+
+            expect(stored(asked).expiryNotice).toBe(noticeId);
+            expect(sends.attempts).toBe(1)
+        } finally {
+            sends.restore()
+        }
     });
 });
 

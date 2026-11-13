@@ -144,6 +144,7 @@ const
     EXPIRABLE_TASK_STATES             = Object.freeze(['Submitted', 'Working', 'InputRequired']),
     EXPIRED_ASK_NOTICE_LIMIT          = 100,
     EXPIRY_NOTICE_OWED                = 'owed',
+    EXPIRY_NOTICE_SENDING             = 'sending:',
     FORBIDDEN_SECRET_KEY_LOWER_SET    = new Set(REQUEST_PUBLISH_FORBIDDEN_SECRET_KEYS.map(key => key.toLowerCase())),
     TASK_ENVELOPE_ALLOWED_FIELD_SET   = new Set(['id', 'state', 'assignee', 'expiresAt', 'fallback', 'requestPublish']),
     ADD_MESSAGE_ALLOWED_TOP_KEYS      = new Set([
@@ -3082,6 +3083,37 @@ async function writeReceiptField(record, table, field, value, {writeOnce = false
 }
 
 /**
+ * @summary Writes one `expiryNotice` value onto each of the given expired asks, through the receipt
+ * writer so that a cached node follows storage.
+ * @param {Array<{taskId: String}>} asks Expired asks to a human.
+ * @param {String} value `'owed'`, `'sending:'` plus the planned notice id, or the accepted notice id.
+ * @returns {Promise<void>}
+ * @private
+ */
+async function writeExpiryNotice(asks, value) {
+    const db = GraphService.db;
+
+    for (const {taskId} of asks) {
+        const node = db.nodes.get(taskId);
+
+        node ? await writeReceiptField(node, 'Nodes', 'expiryNotice', value)
+             : db.storage.setRecordProperty('Nodes', taskId, 'expiryNotice', value)
+    }
+}
+
+/**
+ * @summary Whether a message with this id was accepted: the graph holds its node, or the message WAL
+ * holds it while its projection is pending.
+ * @param {String} messageId
+ * @returns {Promise<Boolean>}
+ * @private
+ */
+async function isMessageAccepted(messageId) {
+    return Boolean(GraphService.db.storage.db.prepare('SELECT 1 FROM Nodes WHERE id = ?').get(messageId))
+        || (await readPendingMessageWalRecords({dir: aiConfig.messageWal.dir, ids: [messageId], limit: 1})).length > 0
+}
+
+/**
  * @summary Stamps the SEEN timestamp on a per-recipient `DELIVERED_TO` edge.
  *
  * Broadcasts carry per-recipient read state on the edge, so `seenAt` follows `readAt` to exactly the
@@ -3277,9 +3309,11 @@ class MailboxService extends Base {
      *   in the WAL and schedule its graph projection. The MCP write boundary enables this mode so
      *   an overloaded graph cannot withhold the durable receipt; internal callers retain the
      *   immediate-projection default.
+     * @param {String|null} [options.messageId=null] An id the caller fixed before the send, so that it
+     *   can later prove from the stores whether this message was accepted. Internal callers only.
      * @returns {Promise<Object>}
      */
-    async addMessage(args = {}, {deferProjection = false} = {}) {
+    async addMessage(args = {}, {deferProjection = false, messageId: plannedMessageId = null} = {}) {
         const {
             to: rawTo,
             subject,
@@ -3432,7 +3466,7 @@ class MailboxService extends Base {
             recipientAlias         = resolveAgentIdentityAlias(preNormalizeTo) ?? resolveAgentIdentityAlias(postNormalizeTo),
             resolvedRecipientAlias = recipientAlias && to === recipientAlias.id ? recipientAlias : null;
 
-        const messageId = `MESSAGE:${crypto.randomUUID()}`;
+        const messageId = plannedMessageId ?? `MESSAGE:${crypto.randomUUID()}`;
         const timestamp = new Date().toISOString();
 
         const isRoleOrHuman = to.startsWith('role:') || to.startsWith('human:');
@@ -6857,16 +6891,14 @@ class MailboxService extends Base {
      * The sweep marks an expired ask as owing its notice. This reads what is owed from storage, so it serves the
      * asks of the current sweep and the ones an earlier send failed for, also after a restart. One message per
      * originator per call, sent as the system principal, so the one party who knows whether an ask still matters
-     * can ask again. Once the message is accepted, each ask it names records that message's id in place of the
-     * mark and is never named again. A failed send is logged and leaves the mark: it never fails the sweep and
-     * never touches the expiry, which is already committed.
+     * can ask again. A failed send is logged: it never fails the sweep and never touches the expiry, which is
+     * already committed. Every sweep tries again until a notice is accepted.
      *
-     * The id replaces the mark after the acceptance, not with it. A process that dies between the two sends that
-     * one notice again at the next sweep.
-     *
-     * The retry is bounded by the span the ask itself was allowed to wait: once an ask expired longer than
-     * `mailbox.humanAskTtlMs` ago, it keeps its mark as the record of a notice that never went out, and no
-     * sweep sends it any more.
+     * A notice's id is fixed before the send and written onto its asks as `sending:` plus the id; once the
+     * message is accepted, the id itself replaces that mark and the asks are never named again. An ask still
+     * marked `sending:` is settled from the stores that prove an acceptance, never by sending again: accepted,
+     * it records the id; not accepted, it is owed once more. So neither a failed send nor a failed id write can
+     * send one notice twice.
      * @returns {Promise<void>}
      * @protected
      */
@@ -6877,6 +6909,23 @@ class MailboxService extends Base {
 
         if (!db?.storage?.db) {
             return
+        }
+
+        const sending = db.storage.db.prepare(`
+            SELECT n.id AS taskId, json_extract(n.data, '$.properties.expiryNotice') AS mark
+            FROM Nodes n
+            WHERE json_extract(n.data, '$.label') = 'MESSAGE'
+                AND json_extract(n.data, '$.properties.expiryNotice') LIKE @sending
+        `).all({sending: `${EXPIRY_NOTICE_SENDING}%`});
+
+        for (const mark of new Set(sending.map(ask => ask.mark))) {
+            const noticeId = mark.slice(EXPIRY_NOTICE_SENDING.length);
+
+            try {
+                await writeExpiryNotice(sending.filter(ask => ask.mark === mark), await isMessageAccepted(noticeId) ? noticeId : EXPIRY_NOTICE_OWED)
+            } catch (error) {
+                logger.error(`[MailboxService] expiry notice ${noticeId} could not be settled; the next sweep tries again:`, error)
+            }
         }
 
         const owed = db.storage.db.prepare(`
@@ -6890,9 +6939,8 @@ class MailboxService extends Base {
             FROM Nodes n
             WHERE json_extract(n.data, '$.label') = 'MESSAGE'
                 AND json_extract(n.data, '$.properties.expiryNotice') = @owed
-                AND datetime(json_extract(n.data, '$.properties.lastModifiedAt')) >= datetime(@retryCutoff)
             ORDER BY n.id ASC
-        `).all({owed: EXPIRY_NOTICE_OWED, retryCutoff: new Date(Date.now() - aiConfig.mailbox.humanAskTtlMs).toISOString()});
+        `).all({owed: EXPIRY_NOTICE_OWED});
 
         for (const ask of owed) {
             byOriginator.set(ask.originator, [...byOriginator.get(ask.originator) || [], ask])
@@ -6900,16 +6948,20 @@ class MailboxService extends Base {
 
         for (const [originator, expired] of byOriginator) {
             const
-                listed = expired.slice(0, EXPIRED_ASK_NOTICE_LIMIT),
-                lines  = listed.map(ask => `- "${ask.subject}" to ${ask.recipient}, sent ${ask.sentAt} (${ask.taskId}). ` +
+                noticeId = `MESSAGE:${crypto.randomUUID()}`,
+                listed   = expired.slice(0, EXPIRED_ASK_NOTICE_LIMIT),
+                lines    = listed.map(ask => `- "${ask.subject}" to ${ask.recipient}, sent ${ask.sentAt} (${ask.taskId}). ` +
                     (ask.fallback ? `Fallback you stated: ${ask.fallback}` : 'No fallback stated.'));
 
             expired.length > listed.length && lines.push(`- and ${expired.length - listed.length} more.`);
 
-            let noticeId = null;
+            let accepted = false;
 
             try {
-                ({messageId: noticeId} = await RequestContextService.run({
+                // Before the send, so that a later sweep can tell an accepted notice from a lost one
+                await writeExpiryNotice(expired, EXPIRY_NOTICE_SENDING + noticeId);
+
+                await RequestContextService.run({
                     agentIdentityNodeId: SYSTEM_SENDER.id,
                     principalClass     : 'system',
                     sessionId          : 'expired-asks'
@@ -6923,17 +6975,14 @@ class MailboxService extends Base {
                         '',
                         'Ask again if one still matters. An ask that needs longer than the default states its own `task.expiresAt`.'
                     ].join('\n')
-                })));
+                }, {messageId: noticeId}));
 
-                // Accepted: every ask the notice counts records it, the ones past the listing limit too
-                for (const {taskId} of expired) {
-                    const node = db.nodes.get(taskId);
+                accepted = true;
 
-                    node ? await writeReceiptField(node, 'Nodes', 'expiryNotice', noticeId)
-                         : db.storage.setRecordProperty('Nodes', taskId, 'expiryNotice', noticeId)
-                }
+                // Every ask the notice counts records it, the ones past the listing limit too
+                await writeExpiryNotice(expired, noticeId)
             } catch (error) {
-                logger.error(`[MailboxService] expiry notice to ${originator} ${noticeId ? `was accepted as ${noticeId}, but its asks could not be marked` : 'failed'}; ${expired.length} ask(s) stay owed:`, error)
+                logger.error(`[MailboxService] expiry notice ${noticeId} to ${originator} ${accepted ? 'was accepted, but its asks could not record it' : 'failed'}; the next sweep settles ${expired.length} ask(s):`, error)
             }
         }
     }
