@@ -35,6 +35,7 @@ import {
     PUBLICATION_STATES,
     PUBLISH_CHANNELS,
     PUBLISH_FORMATS,
+    PUBLISH_LOCK_TIMEZONE,
     REFUSAL_CODES,
     REPLY_CLASSIFICATION_PRIMARY_SOURCE,
     SWITCH_STATES,
@@ -45,6 +46,7 @@ import {
     createPublishSwitchStore,
     createSocialPlatformClient,
     matchesRequestedPublishText,
+    parsePublishSchedule,
     publish,
     readMetrics,
     reply
@@ -2432,5 +2434,192 @@ test.describe('publishExecutor (#979)', () => {
             FleetControlBridge.viewerIdentitySource   = null;
             await fs.rm(tempRoot, {recursive: true, force: true});
         }
+    });
+
+    test('Dated publication schedule (#1695): holds pre-approved scheduledFor requests in queued before earliestReleaseMs (refused: schedule-not-reached), releases at/after earliestReleaseMs, and refuses unapproved late-locked revisions (refused: content-lock-window)', async () => {
+        expect(PUBLISH_LOCK_TIMEZONE).toBe('Europe/Berlin');
+        expect(REFUSAL_CODES.scheduledFor).toBe('refused: scheduledFor');
+        expect(REFUSAL_CODES.contentLockWindow).toBe('refused: content-lock-window');
+        expect(REFUSAL_CODES.scheduleNotReached).toBe('refused: schedule-not-reached');
+        expect(parsePublishSchedule('2026-11-18')).toMatchObject({
+            ok                : true,
+            lockCutoffIso     : '2026-11-17T17:00:00.000Z',
+            earliestReleaseIso: '2026-11-17T23:00:00.000Z'
+        });
+
+        // 1. Pre-approved dated request (D = 2026-11-18) called on D-1 evening (20:00 CET = 19:00Z)
+        // stays in 'queued' (`refused: schedule-not-reached`) with zero platform calls, then releases on day D.
+        const reqScheduled = seedApprovedRequest({
+            requestId: 'MESSAGE:97900000-0000-4000-8000-000000169501',
+            payload  : buildPayload({scheduledFor: '2026-11-18'})
+        });
+        reqScheduled.currentRevision.createdAt = '2026-11-17T16:30:00.000Z';
+        reqScheduled.revision.createdAt        = '2026-11-17T16:30:00.000Z';
+
+        const mailboxScheduled = createInMemoryMailbox({[reqScheduled.requestId]: reqScheduled});
+        let   platformCallsA   = 0;
+
+        const earlyCall = await publish(reqScheduled.requestId, reqScheduled.currentRevision.revisionDigest, {
+            mailbox    : mailboxScheduled,
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            now        : () => Date.parse('2026-11-17T19:00:00.000Z'),
+            platform   : {
+                async publishPost() {
+                    platformCallsA++;
+                    return {providerId: 'never-early'};
+                }
+            }
+        });
+
+        expect(earlyCall).toMatchObject({
+            ok               : false,
+            state            : PUBLICATION_STATES.queued,
+            publicationState : PUBLICATION_STATES.queued,
+            refused          : REFUSAL_CODES.scheduleNotReached,
+            scheduledFor     : '2026-11-18',
+            earliestReleaseAt: '2026-11-17T23:00:00.000Z'
+        });
+        expect(platformCallsA).toBe(0);
+        expect((await mailboxScheduled.getMessage({messageId: reqScheduled.requestId})).publication.state).toBe(PUBLICATION_STATES.queued);
+
+        const releaseCall = await publish(reqScheduled.requestId, reqScheduled.currentRevision.revisionDigest, {
+            mailbox    : mailboxScheduled,
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            now        : () => Date.parse('2026-11-18T08:00:00.000Z'),
+            platform   : {
+                async publishPost() {
+                    platformCallsA++;
+                    return {providerId: 'tweet-scheduled-release-1'};
+                }
+            }
+        });
+        expect(releaseCall).toMatchObject({
+            ok        : true,
+            state     : PUBLICATION_STATES.published,
+            providerId: 'tweet-scheduled-release-1'
+        });
+        expect(platformCallsA).toBe(1);
+
+        // 2a. Unapproved `auto-approve` request whose `createdAt` missed `D-1 18:00 Europe/Berlin` is refused (`refused: content-lock-window`)
+        const reqLateCreated = seedApprovedRequest({
+            requestId: 'MESSAGE:97900000-0000-4000-8000-000000169502',
+            approved : false,
+            payload  : buildPayload({scheduledFor: '2026-11-18'})
+        });
+        reqLateCreated.currentRevision.createdAt = '2026-11-17T17:05:00.000Z';
+        reqLateCreated.revision.createdAt        = '2026-11-17T17:05:00.000Z';
+
+        const mailboxLateCreated = createInMemoryMailbox({[reqLateCreated.requestId]: reqLateCreated});
+        let   platformCallsB1    = 0;
+        const resLateCreated     = await publish(reqLateCreated.requestId, reqLateCreated.currentRevision.revisionDigest, {
+            mailbox    : mailboxLateCreated,
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.autoApprove},
+            now        : () => Date.parse('2026-11-18T08:00:00.000Z'),
+            platform   : {
+                async publishPost() {
+                    platformCallsB1++;
+                    return {providerId: 'never'};
+                }
+            }
+        });
+        expect(resLateCreated).toMatchObject({
+            ok          : false,
+            state       : PUBLICATION_STATES.refused,
+            refused     : REFUSAL_CODES.contentLockWindow,
+            scheduledFor: '2026-11-18',
+            lockCutoffAt: '2026-11-17T17:00:00.000Z'
+        });
+        expect(platformCallsB1).toBe(0);
+        expect((await mailboxLateCreated.getMessage({messageId: reqLateCreated.requestId})).publication.state).toBe(PUBLICATION_STATES.refused);
+
+        // 2b. Unapproved `auto-approve after attestation` request whose `attestedAt` missed `D-1 18:00 Europe/Berlin` is refused (`refused: content-lock-window`)
+        const reviewIdLateAtt = 'MESSAGE:97900000-0000-4000-8000-000000169599';
+        const payloadLateAtt  = buildPayload({scheduledFor: '2026-11-18'});
+        const digestLateAtt   = computePublishRevisionDigest(payloadLateAtt);
+        const reqLateAtt      = seedApprovedRequest({
+            requestId  : 'MESSAGE:97900000-0000-4000-8000-000000169503',
+            approved   : false,
+            payload    : payloadLateAtt,
+            attestation: {
+                reviewerMessageId: reviewIdLateAtt,
+                revisionDigest   : digestLateAtt,
+                attestedAt       : '2026-11-17T17:30:00.000Z'
+            }
+        });
+        reqLateAtt.currentRevision.createdAt = '2026-11-17T15:00:00.000Z';
+        reqLateAtt.revision.createdAt        = '2026-11-17T15:00:00.000Z';
+
+        const mailboxLateAtt = createInMemoryMailbox(
+            {[reqLateAtt.requestId]: reqLateAtt},
+            {
+                [reviewIdLateAtt]: {
+                    messageId     : reviewIdLateAtt,
+                    from          : '@neo-gemini-maryam',
+                    revisionDigest: digestLateAtt,
+                    body          : `Verified revisionDigest ${digestLateAtt}`
+                }
+            }
+        );
+        const resLateAtt = await publish(reqLateAtt.requestId, digestLateAtt, {
+            mailbox              : mailboxLateAtt,
+            credentials          : {'x:@neomjs': {accessToken: SECRET}},
+            switchStore          : {[`${PEER_ID}:x`]: SWITCH_STATES.autoApproveAttested},
+            resolveIdentityFamily: async id => (id === PEER_ID ? 'claude' : 'gemini'),
+            now                  : () => Date.parse('2026-11-18T08:00:00.000Z'),
+            platform             : {async publishPost() { return {providerId: 'never'}; }}
+        });
+        expect(resLateAtt).toMatchObject({
+            ok     : false,
+            state  : PUBLICATION_STATES.refused,
+            refused: REFUSAL_CODES.contentLockWindow
+        });
+
+        // 2c. Explicitly human-approved revision created after D-1 18:00 (operator urgent edit/override) dispatches once release window opens
+        const reqOperatorOverride = seedApprovedRequest({
+            requestId: 'MESSAGE:97900000-0000-4000-8000-000000169504',
+            approved : true,
+            payload  : buildPayload({scheduledFor: '2026-11-18'})
+        });
+        reqOperatorOverride.currentRevision.createdAt = '2026-11-17T20:00:00.000Z';
+        reqOperatorOverride.revision.createdAt        = '2026-11-17T20:00:00.000Z';
+
+        const resOperatorOverride = await publish(
+            reqOperatorOverride.requestId,
+            reqOperatorOverride.currentRevision.revisionDigest,
+            {
+                mailbox    : createInMemoryMailbox({[reqOperatorOverride.requestId]: reqOperatorOverride}),
+                credentials: {'x:@neomjs': {accessToken: SECRET}},
+                switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+                now        : () => Date.parse('2026-11-18T08:00:00.000Z'),
+                platform   : {async publishPost() { return {providerId: 'tweet-operator-override-ok'}; }}
+            }
+        );
+        expect(resOperatorOverride).toMatchObject({
+            ok        : true,
+            state     : PUBLICATION_STATES.published,
+            providerId: 'tweet-operator-override-ok'
+        });
+
+        // 3. Malformed stored scheduledFor transitions to 'refused' (`refused: scheduledFor`)
+        const reqMalformed = seedApprovedRequest({
+            requestId: 'MESSAGE:97900000-0000-4000-8000-000000169505',
+            approved : true,
+            payload  : buildPayload({scheduledFor: '2026-02-30'})
+        });
+        const resMalformed = await publish(reqMalformed.requestId, reqMalformed.currentRevision.revisionDigest, {
+            mailbox    : createInMemoryMailbox({[reqMalformed.requestId]: reqMalformed}),
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            now        : () => Date.parse('2026-11-18T08:00:00.000Z'),
+            platform   : {async publishPost() { return {providerId: 'never'}; }}
+        });
+        expect(resMalformed).toMatchObject({
+            ok     : false,
+            state  : PUBLICATION_STATES.refused,
+            refused: REFUSAL_CODES.scheduledFor
+        });
     });
 });

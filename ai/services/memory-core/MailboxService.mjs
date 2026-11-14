@@ -12,8 +12,11 @@ import {inspectDefectNoteCapture}                         from './helpers/defect
 import {normalizeMailboxObserver, readMailboxObservation} from './helpers/mailboxObservation.mjs';
 import {admissionWhere, canReadMessage}                   from './helpers/messageAdmission.mjs';
 import {
+    PUBLISH_LOCK_TIMEZONE,
     computePublishRevisionDigest,
-    matchesRequestedPublishText
+    matchesRequestedPublishText,
+    parsePublishSchedule,
+    zonedWallTimeToUtcMs
 } from './helpers/publishDigest.mjs';
 import {resolveSharingPolicy}                             from './helpers/resolveSharingPolicy.mjs';
 import {
@@ -116,6 +119,7 @@ export const REQUEST_PUBLISH_ALLOWED_FIELDS = Object.freeze([
     'hypothesis',
     'format',
     'inReplyTo',
+    'scheduledFor',
     'attestation'
 ]);
 
@@ -164,7 +168,13 @@ const
     ]),
     SHA256_HEX_PATTERN                = /^[0-9a-fA-F]{64}$/;
 
-export {computePublishRevisionDigest, matchesRequestedPublishText};
+export {
+    PUBLISH_LOCK_TIMEZONE,
+    computePublishRevisionDigest,
+    matchesRequestedPublishText,
+    parsePublishSchedule,
+    zonedWallTimeToUtcMs
+};
 
 /**
  * @summary Builds a structured refusal Error for `requestPublish` validation and state guards.
@@ -178,6 +188,32 @@ function refuseRequestPublish(code, detail) {
     error.code   = code;
     error.reason = code;
     return error;
+}
+
+/**
+ * @summary Enforces the `D-1 18:00 Europe/Berlin` (`CET`/`CEST`) content-lock cutoff against a
+ * server-stamped timestamp (`nowMs`) for agent-originated `requestPublish` admissions, edits, and
+ * cross-family attestations.
+ * @param {String|null} scheduledFor Normalized `scheduledFor` value or `null`.
+ * @param {Number}      nowMs        Server-owned epoch milliseconds (never caller-supplied).
+ * @param {String}      actionLabel  Diagnostic verb label for refusal text.
+ * @throws {Error} With `code: 'refused: content-lock-window'` when `nowMs > schedule.lockCutoffMs`.
+ * @private
+ */
+function assertAgentPublishScheduleLock(scheduledFor, nowMs, actionLabel) {
+    const schedule = parsePublishSchedule(scheduledFor);
+    if (!schedule) {
+        return;
+    }
+    if (!schedule.ok) {
+        throw refuseRequestPublish(schedule.code, schedule.reason);
+    }
+    if (nowMs > schedule.lockCutoffMs) {
+        throw refuseRequestPublish(
+            'refused: content-lock-window',
+            `${actionLabel} at ${new Date(nowMs).toISOString()} missed the D-1 18:00 ${schedule.timeZone} content-lock cutoff (${schedule.lockCutoffIso}) for scheduledFor '${schedule.scheduledFor}' (target date ${schedule.targetDate}). Re-date scheduledFor forward or route urgent incident/security notices through human operator direction.`
+        );
+    }
 }
 
 /**
@@ -243,6 +279,7 @@ function validateAndNormalizeRequestPublishPayload(rawPayload, {requireHypothesi
         hypothesis,
         format,
         inReplyTo,
+        scheduledFor,
         attestation
     } = rawPayload;
 
@@ -315,6 +352,11 @@ function validateAndNormalizeRequestPublishPayload(rawPayload, {requireHypothesi
         throw refuseRequestPublish('refused: inReplyTo', `Format 'post' must not specify inReplyTo (received ${JSON.stringify(inReplyTo)}).`);
     }
 
+    const parsedSchedule = parsePublishSchedule(scheduledFor);
+    if (parsedSchedule && !parsedSchedule.ok) {
+        throw refuseRequestPublish(parsedSchedule.code, parsedSchedule.reason);
+    }
+
     const revisionDigest = computePublishRevisionDigest({
         account  : account.trim(),
         channel,
@@ -333,6 +375,7 @@ function validateAndNormalizeRequestPublishPayload(rawPayload, {requireHypothesi
         hypothesis   : typeof hypothesis === 'string' ? hypothesis.trim() : null,
         format,
         inReplyTo    : normalizedInReplyTo,
+        scheduledFor : parsedSchedule ? parsedSchedule.scheduledFor : null,
         attestation  : attestation === undefined ? null : attestation,
         revisionDigest
     };
@@ -3251,7 +3294,17 @@ class MailboxService extends Base {
     static PUBLICATION_STATES                   = PUBLICATION_STATES;
     static REQUEST_PUBLISH_ALLOWED_FIELDS       = REQUEST_PUBLISH_ALLOWED_FIELDS;
     static REQUEST_PUBLISH_FORBIDDEN_SECRET_KEYS = REQUEST_PUBLISH_FORBIDDEN_SECRET_KEYS;
+    static PUBLISH_LOCK_TIMEZONE                = PUBLISH_LOCK_TIMEZONE;
     static computePublishRevisionDigest         = computePublishRevisionDigest;
+    static parsePublishSchedule                 = parsePublishSchedule;
+
+    /**
+     * Internal server clock seam returning epoch milliseconds. Never exposed on MCP/wire arguments
+     * so callers cannot supply or backdate `requestPublish` admission, edit, or attestation timestamps.
+     * @type {Function}
+     * @private
+     */
+    _now = () => Date.now();
 
     /**
      * The longest `task.fallback` a sender may state: a plan for an unanswered Task in a sentence or two.
@@ -3365,6 +3418,7 @@ class MailboxService extends Base {
                 || task.format !== undefined
                 || task.hypothesis !== undefined
                 || task.account !== undefined
+                || task.scheduledFor !== undefined
             ))
             || taggedConcepts.some(concept =>
                 typeof concept === 'string' && ['requestpublish', 'request-publish'].includes(concept.trim().toLowerCase())
@@ -3489,7 +3543,8 @@ class MailboxService extends Base {
             resolvedRecipientAlias = recipientAlias && to === recipientAlias.id ? recipientAlias : null;
 
         const messageId = plannedMessageId ?? `MESSAGE:${crypto.randomUUID()}`;
-        const timestamp = new Date().toISOString();
+        const nowMs     = this._now();
+        const timestamp = new Date(nowMs).toISOString();
 
         const isRoleOrHuman = to.startsWith('role:') || to.startsWith('human:');
 
@@ -3550,6 +3605,7 @@ class MailboxService extends Base {
             }
 
             const validated = validateAndNormalizeRequestPublishPayload(candidatePayload, {requireHypothesis: true});
+            assertAgentPublishScheduleLock(validated.scheduledFor, nowMs, 'requestPublish admission');
 
             let verifiedAttestation = null;
             if (validated.attestation !== null && validated.attestation !== undefined) {
@@ -5918,6 +5974,7 @@ class MailboxService extends Base {
             me,
             messageNode,
             storedState,
+            originator,
             isOriginator,
             isAssignee
         } = this._loadPublishRequestContext(targetId, 'editPublishRequest');
@@ -5960,13 +6017,39 @@ class MailboxService extends Base {
             delete mergedCandidate.attestation;
         }
 
-        const validated = validateAndNormalizeRequestPublishPayload(mergedCandidate, {requireHypothesis: true});
-        const timestamp = new Date().toISOString();
+        const validated            = validateAndNormalizeRequestPublishPayload(mergedCandidate, {requireHypothesis: true});
+        const nowMs                = this._now();
+        const timestamp            = new Date(nowMs).toISOString();
+        const callerPrincipalClass = resolvePrincipalClass(db, me);
+
+        if (callerPrincipalClass !== 'human') {
+            if (validated.scheduledFor !== null) {
+                assertAgentPublishScheduleLock(validated.scheduledFor, nowMs, 'editPublishRequest');
+            } else if (currentPayload.scheduledFor !== undefined && currentPayload.scheduledFor !== null) {
+                assertAgentPublishScheduleLock(
+                    currentPayload.scheduledFor,
+                    nowMs,
+                    'clearing scheduledFor via editPublishRequest'
+                );
+            }
+        }
 
         const existingRevisions  = Array.isArray(storedState.revisions) ? storedState.revisions : (storedState.revision ? [storedState.revision] : []);
         const nextRevisionNumber = (storedState.revision?.revisionNumber || existingRevisions.length || 1) + 1;
 
-        const {revisionDigest, attestation: _rawAttestation, ...publishFields} = validated;
+        const {revisionDigest, attestation: rawAttestation, ...publishFields} = validated;
+
+        let verifiedAttestation = null;
+        if (rawAttestation !== null && rawAttestation !== undefined) {
+            verifiedAttestation = resolveAndVerifyPublishAttestation({
+                db,
+                attestation           : rawAttestation,
+                expectedRevisionDigest: revisionDigest,
+                revisionNumber        : nextRevisionNumber,
+                authorIdentity        : originator || me,
+                timestamp
+            });
+        }
 
         const nextRevision = {
             revisionNumber: nextRevisionNumber,
@@ -5975,7 +6058,7 @@ class MailboxService extends Base {
             createdBy     : me,
             payload       : {...publishFields},
             approval      : null,
-            attestation   : null
+            attestation   : verifiedAttestation
         };
 
         const nextRevisions   = [...existingRevisions, nextRevision];
@@ -5999,7 +6082,7 @@ class MailboxService extends Base {
                 revisionNumber: nextRevision.revisionNumber,
                 revisionDigest: nextRevision.revisionDigest,
                 approval      : null,
-                attestation   : null
+                attestation   : verifiedAttestation
             },
             publication   : nextPublication
         };
@@ -6095,7 +6178,15 @@ class MailboxService extends Base {
             ? attestation
             : {reviewerMessageId, revisionDigest};
 
-        const timestamp           = new Date().toISOString();
+        const nowMs     = this._now();
+        const timestamp = new Date(nowMs).toISOString();
+        const activeScheduledFor =
+            currentRevision.payload?.scheduledFor ??
+            storedState.requestPublish?.scheduledFor ??
+            storedState.task?.requestPublish?.scheduledFor ??
+            null;
+        assertAgentPublishScheduleLock(activeScheduledFor, nowMs, 'attestPublishRevision');
+
         const verifiedAttestation = resolveAndVerifyPublishAttestation({
             db,
             attestation           : candidateAttestation,
@@ -6202,7 +6293,7 @@ class MailboxService extends Base {
             );
         }
 
-        const timestamp = new Date().toISOString();
+        const timestamp = new Date(this._now()).toISOString();
         const approval  = {
             approvedBy    : me,
             approvedAt    : timestamp,
@@ -6364,7 +6455,7 @@ class MailboxService extends Base {
             );
         }
 
-        const timestamp       = new Date().toISOString();
+        const timestamp       = new Date(this._now()).toISOString();
         const textAsRequested = currentPublication.textAsRequested ?? storedState.requestPublish?.text ?? '';
         const nextPublication = {
             ...currentPublication,

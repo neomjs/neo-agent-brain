@@ -27,8 +27,11 @@
 
 import crypto from 'node:crypto';
 import {
+    PUBLISH_LOCK_TIMEZONE,
     computePublishRevisionDigest,
-    matchesRequestedPublishText
+    matchesRequestedPublishText,
+    parsePublishSchedule,
+    zonedWallTimeToUtcMs
 } from '../memory-core/helpers/publishDigest.mjs';
 import {
     PUBLISH_CHANNELS,
@@ -47,8 +50,11 @@ import {
 } from './socialPlatformClient.mjs';
 
 export {
+    PUBLISH_LOCK_TIMEZONE,
     computePublishRevisionDigest,
     matchesRequestedPublishText,
+    parsePublishSchedule,
+    zonedWallTimeToUtcMs,
     PUBLISH_CHANNELS,
     SWITCH_STATES,
     SWITCH_STATE_RANK,
@@ -1089,6 +1095,43 @@ export function createPublishExecutor(config = {}) {
                 };
             }
 
+            // Gate 5b.1: Optional dated-publication (`scheduledFor`) syntax & pre-schedule hold.
+            const schedule = parsePublishSchedule(payload.scheduledFor);
+            if (schedule && !schedule.ok) {
+                const reason = `${REFUSAL_CODES.scheduledFor} — ${schedule.reason}`;
+                await transitionMailboxPublishState(mailbox, {
+                    requestId,
+                    state          : PUBLICATION_STATES.refused,
+                    revisionNumber : currentRevision.revisionNumber,
+                    revisionDigest,
+                    textAsRequested: publication.textAsRequested,
+                    textAsPublished: null,
+                    refusalReason  : reason
+                });
+                return {
+                    ok     : false,
+                    state  : PUBLICATION_STATES.refused,
+                    refused: REFUSAL_CODES.scheduledFor,
+                    requestId,
+                    reason
+                };
+            }
+
+            if (schedule && nowMs < schedule.earliestReleaseMs) {
+                const reason = `${REFUSAL_CODES.scheduleNotReached} — request '${requestId}' is scheduled for '${schedule.scheduledFor}' (earliest release ${schedule.earliestReleaseIso}); holding in queued state at ${new Date(nowMs).toISOString()}`;
+                return {
+                    ok               : false,
+                    state            : PUBLICATION_STATES.queued,
+                    publicationState : PUBLICATION_STATES.queued,
+                    refused          : REFUSAL_CODES.scheduleNotReached,
+                    requestId,
+                    revisionDigest,
+                    scheduledFor     : schedule.scheduledFor,
+                    earliestReleaseAt: schedule.earliestReleaseIso,
+                    reason
+                };
+            }
+
             // Gate 5c: Dispatch-time reply-classification check.
             if (payload.format === PUBLISH_FORMATS.reply || (payload.format === PUBLISH_FORMATS.post && payload.inReplyTo != null)) {
                 const reason = `${REFUSAL_CODES.replyClassificationUnresolved} — third-party API replies are disabled until verified against ${REPLY_CLASSIFICATION_PRIMARY_SOURCE}`;
@@ -1192,6 +1235,43 @@ export function createPublishExecutor(config = {}) {
                     requestId,
                     reason : switchCheck.reason
                 };
+            }
+
+            // Gate 5d.1: Defense-in-depth D-1 18:00 Europe/Berlin lock check for dated revisions
+            // released without an explicit human operator approval on the current revision.
+            if (schedule && !currentRevision.approval) {
+                const createdAtMs    = currentRevision.createdAt ? Date.parse(String(currentRevision.createdAt)) : NaN,
+                      attestationObj = currentRevision.attestation ?? payload.attestation ?? null,
+                      attestedAtRaw  = attestationObj?.attestedAt ?? attestationObj?.timestamp ?? null,
+                      attestedAtMs   = attestedAtRaw ? Date.parse(String(attestedAtRaw)) : NaN,
+                      lateRevision   = Number.isFinite(createdAtMs) && createdAtMs > schedule.lockCutoffMs,
+                      lateAttest     = Number.isFinite(attestedAtMs) && attestedAtMs > schedule.lockCutoffMs;
+
+                if (lateRevision || lateAttest) {
+                    const lateDetail = lateRevision
+                        ? `revision ${currentRevision.revisionNumber} createdAt '${currentRevision.createdAt}'`
+                        : `cross-family attestation '${attestedAtRaw}'`;
+                    const reason = `${REFUSAL_CODES.contentLockWindow} — ${lateDetail} exceeded the D-1 18:00 ${schedule.timeZone} lock cutoff (${schedule.lockCutoffIso}) for scheduledFor '${schedule.scheduledFor}' without explicit human operator approval`;
+                    await transitionMailboxPublishState(mailbox, {
+                        requestId,
+                        state          : PUBLICATION_STATES.refused,
+                        revisionNumber : currentRevision.revisionNumber,
+                        revisionDigest,
+                        textAsRequested: publication.textAsRequested,
+                        textAsPublished: null,
+                        refusalReason  : reason
+                    });
+                    return {
+                        ok          : false,
+                        state       : PUBLICATION_STATES.refused,
+                        refused     : REFUSAL_CODES.contentLockWindow,
+                        requestId,
+                        revisionDigest,
+                        scheduledFor: schedule.scheduledFor,
+                        lockCutoffAt: schedule.lockCutoffIso,
+                        reason
+                    };
+                }
             }
 
             // Gate 5e: Verify immutable media byte digests before upload and pass verified bytes.
