@@ -290,7 +290,7 @@ export function buildWakeReceiverManifest({
             );
         }
 
-        const receiverMetadata = Object.fromEntries(
+        let receiverMetadata = Object.fromEntries(
             Object.entries(harnessTargetMetadata).filter(([key]) =>
                 !SENDER_ONLY_METADATA_KEYS.includes(key) && !RECORD_ROUTING_METADATA_KEYS.includes(key))
         );
@@ -299,7 +299,7 @@ export function buildWakeReceiverManifest({
         // the record cannot supply it (its addressType/instanceAddress are sender-side webhook
         // routing — mapping them through passes the loader and then fails every dispatch silently).
         // Without an explicit tuple this becomes a NAMED skip, never an undeliverable route.
-        if (receiverMetadata.adapter === 'osascript') {
+        if (receiverMetadata.adapter === 'osascript' || receiverMetadata.adapter === 'primary-session') {
             if (!instance || typeof instance.address !== 'string' || !instance.address) {
                 skipped.push({
                     subscriptionId: id,
@@ -320,10 +320,21 @@ export function buildWakeReceiverManifest({
         // `codexBinary` requirement from any supported input — the route would be unbuildable rather
         // than merely unconfigured. The context gate rides the same channel: every route
         // states its gate policy explicitly (generator defaults, caller override merged per key).
-        const {contextGate: contextGateOverride, ...adapterConfigExtra} = adapterConfigById[id] || {};
+        const supplied = adapterConfigById[id] || {};
+        if (receiverMetadata.adapter === 'primary-session') {
+            const primarySession = supplied.primarySession || (existing?.harnessTargetMetadata?.adapter === 'primary-session' && existing.agentIdentity === agentIdentity ? existing.adapterConfig?.primarySession : null);
+            if (!instance || !primarySession || trigger !== 'SENT_TO_ME' || agentIdentity !== callerIdentity) {
+                delete routes[id];
+                skipped.push({subscriptionId: id, reason: 'primary-session requires host-owned per-seat admission', withdrewPublishedRoute: Boolean(existing)});
+                continue;
+            }
+            receiverMetadata = {adapter: 'primary-session', addressType: instance.type, instanceAddress: instance.address};
+            supplied.primarySession = primarySession;
+        }
+        const {contextGate: contextGateOverride, ...adapterConfigExtra} = supplied;
         // A rotation route admits only `session/rotate`; a wake route carries no field and admits
         // `wake/digest`, so every manifest published before rotation existed reads unchanged.
-        const admits = admittedEventType({trigger});
+        const admits = receiverMetadata.adapter === 'primary-session' ? 'wake/digest' : admittedEventType({trigger});
 
         routes[id] = {
             agentIdentity,
@@ -636,6 +647,7 @@ export async function runManifestBuilder({
     manifestPath,
     identity,
     adapterConfigPath,
+    adapterConfigById: hostAdapterConfigById,
     attemptTimeoutMs,
     instanceType,
     instanceAddress,
@@ -655,9 +667,10 @@ export async function runManifestBuilder({
         throw new Error(`--instance must be one of ${GUI_INSTANCE_ADDRESS_TYPES.join('|')} (the only addressTypes the receiver can dispatch to)`);
     }
 
+    if (adapterConfigPath && hostAdapterConfigById) throw new Error('choose one adapter config source');
     const adapterConfigById = adapterConfigPath
         ? JSON.parse(await fs.readFile(adapterConfigPath, 'utf8'))
-        : {};
+        : hostAdapterConfigById || {};
 
     const raw = subscriptionsPath === '-'
         ? await readStream(process.stdin)

@@ -177,7 +177,7 @@ class WakeSubscriptionService extends Base {
      *
      * @protected
      */
-    validAdapters = ['osascript', 'tmux', 'claude-courier', 'codex-app-server', 'opencode-server', 'kimi-server', 'kimi-pull-bridge']
+    validAdapters = ['osascript', 'tmux', 'claude-courier', 'codex-app-server', 'opencode-server', 'kimi-server', 'kimi-pull-bridge', 'primary-session']
 
     /**
      * In-memory write-through cache for sub-millisecond trigger evaluation.
@@ -1549,6 +1549,10 @@ class WakeSubscriptionService extends Base {
 
         const finalMetadata = this._retireWebCoordinatesForPullBridge({...harnessTargetMetadata});
 
+        if (finalMetadata.adapter === 'primary-session' && trigger !== 'SENT_TO_ME') {
+            throw new Error('primary-session admits only SENT_TO_ME wakes');
+        }
+
         if (harnessTarget === 'a2a-webhook' && !finalMetadata.url) {
             throw new Error("Shape B (a2a-webhook) requires harnessTargetMetadata.url.");
         }
@@ -1802,6 +1806,9 @@ class WakeSubscriptionService extends Base {
         if (filters               !== undefined) updated.filters               = filters;
         if (harnessTarget         !== undefined) updated.harnessTarget         = harnessTarget;
         if (harnessTargetMetadata !== undefined) updated.harnessTargetMetadata = this._retireWebCoordinatesForPullBridge({...subscription.harnessTargetMetadata, ...harnessTargetMetadata});
+        if (updated.harnessTargetMetadata?.adapter === 'primary-session' && updated.trigger !== 'SENT_TO_ME') {
+            throw new Error('primary-session admits only SENT_TO_ME wakes');
+        }
         this.validateHarnessTargetMetadata(updated.harnessTarget, updated.harnessTargetMetadata || {});
         updated.updatedAt = new Date().toISOString();
 
@@ -1858,6 +1865,10 @@ class WakeSubscriptionService extends Base {
     validateHarnessTargetMetadata(harnessTarget, metadata = {}) {
         if (metadata.adapter !== undefined && !this.validAdapters.includes(metadata.adapter)) {
             throw new Error(`Invalid adapter '${metadata.adapter}'. Must be one of: ${this.validAdapters.join(', ')}`);
+        }
+        if (metadata.adapter === 'primary-session' && (harnessTarget !== 'a2a-webhook' ||
+            Object.keys(metadata).some(key => !['adapter', 'url', 'signingKey', 'coalesceWindow'].includes(key)))) {
+            throw new Error('primary-session requires a2a-webhook and carries no host coordinates');
         }
         // The osascript-style bridge-daemon routes need an appName target; the opencode-server and
         // kimi-server adapters route by seat envelope instead and are exempt (their authority is
@@ -2957,7 +2968,7 @@ class WakeSubscriptionService extends Base {
     _refreshExistingSubscriptionRoute(subscription, {filters = {}, harnessTargetMetadata = {}} = {}) {
         const existingSigningKey = subscription.harnessTargetMetadata?.signingKey;
         const mergedMetadata     = {
-            ...(subscription.harnessTargetMetadata || {}),
+            ...(harnessTargetMetadata.adapter === 'primary-session' ? {} : subscription.harnessTargetMetadata || {}),
             ...harnessTargetMetadata
         };
 

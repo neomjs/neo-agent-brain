@@ -60,6 +60,21 @@ async function tempDir() {
 }
 
 test.describe('buildWakeReceiverManifest — key authority', () => {
+    test('native route takes host config only for the exact owner and subscription', () => {
+        const sub = {...webhookSubscription, harnessTargetMetadata: {...webhookSubscription.harnessTargetMetadata,
+            adapter: 'primary-session', instanceAddress: '/untrusted/path'}},
+              config = {instanceHome: '/seat', appBundle: '/Applications/Codex.app', agentId: 'seat-a', family: 'codex-desktop'},
+              options = {subscriptions: [sub], callerIdentity: sub.agentIdentity, instance: {type: 'userDataDir', address: '/seat/electron-profile'},
+                  adapterConfigById: {[sub.id]: {primarySession: config}}};
+        const result = buildWakeReceiverManifest(options), route = result.manifest.routes[sub.id];
+        expect(route.admits).toBe('wake/digest');
+        expect(route.harnessTargetMetadata).toEqual({adapter: 'primary-session', addressType: 'userDataDir', instanceAddress: '/seat/electron-profile'});
+        expect(route.adapterConfig.primarySession).toEqual(config);
+        const rebuilt = buildWakeReceiverManifest({...options, adapterConfigById: {}, existingRoutes: result.manifest.routes});
+        expect(rebuilt.manifest.routes[sub.id].adapterConfig.primarySession).toEqual(config);
+        expect(() => buildWakeReceiverManifest({...options, adapterConfigById: {}})).toThrow('host-owned');
+        expect(() => buildWakeReceiverManifest({...options, callerIdentity: '@other'})).toThrow('host-owned');
+    });
     test('uses the server-issued key and never mints one', () => {
         const {manifest} = buildWakeReceiverManifest({subscriptions: [webhookSubscription], instance: INSTANCE});
 

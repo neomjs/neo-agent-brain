@@ -162,6 +162,7 @@ export async function armSeatWakeRoute({
     listSubscriptions,
     manifestPath,
     tuple: knownTuple,
+    adapterConfigById,
     env        = process.env,
     harness    = 'claude',
     homeDir,
@@ -229,7 +230,8 @@ export async function armSeatWakeRoute({
             instanceType   : tuple.instanceType,
             logger,
             manifestPath,
-            subscriptionsPath
+            subscriptionsPath,
+            adapterConfigById
         });
 
         // "The builder returned" is NOT "this seat is reachable". The builder withdraws the caller's own

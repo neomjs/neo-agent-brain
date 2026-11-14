@@ -94,6 +94,7 @@ export async function armFleetSeatWake({
     planeBase,
     receiverBase,
     manifestPath,
+    primarySession = null,
     tenantService,
     startSignal,
     routeClass   = 'wake',
@@ -105,7 +106,7 @@ export async function armFleetSeatWake({
 
     if (!routeSpec) throw new Error(`armFleetSeatWake: unknown route class '${routeClass}'`);
 
-    const dispatch = routeSpec.dispatchTable[agent?.harnessType];
+    const dispatch = routeClass === 'wake' && primarySession ? {adapter: 'primary-session'} : routeSpec.dispatchTable[agent?.harnessType];
 
     if (!dispatch) return null;
 
@@ -113,6 +114,11 @@ export async function armFleetSeatWake({
 
     if (!address) {
         return {state: 'unarmed', reason: 'the seat has no launched profile to address'}
+    }
+    if (primarySession && (routeClass !== 'wake' || primarySession.family !== agent.harnessType ||
+        primarySession.agentId !== agent.id || primarySession.instanceHome !== instanceHome ||
+        !['codex-desktop', 'antigravity'].includes(agent.harnessType))) {
+        return {state: 'unarmed', reason: 'primary-session host admission is incomplete or inconsistent'}
     }
 
     // Every reason lands on a public status, and the plane, the publisher and thrown errors author most
@@ -184,6 +190,7 @@ export async function armFleetSeatWake({
         listSubscriptions: async () => (await client.callTool('manage_wake_subscription', {action: 'list'}))?.subscriptions,
         manifestPath,
         tuple            : {identity, instanceAddress: address.instanceAddress, instanceType: address.addressType},
+        adapterConfigById: primarySession && subscriptionId ? {[subscriptionId]: {primarySession}} : undefined,
         logger
     });
     let result, subscriptionId = null, subscriptionRequested = false;
@@ -211,7 +218,7 @@ export async function armFleetSeatWake({
             trigger              : routeSpec.trigger,
             filters              : {},
             harnessTarget        : 'a2a-webhook',
-            harnessTargetMetadata: {...dispatch, url, ...address}
+            harnessTargetMetadata: primarySession ? {...dispatch, url} : {...dispatch, url, ...address}
         }) ?? {});
 
         if (!subscriptionId) return unarmed('the plane accepted the subscription without naming it');
@@ -225,7 +232,8 @@ export async function armFleetSeatWake({
 
         // `armed` speaks for every route the seat owns; `ready` is a claim about this one.
         result = published.subscriptionIds?.includes(subscriptionId)
-            ? {state: 'ready', reason: null, ...route, subscriptionId}
+            ? {state: 'ready', reason: primarySession ? 'route published; recipient not yet witnessed' : null, ...route, subscriptionId,
+                ...(primarySession ? {recipientState: 'unknown'} : {})}
             : unarmed(`the publish carried no route for ${subscriptionId}`)
     } catch (error) {
         return {
