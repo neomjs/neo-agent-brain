@@ -429,17 +429,18 @@ export function createWakeReceiver({
                     continue;
                 }
 
-                // The holder fence: a rotation's first attempt records which session holds the seat, and an
-                // attempt that finds another holder (a session someone opened since) fails without a keystroke.
-                // The adapter asks again right before Cmd+N. No readable holder at the first attempt, no fence.
-                let rotationGuard;
+                // The holder fence: a rotation's first attempt records which session holds the seat (`null` when
+                // none is readable), and an attempt that finds any other holder, a first one included, fails
+                // without a keystroke. The adapter asks again after its last await, and the script re-reads the
+                // holder right before Cmd+N.
+                let rotationGuard, rotationHolder;
 
                 if (isSessionRotation(dispatching.envelope)) {
                     const identity = dispatching.envelope.agentIdentity,
                           holder   = readSeatHolder(identity),
                           baseline = dispatching.seatHolder === undefined ? holder : dispatching.seatHolder;
 
-                    if (typeof baseline === 'string' && holder !== baseline) {
+                    if (holder !== baseline) {
                         await watched.transition(record.recordKey, 'dispatching', 'failed', {
                             outcomeReason     : ROTATION_SUPERSEDED,
                             dispatchFinishedAt: new Date(clock()).toISOString()
@@ -452,7 +453,10 @@ export function createWakeReceiver({
                     }
 
                     dispatching.seatHolder = baseline ?? null;
-                    rotationGuard          = () => typeof baseline === 'string' && readSeatHolder(identity) !== baseline ? ROTATION_SUPERSEDED : null;
+                    rotationGuard          = () => readSeatHolder(identity) !== (baseline ?? null) ? ROTATION_SUPERSEDED : null;
+                    rotationHolder         = typeof baseline === 'string'
+                        ? {path: path.join(listenerStateDir, `${identity.replace(/^@/, '')}.json`), sessionId: baseline.split('#')[0]}
+                        : null;
                 }
 
                 // The context gate: after the non-idempotency marker, before the adapter runs.
@@ -592,7 +596,7 @@ export function createWakeReceiver({
                             }
                         }
                     }
-                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath}) : dispatch(dispatching, rotationGuard ? {rotationGuard} : undefined),
+                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath}) : dispatch(dispatching, rotationGuard ? {rotationGuard, rotationHolder} : undefined),
                         (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch, record.subscriptionId);
 
                     outcome = typeof result === 'string' ? result : native ? result?.status : result?.outcome;

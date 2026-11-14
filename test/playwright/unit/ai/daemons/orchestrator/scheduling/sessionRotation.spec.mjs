@@ -713,4 +713,17 @@ test.describe('session-rotation lane: the receipt turn ends at its writer\'s clo
         expect((await runLane(db, {now: NOW + MIN})).sent).toEqual([]);
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'refused', reason: 'prompted-after-receipt'})
     });
+
+    test('Emmy\'s Round-2 control: a session first seen after the receipt is not the writer, so its close authorizes nothing', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        save(db, 'mem-a', 20, 'session-a');
+        insertSelfMessage(db, 'MESSAGE:receipt', 10);
+        insertInterval(db, 'a-turn',   {startedAgo: 12, progressAgo: 10, expiresIn: 50}); // the writer, still active
+        insertInterval(db, 'new-turn', {startedAgo: 8, progressAgo: 6, closed: true});     // a new session's turn...
+        save(db, 'mem-new', 6, 'session-new');                                             // ...saving alongside its close
+
+        expect((await runLane(db)).sent).toEqual([])
+    });
 });

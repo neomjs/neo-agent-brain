@@ -40,9 +40,9 @@ export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
  * join (the prompt's, a tool-progress beacon's, the one `add_memory` closes), and presence names no session,
  * so an interval alone cannot say whose turn it was. The writer's `add_memory` can: its memory lands within
  * {@link WRITER_CLOSE_SKEW_MS} of the `terminal` interval it closes, under the writer's Memory Core session
- * (the old session, or one first seen after the receipt: an MCP reconnect inside the writer's transcript).
- * The close is the earliest such interval at or after the receipt; any other close is unattributed and
- * authorizes nothing.
+ * (the old session). The close is the earliest such interval at or after the receipt; any other close is
+ * unattributed and authorizes nothing. A session first seen after the receipt attributes nothing either: it
+ * may be the writer's reconnect or a new session, so the turn then waits on presence alone.
  * - Before the close, the turn is live while any interval is, since an interval opened after the receipt may
  *   still be the writer's own tail.
  * - After it, the turn holds nothing. A prompted turn is then an interval, without a wake-submit nonce,
@@ -104,12 +104,12 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
                 AND json_extract(data, '$.properties.agentIdentity') = ?
                 AND json_extract(data, '$.properties.timestamp') >= ?
           `).all(identity, sinceIso),
-          // sessions writing before the receipt; one first seen after it is the writer's own reconnect
+          // Only the writer's own session attributes a close. One first seen after the receipt may be the
+          // writer's reconnect or a new session, so it neither closes the turn nor refuses it.
           before       = new Set(memories.filter(row => row.at <= sentAt).map(row => row.sessionId)),
-          isWriter     = sessionId => sessionId === oldSessionId || !before.has(sessionId),
           after        = memories.filter(row => row.at > sentAt),
-          writerSaves  = after.filter(row => isWriter(row.sessionId)).map(row => Date.parse(row.at)),
-          otherSaveAt  = after.filter(row => !isWriter(row.sessionId)).map(row => row.at).sort()[0] || null,
+          writerSaves  = after.filter(row => row.sessionId === oldSessionId).map(row => Date.parse(row.at)),
+          otherSaveAt  = after.filter(row => row.sessionId !== oldSessionId && before.has(row.sessionId)).map(row => row.at).sort()[0] || null,
           intervals    = db.prepare(`
               SELECT json_extract(data, '$.properties.startedAt') AS startedAt,
                      json_extract(data, '$.properties.lastProgressAt') AS lastProgressAt,

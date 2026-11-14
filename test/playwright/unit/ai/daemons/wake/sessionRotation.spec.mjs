@@ -258,6 +258,17 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
         expect(lines[fresh - 2]).toBe('      if (current date) > rotationDeadline then error "Rotation deadline passed before the fresh session"')
     });
 
+    test('Emmy\'s Round-2 control: the script re-reads the seat holder right before the fresh-session keystroke', () => {
+        const lines = buildOsascriptArgs({
+                  appName: 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7,
+                  freshSessionHolder: {path: '/seats/ada/listeners/neo-opus-ada.json', sessionId: 'old-session'}
+              }).map(String),
+              fresh = lines.indexOf('      keystroke "n" using command down');
+
+        expect(lines[fresh - 4]).toBe('      tell current application to set rotationHolderNow to (do shell script "cat " & quoted form of "/seats/ada/listeners/neo-opus-ada.json")');
+        expect(lines[fresh - 2]).toBe('      if rotationHolderNow does not contain "old-session" then error "Seat holder changed before the fresh session"')
+    });
+
     test('the idle clock is read last: after the pid lookup and the dialog probe, before the first keystroke', async () => {
         const order  = [];
         const result = await dispatchLocalWake(rotationRecord(), quietEffects({
@@ -510,6 +521,26 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
             expect(await state.read(rotationKey)).toMatchObject({state: 'pending', seatHolder: 'old-session#7'});
 
             await holder('opened-by-hand');
+
+            await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
+            expect((await state.read(rotationKey)).outcomeReason).toBe(ROTATION_SUPERSEDED);
+            expect(dispatched).toHaveLength(1)
+        } finally {
+            await fs.rm(listenerStateDir, {recursive: true, force: true})
+        }
+    });
+
+    test('Emmy\'s Round-2 control: a holder that appears after an unreadable first read supersedes the rotation', async () => {
+        const listenerStateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-rotation-listeners-')),
+              quick            = rotationReceiver([{outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE}], {rotationRetryMs: 200, listenerStateDir});
+
+        try {
+            await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+            await quick.drain();
+
+            expect(await state.read(rotationKey)).toMatchObject({state: 'pending', seatHolder: null});
+
+            await fs.writeFile(path.join(listenerStateDir, 'neo-opus-ada.json'), JSON.stringify({owner: {sessionId: 'opened-by-hand', session: {pid: 9}}}));
 
             await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
             expect((await state.read(rotationKey)).outcomeReason).toBe(ROTATION_SUPERSEDED);

@@ -771,6 +771,7 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
         freshSessionDeadlineSeconds: rotation
             ? Math.max(0, Math.floor((rotationDeadline(record.acceptedAt) - effects.now()) / 1000))
             : null,
+        freshSessionHolder: rotation ? effects.rotationHolder || null : null,
         instancePid,
         tabShortcut         : resolvedMeta.tabShortcut
     });
@@ -858,11 +859,14 @@ export function processAutomationIdLines(indent = '  ') {
  * @param {String|null} [options.freshSessionShortcut] Command-key shortcut that opens a fresh session.
  * @param {Number|null} [options.freshSessionDeadlineSeconds] Seconds the rotation has left: the script
  *   refuses the fresh-session keystroke once they pass, so a slow activation cannot open a late session.
+ * @param {{path: String, sessionId: String}|null} [options.freshSessionHolder] The seat holder's record and the
+ *   session that held it at the rotation's first attempt: the script re-reads the record right before
+ *   Cmd+N and refuses the keystroke when another session holds the seat or the record cannot be read.
  * @param {Number|null} [options.instancePid] Resolved Unix PID when instance-addressed.
  * @param {String} [options.tabShortcut] Command-key shortcut for the harness tab.
  * @returns {String[]} `osascript` argv fragments ending with the digest.
  */
-export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, freshSessionDeadlineSeconds = null, instancePid, tabShortcut}) {
+export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, freshSessionDeadlineSeconds = null, freshSessionHolder = null, instancePid, tabShortcut}) {
     const fencedFreshSession = Boolean(freshSessionShortcut) && Number.isFinite(freshSessionDeadlineSeconds);
     const escapedAppName   = escapeAppleScript(appName);
     const targetPid        = instancePid ? String(instancePid) : '';
@@ -935,6 +939,12 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
     if (freshSessionShortcut) {
         if (fencedFreshSession) {
             args.push('-e', '      if (current date) > rotationDeadline then error "Rotation deadline passed before the fresh session"');
+        }
+        if (freshSessionHolder?.path && freshSessionHolder?.sessionId) {
+            args.push(
+                '-e', `      tell current application to set rotationHolderNow to (do shell script "cat " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}")`,
+                '-e', `      if rotationHolderNow does not contain "${escapeAppleScript(freshSessionHolder.sessionId)}" then error "Seat holder changed before the fresh session"`
+            );
         }
         args.push('-e', `      keystroke "${escapeAppleScript(freshSessionShortcut)}" using command down`);
         // The new session's composer renders before it takes input.
