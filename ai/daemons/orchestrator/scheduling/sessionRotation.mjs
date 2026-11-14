@@ -23,10 +23,11 @@ import {
  * - **One request per receipt:** the event id is `session-rotate:<receipt id>`, written to the receipt
  *   before the send. A send the receiver never accepted is sent again under the same id, so a retry is
  *   the receiver's duplicate rather than a second session.
- * - **Guards** ({@link decideRotation}): a prompt or a newer session after the receipt refuses it, and so
- *   does a second request of one seat inside the minimum interval. The refusal and its reason are
+ * - **Guards** ({@link decideRotation}): a prompt or a successor marker after the receipt refuses it, and
+ *   so does a second request of one seat inside the minimum interval. The refusal and its reason are
  *   recorded. The handover's receipt count (`focusItemsReceipt`) must be consumed first.
- * - **Records:** `requested`, `completed` (both session ids and the messages the wake hold kept),
+ * - **Records:** `requested`, `completed` (the successor marker, both session ids and the messages the
+ *   wake hold kept; the new id is `null` until the fresh session's first memory lands),
  *   `refused`, `incomplete` (the window passed). Each one is a log line, and the record stays on the
  *   handover node's `sessionRotation`.
  */
@@ -87,11 +88,11 @@ export async function runSessionRotation({db, deliver, operatorPresence, windowM
         }
 
         if (verdict.action === 'complete') {
-            const {sessionId, at} = read.newerSession,
-                  heldMessages    = countDirectMessagesBetween(db, identity, {afterIso: receipt.sentAt, untilIso: at});
+            const {id: successorMessageId, sentAt, sessionId} = read.successor,
+                  heldMessages                                = countDirectMessagesBetween(db, identity, {afterIso: receipt.sentAt, untilIso: sentAt});
 
-            writeSessionRotation(db, receipt.id, {...rotation, state: 'completed', completedAt: nowIso, newSessionId: sessionId, heldMessages});
-            writeLog('INFO', `[Orchestrator] session-rotation: completed for ${identity}, session ${rotation.oldSessionId} → ${sessionId}, receipt ${receipt.id}, ${heldMessages} held message(s)`);
+            writeSessionRotation(db, receipt.id, {...rotation, state: 'completed', completedAt: nowIso, successorMessageId, newSessionId: sessionId, heldMessages});
+            writeLog('INFO', `[Orchestrator] session-rotation: completed for ${identity}, session ${rotation.oldSessionId} → ${sessionId ?? 'unsaved'}, successor ${successorMessageId}, receipt ${receipt.id}, ${heldMessages} held message(s)`);
             outcome.completed++;
             continue
         }

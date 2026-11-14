@@ -167,7 +167,16 @@ export const SESSION_ROTATION_REASON = 'sunset_restart';
 export const TERMINAL_ROTATION_STATES = Object.freeze(['completed', 'incomplete', 'refused']);
 
 /**
- * @summary The first prompt the receiver types into the fresh session.
+ * The tag of the quiet self-DM a fresh session sends in reply to the handover it continues
+ * (`context-recovery` step 1a). The marker names the successor, not a Memory Core session id: an MCP
+ * reconnect mints a new id inside the old transcript.
+ * @type {String}
+ */
+export const SUNSET_SUCCESSOR_TAG = 'sunset-successor';
+
+/**
+ * @summary The first prompt the receiver types into the fresh session. It names the successor marker,
+ * so the rotation completes even where the session's `context-recovery` does not send one yet.
  * @param {Object} options
  * @param {String} options.agentIdentity The seat, `@<identity>`.
  * @param {String} options.receiptMessageId The sunset handover the session continues from.
@@ -177,7 +186,7 @@ export const TERMINAL_ROTATION_STATES = Object.freeze(['completed', 'incomplete'
 export function buildRotationPrompt({agentIdentity, receiptMessageId, operatorPresence}) {
     const until = operatorPresence.mode === 'away' && operatorPresence.until ? ` until ${operatorPresence.until}` : '';
 
-    return `/context-recovery Fresh session for ${agentIdentity}, opened by the plane after your sunset handover ${receiptMessageId}: read it first. The operator is ${operatorPresence.mode}${until}.`
+    return `/context-recovery Fresh session for ${agentIdentity}, opened by the plane after your sunset handover ${receiptMessageId}: read it first, then send the quiet [sunset successor] self-DM tagged ${SUNSET_SUCCESSOR_TAG} with inReplyTo ${receiptMessageId}. The operator is ${operatorPresence.mode}${until}.`
 }
 
 /**
@@ -204,8 +213,8 @@ export function buildRotationEnvelope({subscription, receiptMessageId, oldSessio
 }
 
 /**
- * @summary Whether a receipt still waits for its fresh session: not settled, and no prompt or newer
- * session has answered it. A prompt after the receipt is a person at the old session or the fresh
+ * @summary Whether a receipt still waits for its fresh session: not settled, and no prompt or successor
+ * marker has answered it. A prompt after the receipt is a person at the old session or the fresh
  * session's first prompt; either way the old session is no longer the one to wait on.
  * @param {Object|null} read `readSunsetReceipt`'s answer.
  * @returns {Boolean}
@@ -214,7 +223,7 @@ export function isReceiptOpen(read) {
     return !!read &&
         !TERMINAL_ROTATION_STATES.includes(read.receipt.sessionRotation?.state) &&
         !read.promptedTurnAt &&
-        !read.newerSession
+        !read.successor
 }
 
 /**
@@ -243,7 +252,8 @@ export function holdsWakes({read, hasRotationRoute, now, windowMs}) {
  * - `request`: send the rotation (a first send, or a re-send of one the receiver never accepted:
  *   the event id makes it the same record). A re-send passes the prompt and live-turn guards again,
  *   since a person may resume the old session after a first send failed.
- * - `complete`: a session other than the old one has saved a memory since the request.
+ * - `complete`: a successor marker replies to the receipt since the request. A Memory Core session id
+ *   that changes inside the old transcript is no successor.
  * - `refuse`: the receipt never gets a rotation, with the reason recorded on it.
  * - `incomplete`: the window passed without a fresh session.
  * - `wait`: nothing to do yet (the receipt count is not consumed, the turn that wrote the receipt is
@@ -268,7 +278,7 @@ export function decideRotation({read, now, windowMs, minIntervalMs}) {
     const pastWindow = now - Date.parse(read.receipt.sentAt) >= windowMs;
 
     if (rotation) {
-        if (read.newerSession)    return {action: 'complete'};
+        if (read.successor)       return {action: 'complete'};
         if (pastWindow)           return {action: 'incomplete', reason: rotation.deliveredAt ? 'no-fresh-session' : 'undelivered'};
         if (rotation.deliveredAt) return {action: 'wait', reason: 'receiver-has-request'};
         // a re-send answers to the guards a first send answers to
@@ -279,7 +289,7 @@ export function decideRotation({read, now, windowMs, minIntervalMs}) {
     }
 
     if (read.promptedTurnAt)            return {action: 'refuse', reason: 'prompted-after-receipt'};
-    if (read.newerSession)              return {action: 'refuse', reason: 'newer-session'};
+    if (read.successor)                 return {action: 'refuse', reason: 'successor-present'};
     if (pastWindow)                     return {action: 'incomplete', reason: 'receipt-not-consumed'};
     if (read.receipt.focusItemsReceipt === null) return {action: 'wait', reason: 'receipt-count-pending'};
     if (read.lastRequestedAt && now - Date.parse(read.lastRequestedAt) < minIntervalMs) {
