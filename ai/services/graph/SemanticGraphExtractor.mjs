@@ -14,8 +14,9 @@ import {
     clearActiveRemCallState,
     writeActiveRemCallState
 } from '../../services/memory-core/helpers/remRunStateStore.mjs';
-import Json   from 'neo.mjs/src/util/Json.mjs';
-import logger from '../../mcp/server/memory-core/logger.mjs';
+import {resolveSessionTimestamp} from '../memory-core/helpers/resolveRowTimestamp.mjs';
+import Json                      from 'neo.mjs/src/util/Json.mjs';
+import logger                    from '../../mcp/server/memory-core/logger.mjs';
 import {
     canonicalizeSemanticGraphNodeId,
     canonicalizeTaggedConceptIds
@@ -390,9 +391,8 @@ class SemanticGraphExtractor extends Base {
     /**
      * Deterministically reduces chunk-level Tri-Vector payloads into one session payload.
      *
-     * @summary Anchor & Echo: This is the deterministic map-reduce floor, not semantic-perfect
-     * synthesis. Chunks are processed in monotonic chunk order; graph nodes dedupe by
-     * `(type, name)`, and edges are remapped through the deduped node ids before graph commit.
+     * @summary Anchor & Echo: Chunks reduce in monotonic order by `(type, name)`; `gravity_well`
+     * ORs across chunks within one session while leaving assertion timestamping to `commitTriVectorPayload`.
      *
      * @param {Object[]} payloads Chunk-level Tri-Vector payloads
      * @param {Object} chunkPlan Chunk plan emitted by `sessionChunker`
@@ -431,9 +431,11 @@ class SemanticGraphExtractor extends Base {
                         ...node,
                         type,
                         name,
-                        tags: Array.isArray(node.tags) ? [...new Set(node.tags)] : []
+                        gravity_well: node.gravity_well === true,
+                        tags        : Array.isArray(node.tags) ? [...new Set(node.tags)] : []
                     };
                     delete storedNode.confidence;
+                    delete storedNode.gravity_well_asserted_at;
                     nodeByTuple.set(key, storedNode);
                     if (node.id) {
                         nodeIdRemap.set(node.id, storedNode.id);
@@ -813,9 +815,10 @@ class SemanticGraphExtractor extends Base {
     /**
      * Commits a reduced Tri-Vector payload to the Native Edge Graph.
      *
-     * @summary Anchor & Echo: Chunked extraction completes every chunk before this method runs,
-     * preserving the historical single graph-write phase and avoiding partial writes on chunk failure.
-     * Closed classifications use their catch-all values for legacy input; self-confidence is not written.
+     * @summary Anchor & Echo: Commits only after every chunk succeeds; stamps `gravity_well_asserted_at`
+     * from the session's own timestamp (`resolveSessionTimestamp(session?.meta)`) when `gravity_well` is
+     * asserted and omits anchor fields otherwise, so anchor liveness is bounded by `strategicAnchorWindowMs`
+     * on the session's clock while `GraphService#upsertNode` owns stored anchor lifetime.
      *
      * @param {Object} payload Session-level Tri-Vector payload
      * @param {Object} session Wrapped session object
@@ -825,9 +828,11 @@ class SemanticGraphExtractor extends Base {
      * @protected
      */
     async commitTriVectorPayload(payload, session, {excludedNodeTypes = []} = {}) {
-        const artifact      = payload.session_artifact;
-        const excluded      = new Set(excludedNodeTypes.map(type => String(type).toUpperCase()));
-        const excludedNodes = new Set();
+        const artifact           = payload.session_artifact;
+        const excluded           = new Set(excludedNodeTypes.map(type => String(type).toUpperCase()));
+        const excludedNodes      = new Set();
+        const sessionTimestampMs = resolveSessionTimestamp(session?.meta);
+        const assertedAt         = sessionTimestampMs > 0 ? new Date(sessionTimestampMs).toISOString() : null;
 
         // Was a hand-written `frontier` spec upserted through plain upsertNode, which carried
         // two defects: the local description had drifted from the boot manifest, making the
@@ -855,6 +860,10 @@ class SemanticGraphExtractor extends Base {
             nodeId = this.normalizeMemorySessionGraphNodeId(nodeId);
             nodeId = canonicalizeSemanticGraphNodeId({id: nodeId, type: nodeType, name: node.name});
 
+            const anchorProps = node.gravity_well === true
+                ? (assertedAt ? {gravity_well: true, gravity_well_asserted_at: assertedAt} : {gravity_well: true})
+                : {};
+
             GraphService.upsertNode({
                 id              : nodeId,
                 type            : nodeType,
@@ -862,9 +871,9 @@ class SemanticGraphExtractor extends Base {
                 description     : node.description || '',
                 semanticVectorId: session.id,
                 properties      : {
-                    logical_layer   : TRI_VECTOR_LAYERS.includes(node.logical_layer) ? node.logical_layer : 'Unknown',
-                    stability       : TRI_VECTOR_STABILITIES.includes(node.stability) ? node.stability : 'UNKNOWN',
-                    gravity_well    : node.gravity_well === true,
+                    logical_layer: TRI_VECTOR_LAYERS.includes(node.logical_layer) ? node.logical_layer : 'Unknown',
+                    stability    : TRI_VECTOR_STABILITIES.includes(node.stability) ? node.stability : 'UNKNOWN',
+                    ...anchorProps,
                     strategic_weight: typeof node.strategic_weight === 'number' ? node.strategic_weight : (node.gravity_well ? 1.0 : 0.1),
                     tags            : Array.isArray(node.tags) ? node.tags : [],
                     context_source  : session.meta.sessionId

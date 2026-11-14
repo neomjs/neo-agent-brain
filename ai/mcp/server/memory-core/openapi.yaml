@@ -2487,7 +2487,7 @@ paths:
                           minimum: -1
                       gravityWell:
                         type: array
-                        description: 1 for a REM strategic anchor, else 0.
+                        description: 1 for a live REM strategic anchor (not a closed or merged work item, and asserted within the configured strategic-anchor window), else 0.
                         items:
                           type: integer
                           enum: [0, 1]
