@@ -441,3 +441,47 @@ test.describe('buildComputedRouteFromPass — canonical pass outcome → typed c
         expect(result.route.items.map(i => i.rank)).toEqual([1, 2, 3]);
     });
 });
+
+test.describe('computedGoldenPathRouting — read-time issue emphasis multiplier (#1527)', () => {
+    let getComputedIssueEmphasisMultiplier;
+
+    const internal = new Set(['neo-opus-grace', 'tobiu']);
+
+    test.beforeAll(async () => {
+        ({getComputedIssueEmphasisMultiplier} = await import('../../../../../../ai/services/graph/computedGoldenPathRouting.mjs'));
+    });
+
+    test('applies +0.5 for triaged community issues and +1.0 for bug issues, with safe degrade and DISCUSSION exclusion', () => {
+        expect(getComputedIssueEmphasisMultiplier({
+            id: 'issue-1', type: 'ISSUE', properties: {author: 'neo-opus-grace', labels: ['enhancement', 'ai']}
+        }, internal)).toBe(1.0);
+
+        expect(getComputedIssueEmphasisMultiplier({
+            id: 'issue-2', type: 'ISSUE', properties: {author: 'external-contributor', labels: ['enhancement']}
+        }, internal)).toBe(1.5);
+
+        expect(getComputedIssueEmphasisMultiplier({
+            id: 'issue-3', type: 'ISSUE', properties: {author: 'neo-opus-grace', labels: ['bug', 'ai']}
+        }, internal)).toBe(2.0);
+
+        expect(getComputedIssueEmphasisMultiplier({
+            id: 'issue-4', type: 'ISSUE', properties: {author: 'external-contributor', labels: ['Bug', 'ai']}
+        }, internal)).toBe(2.5);
+
+        expect(getComputedIssueEmphasisMultiplier({
+            id: 'issue-5', type: 'ISSUE', properties: {author: 'external-contributor', labels: []}
+        }, internal)).toBe(1.0);
+
+        expect(getComputedIssueEmphasisMultiplier({
+            id: 'issue-6', type: 'ISSUE', properties: {author: 'external-contributor', labels: ['enhancement']}
+        }, new Set())).toBe(1.0);
+
+        expect(getComputedIssueEmphasisMultiplier({
+            id: 'issue-7', type: 'ISSUE', properties: {author: 'external-contributor', labels: ['bug']}
+        }, new Set())).toBe(2.0);
+
+        expect(getComputedIssueEmphasisMultiplier({
+            id: 'discussion-8', type: 'DISCUSSION', properties: {author: 'external-contributor', labels: ['bug']}
+        }, internal)).toBe(1.0);
+    });
+});

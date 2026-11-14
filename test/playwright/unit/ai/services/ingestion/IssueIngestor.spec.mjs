@@ -329,6 +329,93 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         }
     });
 
+    test('ingestIssueStates() preserves decayed scent edges on OPEN issues while re-asserting only PARENT_OF and BLOCKS to 1.0 (#1527)', async () => {
+        const persistedBatches = [],
+              previousTestDb   = GraphService.db,
+              root             = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-ingestor-scent-decay-')),
+              edges            = [
+                  {id: 'e-discussed', source: 'SESSION_SUMMARY:1', target: 'issue-2001', type: 'DISCUSSED_IN', properties: {weight: 0.5}},
+                  {id: 'e-guides',    source: 'guide-source-1',    target: 'issue-2001', type: 'GUIDES',       properties: {weight: 0.65}},
+                  {id: 'e-relates',   source: 'issue-2001',        target: 'concept-1',  type: 'RELATES_TO',   properties: {weight: 0.4}},
+                  {id: 'e-advances',  source: 'pr-99',             target: 'issue-2001', type: 'ADVANCES',     properties: {weight: 0.75}},
+                  {id: 'e-parent',    source: 'epic-100',          target: 'issue-2001', type: 'PARENT_OF',    properties: {weight: 0.35}},
+                  {id: 'e-blocks',    source: 'issue-101',         target: 'issue-2001', type: 'BLOCKS',       properties: {weight: 0.3}}
+              ],
+              weightOf = id => edges.find(edge => edge.id === id).properties.weight;
+
+        let acknowledged = 0;
+
+        fs.mkdirSync(path.join(root, 'issues'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'issues/issue-2001.md'), [
+            '---',
+            'id: 2001',
+            'title: Active Blocked Bug',
+            'state: OPEN',
+            'labels:',
+            '  - bug',
+            'blockedBy:',
+            "  - '#101'",
+            '---',
+            '# Active Blocked Bug'
+        ].join('\n'));
+        fs.writeFileSync(path.join(root, 'issues/issue-101.md'), [
+            '---',
+            'id: 101',
+            'title: Open Blocker',
+            'state: OPEN',
+            '---',
+            '# Open Blocker'
+        ].join('\n'));
+
+        GraphService.db = {
+            autoSave                 : true,
+            nodes                    : {get: () => null},
+            edges                    : {items: edges},
+            getAdjacentNodes         : () => {},
+            acknowledgeLocalMutations: () => { acknowledged++; },
+            storage                  : {
+                addEdges: batch => persistedBatches.push(batch.map(e => ({...e, properties: {...e.properties}})))
+            }
+        };
+        StorageRouter.getGraphCollection = async () => ({
+            upsert: async () => {},
+            get   : async () => ({ids: [], metadatas: [], documents: []}),
+            add   : async () => {}
+        });
+
+        try {
+            await IssueIngestor.ingestIssueStates({contentRoot: '/mock/resources/content'});
+
+            expect(weightOf('e-discussed')).toBe(0.5);
+            expect(weightOf('e-guides')).toBe(0.65);
+            expect(weightOf('e-relates')).toBe(0.4);
+            expect(weightOf('e-advances')).toBe(0.75);
+            expect(weightOf('e-parent')).toBe(1.0);
+            expect(weightOf('e-blocks')).toBe(1.0);
+            expect(persistedBatches).toHaveLength(1);
+            expect(persistedBatches[0].map(e => e.type)).toEqual(['PARENT_OF', 'BLOCKS']);
+            expect(acknowledged).toBe(1);
+
+            edges.find(e => e.id === 'e-parent').properties.weight = 0.35;
+            edges.find(e => e.id === 'e-blocks').properties.weight = 0.3;
+            persistedBatches.length = 0;
+
+            await IssueIngestor.ingestIssueStates({contentRoot: root, strict: true});
+
+            expect(weightOf('e-discussed')).toBe(0.5);
+            expect(weightOf('e-guides')).toBe(0.65);
+            expect(weightOf('e-relates')).toBe(0.4);
+            expect(weightOf('e-advances')).toBe(0.75);
+            expect(weightOf('e-parent')).toBe(1.0);
+            expect(weightOf('e-blocks')).toBe(1.0);
+            expect(persistedBatches.flat().every(e => ['PARENT_OF', 'BLOCKS'].includes(e.type) && e.properties.weight === 1.0)).toBe(true);
+        } finally {
+            GraphService.db                  = previousTestDb;
+            StorageRouter.getGraphCollection = _originalGetGraphCollection;
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+
     test('ingestDiscussionStates() maps closed frontmatter into graph and vector lifecycle metadata', async () => {
         const upserts = [];
 

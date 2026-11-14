@@ -8,8 +8,9 @@ import {
     Memory_GraphService as GraphService,
     Memory_StorageRouter as StorageRouter
 } from '../../services.mjs';
-import logger                    from '../../mcp/server/memory-core/logger.mjs';
-import {CORPUS_PROJECTION_OWNER} from '../graph/corpusProjectionContract.mjs';
+import logger                      from '../../mcp/server/memory-core/logger.mjs';
+import {ANCHORED_ISSUE_EDGE_TYPES} from '../memory-core/GraphService.mjs';
+import {CORPUS_PROJECTION_OWNER}   from '../graph/corpusProjectionContract.mjs';
 import {
     memberLoginsOf,
     readAgentIdentityNodes
@@ -18,7 +19,8 @@ import {
     normalizeDiscussionRoutingProjection as normalizeSourceDiscussionRoutingProjection
 } from '../github-workflow/shared/discussionRoutingDisposition.mjs';
 
-const PULL_GAP_LABELS = Object.freeze(['KB_GAP', 'TOOLING_GAP', 'RETROSPECTIVE']);
+const PULL_GAP_LABELS              = Object.freeze(['KB_GAP', 'TOOLING_GAP', 'RETROSPECTIVE']);
+const ANCHORED_ISSUE_EDGE_TYPE_SET = new Set(ANCHORED_ISSUE_EDGE_TYPES);
 
 /**
  * @summary Loads the source revision's exact path→provider-id map for one corpus facet.
@@ -306,12 +308,12 @@ class IssueIngestor extends Base {
     }
 
     /**
-     * @summary Parses the local file system for markdown files and explicitly syncs their state
-     * into the Native Graph database. Re-asserts edge weights for OPEN issues, heavily discounting
-     * any nodes structurally blocked via BLOCKED_BY relationships to prevent GraphRAG hallucinations.
-     * Upserts textual issue embeddings into the localized `neo_graph_nodes` SQLite vector collection.
-     * Each ISSUE node carries its `author` login and its `assignees` logins, an empty list when none
-     * hold it, so the next sync after an unassignment replaces the old holders.
+     * @summary Syncs markdown issue state into the Native Graph and `neo_graph_nodes` vectors, stamping
+     * `author` and `assignees` (empty list when unassigned). On `OPEN` issues, re-asserts only
+     * `ANCHORED_ISSUE_EDGE_TYPES` (`PARENT_OF` and `BLOCKS`) to `1.0`—matching
+     * `GraphService#getInboundStructuralSupport()`—so scent edges (`DISCUSSED_IN`, non-frontier `GUIDES`,
+     * `RELATES_TO`, `ADVANCES`) decay via `decayGlobalTopology()`; open blockers gate routing via
+     * `hasOpenBlocker` while `bug` and triaged community emphasis apply at Golden Path read time.
      * @param {Object} [options]
      * @param {String} [options.contentRoot] Exact-revision materialized corpus root.
      * @param {Boolean} [options.strict=false] True rejects any otherwise-swallowed facet error so a
@@ -351,10 +353,9 @@ class IssueIngestor extends Base {
             return [];
         }
 
-        const files                = filesRaw;
-        const openIssues           = [];
-        const parsedIssues         = [];
-        const internalAuthorLogins = IssueIngestor.readInternalAuthorLogins();
+        const files        = filesRaw;
+        const openIssues   = [];
+        const parsedIssues = [];
 
         const indexMap = await loadIndexMap(contentRoot, 'issues');
 
@@ -438,49 +439,18 @@ class IssueIngestor extends Base {
                 }
 
                 if (meta.state === 'OPEN') {
-                    // Ensure local edge topology is completely lazily loaded into RAM BEFORE re-asserting native weights
                     GraphService.db.getAdjacentNodes(issueId, 'both');
 
-                    // The Ancestral Anchor: Re-assert edge weights for active roadmap items
-                    const edges = GraphService.db.edges.items.filter(e => e.source === issueId || e.target === issueId);
-                    if (edges.length > 0) {
-                        let baseWeight = 1.0;
-
-                        // Check if this issue is mathematically blocked by any currently OPEN issues
-                        let isBlocked = false;
-                        if (Array.isArray(meta.blockedBy)) {
-                            for (const blocker of meta.blockedBy) {
-                                const blockerId   = extractIssueId(blocker);
-                                const blockerData = parsedIssues.find(p => p.issueId === blockerId);
-                                if (blockerData && blockerData.meta.state === 'OPEN') {
-                                    isBlocked = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (isBlocked) {
-                            baseWeight = 0.05;
-                            logger.debug(`[IssueIngestor] Discounting topological weight for ${issueId} because it is BLOCKED_BY an OPEN issue.`);
-                        } else {
-                            // Community Multiplier: boost externally-authored (non-maintainer) tickets that have been triaged.
-                            if (IssueIngestor.isCommunityAuthor(meta.author, internalAuthorLogins)) {
-                                if (Array.isArray(meta.labels) && meta.labels.length > 0) {
-                                    baseWeight += 0.5;
-                                }
-                            }
-
-                            // Bug Multiplier: Forcing Context Priming towards regressions
-                            if (Array.isArray(meta.labels) && meta.labels.includes('bug')) {
-                                baseWeight += 1.0;
-                            }
-                        }
-
-                        edges.forEach(e => {
-                            e.properties.weight = baseWeight;
+                    const anchoredEdges = GraphService.db.edges.items.filter(
+                        e => (e.source === issueId || e.target === issueId) && ANCHORED_ISSUE_EDGE_TYPE_SET.has(e.type)
+                    );
+                    if (anchoredEdges.length > 0) {
+                        anchoredEdges.forEach(e => {
+                            (e.properties ||= {}).weight = 1.0;
                         });
                         if (GraphService.db.autoSave && GraphService.db.storage) {
-                            GraphService.db.storage.addEdges(edges);
+                            GraphService.db.storage.addEdges(anchoredEdges);
+                            GraphService.db.acknowledgeLocalMutations?.();
                         }
                     }
 

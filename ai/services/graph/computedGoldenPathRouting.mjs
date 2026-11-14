@@ -96,6 +96,31 @@ function getComputedRecommendationNodeType(nodeData) {
 }
 
 /**
+ * @summary Computes read-time structural emphasis for `ISSUE` candidates (`+0.5` triaged community, `+1.0` `bug`).
+ * @param {Object} nodeData Parsed graph node payload.
+ * @param {Set<String>} [internalAuthorLogins] Plane internal author logins; empty disables community emphasis.
+ * @returns {Number}
+ */
+export function getComputedIssueEmphasisMultiplier(nodeData, internalAuthorLogins) {
+    if (getComputedRecommendationNodeType(nodeData) !== 'ISSUE') return 1.0;
+
+    const author = nodeData?.properties?.author ?? nodeData?.author ?? null,
+          labels = normalizeLabels(nodeData?.properties?.labels || nodeData?.labels);
+
+    let multiplier = 1.0;
+
+    if (Boolean(author) && internalAuthorLogins?.size > 0 && !internalAuthorLogins.has(author) && labels.length > 0) {
+        multiplier += 0.5;
+    }
+
+    if (labels.includes('bug')) {
+        multiplier += 1.0;
+    }
+
+    return multiplier
+}
+
+/**
  * @summary Applies the Discussion-liveness gate without turning lifecycle facts into score or
  * contaminating the preceding actionability type/label gate.
  * @param {Object} nodeData Parsed graph node payload.

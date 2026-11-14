@@ -30,6 +30,7 @@ import {readAgentIdentityNodes} from '../../../../../../ai/graph/agentIdentityPa
 test.describe('Neo.ai.services.memory-core.GraphService', () => {
     let GraphService;
     let protectedEdgeTypes;
+    let anchoredIssueEdgeTypes;
     let SystemLifecycleService;
     let service;
     const testDbName = `memory-core-graph-test-${process.pid}-${Date.now()}.sqlite`;
@@ -49,8 +50,9 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         // `useTestDatabase` toggle). The test never mutates the shared AiConfig singleton.
 
         const graphModule = await import('../../../../../../ai/services/memory-core/GraphService.mjs');
-        GraphService       = graphModule.default;
-        protectedEdgeTypes = graphModule.PROTECTED_EDGE_TYPES;
+        GraphService           = graphModule.default;
+        protectedEdgeTypes     = graphModule.PROTECTED_EDGE_TYPES;
+        anchoredIssueEdgeTypes = graphModule.ANCHORED_ISSUE_EDGE_TYPES;
         SystemLifecycleService = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
         if (fs.existsSync(testDbPath)) {
             try {
@@ -471,11 +473,12 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         await GraphService.upsertNode({id: 'MESSAGE:record', type: 'MESSAGE'});
         GraphService.linkNodes('MESSAGE:record', 'discussion-15105', 'DISCUSSED_IN', 4);
 
+        expect(anchoredIssueEdgeTypes).toEqual(['PARENT_OF', 'BLOCKS']);
         expect(GraphService.getInboundStructuralSupport({id: 'discussion-15105'})).toEqual({
             totalWeight      : protectedEdgeTypes.length + 10,
-            decayingWeight   : 3,
+            decayingWeight   : 2,
             totalEdgeCount   : protectedEdgeTypes.length + 4,
-            decayingEdgeCount: 2,
+            decayingEdgeCount: 1,
             hasOpenBlocker   : true,
             parentId         : 'parent-source'
         })

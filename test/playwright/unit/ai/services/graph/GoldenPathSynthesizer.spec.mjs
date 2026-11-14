@@ -1839,8 +1839,8 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             coldChildRecordParentId,
             recordHeavyId
         ]);
-        expect(handoffContent).toContain(`1. **${decayingThreeId}**: Score 13.00 (Semantic: 5.00, Structural: 3.00)`);
-        expect(handoffContent).toContain(`2. **${coldChildDecayingParentId}**: Score 12.00 (Semantic: 5.00, Structural: 2.00)`);
+        expect(handoffContent).toContain(`1. **${decayingThreeId}**: Score 16.00 (Semantic: 5.00, Structural: 6.00)`);
+        expect(handoffContent).toContain(`2. **${coldChildDecayingParentId}**: Score 14.00 (Semantic: 5.00, Structural: 4.00)`);
         expect(handoffContent).toContain(`3. **${coldChildRecordParentId}**: Score 10.00 (Semantic: 5.00, Structural: 0.00)`);
         expect(handoffContent).toContain(`4. **${recordHeavyId}**: Score 10.00 (Semantic: 5.00, Structural: 0.00)`);
     });
@@ -2238,9 +2238,129 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         // The ready, actionable node is routed and rendered by decayingWeight (RESOLVES is a protected fact edge);
         // the not-ready and blocked nodes are gated out.
         expect(computedIndex).toBeGreaterThan(-1);
-        expect(handoffContent).toContain(`${readyId}**: Score 11.50 (Semantic: 5.00, Structural: 1.50)`);
+        expect(handoffContent).toContain(`${readyId}**: Score 13.00 (Semantic: 5.00, Structural: 3.00)`);
         expect(handoffContent).not.toContain(notReadyId);
         expect(handoffContent).not.toContain(blockedId);
+    });
+
+    test('ingestIssueStates preserves decayed scent weights while synthesizeGoldenPath applies read-time emphasis and open-blocker gating (#1527)', async () => {
+        const IssueIngestor                = (await import('../../../../../../ai/services/ingestion/IssueIngestor.mjs')).default;
+        const OpenAiCompatible             = (await import('../../../../../../ai/provider/OpenAiCompatible.mjs')).default;
+        const originalGetGraphCollection   = StorageRouter.getGraphCollection;
+        const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
+        const originalEmbedText            = TextEmbeddingService.embedText;
+        const originalGenerate             = OpenAiCompatible.prototype.generate;
+        const baseNum                      = 950000 + Math.floor(Math.random() * 10000);
+        const recentId                     = `issue-${baseNum + 1}`;
+        const decayedHeavyId               = `issue-${baseNum + 2}`;
+        const internalEnhId                = `issue-${baseNum + 3}`;
+        const communityEnhId               = `issue-${baseNum + 4}`;
+        const internalBugId                = `issue-${baseNum + 5}`;
+        const blockedBugId                 = `issue-${baseNum + 6}`;
+        const openBlockerId                = `issue-${baseNum + 7}`;
+        const identityId                   = `@test-internal-${baseNum}`;
+        const root                         = fs.mkdtempSync(path.join(os.tmpdir(), 'gp-issue-ingestor-scent-'));
+        const createdNodes                 = [
+            recentId, decayedHeavyId, internalEnhId, communityEnhId, internalBugId, blockedBugId, openBlockerId, identityId
+        ];
+
+        fs.mkdirSync(path.join(root, 'issues'), {recursive: true});
+        const writeIssue = (num, title, author, labels, extra = []) => fs.writeFileSync(
+            path.join(root, `issues/issue-${num}.md`),
+            [
+                '---',
+                `id: ${num}`,
+                `title: ${title}`,
+                'state: OPEN',
+                `author: ${author}`,
+                'labels:',
+                ...labels.map(label => `  - ${label}`),
+                ...extra,
+                '---',
+                `# ${title}`
+            ].join('\n')
+        );
+
+        writeIssue(baseNum + 1, 'Recent active scent lane',          'test-internal-author', ['enhancement', 'ai']);
+        writeIssue(baseNum + 2, 'Stale decayed mention-heavy lane',  'test-internal-author', ['enhancement', 'ai']);
+        writeIssue(baseNum + 3, 'Equal-scent internal enhancement',  'test-internal-author', ['enhancement', 'ai']);
+        writeIssue(baseNum + 4, 'Equal-scent triaged community lane','external-contributor', ['enhancement']);
+        writeIssue(baseNum + 5, 'Equal-scent regression bug',        'test-internal-author', ['bug', 'ai']);
+        writeIssue(baseNum + 6, 'Open blocked bug',                  'test-internal-author', ['bug', 'ai'], ['blockedBy:', `  - '#${baseNum + 7}'`]);
+        writeIssue(baseNum + 7, 'Upstream open blocker',             'test-internal-author', ['ai']);
+
+        GraphService.upsertNode({id: 'frontier', type: 'SYSTEM_TENET', properties: {name: 'Active Context Frontier'}});
+        GraphService.upsertGlobalNode({
+            id        : identityId,
+            type      : 'AgentIdentity',
+            properties: {accountType: 'agent', githubLogin: 'test-internal-author'}
+        });
+        [recentId, decayedHeavyId, internalEnhId, communityEnhId, internalBugId, blockedBugId, openBlockerId].forEach(id => {
+            GraphService.upsertNode({id, type: 'ISSUE', properties: {state: 'OPEN'}});
+        });
+
+        const linkSummary = (key, targetId, weight) => {
+            const summaryId = `summary-scent-${baseNum}-${key}`;
+            createdNodes.push(summaryId);
+            GraphService.upsertNode({id: summaryId, type: 'SESSION_SUMMARY'});
+            GraphService.linkNodes(summaryId, targetId, 'DISCUSSED_IN', weight);
+        };
+
+        linkSummary('r1', recentId, 0.9);
+        linkSummary('r2', recentId, 0.9);
+        for (let i = 0; i < 5; i++) linkSummary(`d${i}`, decayedHeavyId, 0.25);
+        linkSummary('e-int',  internalEnhId,  0.4);
+        linkSummary('e-comm', communityEnhId, 0.4);
+        linkSummary('e-bug',  internalBugId,  0.4);
+        linkSummary('b1',     blockedBugId,   0.9);
+        linkSummary('b2',     blockedBugId,   0.9);
+        GraphService.linkNodes(openBlockerId, blockedBugId, 'BLOCKS', 0.3);
+
+        StorageRouter.getGraphCollection = async () => ({
+            get   : async () => ({ids: [], metadatas: []}),
+            upsert: async () => {},
+            query : async () => ({
+                ids      : [[recentId, decayedHeavyId, internalEnhId, communityEnhId, internalBugId, blockedBugId]],
+                distances: [[0.1, 0.1, 0.1, 0.1, 0.1, 0.1]]
+            })
+        });
+        StorageRouter.getSummaryCollection  = async () => ({get: async () => ({documents: ['Decayed scent ranking proof']})});
+        TextEmbeddingService.embedText      = async () => buildConfiguredEmbedding();
+        OpenAiCompatible.prototype.generate = async () => ({content: '{"strategic_brief":"stub"}'});
+
+        let outcome;
+        try {
+            await IssueIngestor.ingestIssueStates({contentRoot: root, strict: true});
+
+            const blocksEdge = GraphService.db.edges.items.find(e => e.source === openBlockerId && e.target === blockedBugId && e.type === 'BLOCKS');
+            expect(blocksEdge.properties.weight).toBe(1.0);
+
+            outcome = await GoldenPathSynthesizer.synthesizeGoldenPath({repoEnrichmentEnabled: false});
+        } finally {
+            StorageRouter.getGraphCollection    = originalGetGraphCollection;
+            StorageRouter.getSummaryCollection  = originalGetSummaryCollection;
+            TextEmbeddingService.embedText      = originalEmbedText;
+            OpenAiCompatible.prototype.generate = originalGenerate;
+            GraphService.removeNodes(createdNodes);
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+
+        const handoffContent = fs.readFileSync(tmpHandoffFile, 'utf-8');
+        const routeItems     = outcome.computedRoute.route.items;
+
+        expect(routeItems.map(item => item.id)).toEqual([
+            recentId,
+            decayedHeavyId,
+            internalBugId,
+            communityEnhId,
+            internalEnhId
+        ]);
+        expect(handoffContent).not.toContain(blockedBugId);
+        expect(handoffContent).toContain(`1. **${recentId}**: Score 11.80 (Semantic: 5.00, Structural: 1.80)`);
+        expect(handoffContent).toContain(`2. **${decayedHeavyId}**: Score 11.25 (Semantic: 5.00, Structural: 1.25)`);
+        expect(handoffContent).toContain(`3. **${internalBugId}**: Score 10.80 (Semantic: 5.00, Structural: 0.80)`);
+        expect(handoffContent).toContain(`4. **${communityEnhId}**: Score 10.60 (Semantic: 5.00, Structural: 0.60)`);
+        expect(handoffContent).toContain(`5. **${internalEnhId}**: Score 10.40 (Semantic: 5.00, Structural: 0.40)`);
     });
 
     test('D2 admission withholds before both stores and preserves the last-known-good handoff (#17627)', async () => {

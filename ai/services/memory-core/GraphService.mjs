@@ -153,6 +153,9 @@ export const PROTECTED_EDGE_TYPES = Object.freeze([
 ]);
 const PROTECTED_EDGE_TYPE_SET = new Set(PROTECTED_EDGE_TYPES);
 
+export const ANCHORED_ISSUE_EDGE_TYPES = Object.freeze(['PARENT_OF', 'BLOCKS']);
+const ANCHORED_ISSUE_EDGE_TYPE_SET = new Set(ANCHORED_ISSUE_EDGE_TYPES);
+
 const MESSAGE_ID_PREFIX = 'MESSAGE:';
 
 /**
@@ -1763,16 +1766,14 @@ class GraphService extends Base {
 
     /**
      * @summary Returns one RLS-safe inbound-support projection for Golden Path scoring and
-     * Discussion liveness. `decayingWeight` is the Golden Path ranking and parent-inheritance
-     * input, excluding protected fact edges, a message's record edges (`isMessageRecordEdge`) and
-     * Golden Path's own `frontier → GUIDES` output so permanent records, archaeology or a prior
-     * route cannot masquerade as current swarm motion; `totalWeight` retains the full non-`BLOCKS`
-     * inbound sum for diagnostics. The same visible inbound projection
-     * exposes open-blocker and parent facts, keeping admission and cold-start inheritance cache-safe.
+     * Discussion liveness. Anchored structural issue edges (`ANCHORED_ISSUE_EDGE_TYPES`: `PARENT_OF`
+     * and `BLOCKS`) never enter `decayingWeight`: `BLOCKS` sets `hasOpenBlocker` and contributes to
+     * neither sum, while `PARENT_OF` sets `parentId` and contributes to `totalWeight` alongside
+     * `PROTECTED_EDGE_TYPES`, `isMessageRecordEdge` and `frontier → GUIDES` (all excluded from
+     * `decayingWeight` so permanent records, hierarchy or a prior route never masquerade as live scent).
      *
-     * Root, source node, and edge must all be visible at the cache return boundary. `BLOCKS`,
-     * non-positive, and non-finite weights contribute to neither projection. A missing edge weight
-     * retains the graph's established default of 1.
+     * Root, source node, and edge must all be visible at the cache return boundary. Non-positive and
+     * non-finite weights contribute to neither sum; a missing weight defaults to 1.
      *
      * @param {Object} data
      * @param {String} data.id Graph node id.
@@ -1822,7 +1823,7 @@ class GraphService extends Base {
                 support.totalEdgeCount++;
 
                 const isGoldenPathOutput = edge.type === 'GUIDES' && edge.source === 'frontier';
-                if (!PROTECTED_EDGE_TYPE_SET.has(edge.type) && !isGoldenPathOutput && !isMessageRecordEdge(edge)) {
+                if (!ANCHORED_ISSUE_EDGE_TYPE_SET.has(edge.type) && !PROTECTED_EDGE_TYPE_SET.has(edge.type) && !isGoldenPathOutput && !isMessageRecordEdge(edge)) {
                     support.decayingWeight += weight;
                     support.decayingEdgeCount++
                 }
