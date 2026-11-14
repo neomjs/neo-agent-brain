@@ -130,7 +130,7 @@ test.describe('ai/daemons/wake/receiver', () => {
         optIn = {agentId: 'fleet-seat', family: 'codex-desktop', stateDir};
         route.admits = 'wake/digest';
         route.harnessTargetMetadata = {adapter: 'primary-session', addressType: 'userDataDir', instanceAddress: '/seat/electron-profile'};
-        route.adapterConfig.primarySession = {instanceHome: '/seat', appBundle: '/Applications/Codex.app', agentId: 'fleet-seat', family: 'codex-desktop', hookNodePath:'/bin/node', hookModulePath:'/brain/hook.mjs'};
+        route.adapterConfig = {...route.adapterConfig, primarySession: {instanceHome: '/seat', appBundle: '/Applications/Codex.app', agentId: 'fleet-seat', family: 'codex-desktop', hookNodePath:'/bin/node', hookModulePath:'/brain/hook.mjs'}};
         return result
     }
 
@@ -140,8 +140,8 @@ test.describe('ai/daemons/wake/receiver', () => {
         expect(await loadWakeReceiverManifest(file)).toEqual(good);
         for (const change of [route => { route.admits = 'session/rotate' },
             route => { route.harnessTargetMetadata.instanceAddress = '/other' },
-            route => { route.adapterConfig.primarySession.instanceHome = '/seat/../other' },
-            route => { route.adapterConfig.primarySession.untrusted = 'x' }]) {
+            route => { route.adapterConfig = {...route.adapterConfig, primarySession: {...route.adapterConfig.primarySession, instanceHome: '/seat/../other'}} },
+            route => { route.adapterConfig = {...route.adapterConfig, primarySession: {...route.adapterConfig.primarySession, untrusted: 'x'}} }]) {
             const invalid = structuredClone(good); change(invalid.routes[subscriptionId]);
             await fs.writeFile(file, JSON.stringify(invalid));
             await expect(loadWakeReceiverManifest(file)).rejects.toThrow();
@@ -205,7 +205,7 @@ test.describe('ai/daemons/wake/receiver', () => {
     test('cutover during an awaiting GUI context probe cannot type through its captured route', async () => {
         const envelope = buildEnvelope(), old = structuredClone(manifest), route = old.routes[subscriptionId];
         route.harnessTargetMetadata = {adapter: 'osascript'};
-        route.adapterConfig.contextGate = {maxContextTokens: 100, warnContextTokens: 50};
+        route.adapterConfig = {...route.adapterConfig, contextGate: {maxContextTokens: 100, warnContextTokens: 50}};
         receiver.setManifest(old);
         await state.accept({subscriptionId, eventId: envelope.eventId, sourceEventIds: envelope.payload.sourceEventIds,
             envelope, route: {agentIdentity, harnessTargetMetadata: route.harnessTargetMetadata, adapterConfig: route.adapterConfig}});
