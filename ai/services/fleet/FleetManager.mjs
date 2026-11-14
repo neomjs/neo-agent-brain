@@ -678,7 +678,7 @@ class FleetManager extends Base {
                     primarySession = {instanceHome: live.instanceHome, appBundle: generation.appBundle, agentId, family: agent.harnessType};
                     if (agent.harnessType === 'codex-desktop') {
                         const hookNodePath   = process.execPath,
-                              hookModulePath = fileURLToPath(new URL('../../scripts/lifecycle/hooks/codex/primaryWakeAdmission.mjs', import.meta.url));
+                              hookModulePath = fileURLToPath(new URL('../../daemons/wake/codexWakeHook.mjs', import.meta.url));
                         if (!(await fs.stat(hookModulePath)).isFile()) throw new Error('native wake hook module is unavailable');
                         primarySession = {...primarySession, hookNodePath, hookModulePath};
                     }

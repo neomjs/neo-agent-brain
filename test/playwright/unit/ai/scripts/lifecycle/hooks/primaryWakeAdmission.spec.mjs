@@ -5,7 +5,7 @@ import {execFileSync}                                            from 'node:chil
 import os                                                        from 'node:os';
 import path                                                      from 'node:path';
 import {materializeCodexWakeAdmission, verifyCodexWakeAdmission} from '../../../../../../../ai/daemons/wake/codexSessionWake.mjs';
-import {decidePrimaryWakeAdmission}                              from '../../../../../../../ai/scripts/lifecycle/hooks/codex/primaryWakeAdmission.mjs';
+import {decidePrimaryWakeAdmission}                              from '../../../../../../../ai/daemons/wake/codexWakeHook.mjs';
 
 test('only an exact canary envelope for the selected root is admitted', async () => {
     const session = '01a1dabf-2363-77d1-8214-100d0ba4de47';
@@ -42,7 +42,7 @@ test('verification requires trusted exact hook and same-process epoch marker', a
     const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'codex-proof-unit-')));
     try {
         const threadId   = '01a1dabf-2363-77d1-8214-100d0ba4de47', stateDir = path.join(home, 'state');
-        const modulePath = path.resolve('ai/scripts/lifecycle/hooks/codex/primaryWakeAdmission.mjs');
+        const modulePath = path.resolve('ai/daemons/wake/codexWakeHook.mjs');
         const options    = {home, workspaceRoot: home, nodePath: process.execPath, modulePath, manifestPath: path.join(home, 'manifest'), stateDir, agentId: '@seat'};
         const installed  = await materializeCodexWakeAdmission(options);
         const hash       = bytes => createHash('sha256').update(bytes).digest('hex');

@@ -78,6 +78,7 @@ import {createPlaneWakeIdentitiesReader,
         createPlaneWakeObservationsReader}                               from './planeWakeIdentitiesReader.mjs';
 import {createCapacityThrottleReader}     from './capacityThrottleState.mjs';
 import {createFleetWakeSseConsumer}       from './fleetWakeSseConsumer.mjs';
+import {startFleetPrimaryWakePump}        from '../../daemons/wake/fleetPrimarySessionWake.mjs';
 import {createHostWhoIsOnlineReader}      from './hostWhoIsOnlineReader.mjs';
 import {createPlaneWhoIsOnlineReader}     from './planeWhoIsOnlineReader.mjs';
 import {createPlaneDeploymentStateReader} from './planeDeploymentStateReader.mjs';
@@ -186,6 +187,7 @@ async function boot() {
         armedAdmissionBearer    = '',
         openWork                = null,
         harnessAcquisition      = null,
+        nativeWakePump          = null,
         wakeRound               = null,
         server                  = null,
         viewer;
@@ -291,7 +293,8 @@ async function boot() {
             Promise.resolve().then(() => fleetWakeStreamConsumer?.stop()),
             Promise.resolve().then(() => openWork?.stop()),
             Promise.resolve().then(() => wakeRound?.stop()),
-            Promise.resolve().then(() => harnessAcquisition?.stop())
+            Promise.resolve().then(() => harnessAcquisition?.stop()),
+            Promise.resolve().then(() => nativeWakePump?.stop())
         ]);
         await planeClient?.close();
         const failed = stopped.find(result => result.status === 'rejected');
@@ -737,6 +740,10 @@ async function boot() {
             mcAuthorization: assertFleetViewerMcAuthorizationClass({planeCredential}) || null,
             runInContext   : (context, fn) => RequestContextService.run(context, fn)
         });
+
+        if (FleetManager.wakeStateOptions.wakeReceiverManifestPath) {
+            nativeWakePump = startFleetPrimaryWakePump({manifestPath:FleetManager.wakeStateOptions.wakeReceiverManifestPath})
+        }
 
         const bridgeState = await settleFleetBridge({
             port    : neuralLinkConfig.port,

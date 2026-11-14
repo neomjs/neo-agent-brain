@@ -28,14 +28,14 @@ import {
     isSessionRotation,
     routeAdmits
 } from './sessionRotation.mjs';
-import {isEntryModule}            from '../../services/shared/isEntryModule.mjs';
-import {deriveHarnessWakeAddress} from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
-import {assertSeatSegment}        from '../../services/fleet/deriveAgentRepoPath.mjs';
+import {isEntryModule}       from '../../services/shared/isEntryModule.mjs';
+import {stagePrimaryWake}    from './primaryWakeSpool.mjs';
+import {readNativeWakeOptIn} from './nativeWakeEnrollment.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 
 function isSeatId(value) {
-    try { assertSeatSegment(value, 'agentId', 'wake receiver'); return true } catch { return false }
+    return typeof value === 'string' && /^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/.test(value)
 }
 
 function hasNativeRecipient(result, record) {
@@ -181,7 +181,8 @@ export async function loadWakeReceiverManifest(manifestPath) {
             const config   = route.adapterConfig?.primarySession,
                   fields   = ['instanceHome', 'appBundle', 'agentId', 'family', 'projectId', 'projectRoot', 'hookNodePath', 'hookModulePath'],
                   absolute = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root,
-                  address  = deriveHarnessWakeAddress({harnessType: config?.family, instanceHome: config?.instanceHome});
+                  address  = absolute(config?.instanceHome) && {addressType:'userDataDir',instanceAddress:
+                      config.family === 'codex-desktop' ? path.join(config.instanceHome,'electron-profile') : config.instanceHome};
 
             if (!config || typeof config !== 'object' || Array.isArray(config) ||
                 Object.keys(config).some(key => !fields.includes(key)) ||
@@ -282,8 +283,8 @@ export function createWakeReceiver({
     manifest,
     state,
     dispatch           = dispatchLocalWake,
-    dispatchPrimary    = async (record, options) => (await import('./fleetPrimarySessionWake.mjs')).dispatchFleetPrimarySessionWake(record, options),
-    readNativeOptIn    = async options => (await import('./fleetPrimarySessionWake.mjs')).readNativeWakeOptIn(options),
+    dispatchPrimary    = stagePrimaryWake,
+    readNativeOptIn    = readNativeWakeOptIn,
     manifestPath       = null,
     contextProbe       = probeSessionContext,
     logger             = console,

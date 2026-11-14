@@ -147,7 +147,7 @@ async function openRollout(home, file, threadId) {
     try {
         const stat = await handle.stat();
         if (!stat.isFile()) throw new Error('Codex rollout is not a regular file');
-        return {handle, size: stat.size}
+        return {handle, size: stat.size, device: stat.dev, inode: stat.ino}
     } catch (error) {
         await handle.close(); throw error
     }
@@ -190,15 +190,19 @@ export async function readCodexWakeTarget({home, threadId}) {
     const row  = rows[0];
     if (rows.length !== 1 || row.source !== 'vscode' || row.thread_source !== 'user' ||
         row.originator !== 'Codex Desktop' || row.attached_thread_parent_id !== null) throw new Error('Codex session is not a proven Desktop user root');
-    const file = row.rollout_path, {handle, size} = await openRollout(home, file, threadId);
-    let first;
+    const file = row.rollout_path, {handle, size, device, inode} = await openRollout(home, file, threadId);
+    let first, boundaryHash;
     try {
         const buffer      = Buffer.alloc(Math.min(size, MAX_HEADER));
         const {bytesRead} = await handle.read(buffer, 0, buffer.length, 0);
         const header      = buffer.subarray(0, bytesRead).toString('utf8');
         const end         = header.indexOf('\n');
         if (end < 0) throw new Error('header exceeds bound');
-        first = JSON.parse(header.slice(0, end))
+        first = JSON.parse(header.slice(0, end));
+        const boundary = Buffer.alloc(Math.min(size, 256));
+        if ((await handle.read(boundary, 0, boundary.length, size - boundary.length)).bytesRead !== boundary.length) throw new Error('short boundary');
+        boundaryHash = createHash('sha256').update(boundary).digest('hex');
+        if ((await handle.stat()).size !== size) throw new Error('rollout changed')
     } catch { throw new Error('Invalid Codex session metadata') } finally { await handle.close() }
     const meta = first?.payload;
     if (first?.type !== 'session_meta' || meta?.id !== threadId || meta?.session_id !== threadId ||
@@ -210,7 +214,7 @@ export async function readCodexWakeTarget({home, threadId}) {
     }
     if (!Number.isSafeInteger(row.created_at_ms) || row.created_at_ms <= 0) throw new Error('Codex root start is unavailable');
     if (row.archived !== 0) throw new Error('Codex session is not a proven eligible Desktop root');
-    return {home, threadId, root: true, workspaceRoot: row.cwd, startedAt: row.created_at_ms, rolloutPath: file, receiptOffset: size}
+    return {home, threadId, root: true, workspaceRoot: row.cwd, startedAt: row.created_at_ms, rolloutPath: file, receiptOffset: {offset: size, device, inode, boundaryHash}}
 }
 
 /**
@@ -302,34 +306,55 @@ export async function readCodexWakeReceipt({home, threadId, text, receiptOffset,
     if (!token || !UUID.test(token[1]) || !UUID.test(receiptToken || '') || receiptToken === token[1]) throw new Error('Invalid Codex receipt token');
     const acknowledgement = `[NEO_WAKE_RECEIVED:${receiptToken}]`;
     const target          = await readCodexWakeTarget({home, threadId}), {handle, size} = await openRollout(home, target.rolloutPath, threadId);
-    let data, offset = receiptOffset ?? Math.max(0, size - MAX_TAIL);
+    const cursor          = receiptOffset;
     try {
-        if (!Number.isSafeInteger(offset) || offset < 0 || offset > size || size - offset > MAX_TAIL) return {state: 'unknown'};
-        const buffer = Buffer.alloc(size - offset), {bytesRead} = await handle.read(buffer, 0, buffer.length, offset);
-        data = buffer.subarray(0, bytesRead).toString('utf8');
+        const initial = await handle.stat();
+        if (!cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 1 || cursor.offset > size ||
+            cursor.device !== initial.dev || cursor.inode !== initial.ino) return {state: 'unknown'};
+        const boundary = Buffer.alloc(1);
+        if ((await handle.read(boundary, 0, 1, cursor.offset - 1)).bytesRead !== 1 || boundary[0] !== 10) return {state: 'unknown'};
+        const prefix = Buffer.alloc(Math.min(cursor.offset, 256));
+        if ((await handle.read(prefix, 0, prefix.length, cursor.offset - prefix.length)).bytesRead !== prefix.length ||
+            createHash('sha256').update(prefix).digest('hex') !== cursor.boundaryHash) return {state: 'unknown'};
+        let position = cursor.offset, pieces = [], lineBytes = 0, currentTurn = null, seenUser = false, matched = null;
+        while (position < size) {
+            const length = Math.min(64 * 1024, size - position), chunk = Buffer.alloc(length);
+            if ((await handle.read(chunk, 0, length, position)).bytesRead !== length) return {state: 'unknown'};
+            position += length;
+            let start = 0;
+            for (let i = 0; i < length; i++) {
+                if (chunk[i] !== 10) continue;
+                const part = chunk.subarray(start, i);
+                if (part.length) { pieces.push(part); lineBytes += part.length }
+                if (lineBytes > 8 * 1024 * 1024) return {state: 'unknown'};
+                if (lineBytes) {
+                    let record;
+                    try { record = JSON.parse(Buffer.concat(pieces, lineBytes).toString('utf8')) } catch { return {state: 'unknown'} }
+                    const p = record.payload, meta = p?.internal_chat_message_metadata_passthrough;
+                    if (record.type === 'event_msg' && p?.type === 'task_started' && p.turn_attribution?.turn_trigger === 'queue' &&
+                        p.turn_attribution?.parent_turn_id === null && p.turn_id && p.turn_id === p.root_turn_id) {
+                        currentTurn = p.turn_id; seenUser = false
+                    } else if (record.type === 'response_item' && p?.type === 'message' && p.role === 'user' &&
+                        p.content?.length === 1 && p.content[0]?.type === 'input_text' && p.content[0].text === text && meta?.turn_id === currentTurn) {
+                        seenUser = true
+                    } else if (seenUser && record.type === 'response_item' && p?.type === 'message' && p.role === 'developer' &&
+                        meta?.turn_id === currentTurn && meta?.content_item_kinds?.includes('hooks.additional_context') &&
+                        meta?.content_item_metadata?.some(item => item?.provenance?.type === 'harness' && item.provenance.hook === true) &&
+                        p.content?.some(item => item?.type === 'input_text' && typeof item.text === 'string' && item.text.split('\n').includes(acknowledgement))) {
+                        if (matched) throw new Error('Codex wake receipt is ambiguous');
+                        matched = currentTurn; seenUser = false
+                    }
+                }
+                pieces = []; lineBytes = 0; start = i + 1
+            }
+            if (start < length) { const part = chunk.subarray(start); pieces.push(part); lineBytes += part.length }
+            if (lineBytes > 8 * 1024 * 1024) return {state: 'unknown'}
+        }
+        const after = await handle.stat();
+        let current;
+        try { current = await fs.lstat(target.rolloutPath) } catch (error) { if (error.code === 'ENOENT') return {state: 'unknown'}; throw error }
+        if (lineBytes || !current.isFile() || current.isSymbolicLink() || after.dev !== cursor.device || after.ino !== cursor.inode ||
+            current.dev !== cursor.device || current.ino !== cursor.inode || after.size !== size || after.mtimeMs !== initial.mtimeMs) return {state: 'unknown'};
+        return matched ? {state: 'turn-started', threadId, turnId: matched} : {state: 'unknown'}
     } finally { await handle.close() }
-    if (offset && receiptOffset === undefined) data = data.slice(data.indexOf('\n') + 1);
-    const lines  = data.split('\n');
-    const starts = new Set(), contexts = new Set(), messages = [];
-    for (const line of lines) {
-        if (!line) continue;
-        let record;
-        try { record = JSON.parse(line) } catch { continue }
-        const p = record.payload;
-        if (record.type === 'event_msg' && p?.type === 'task_started' && p.turn_attribution?.turn_trigger === 'queue' &&
-            p.turn_attribution?.parent_turn_id === null && p.turn_id === p.root_turn_id) starts.add(p.turn_id);
-        if (record.type === 'response_item' && p?.type === 'message' && p.role === 'user' &&
-            p.content?.length === 1 && p.content[0]?.type === 'input_text' && p.content[0].text === text) {
-            messages.push(p.internal_chat_message_metadata_passthrough?.turn_id)
-        }
-        if (record.type === 'response_item' && p?.type === 'message' && p.role === 'developer' &&
-            p.internal_chat_message_metadata_passthrough?.content_item_kinds?.includes('hooks.additional_context') &&
-            p.internal_chat_message_metadata_passthrough?.content_item_metadata?.some(item => item?.provenance?.type === 'harness' && item.provenance.hook === true) &&
-            p.content?.some(item => item?.type === 'input_text' && typeof item.text === 'string' && item.text.split('\n').includes(acknowledgement))) {
-            contexts.add(p.internal_chat_message_metadata_passthrough?.turn_id)
-        }
-    }
-    const matches = messages.filter(id => id && starts.has(id) && contexts.has(id));
-    if (matches.length > 1) throw new Error('Codex wake receipt is ambiguous');
-    return matches.length ? {state: 'turn-started', threadId, turnId: matches[0]} : {state: 'unknown'}
 }

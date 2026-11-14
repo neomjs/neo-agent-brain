@@ -1,5 +1,5 @@
 /**
- * @module ai/scripts/lifecycle/hooks/codex/primaryWakeAdmission
+ * @module ai/daemons/wake/codexWakeHook
  * @summary Canary UserPromptSubmit guard for opaque Codex wake tokens.
  * A trusted, installed hook is required: an absent or untrusted hook cannot enforce this guard.
  */
@@ -28,7 +28,7 @@ export async function decidePrimaryWakeAdmission(payload, {manifestPath, stateDi
     if (!match || !path.isAbsolute(manifestPath || '') || !path.isAbsolute(stateDir || '') || !agentId ||
         typeof payload?.session_id !== 'string' || typeof payload?.turn_id !== 'string' || payload.agent_id != null || payload.hook_event_name !== 'UserPromptSubmit') return refuse;
     try {
-        const consumer = consume || (await import('../../../../daemons/wake/fleetPrimarySessionWake.mjs')).consumeNativeWakePrompt;
+        const consumer = consume || (await import('./fleetPrimarySessionWake.mjs')).consumeNativeWakePrompt;
         const result   = await consumer({manifestPath, stateDir, agentId, family: 'codex-desktop', threadId: payload.session_id, turnId: payload.turn_id, nonce: match[1]});
         return result?.admitted === true && typeof result.digest === 'string' && result.digest
             ? {hookSpecificOutput: {hookEventName: 'UserPromptSubmit', additionalContext: result.digest}}

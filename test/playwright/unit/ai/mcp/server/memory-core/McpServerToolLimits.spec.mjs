@@ -134,7 +134,7 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
             'tokenPath',
             'url'
         ]));
-        expect(metadata.properties.adapter.enum).toEqual(['osascript', 'tmux', 'claude-courier', 'codex-app-server', 'opencode-server', 'kimi-server', 'kimi-pull-bridge']);
+        expect(metadata.properties.adapter.enum).toEqual(['osascript', 'tmux', 'claude-courier', 'codex-app-server', 'opencode-server', 'kimi-server', 'kimi-pull-bridge', 'primary-session']);
         expect(metadata.properties.envelopePath.type).toBe('string');
         expect(metadata.properties.addressType.enum).toEqual(['userDataDir', 'pid', 'tmuxSession', 'webhookUrl', null]);
 

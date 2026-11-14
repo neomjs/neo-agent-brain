@@ -6,12 +6,10 @@
  */
 import {execFile}                                                              from 'node:child_process';
 import {randomUUID}                                                            from 'node:crypto';
-import {constants}                                                             from 'node:fs';
 import fs                                                                      from 'node:fs/promises';
 import os                                                                      from 'node:os';
 import path                                                                    from 'node:path';
-import {promisify}                                                             from 'node:util';
-import {assertSeatSegment}                                                     from '../../services/fleet/deriveAgentRepoPath.mjs';
+import {isDeepStrictEqual, promisify}                                          from 'node:util';
 import {deriveCodexHome, guiProfileDir}                                        from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
 import {writeFileAtomic}                                                       from '../../services/shared/atomicFileWrite.mjs';
 import * as antigravity                                                        from './antigravitySessionWake.mjs';
@@ -19,8 +17,11 @@ import * as codex                                                              f
 import {formatLocalWakeDigest}                                                 from './localWakeAdapters.mjs';
 import {withOutboxLock}                                                        from './outboxLock.mjs';
 import {bindPrimarySession, deliverPrimarySessionWake, readPrimarySessionWake} from './primarySessionWake.mjs';
+import {primaryWakeSpoolPath}                                                  from './primaryWakeSpool.mjs';
 import {WakeReceiverState}                                                     from './receiverState.mjs';
 import {observePrimaryWakeSelection}                                           from './primaryWakeSelection.mjs';
+import {readPrivateWakeJson as readPrivate, readNativeWakeOptIn}               from './nativeWakeEnrollment.mjs';
+export {enrollNativeWake, readNativeWakeOptIn}                                  from './nativeWakeEnrollment.mjs';
 
 const exec       = promisify(execFile);
 const bareFamily = new Set(['antigravity', 'codex-desktop']);
@@ -31,62 +32,6 @@ const unknown    = reason => ({status: 'unknown', reason});
 
 function absolute(value) {
     return typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root
-}
-
-function optInPath(manifestPath, agentId) {
-    if (!absolute(manifestPath)) throw new Error('Expected an absolute receiver manifest path');
-    assertSeatSegment(agentId, 'agentId', 'primary session wake');
-    return path.join(path.dirname(manifestPath), 'primary-session-seats', agentId + '.json')
-}
-
-/** @summary Reads only private regular host records. A missing file means an unconfigured host. */
-async function readPrivate(file) {
-    let handle;
-    try {
-        handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-        const stat = await handle.stat();
-        if (!stat.isFile() || (stat.mode & 0o077) || stat.size > 1024 * 1024) throw new Error('Invalid private wake record');
-        return JSON.parse(await handle.readFile('utf8'))
-    } catch (error) {
-        if (error.code === 'ENOENT') return null;
-        throw error
-    } finally { await handle?.close() }
-}
-
-/**
- * @summary Reads a local rollout selection. An invalid marker refuses both dispatch paths.
- * @param {Object} options Validated host manifest path, Fleet registry id and family.
- * @returns {Promise<Object|null>} Scoped configuration, or null if never enrolled.
- */
-export async function readNativeWakeOptIn({manifestPath, agentId, family}) {
-    const value = await readPrivate(optInPath(manifestPath, agentId));
-    if (value === null) return null;
-    if (value.version !== 1 || value.agentId !== agentId || !bareFamily.has(family) ||
-        value.family !== family || !absolute(value.stateDir)) throw new Error('Invalid native wake enrollment');
-    return value
-}
-
-/**
- * @summary Explicit host-side canary enrollment. An existing marker may only be replayed for the same receiver.
- * @param {Object} options Operator-supplied receiver manifest/state paths, registry id and harness family.
- * @returns {Promise<Object>} The private enrollment; arming and delivery are separate operations.
- */
-export async function enrollNativeWake({manifestPath, stateDir, agentId, family}) {
-    if (!absolute(stateDir) || !bareFamily.has(family)) throw new Error('Expected receiver state directory and native desktop family');
-    const file  = optInPath(manifestPath, agentId);
-    const state = await fs.lstat(stateDir);
-    if (!state.isDirectory() || (state.mode & 0o077) || !(await readPrivate(manifestPath))?.routes) {
-        throw new Error('Expected an initialized private receiver')
-    }
-    await fs.mkdir(path.dirname(file), {recursive: true, mode: 0o700});
-    return withOutboxLock(file, async () => {
-        const previous = await readNativeWakeOptIn({manifestPath, agentId, family});
-        if (previous && previous.stateDir !== stateDir) throw new Error('A different receiver owns this enrollment');
-        if (previous) return previous;
-        const enrollment = {version: 1, family, agentId, stateDir};
-        await writeFileAtomic(file, JSON.stringify(enrollment), {mode: 0o600, fsync: true});
-        return enrollment
-    })
 }
 
 function statePathFor(stateDir, seat) {
@@ -224,19 +169,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         before = await readBinding()
     }
 
-    // The receiver points the App at its signed record. Only the App-owned sidecar holds its send capability.
-    // Keep the pointer stable until the corresponding receiver record has been acknowledged.
-    if (!isCodex && !sidecar) {
-        const pointer = statePath + '.request.json';
-        await withOutboxLock(pointer, async () => {
-            const current = await readPrivate(pointer);
-            if (current?.recordKey === record.recordKey) return;
-            if (current && !(isKey(current.recordKey) && await recorded(current.recordKey))) return;
-            await writeFileAtomic(pointer, JSON.stringify({recordKey:record.recordKey}), {mode:0o600,fsync:true})
-        });
-        if (before.inflight?.recordKey !== record.recordKey || before.inflight.status !== 'delivered' || before.binding?.seat !== seat || before.binding?.family !== family) return pending('waiting for App-side receipt');
-        return {status:'delivered', recipient:{...before.binding,recordKey:record.recordKey,nonce:before.inflight.nonce}}
-    }
+    if (!isCodex && !sidecar) return pending('awaiting App sidecar');
     if (!isCodex && (sidecar.appPid !== live.pid || sidecar.appStart !== live.startedAt ||
         sidecar.appBundle !== appBundle || sidecar.instanceHome !== instanceHome)) return pending('sidecar does not own instance');
     let selected;
@@ -324,12 +257,71 @@ export async function dispatchAntigravitySidecarRecords({manifestPath,stateDir,e
         await fs.mkdir(path.dirname(statePath),{recursive:true,mode:0o700});
         await antigravity.initializeAntigravityStarts({databasePath:path.join(appDataDir,'conversation_summaries.db'),
             projectId:config.projectId,generation:live.generation,statePath});
-        const pointer = await readPrivate(statePath + '.request.json');
-        if (!pointer || !isKey(pointer.recordKey)) continue;
-        const record = await state.read(pointer.recordKey);
-        if (!['pending','dispatching'].includes(record.state) || record.subscriptionId !== subscriptionId ||
-            record.route.agentIdentity !== route.agentIdentity || record.envelope?.eventType !== 'wake/digest') continue;
-        const publicRoute = {agentIdentity:route.agentIdentity,harnessTargetMetadata:route.harnessTargetMetadata,adapterConfig:route.adapterConfig};
-        await dispatchFleetPrimarySessionWake({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar:{environment,...app}})
+        await drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route,sidecar:{environment,...app}})
     }
+}
+
+/** @summary Revalidates the host route, reads a signed receiver record, and publishes only correlated receipt fields. */
+export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route,sidecar,dispatch = dispatchFleetPrimarySessionWake}) {
+    if (route.harnessTargetMetadata?.adapter !== 'primary-session') return;
+    const config = route.adapterConfig?.primarySession;
+    if (!config || (await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family}))?.stateDir !== stateDir) return;
+    const current = (await readPrivate(manifestPath))?.routes?.[subscriptionId];
+    if (!current || current.agentIdentity !== route.agentIdentity || current.harnessTargetMetadata?.adapter !== 'primary-session' ||
+        current.admits !== 'wake/digest' || !isDeepStrictEqual(current.adapterConfig?.primarySession,config)) return;
+    const pointerPath = primaryWakeSpoolPath(stateDir,route.agentIdentity);
+    const pointer     = await readPrivate(pointerPath);
+    if (!pointer || !isKey(pointer.recordKey)) return;
+    const record = await state.read(pointer.recordKey);
+    if (!['pending','dispatching'].includes(record.state) || record.subscriptionId !== subscriptionId ||
+        record.envelope?.subscriptionId !== subscriptionId || record.route?.agentIdentity !== route.agentIdentity ||
+        record.envelope?.agentIdentity !== route.agentIdentity || record.envelope?.eventType !== 'wake/digest') return;
+    const publicRoute = {agentIdentity:route.agentIdentity,harnessTargetMetadata:route.harnessTargetMetadata,adapterConfig:route.adapterConfig};
+    // Manifest publication uses this same lock; ownership and route cannot change between the
+    // last manifest check and acceptance of the bounded native send. The recipient independently
+    // verifies ownership again when it attempts to claim the content.
+    const result = await withOutboxLock(manifestPath,async () => {
+        const latest = (await readPrivate(manifestPath))?.routes?.[subscriptionId];
+        if (!isDeepStrictEqual(latest,current)) return pending('manifest changed');
+        return dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar})
+    });
+    if (result?.status === 'delivered' && result.recipient?.seat === route.agentIdentity &&
+        result.recipient.recordKey === record.recordKey && UUID.test(result.recipient.nonce ?? '') &&
+        UUID.test(result.recipient.threadId ?? '') && typeof result.recipient.generation === 'string' && result.recipient.generation) {
+        const {recordKey} = record;
+        await writeFileAtomic(pointerPath+'.result', JSON.stringify({recordKey,subscriptionId,recipient:result.recipient}), {mode:0o600,fsync:true})
+    }
+}
+
+/**
+ * @summary Owns native Codex dispatch in the host Fleet process. Antigravity's App sidecar
+ * independently consumes its requests. An inactive host reads only its enrollment directory.
+ * @returns {{stop:Function}} Stops scheduling and waits for an in-flight pass.
+ */
+export function startFleetPrimaryWakePump({manifestPath,intervalMs=5000,logger=console}) {
+    let timer, stopped=false, running=Promise.resolve();
+    async function tick() {
+        try {
+            const dir     = path.join(path.dirname(manifestPath),'primary-session-seats');
+            const entries = await fs.readdir(dir).catch(error => { if(error.code==='ENOENT') return []; throw error });
+            if (entries.length) {
+                const manifest = await readPrivate(manifestPath);
+                for (const [subscriptionId,route] of Object.entries(manifest?.routes ?? {})) {
+                    const config = route?.adapterConfig?.primarySession;
+                    if (config?.family !== 'codex-desktop' || route.harnessTargetMetadata?.adapter !== 'primary-session') continue;
+                    const enrollment = await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family});
+                    if (!enrollment) continue;
+                    const stateDir = enrollment.stateDir, state=new WakeReceiverState({stateDir});
+                    await drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route})
+                }
+            }
+        } catch { logger.warn?.('Native wake pass could not reconcile a seat; signed records remain pending.') }
+        if (!stopped) schedule(intervalMs)
+    }
+    function schedule(delay) {
+        timer=setTimeout(() => { running=tick() },delay);
+        timer.unref?.()
+    }
+    schedule(0);
+    return {stop: async () => { stopped=true; clearTimeout(timer); await running }}
 }

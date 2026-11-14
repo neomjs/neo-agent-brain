@@ -1,5 +1,6 @@
 import Database    from 'better-sqlite3';
 import path        from 'node:path';
+import crypto      from 'node:crypto';
 import fs          from 'node:fs';
 import {execFile}  from 'node:child_process';
 import {promisify} from 'node:util';
@@ -67,7 +68,9 @@ export function captureAntigravityWakeCursor({appDataDir, threadId}) {
     try {
         const stat = fs.fstatSync(fd);
         if (!stat.isFile()) throw new Error('Transcript is not a regular file');
-        return {dev: stat.dev, ino: stat.ino, offset: stat.size};
+        const length = Math.min(64,stat.size), tail = Buffer.alloc(length);
+        if (length && fs.readSync(fd,tail,0,length,stat.size-length) !== length) throw new Error('Cursor unreadable');
+        return {dev:stat.dev,ino:stat.ino,offset:stat.size,tailHash:crypto.createHash('sha256').update(tail).digest('hex')};
     } finally { fs.closeSync(fd) }
 }
 
@@ -88,69 +91,94 @@ export function isAntigravityWakeSystemMessage(item, text) {
     return Boolean(match && !Number.isNaN(Date.parse(match[1])) && match[2] === text);
 }
 
+/**
+ * @summary Streams complete post-cursor JSONL records with bounded line and chunk memory.
+ * A cursor captured in an unfinished record skips its remainder; malformed or oversized records
+ * yield null so callers discard earlier correlation. File replacement and truncation fail closed.
+ * @private
+ */
+function* transcriptRecords({appDataDir,threadId,cursor}) {
+    const fd = fs.openSync(transcriptFor(appDataDir,threadId),fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile() || stat.dev !== cursor.dev || stat.ino !== cursor.ino || stat.size < cursor.offset ||
+            !/^[0-9a-f]{64}$/.test(cursor.tailHash || '')) throw new Error('Transcript changed');
+        const tailLength = Math.min(64,cursor.offset), tail = Buffer.alloc(tailLength);
+        if ((tailLength && fs.readSync(fd,tail,0,tailLength,cursor.offset-tailLength) !== tailLength) ||
+            crypto.createHash('sha256').update(tail).digest('hex') !== cursor.tailHash) throw new Error('Cursor content changed');
+        const chunk  = Buffer.allocUnsafe(64 * 1024), limit = 1024 * 1024;
+        let   offset = cursor.offset, parts = [], size = 0, skipping = false;
+        if (offset > 0) {
+            const previous = Buffer.allocUnsafe(1);
+            if (fs.readSync(fd,previous,0,1,offset-1) !== 1) throw new Error('Cursor unreadable');
+            skipping = previous[0] !== 10;
+        }
+        while (offset < stat.size) {
+            const count = fs.readSync(fd,chunk,0,Math.min(chunk.length,stat.size-offset),offset);
+            if (!count) throw new Error('Transcript shortened');
+            offset += count;
+            let begin = 0;
+            for (let i=0;i<count;i++) {
+                if (chunk[i] !== 10) continue;
+                if (!skipping) {
+                    const piece = chunk.subarray(begin,i);
+                    if (size + piece.length <= limit) {
+                        parts.push(Buffer.from(piece));
+                        try { yield JSON.parse(Buffer.concat(parts).toString('utf8')) } catch { yield null }
+                    } else { yield null }
+                } else { yield null }
+                parts=[]; size=0; skipping=false; begin=i+1;
+            }
+            const rest = chunk.subarray(begin,count);
+            if (!skipping && rest.length) {
+                size += rest.length;
+                if (size > limit) { parts=[]; skipping=true } else { parts.push(Buffer.from(rest)) }
+            }
+        }
+        // An incomplete trailing record is not evidence.
+    } finally { fs.closeSync(fd) }
+}
+
 /** @summary Looks for the exact native opaque message after a pre-send same-file cursor. */
 export function hasAntigravityPendingSystemWake({appDataDir,threadId,text,cursor}) {
     if (!cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 || typeof text !== 'string') return false;
-    let fd;
     try {
-        fd = fs.openSync(transcriptFor(appDataDir,threadId),fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-        const stat = fs.fstatSync(fd), bytes = stat.size - cursor.offset;
-        if (!stat.isFile() || stat.dev !== cursor.dev || stat.ino !== cursor.ino || bytes < 0 || bytes > 4*1024*1024) return false;
-        const buf = Buffer.alloc(bytes);
-        if (fs.readSync(fd,buf,0,bytes,cursor.offset) !== bytes) return false;
-        const lines = buf.toString('utf8').split('\n');
-        lines.pop();
         let latest = false;
-        for (const line of lines) {
-            let item;
-            try { item = JSON.parse(line) } catch { return false }
-            if (item?.type === 'USER_INPUT' || item?.type === 'SYSTEM_MESSAGE') {
-                latest = isAntigravityWakeSystemMessage(item,text);
-            }
+        for (const item of transcriptRecords({appDataDir,threadId,cursor})) {
+            if (!item || item.truncated_fields) latest = false;
+            else if (item.type === 'USER_INPUT' || item.type === 'SYSTEM_MESSAGE') latest = isAntigravityWakeSystemMessage(item,text);
         }
         return latest;
-    } catch { return false } finally { if (fd !== undefined) fs.closeSync(fd) }
+    } catch { return false }
 }
 
 /**
- * @summary Recognizes a new exact user input followed by a model planner response in the same transcript.
- * The cursor must be captured before dispatch. Observed App JSONL shapes are not a vendor API;
- * malformed, truncated, rotated, or incomplete records remain unconfirmed. No content is returned.
+ * @summary Recognizes the exact post-cursor wake followed by the private model acknowledgment.
  * @returns {Object} A bounded model-response observation, or unknown.
  */
-export function readAntigravityWakeReceipt({appDataDir, threadId, text, cursor, receiptToken}) {
-    const unknown = {outcome: 'unknown'};
-    if (typeof text !== 'string' || !text || !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) return unknown;
-    let fd;
+export function readAntigravityWakeReceipt({appDataDir,threadId,text,cursor,receiptToken}) {
+    const unknown = {outcome:'unknown'};
+    if (typeof text !== 'string' || !text || !cursor || !Number.isSafeInteger(cursor.offset) ||
+        cursor.offset < 0 || !UUID.test(receiptToken || '')) return unknown;
     try {
-        if (!UUID.test(receiptToken || '')) return unknown;
-        fd = fs.openSync(transcriptFor(appDataDir, threadId), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-        const stat = fs.fstatSync(fd), bytes = stat.size - cursor.offset;
-        if (!stat.isFile() || stat.dev !== cursor.dev || stat.ino !== cursor.ino || bytes < 0 || bytes > 4 * 1024 * 1024) return unknown;
-        const buffer = Buffer.alloc(bytes);
-        if (fs.readSync(fd, buffer, 0, bytes, cursor.offset) !== bytes) return unknown;
-        const data = buffer.toString('utf8'), lines = data.split('\n');
-        lines.pop(); // Ignore a partial line, including an incomplete JSON object.
         let matched = null;
-        for (const line of lines) {
-            let item;
-            try { item = JSON.parse(line) } catch { return unknown }
-            if (!item || item.truncated_fields) continue;
+        for (const item of transcriptRecords({appDataDir,threadId,cursor})) {
+            if (!item || item.truncated_fields) { matched = null; continue }
             if (((item.type === 'USER_INPUT' && item.source === 'USER_EXPLICIT' && item.status === 'DONE' && item.content === text) ||
                 isAntigravityWakeSystemMessage(item,text)) && Number.isSafeInteger(item.step_index)) {
                 matched = item.step_index;
-            } else if (matched !== null && item.type === 'USER_INPUT') {
+            } else if (matched !== null && (item.type === 'USER_INPUT' || item.type === 'SYSTEM_MESSAGE')) {
                 matched = null;
             } else if (matched !== null && item.type === 'PLANNER_RESPONSE' && item.source === 'MODEL' &&
                 item.status === 'DONE' && Number.isSafeInteger(item.step_index) && item.step_index > matched) {
-                const content = typeof item.content === 'string' ? item.content : '';
-                const lines   = content.split(/\r?\n/);
-                const proof   = lines.some(line => line === '[NEO_WAKE_RECEIVED:' + receiptToken + ']');
-                if (proof) return {outcome:'observed',reason:'private-model-ack'};
+                const lines = typeof item.content === 'string' ? item.content.split(/\r?\n/) : [];
+                if (lines.some(line => line === '[NEO_WAKE_RECEIVED:' + receiptToken + ']')) {
+                    return {outcome:'observed',reason:'private-model-ack'};
+                }
             }
         }
         return unknown;
-    } catch { return unknown } finally { if (fd !== undefined) fs.closeSync(fd) }
+    } catch { return unknown }
 }
 
 /**

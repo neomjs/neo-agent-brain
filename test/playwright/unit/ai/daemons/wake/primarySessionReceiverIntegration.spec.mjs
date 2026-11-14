@@ -1,11 +1,11 @@
-import {test, expect}                                                               from '@playwright/test';
-import crypto                                                                       from 'node:crypto';
-import fs                                                                           from 'node:fs/promises';
-import os                                                                           from 'node:os';
-import path                                                                         from 'node:path';
-import {createWakeReceiver, loadWakeReceiverManifest}                               from '../../../../../../ai/daemons/wake/receiver.mjs';
-import {WakeReceiverState}                                                          from '../../../../../../ai/daemons/wake/receiverState.mjs';
-import {dispatchFleetPrimarySessionWake, consumeNativeWakePrompt, enrollNativeWake} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
+import {test, expect}                                                                                            from '@playwright/test';
+import crypto                                                                                                    from 'node:crypto';
+import fs                                                                                                        from 'node:fs/promises';
+import os                                                                                                        from 'node:os';
+import path                                                                                                      from 'node:path';
+import {createWakeReceiver, loadWakeReceiverManifest}                                                            from '../../../../../../ai/daemons/wake/receiver.mjs';
+import {WakeReceiverState}                                                                                       from '../../../../../../ai/daemons/wake/receiverState.mjs';
+import {dispatchFleetPrimarySessionWake, drainFleetPrimaryWakeRecord, consumeNativeWakePrompt, enrollNativeWake} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
 
 test.describe('signed native wake receiver integration', () => {
     let root, stateDir, manifestPath, state, server, receiver, url, manifest, delivered, sends, consumed, mode, lastNonce, nativeInputs;
@@ -94,5 +94,31 @@ test.describe('signed native wake receiver integration', () => {
         await receiver.drain();
         expect(await state.list('delivered')).toHaveLength(1);
         expect(sends).toBe(1);
+    });
+
+    test('default signed receiver stages for Fleet and consumes its correlated result', async () => {
+        await new Promise(resolve => server.close(resolve));
+        receiver = createWakeReceiver({manifest,state,manifestPath,logger:{log(){},warn(){},error(){}}});
+        server = receiver.server; await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+        url = `http://127.0.0.1:${server.address().port}/wake`;
+        expect((await post(1)).status).toBe(202);
+        await receiver.drain();
+        expect(await state.list('pending')).toHaveLength(1);
+        expect(sends).toBe(0);
+        const pump = route => drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId:sub,route,
+            dispatch:(record, options) => dispatchFleetPrimarySessionWake(record,{...options,inspectResident:resident,codexTransport:transport})});
+        await pump(manifest.routes[sub]);
+        await receiver.drain();
+        expect(await state.list('delivered')).toHaveLength(1);
+        expect(sends).toBe(1);
+        expect((await post(1)).status).toBe(200);
+        await receiver.drain(); await pump(manifest.routes[sub]);
+        expect(sends).toBe(1);
+        expect((await post(2)).status).toBe(202); await receiver.drain();
+        const changed = structuredClone(manifest); changed.routes[sub].harnessTargetMetadata.adapter = 'osascript';
+        await fs.writeFile(manifestPath,JSON.stringify(changed),{mode:0o600}); receiver.setManifest(changed);
+        await pump(changed.routes[sub]); await receiver.drain();
+        expect(sends).toBe(1);
+        expect(await state.list('delivered')).toHaveLength(1);
     });
 });

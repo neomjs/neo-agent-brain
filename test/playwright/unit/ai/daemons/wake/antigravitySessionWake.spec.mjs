@@ -287,3 +287,42 @@ test('App callback redeems a bound native system wake with unrelated lastUserInp
         expect(calls).toBe(1);
     } finally {db.close();fs.rmSync(root,{recursive:true,force:true})}
 });
+
+test('streams long deltas after an orphaned cursor line and fences intervening inputs', () => {
+    const root     = fs.mkdtempSync(path.join(os.tmpdir(),'agy-long-'));
+    const threadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', nonce='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        token='cccccccc-cccc-4ccc-8ccc-cccccccccccc', marker='[NEO_WAKE_V1:'+nonce+'] [WAKE]';
+    const dir     = path.join(root,'brain',threadId,'.system_generated','logs');fs.mkdirSync(dir,{recursive:true});
+    const file    = path.join(dir,'transcript.jsonl'), row=x=>JSON.stringify(x)+'\n';
+    const content = 'The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-14T16:24:03Z sender=system priority=MESSAGE_PRIORITY_HIGH content='+marker+'\n</SYSTEM_MESSAGE>';
+    const wake    = {type:'SYSTEM_MESSAGE',source:'SYSTEM',status:'DONE',step_index:10000,content};
+    const ack     = {type:'PLANNER_RESPONSE',source:'MODEL',status:'DONE',step_index:10001,content:'[NEO_WAKE_RECEIVED:'+token+']'};
+    try {
+        fs.writeFileSync(file,'{"partial":');
+        const cursor = captureAntigravityWakeCursor({appDataDir:root,threadId});
+        fs.appendFileSync(file,'true}\n'+row({type:'GENERIC',source:'MODEL',status:'DONE',content:'x'.repeat(1024)}).repeat(6000)+row(wake));
+        expect(hasAntigravityPendingSystemWake({appDataDir:root,threadId,text:marker,cursor})).toBe(true);
+        const read = ()=>readAntigravityWakeReceipt({appDataDir:root,threadId,text:marker,cursor,receiptToken:token});
+        expect(read().outcome).toBe('unknown');
+        fs.appendFileSync(file,row({type:'USER_INPUT',source:'USER_EXPLICIT',status:'DONE',content:'later',step_index:10001})+row(ack));
+        expect(hasAntigravityPendingSystemWake({appDataDir:root,threadId,text:marker,cursor})).toBe(false);
+        expect(read().outcome).toBe('unknown');
+        fs.appendFileSync(file,row({...wake,step_index:10002})+row({...ack,step_index:10003}));
+        expect(read().outcome).toBe('observed');
+        fs.truncateSync(file,0);
+        expect(read().outcome).toBe('unknown');
+        fs.writeFileSync(file, 'x'.repeat(128)+'\\n'+row(wake)+row(ack));
+        expect(read().outcome).toBe('unknown');
+    } finally {fs.rmSync(root,{recursive:true,force:true})}
+});
+
+test('transcript cursor refuses a symlinked conversation ancestor', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(),'agy-link-'));
+    const id   = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', other='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    try {
+        const dir = path.join(root,'brain',other,'.system_generated','logs');fs.mkdirSync(dir,{recursive:true});
+        fs.writeFileSync(path.join(dir,'transcript.jsonl'),'');
+        fs.symlinkSync(other,path.join(root,'brain',id));
+        expect(()=>captureAntigravityWakeCursor({appDataDir:root,threadId:id})).toThrow();
+    } finally {fs.rmSync(root,{recursive:true,force:true})}
+});

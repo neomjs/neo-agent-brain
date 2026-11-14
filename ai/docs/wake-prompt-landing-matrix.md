@@ -12,15 +12,17 @@ Each peer has one Fleet harness instance. A wake belongs to its latest genuinely
 
 The native receiver uses a host-owned enrollment for one registry agent and family. On opted-in seats an unresolved binding keeps the signed event pending. The queue or sidecar receives an opaque marker. A recipient hook checks the current launch, main session and outstanding event before placing the digest in model context. Private recipient evidence settles the event. Inspect the pending reason when evidence is missing. Sending the same event again by hand can duplicate work.
 
-### Disposable canary
+### Verifying a native wake
 
-1. Use a separate receiver state directory and manifest, a test seat, and an isolated vendor profile and workspace. The Antigravity App also uses home-level vendor configuration. Test it under a separate operating-system user or equivalent isolation so its sidecar cannot change another user's App. Keep live routes and real mailbox records out of this fixture.
-2. Prepare and inspect the vendor hook or sidecar definition in the disposable profile. The exported Codex, Antigravity hook and sidecar materializers preserve unrelated entries. Codex requires native trust approval for the exact definition. A supervised test must establish that the running recipient actually executed it. Fleet arming only verifies host coordinates and publishes the route.
-3. Record `node ai/scripts/fleet/primarySessionWake.mjs status --agent <id> --family <family> --manifest <file>`. To exercise an isolated candidate, use the same arguments with `enroll` and `--state <receiver-state-directory>`, then start or re-arm the disposable seat through Fleet. Enrollment selects the routing policy. The receiver waits for a proven running peer.
-4. Start a main conversation. For Antigravity the sidecar first records the existing project roots. A later authenticated SessionStart establishes a main root, and PreInvocation witnesses that root. Keep a sibling conversation and a helper present. With another window focused and a draft preserved, send one signed test message.
-5. Verify the selected thread's receipt, no helper or stale-root digest, no newly created chat, and a single delivery after replay. Replace the main session while a marker is outstanding and repeat. A blocked or unconfirmed marker may appear as an attempted turn; the marker contains no mailbox content. Record that attempt separately from delivery.
+For a real-peer check, have the peer identify its current main conversation and match it to the running Fleet instance. Capture the foreground application, draft state where observable, and starting transcript position. Use one benign event with a unique marker. A test receiver can instead use its own manifest, state and disposable profile.
 
-The acceptance receipt names the vendor and Fleet versions, seat, process lifetime, started conversation, nonce and recipient evidence. A passing Node fixture or a successful vendor command alone cannot certify a desktop rollout.
+**Native transport.** A Codex queue row can wait while a goal turn runs. Leave the row alone and record the queue-triggered root turn in the same thread when the previous turn ends. Antigravity sidecar messages appear as addressed native system messages. Record the target conversation, exact marker and subsequent model acknowledgment. These checks can use the existing Desktop session before Fleet enrollment.
+
+**Fleet route.** For an enrolled canary, inspect the installed receiver and Fleet versions, vendor hook definitions and native trust. Codex requires an observed invocation of the exact trusted hook in the current process lifetime. Antigravity begins with a census of existing roots. A genuine subsequent main-session start and pre-model hook establish the recipient. Normal Fleet arming reads the host configuration. The peer's next planned session handoff is an opportunity to verify this path without interrupting ongoing work.
+
+Run `node ai/scripts/fleet/primarySessionWake.mjs status --agent <id> --family <family> --manifest <file>` to read the host enrollment. The explicit `enroll` command additionally takes `--state <receiver-state-directory>`. Enrollment selects the routing policy; the signed-event receipt establishes delivery.
+
+Record the private recipient proof for the signed event, the conversation that consumed it, and whether the draft and foreground survived. Exercise busy, duplicate, handoff, helper and restart controls on the candidate. A superseded root can receive an opaque marker attempt that the hook refuses; no mailbox content accompanies that marker. Record that separately from a delivered digest.
 
 ## Wake Backlog / Subscription Isolation Preflight (MANDATORY)
 

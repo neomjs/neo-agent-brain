@@ -49,7 +49,7 @@ test.describe('Codex session wake', () => {
         const result = await sendCodexSessionWake({binary: '/bin/codex', home, threadId: id, text: `[NEO_WAKE_V1:${queueId}] [WAKE]`,
             verifyAdmission: async () => ({verified: true}),
             execute        : async (...input) => { args = input; return {stdout: `Queued message ${queueId} for thread ${id}.\n`} }});
-        expect(result).toMatchObject({state: 'enqueued', threadId: id, queueId, receiptOffset: expect.any(Number)});
+        expect(result).toMatchObject({state: 'enqueued', threadId: id, queueId, receiptOffset: {offset: expect.any(Number), device: expect.any(Number), inode: expect.any(Number)}});
         expect(args[1]).toEqual(['queue', '--thread', id, '--message', `[NEO_WAKE_V1:${queueId}] [WAKE]`]);
         expect(args[2].env.CODEX_HOME).toBe(home);
         expect(Object.keys(args[2].env).sort()).toEqual(['CODEX_HOME', 'HOME', 'PATH']);
@@ -106,19 +106,50 @@ test.describe('Codex session wake', () => {
     });
 
     test('receipt requires the exact text and a matching queued root turn, not a substring or another turn', async () => {
-        const text = `[NEO_WAKE_V1:${queueId}] [WAKE]`;
+        const text          = `[NEO_WAKE_V1:${queueId}] [WAKE]`;
+        const receiptOffset = (await readCodexWakeTarget({home, threadId: id})).receiptOffset;
         await fs.appendFile(file, line(start()) + line(message(text)));
-        expect(await readCodexWakeReceipt({home, threadId: id, text, receiptToken: id})).toEqual({state: 'unknown'});
+        expect(await readCodexWakeReceipt({home, threadId: id, text, receiptOffset, receiptToken: id})).toEqual({state: 'unknown'});
         const context = turnId => ({type: 'response_item', payload: {type: 'message', role: 'developer',
             content                                   : [{type: 'input_text', text: `digest\n[NEO_WAKE_RECEIVED:${id}]`}],
             internal_chat_message_metadata_passthrough: {turn_id: turnId, content_item_kinds: ['hooks.additional_context'],
                 content_item_metadata: [{provenance: {type: 'harness', hook: true}}]}}});
         await fs.appendFile(file, line(context('other')));
-        expect(await readCodexWakeReceipt({home, threadId: id, text, receiptToken: id})).toEqual({state: 'unknown'});
+        expect(await readCodexWakeReceipt({home, threadId: id, text, receiptOffset, receiptToken: id})).toEqual({state: 'unknown'});
         await fs.appendFile(file, line(context(turn)));
-        expect(await readCodexWakeReceipt({home, threadId: id, text, receiptToken: turn})).toEqual({state: 'unknown'});
-        expect(await readCodexWakeReceipt({home, threadId: id, text, receiptToken: id})).toEqual({state: 'turn-started', threadId: id, turnId: turn});
-        await fs.appendFile(file, line(message(text)));
-        await expect(readCodexWakeReceipt({home, threadId: id, text, receiptToken: id})).rejects.toThrow('ambiguous')
+        expect(await readCodexWakeReceipt({home, threadId: id, text, receiptOffset, receiptToken: turn})).toEqual({state: 'unknown'});
+        expect(await readCodexWakeReceipt({home, threadId: id, text, receiptOffset, receiptToken: id})).toEqual({state: 'turn-started', threadId: id, turnId: turn});
+        await fs.appendFile(file, line(start()) + line(message(text)) + line(context(turn)));
+        await expect(readCodexWakeReceipt({home, threadId: id, text, receiptOffset, receiptToken: id})).rejects.toThrow('ambiguous')
+    });
+
+    test('streams large post-send logs and refuses rotation or incomplete data', async () => {
+        const text  = `[NEO_WAKE_V1:${queueId}] [WAKE]`, receiptToken = id;
+        const proof = line(start()) + line(message(text)) + line({type: 'response_item', payload: {
+            type                                      : 'message', role: 'developer', content: [{type: 'input_text', text: `digest\n[NEO_WAKE_RECEIVED:${receiptToken}]`}],
+            internal_chat_message_metadata_passthrough: {turn_id: turn, content_item_kinds: ['hooks.additional_context'],
+                content_item_metadata: [{provenance: {type: 'harness', hook: true}}]}
+        }});
+        const padding = line({type: 'padding', payload: 'x'.repeat(1024)}).repeat(5200);
+        const cursor  = (await readCodexWakeTarget({home, threadId: id})).receiptOffset;
+        const read    = () => readCodexWakeReceipt({home, threadId: id, text, receiptToken, receiptOffset: cursor});
+        await fs.appendFile(file, proof + padding);
+        expect(await read()).toEqual({state: 'turn-started', threadId: id, turnId: turn});
+        await fs.truncate(file, cursor.offset);
+        await fs.appendFile(file, padding + proof);
+        expect(await read()).toEqual({state: 'turn-started', threadId: id, turnId: turn});
+        await fs.truncate(file, cursor.offset);
+        await fs.appendFile(file, padding);
+        expect(await read()).toEqual({state: 'unknown'});
+        await fs.appendFile(file, proof + '{"partial":');
+        expect(await read()).toEqual({state: 'unknown'});
+        await fs.truncate(file, cursor.offset);
+        await fs.appendFile(file, 'invalid\n' + proof);
+        expect(await read()).toEqual({state: 'unknown'});
+        await fs.writeFile(file, line(meta()) + line({type: 'changed', payload: 'z'.repeat(cursor.offset)}) + proof);
+        expect(await read()).toEqual({state: 'unknown'});
+        await fs.rename(file, file + '.old');
+        await fs.writeFile(file, line(meta()) + proof);
+        expect(await read()).toEqual({state: 'unknown'})
     });
 });

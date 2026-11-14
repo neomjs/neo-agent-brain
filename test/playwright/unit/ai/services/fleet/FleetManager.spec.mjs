@@ -1546,7 +1546,7 @@ test.describe('FleetManager native wake canary', () => {
         await FleetManager.armSeatWake('seat-a', status);
         expect(calls[0].primarySession).toEqual({instanceHome: status.instanceHome, appBundle: '/generation/Codex.app',
             agentId: 'seat-a', family: 'codex-desktop', hookNodePath:process.execPath,
-            hookModulePath:expect.stringContaining('/ai/scripts/lifecycle/hooks/codex/primaryWakeAdmission.mjs')});
+            hookModulePath:expect.stringContaining('/ai/daemons/wake/codexWakeHook.mjs')});
         status.harnessGeneration.generationId = 'wrong';
         expect((await FleetManager.armSeatWake('seat-a', status)).wakeRoute.state).toBe('unarmed');
         expect(calls).toHaveLength(1);
