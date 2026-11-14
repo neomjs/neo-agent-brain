@@ -63,7 +63,9 @@ export async function runSessionRotation({db, deliver, operatorPresence, windowM
         }
 
         if (verdict.action === 'refuse') {
+            // a refused re-send keeps its event id and its failed attempt on the record
             writeSessionRotation(db, receipt.id, {
+                ...rotation,
                 state       : 'refused',
                 reason      : verdict.reason,
                 refusedAt   : nowIso,

@@ -241,7 +241,8 @@ export function holdsWakes({read, hasRotationRoute, now, windowMs}) {
  * @summary Decides what the rotation lane does with one seat's receipt on this run.
  *
  * - `request`: send the rotation (a first send, or a re-send of one the receiver never accepted:
- *   the event id makes it the same record).
+ *   the event id makes it the same record). A re-send passes the prompt and live-turn guards again,
+ *   since a person may resume the old session after a first send failed.
  * - `complete`: a session other than the old one has saved a memory since the request.
  * - `refuse`: the receipt never gets a rotation, with the reason recorded on it.
  * - `incomplete`: the window passed without a fresh session.
@@ -267,11 +268,14 @@ export function decideRotation({read, now, windowMs, minIntervalMs}) {
     const pastWindow = now - Date.parse(read.receipt.sentAt) >= windowMs;
 
     if (rotation) {
-        if (read.newerSession)  return {action: 'complete'};
-        if (pastWindow)         return {action: 'incomplete', reason: rotation.deliveredAt ? 'no-fresh-session' : 'undelivered'};
-        if (!rotation.deliveredAt) return {action: 'request'};
+        if (read.newerSession)    return {action: 'complete'};
+        if (pastWindow)           return {action: 'incomplete', reason: rotation.deliveredAt ? 'no-fresh-session' : 'undelivered'};
+        if (rotation.deliveredAt) return {action: 'wait', reason: 'receiver-has-request'};
+        // a re-send answers to the guards a first send answers to
+        if (read.promptedTurnAt)  return {action: 'refuse', reason: 'prompted-after-receipt'};
+        if (read.liveTurnUntil)   return {action: 'wait', reason: 'live-turn'};
 
-        return {action: 'wait', reason: 'receiver-has-request'}
+        return {action: 'request'}
     }
 
     if (read.promptedTurnAt)            return {action: 'refuse', reason: 'prompted-after-receipt'};

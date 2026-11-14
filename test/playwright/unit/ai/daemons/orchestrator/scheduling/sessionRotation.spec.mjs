@@ -350,6 +350,49 @@ test.describe('session-rotation lane (#1383)', () => {
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({requestedAt: at(0), deliveredAt: new Date(NOW + MIN).toISOString()})
     });
 
+    test('a prompt after a send the receiver never accepted refuses the re-send, and the record keeps its event id and its failed attempt', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        insertSelfMessage(db, 'MESSAGE:receipt', 10);
+
+        const failed = await runLane(db, {delivery: 'failed'});
+
+        insertTurn(db, 'person-at-the-old-session', -0.5); // typed after the failed send, no wake nonce
+
+        const retried = await runLane(db, {now: NOW + MIN});
+
+        expect(retried.sent).toEqual([]);
+        expect(retried.outcome).toMatchObject({requested: 0, refused: 1});
+        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({
+            state: 'refused', reason: 'prompted-after-receipt', eventId: failed.sent[0].envelope.eventId, lastDelivery: 'failed'
+        });
+        expect((await runLane(db, {now: NOW + 2 * MIN})).sent).toEqual([])
+    });
+
+    test('a turn live after a send the receiver never accepted holds the re-send, which goes under the same event id once the turn ends', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        insertSelfMessage(db, 'MESSAGE:receipt', 10);
+
+        const failed = await runLane(db, {delivery: 'failed'});
+
+        insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:sunset-turn`, 'AGENT_TURN_PRESENCE', {
+            agentIdentity: SEAT, turnId: 'sunset-turn', startedAt: at(15), status: 'active', expiresAt: at(-20)
+        });
+
+        const held = await runLane(db, {now: NOW + MIN});
+
+        expect(held.sent).toEqual([]);
+        expect(held.outcome).toMatchObject({requested: 0, waiting: 1});
+
+        const retried = await runLane(db, {now: NOW + 21 * MIN});
+
+        expect(retried.sent).toHaveLength(1);
+        expect(retried.sent[0].envelope.eventId).toBe(failed.sent[0].envelope.eventId)
+    });
+
     test('the wake hold: an open receipt with a rotation route inside its window, released by a prompt, a settlement or the window', () => {
         const db = createGraph();
 

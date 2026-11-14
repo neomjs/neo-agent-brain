@@ -2905,6 +2905,66 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(webhookEvents[0].eventData.payload.sourceEventIds).toContain('MSG:6');
         });
 
+        // The push twin of poll-digest's rotation hold: the hold the entrypoint injects, read from the
+        // graph, keeps the digest queued; the transport is the spec's recording stub.
+        for (const [release, act] of [
+            ['a prompt after the receipt', ({insert}) => insert('AGENT_TURN_PRESENCE:@alice:typed', 'AGENT_TURN_PRESENCE', {
+                agentIdentity: '@alice', turnId: 'typed', startedAt: new Date().toISOString(), status: 'active'
+            })],
+            ['a settled rotation', ({setReceipt}) => setReceipt({sessionRotation: {state: 'completed'}})],
+            ['the end of its window', ({setReceipt}) => setReceipt({
+                sentAt: new Date(Date.now() - AiConfig.orchestrator.sessionRotation.windowMs - 60 * 1000).toISOString()
+            })]
+        ]) {
+            test(`the push digest waits while a sunset receipt waits for its rotation, and ${release} releases it with the wakes queued before the receipt (#1383)`, async () => {
+                const sqlite     = GraphService.db.storage.db,
+                      receiptId  = 'MESSAGE:push-hold-receipt',
+                      receipt    = {from: '@alice', to: '@alice', subject: '[sunset]', sentAt: new Date(Date.now() - 60 * 1000).toISOString(), taggedConcepts: ['sunset-protocol-handover']},
+                      insert     = (id, label, properties) => sqlite.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)')
+                          .run(id, '@alice', JSON.stringify({id, label, type: label, properties})),
+                      setReceipt = changes => sqlite.prepare('UPDATE Nodes SET data = ? WHERE id = ?')
+                          .run(JSON.stringify({id: receiptId, label: 'MESSAGE', type: 'MESSAGE', properties: {...receipt, ...changes}}), receiptId),
+                      message    = id => {
+                          GraphService.upsertNode({id, type: 'MESSAGE', properties: {from: '@bob', sentAt: new Date().toISOString()}});
+                          GraphService.linkNodes(id, '@alice', 'SENT_TO', 1.0)
+                      };
+
+                CoalescingEngineService.configure(AiConfig.orchestrator.wakeDispatch, {
+                    resolveDeliveryHold: identity => WakeSubscriptionService.holdsWakesForRotation(identity)
+                });
+
+                try {
+                    await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+                        await WakeSubscriptionService.subscribe({trigger: 'SENT_TO_ME', harnessTarget: 'a2a-webhook', harnessTargetMetadata: {url: 'test'}});
+                        await callTool('manage_wake_subscription', {
+                            action               : 'subscribe', trigger: 'SESSION_ROTATE', filters: {}, harnessTarget: 'a2a-webhook',
+                            harnessTargetMetadata: {adapter: 'osascript', appName: 'Claude', url: BOOT_URL}
+                        })
+                    });
+
+                    message('MSG:QUEUED-BEFORE-RECEIPT');
+                    await WakeSubscriptionService.pump();
+                    insert(receiptId, 'MESSAGE', receipt);
+                    message('MSG:SENT-AFTER-RECEIPT');
+                    await WakeSubscriptionService.pump();
+                    await CoalescingEngineService.flushAll();
+
+                    expect(webhookEvents).toEqual([]);
+
+                    act({insert, setReceipt});
+                    await CoalescingEngineService.flushAll();
+
+                    expect(webhookEvents).toHaveLength(1);
+                    expect(webhookEvents[0].eventData.eventType).toBe('wake/digest');
+                    expect(webhookEvents[0].eventData.payload.sourceEventIds).toEqual(
+                        expect.arrayContaining(['MSG:QUEUED-BEFORE-RECEIPT', 'MSG:SENT-AFTER-RECEIPT'])
+                    )
+                } finally {
+                    sqlite.prepare("DELETE FROM Nodes WHERE id IN (?, 'AGENT_TURN_PRESENCE:@alice:typed')").run(receiptId)
+                }
+            });
+        }
+
         test('refreshes a cached webhook route after it degrades', async () => {
             let subscriptionId;
 

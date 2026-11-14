@@ -2193,7 +2193,7 @@ class WakeSubscriptionService extends Base {
         // A seat whose sunset handover waits for its fresh session gets no wakes in the session that
         // ended. The watermark stays where the caller holds it, so the fresh session, which inherits
         // it, receives everything the hold kept.
-        if (this._holdsWakesForRotation(caller)) {
+        if (this.holdsWakesForRotation(caller)) {
             return {
                 subscriptionId,
                 pending  : 0,
@@ -2252,13 +2252,14 @@ class WakeSubscriptionService extends Base {
 
     /**
      * @summary Whether the plane holds a seat's wakes for its session rotation ({@link holdsWakes}).
-     * A read that fails delivers: a withheld wake must never be the cost of an unreadable receipt.
+     * Both delivery paths ask it: `pollDigest`, and the push digest through the coalescing engine's
+     * injected hold. A read that fails delivers: a withheld wake must never be the cost of an
+     * unreadable receipt.
      * @param {String} identity Canonical `@<identity>`.
      * @param {Number} [now=Date.now()]
      * @returns {Boolean}
-     * @protected
      */
-    _holdsWakesForRotation(identity, now = Date.now()) {
+    holdsWakesForRotation(identity, now = Date.now()) {
         try {
             const db       = GraphService.db.storage.db,
                   windowMs = AiConfig.orchestrator.sessionRotation.windowMs;
