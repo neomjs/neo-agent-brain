@@ -181,30 +181,56 @@ test.describe('session-rotation lane (#1383)', () => {
         expect((await runLane(db, {now: NOW + 21 * MIN})).sent).toHaveLength(1)
     });
 
-    test('#1722 AC-1: an older turn left open holds nothing once the turn that wrote the receipt closed; that turn still live waits', async () => {
-        const turn = (db, turnId, minutesAgo, status, expiresInMinutes) => insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:${turnId}`, 'AGENT_TURN_PRESENCE', {
-            agentIdentity: SEAT, turnId, startedAt: at(minutesAgo), status, expiresAt: at(-expiresInMinutes)
-        });
+    // The stored interval shape: `lastProgressAt` moves on every recorded event, `add_memory`'s close included.
+    const turn = (db, turnId, {startedAgo, progressAgo = startedAgo, status = 'active', expiresIn}) => insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:${turnId}`, 'AGENT_TURN_PRESENCE', {
+        agentIdentity: SEAT, turnId, startedAt: at(startedAgo), lastProgressAt: at(progressAgo), status, expiresAt: at(-expiresIn)
+    });
+    const liveTurnUntil = db => readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)}).liveTurnUntil;
 
+    test('#1722 AC-1: an older turn that went quiet before the receipt holds nothing once the turn that wrote it closed; that turn still live waits', async () => {
         const closed = createGraph();
 
         insertRoute(closed);
-        turn(closed, 'diary-less-turn', 9, 'active', 51);   // the 18:41Z shape: never closed, live for its full TTL
-        turn(closed, 'sunset-turn', 4, 'terminal', 56);     // add_memory closed the turn that wrote the receipt
+        turn(closed, 'diary-less-turn', {startedAgo: 9, progressAgo: 8, expiresIn: 51});                     // the 18:41Z shape: never closed
+        turn(closed, 'sunset-turn',     {startedAgo: 4, progressAgo: 1, status: 'terminal', expiresIn: 56}); // add_memory closed it
         insertSelfMessage(closed, 'MESSAGE:receipt', 2);
 
-        expect(readSunsetReceipt(closed, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)}).liveTurnUntil).toBeNull();
+        expect(liveTurnUntil(closed)).toBeNull();
         expect((await runLane(closed)).sent).toHaveLength(1);
 
         const live = createGraph();
 
         insertRoute(live);
-        turn(live, 'diary-less-turn', 9, 'active', 51);
-        turn(live, 'sunset-turn', 4, 'active', 20);
+        turn(live, 'diary-less-turn', {startedAgo: 9, progressAgo: 8, expiresIn: 51});
+        turn(live, 'sunset-turn',     {startedAgo: 4, progressAgo: 1, expiresIn: 20});
         insertSelfMessage(live, 'MESSAGE:receipt', 2);
 
-        expect(readSunsetReceipt(live, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)}).liveTurnUntil).toBe(at(-20));
+        expect(liveTurnUntil(live)).toBe(at(-20));
         expect((await runLane(live)).outcome).toMatchObject({requested: 0, waiting: 1})
+    });
+
+    test('#1722: overlapping sessions — the turn that wrote the receipt waits while active, whichever interval started last; without progress since the receipt every interval begun by then counts', async () => {
+        // Emmy's control: A starts first and writes the receipt; B, of the seat's other session, starts later and closes before it.
+        const progressed = createGraph();
+
+        insertRoute(progressed);
+        turn(progressed, 'session-a-turn', {startedAgo: 10, progressAgo: 1, expiresIn: 50});
+        turn(progressed, 'session-b-turn', {startedAgo: 9, progressAgo: 8, status: 'terminal', expiresIn: 51});
+        insertSelfMessage(progressed, 'MESSAGE:receipt', 2);
+
+        expect(liveTurnUntil(progressed)).toBe(at(-50));
+        expect((await runLane(progressed)).outcome).toMatchObject({requested: 0, waiting: 1});
+
+        // No interval progressed since the receipt (a harness reporting no progress): nothing proves which one wrote it.
+        const unattributed = createGraph();
+
+        insertRoute(unattributed);
+        turn(unattributed, 'session-a-turn', {startedAgo: 10, expiresIn: 50});
+        turn(unattributed, 'session-b-turn', {startedAgo: 9, progressAgo: 8, status: 'terminal', expiresIn: 51});
+        insertSelfMessage(unattributed, 'MESSAGE:receipt', 2);
+
+        expect(liveTurnUntil(unattributed)).toBe(at(-50));
+        expect((await runLane(unattributed)).outcome).toMatchObject({requested: 0, waiting: 1})
     });
 
     test('AC-9: the newest self-message decides, so a note after the handover turns the rotation off', async () => {

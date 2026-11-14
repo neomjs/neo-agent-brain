@@ -552,6 +552,23 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
         expect(read()).toMatchObject({receipt: {id: 'MESSAGE:sunset-receipt'}, liveTurnUntil: null});
     });
 
+    test('a turn that writes the receipt after another session\'s later turn closed still holds the rotation (#1722)', async () => {
+        const {readSunsetReceipt} = await import('../../../../../../ai/daemons/wake/sunsetReceipt.mjs'),
+              read                = () => readSunsetReceipt(GraphService.db.storage.db, '@agent-turn', {sinceIso: new Date(Date.now() - 5 * 60_000).toISOString()}),
+              ago                 = ms => new Date(Date.now() - ms).toISOString();
+
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'session-a-turn', source: 'spec', now: ago(60_000)}));
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'session-b-turn', source: 'spec', now: ago(30_000)}));
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'terminal', turnId: 'session-b-turn', terminalState: 'completed', now: ago(20_000)}));
+        GraphService.upsertNode({id: 'MESSAGE:sunset-receipt', type: 'MESSAGE', name: 'sunset', properties: {
+            from: '@agent-turn', to: '@agent-turn', sentAt: new Date().toISOString(), taggedConcepts: ['sunset-protocol-handover']
+        }});
+        // The receipt's own tool call: the Claude PostToolUse hook names the turn its `start` stored.
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'progress', turnId: 'session-a-turn', source: 'claude-post-tool-use'}));
+
+        expect(read().liveTurnUntil).toBe(getNode('session-a-turn').properties.expiresAt);
+    });
+
     test('a named progress past expiresAt still joins its own turn: a long tool call is still the turn', async () => {
         await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'long-turn', now: '2026-06-19T00:00:00.000Z'}));
 
