@@ -265,8 +265,9 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
               }).map(String),
               fresh = lines.indexOf('      keystroke "n" using command down');
 
-        expect(lines[fresh - 4]).toBe('      tell current application to set rotationHolderNow to (do shell script "cat " & quoted form of "/seats/ada/listeners/neo-opus-ada.json")');
-        expect(lines[fresh - 2]).toBe('      if rotationHolderNow does not contain "old-session" then error "Seat holder changed before the fresh session"')
+        // Exactly the owner, never `delivered.sessionId`, which can still name the old session.
+        expect(lines[fresh - 4]).toBe('      tell current application to set rotationHolderNow to (do shell script "/usr/bin/plutil -extract owner.sessionId raw -o - " & quoted form of "/seats/ada/listeners/neo-opus-ada.json")');
+        expect(lines[fresh - 2]).toBe('      if rotationHolderNow is not "old-session" then error "Seat holder changed before the fresh session"')
     });
 
     test('Emmy\'s Round-2 control: with no holder at the first attempt, the script requires the record still absent before Cmd+N', () => {
@@ -276,7 +277,7 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
               }).map(String),
               fresh = lines.indexOf('      keystroke "n" using command down');
 
-        expect(lines[fresh - 4]).toBe('      tell current application to set rotationHolderNow to (do shell script "cat " & quoted form of "/seats/ada/listeners/neo-opus-ada.json" & " 2>/dev/null; true")');
+        expect(lines[fresh - 4]).toBe('      tell current application to set rotationHolderNow to (do shell script "test -e " & quoted form of "/seats/ada/listeners/neo-opus-ada.json" & " && echo present || true")');
         expect(lines[fresh - 2]).toBe('      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"')
     });
 

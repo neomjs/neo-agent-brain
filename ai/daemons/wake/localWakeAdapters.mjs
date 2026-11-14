@@ -941,15 +941,16 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
         if (fencedFreshSession) {
             args.push('-e', '      if (current date) > rotationDeadline then error "Rotation deadline passed before the fresh session"');
         }
+        // The record also names the session a wake was delivered to, so only its `owner.sessionId` is compared.
         if (freshSessionHolder?.path && freshSessionHolder.sessionId) {
             args.push(
-                '-e', `      tell current application to set rotationHolderNow to (do shell script "cat " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}")`,
-                '-e', `      if rotationHolderNow does not contain "${escapeAppleScript(freshSessionHolder.sessionId)}" then error "Seat holder changed before the fresh session"`
+                '-e', `      tell current application to set rotationHolderNow to (do shell script "/usr/bin/plutil -extract owner.sessionId raw -o - " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}")`,
+                '-e', `      if rotationHolderNow is not "${escapeAppleScript(freshSessionHolder.sessionId)}" then error "Seat holder changed before the fresh session"`
             );
         } else if (freshSessionHolder?.path) {
             // No holder at the first attempt: the record must still be absent, so a session opened since is seen.
             args.push(
-                '-e', `      tell current application to set rotationHolderNow to (do shell script "cat " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}" & " 2>/dev/null; true")`,
+                '-e', `      tell current application to set rotationHolderNow to (do shell script "test -e " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}" & " && echo present || true")`,
                 '-e', '      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"'
             );
         }
