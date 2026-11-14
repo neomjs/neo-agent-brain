@@ -55,7 +55,7 @@ export function standalonePlacement({
         NEO_PLANE_DATA_ROOT         : root,
         NEO_MEMORY_WAL_DIR          : path.join(root, 'wal'),
         NEO_MC_STANDALONE_INDEX_PATH: path.join(root, 'index.sqlite'),
-        NEO_MC_LOG_PATH             : path.join(root, 'logs', 'mcp.log'),
+        NEO_MC_LOG_PATH             : path.join(root, 'logs'),
         ...(typeof workspace === 'string' && workspace.trim().length > 0
             ? {NEO_MC_WORKSPACE: workspace.trim()}
             : {}),
@@ -68,7 +68,7 @@ export function standalonePlacement({
 /**
  * @summary Parses standalone CLI flags without external argument-parser overhead on the launcher path.
  * @param {String[]} [argv=process.argv.slice(2)] Raw CLI arguments.
- * @returns {{configFile: (String|null), dataRoot: (String|undefined), debug: Boolean, help: Boolean, mode: ('launch'|'serve'|'promote'), sessionId: (String|undefined), version: Boolean, workspace: (String|undefined)}}
+ * @returns {{configFile: (String|null), dataRoot: (String|undefined), debug: Boolean, help: Boolean, mode: ('launch'|'serve'), sessionId: (String|undefined), version: Boolean, workspace: (String|undefined)}}
  */
 export function parseStandaloneArgs(argv = process.argv.slice(2)) {
     const parsed = {
@@ -93,10 +93,6 @@ export function parseStandaloneArgs(argv = process.argv.slice(2)) {
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
 
-        if (i === 0 && arg === 'promote') {
-            parsed.mode = 'promote';
-            continue;
-        }
         if (arg === '--serve') {
             parsed.mode = 'serve';
             continue;
@@ -165,6 +161,7 @@ export function formatStandaloneHelp() {
         '  --data-root <dir>           Relocate standalone plane root (default: ~/.neo-ai/memory-core)',
         '  --session-id <id>           Default session identifier for add_memory calls',
         '  -c, --config <path>         Optional JSON/MJS config overlay path',
+        '  --serve                     Run the stdio MCP server directly in-process with standalone placement',
         '  -d, --debug                 Mirror INFO/DEBUG logs to stderr',
         '  -V, --version               Print version and exit',
         '  -h, --help                  Print help and exit'
@@ -186,15 +183,26 @@ export function launch({
     homedir = os.homedir(),
     spawnFn = spawn
 } = {}) {
-    const parsed    = parseStandaloneArgs(argv);
-    const placement = standalonePlacement({
+    const parsed             = parseStandaloneArgs(argv);
+    const effectiveWorkspace = parsed.workspace ?? env.NEO_MC_WORKSPACE;
+    const effectiveSessionId = parsed.sessionId ?? env.NEO_MC_SESSION_ID;
+    const placement          = standalonePlacement({
         homedir,
         dataRoot : parsed.dataRoot,
-        workspace: parsed.workspace ?? env.NEO_MC_WORKSPACE,
-        sessionId: parsed.sessionId ?? env.NEO_MC_SESSION_ID
+        workspace: effectiveWorkspace,
+        sessionId: effectiveSessionId
     });
 
     const childArgs = [__filename, '--serve'];
+    if (parsed.dataRoot) {
+        childArgs.push('--data-root', parsed.dataRoot);
+    }
+    if (effectiveWorkspace) {
+        childArgs.push('--workspace', effectiveWorkspace);
+    }
+    if (effectiveSessionId) {
+        childArgs.push('--session-id', effectiveSessionId);
+    }
     if (parsed.configFile) {
         childArgs.push('--config', parsed.configFile);
     }
@@ -293,18 +301,38 @@ export function superviseChild(child, {pollIntervalMs = 200, proc = process} = {
 }
 
 /**
- * @summary Boots `StandaloneServer` in-process when invoked as the serialized `--serve` child.
+ * @summary Boots `StandaloneServer` in-process with explicit standalone placement winning over inherited plane env.
  * @param {Object} parsed Parsed CLI options.
+ * @param {Object} [options={}]
+ * @param {Object} [options.env=process.env] Process environment.
+ * @param {String} [options.homedir=os.homedir()] Home directory used when `--data-root` is unset.
  * @returns {Promise<void>}
  */
-async function startServeMode(parsed) {
+async function startServeMode(parsed, {env = process.env, homedir = os.homedir()} = {}) {
     const {default: Neo} = await import('neo.mjs/src/Neo.mjs');
     await import('neo.mjs/src/core/_export.mjs');
     await import('neo.mjs/src/manager/Instance.mjs');
+    const {createStandaloneConfig}    = await import('./standaloneConfigBase.mjs');
     const {default: StandaloneServer} = await import('./standaloneServer.mjs');
 
+    const placement = standalonePlacement({
+        homedir,
+        dataRoot : parsed.dataRoot,
+        workspace: parsed.workspace ?? env.NEO_MC_WORKSPACE,
+        sessionId: parsed.sessionId ?? env.NEO_MC_SESSION_ID
+    });
+
+    const aiConfig = createStandaloneConfig({
+        envOverrides: {
+            ...placement,
+            ...(parsed.debug ? {NEO_DEBUG: true} : {})
+        }
+    });
+
     const server = Neo.create(StandaloneServer, {
-        configFile: parsed.configFile
+        aiConfig,
+        configFile        : parsed.configFile,
+        ownsConfigInstance: true
     });
 
     let   shuttingDown = false;
@@ -328,6 +356,11 @@ async function startServeMode(parsed) {
 }
 
 if (isEntryModule(import.meta.url)) {
+    const handleFatal = error => {
+        process.stderr.write(`[neo-memory-core] Fatal startup error: ${error?.stack || error?.message || String(error)}\n`);
+        process.exit(1);
+    };
+
     try {
         const parsed = parseStandaloneArgs(process.argv.slice(2));
 
@@ -339,17 +372,12 @@ if (isEntryModule(import.meta.url)) {
             process.stdout.write(`${readStandaloneVersion()}\n`);
             process.exit(0);
         }
-        if (parsed.mode === 'promote') {
-            process.stderr.write('[neo-memory-core] The "promote" subcommand is not yet available in this standalone runtime slice.\n');
-            process.exit(1);
-        }
         if (parsed.mode === 'serve') {
-            await startServeMode(parsed);
+            startServeMode(parsed).catch(handleFatal);
         } else {
             superviseChild(launch());
         }
     } catch (error) {
-        process.stderr.write(`[neo-memory-core] Fatal startup error: ${error?.stack || error?.message || String(error)}\n`);
-        process.exit(1);
+        handleFatal(error);
     }
 }

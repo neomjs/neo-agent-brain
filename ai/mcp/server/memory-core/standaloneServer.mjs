@@ -1,7 +1,6 @@
-import fs                              from 'node:fs';
-import path                            from 'node:path';
 import Neo                             from 'neo.mjs/src/Neo.mjs';
 import BaseServer                      from '../BaseServer.mjs';
+import {createLogger}                  from '../shared/logger.mjs';
 import {collectPlaneMembers}           from '../../../planeConfig.mjs';
 import StandaloneSqliteIndex           from '../../../services/memory-core/helpers/standaloneSqliteIndex.mjs';
 import {resolveStandaloneWorkspaceKey} from '../../../services/memory-core/helpers/standaloneWorkspaceKey.mjs';
@@ -12,47 +11,6 @@ import StandaloneConfigBase, {
 import {createStandaloneToolService}     from './standaloneToolService.mjs';
 
 const STANDALONE_SERVER_VERSION = '1.0.0';
-
-/**
- * @summary Creates a file-and-stderr logger writing to the standalone `logPath` file without touching stdout.
- * @param {Object} options
- * @param {String} options.logFilePath Absolute file path for `mcp.log`.
- * @param {Function} options.isDebug Callback reading the current `debug` boolean.
- * @returns {{debug: Function, error: Function, info: Function, warn: Function}}
- */
-function createStandaloneFileLogger({logFilePath, isDebug}) {
-    const resolvedFile = path.resolve(logFilePath);
-    fs.mkdirSync(path.dirname(resolvedFile), {recursive: true});
-
-    const formatArg = item => {
-        if (item instanceof Error) {
-            return item.stack || item.message;
-        }
-        return typeof item === 'object' ? JSON.stringify(item) : String(item);
-    };
-
-    const writeEntry = (level, emitStderr, args) => {
-        const line = `[${new Date().toISOString()}] [${level}] ${args.map(formatArg).join(' ')}\n`;
-        try {
-            fs.appendFileSync(resolvedFile, line, 'utf8');
-        } catch {}
-
-        if (emitStderr) {
-            process.stderr.write(line);
-        }
-    };
-
-    return {
-        debug: (...args) => {
-            if (isDebug()) {
-                writeEntry('DEBUG', true, args);
-            }
-        },
-        info : (...args) => writeEntry('INFO', Boolean(isDebug()), args),
-        warn : (...args) => writeEntry('WARN', Boolean(isDebug()), args),
-        error: (...args) => writeEntry('ERROR', true, args)
-    };
-}
 
 /**
  * @summary Standalone zero-daemon Memory Core MCP server backed by JSONL WAL and `node:sqlite` FTS5.
@@ -100,7 +58,7 @@ class StandaloneServer extends BaseServer {
         return collectPlaneMembers({
             memberPaths   : STANDALONE_PLANE_MEMBER_PATHS,
             resolvedConfig: this.aiConfig,
-            descriptorData: StandaloneConfigBase.config.data
+            descriptorData: this.aiConfig.descriptorData
         });
     }
 
@@ -200,7 +158,7 @@ class StandaloneServer extends BaseServer {
     }
 
     /**
-     * @summary Validates plane coherence first, then initializes logger, workspace key, SQLite FTS5 index, and MCP transport.
+     * @summary Validates transport and plane coherence first, then initializes shared logger, workspace key, SQLite FTS5 index, and MCP transport.
      * @returns {Promise<void>}
      * @override
      */
@@ -210,15 +168,28 @@ class StandaloneServer extends BaseServer {
             this.ownsConfigInstance = true;
         }
 
+        if (typeof this.aiConfig.ready === 'function') {
+            await this.aiConfig.ready();
+        }
+
         await this.loadCustomConfig();
+
+        if (this.aiConfig.transport !== 'stdio') {
+            throw new Error(
+                `[${this.className}] Standalone Memory Core supports only "stdio" transport; received "${this.aiConfig.transport}".`
+            );
+        }
 
         // Fail closed on plane or member incoherence before creating log or SQLite files on disk.
         this.assertPlaneIdentity();
 
         if (!this.logger) {
-            this.logger = createStandaloneFileLogger({
-                logFilePath: this.aiConfig.logPath,
-                isDebug    : () => Boolean(this.aiConfig && this.aiConfig.debug)
+            this.logger = createLogger(this.aiConfig, {
+                filePrefix    : 'mc-standalone',
+                fileSink      : true,
+                flush         : true,
+                stderrMode    : 'debug',
+                timestampStyle: 'plain'
             });
         }
 
@@ -251,6 +222,7 @@ class StandaloneServer extends BaseServer {
         await this.beforeHealthcheck();
         const health = await this.runHealthcheckAndLogStatus();
         await this.afterHealthcheck(health);
+        await this.logger?.flush?.();
 
         if (this.connectOnBoot) {
             await this.connectTransport();

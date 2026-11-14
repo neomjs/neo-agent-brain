@@ -141,8 +141,8 @@ export function createStandaloneToolService({
                 graphProjectionVersion: 1,
                 graphProjection       : {
                     requestIdentity : null,
+                    // Standalone cannot vouch for rostered identities; promotion stamps verified `--owner` agentIdentity.
                     memoryProperties: {
-                        ...(args.agent ? {agentIdentity: args.agent} : {}),
                         sessionId,
                         timestamp: isoTimestamp,
                         workspace: workspaceInfo.workspace

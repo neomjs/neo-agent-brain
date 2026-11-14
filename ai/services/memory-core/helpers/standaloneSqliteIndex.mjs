@@ -415,6 +415,7 @@ export class StandaloneSqliteIndex {
             return {replayedRecords: 0, segmentsChecked: 0};
         }
 
+        // Read outside BEGIN IMMEDIATE: a concurrent writer regressing this map only triggers safe idempotent re-upserts.
         const memoryCount   = Number(this.#countMemoriesStmt.get()?.cnt || 0);
         const storedMapRaw  = this.#getMetaStmt.get('walFileSizesJson')?.value ?? null;
         const prevSizesMap  = memoryCount === 0 ? {} : safeParseJson(storedMapRaw, {});
@@ -684,7 +685,10 @@ export class StandaloneSqliteIndex {
         const results = rows.map(row => {
             const rawBm25          = Number(row.bm25_score);
             const bm25Score        = Object.is(rawBm25, -0) ? 0 : rawBm25;
-            const lexicalRankScore = Number((1 / (1 + Math.abs(bm25Score))).toFixed(6));
+            const absBm25          = Math.abs(bm25Score);
+            const lexicalRankScore = bm25Score < 0
+                ? Number((absBm25 / (1 + absBm25)).toFixed(6))
+                : 0;
             const excerpt          = buildDeterministicSummary({prompt: row.prompt, response: row.response});
 
             const item = {

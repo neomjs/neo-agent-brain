@@ -27,6 +27,7 @@ import {
     parseStandaloneArgs,
     standalonePlacement
 }                                     from '../../../../../../../ai/mcp/server/memory-core/standalone.mjs';
+import * as standaloneConfigModule     from '../../../../../../../ai/mcp/server/memory-core/standaloneConfigBase.mjs';
 import StandaloneConfigBase, {
     STANDALONE_PLANE_MEMBER_PATHS,
     createStandaloneConfig,
@@ -180,10 +181,24 @@ test.describe('Standalone Memory Core MCP Server', () => {
             rawProvider.destroy();
         }
 
-        const tempRoot  = makeTempDir('mc-standalone-ac1-');
-        const badTarget = makeTempDir('mc-standalone-partial-');
+        const tempRoot         = makeTempDir('mc-standalone-ac1-');
+        const badTarget        = makeTempDir('mc-standalone-partial-');
+        const secondTempHome   = makeTempDir('mc-standalone-fake-home-');
+        const serveHome        = makeTempDir('mc-standalone-serve-home-');
+        const foreignPlaneRoot = makeTempDir('mc-standalone-foreign-plane-');
+        const badTransportCfg  = path.join(tempRoot, 'bad-transport.json');
 
         try {
+            // RA-4a: DEFAULT_STANDALONE_PLANE_ID is exported from standalone.mjs only; config leaf defaults derive from standalonePlacement.
+            expect('DEFAULT_STANDALONE_PLANE_ID' in standaloneConfigModule).toBe(false);
+            const canonicalPlacement = standalonePlacement();
+            expect(StandaloneConfigBase.config.data.plane.id.default).toBe(canonicalPlacement.NEO_PLANE_ID);
+            expect(StandaloneConfigBase.config.data.plane.dataRoot.default).toBe(canonicalPlacement.NEO_PLANE_DATA_ROOT);
+            expect(StandaloneConfigBase.config.data.memoryWal.dirProd.default).toBe(canonicalPlacement.NEO_MEMORY_WAL_DIR);
+            expect(StandaloneConfigBase.config.data.standaloneIndexPath.default).toBe(canonicalPlacement.NEO_MC_STANDALONE_INDEX_PATH);
+            expect(StandaloneConfigBase.config.data.logPath.default).toBe(canonicalPlacement.NEO_MC_LOG_PATH);
+            expect(StandaloneConfigBase.config.data.transport.env).toBeNull();
+
             const placement = standalonePlacement({
                 homedir  : '/Users/example',
                 dataRoot : tempRoot,
@@ -195,7 +210,7 @@ test.describe('Standalone Memory Core MCP Server', () => {
                 NEO_PLANE_DATA_ROOT         : path.resolve(tempRoot),
                 NEO_MEMORY_WAL_DIR          : path.join(path.resolve(tempRoot), 'wal'),
                 NEO_MC_STANDALONE_INDEX_PATH: path.join(path.resolve(tempRoot), 'index.sqlite'),
-                NEO_MC_LOG_PATH             : path.join(path.resolve(tempRoot), 'logs', 'mcp.log'),
+                NEO_MC_LOG_PATH             : path.join(path.resolve(tempRoot), 'logs'),
                 NEO_MC_WORKSPACE            : 'acme/widget'
             });
 
@@ -214,8 +229,16 @@ test.describe('Standalone Memory Core MCP Server', () => {
             expect(spawnCalls[0].opts.env.NEO_PLANE_DATA_ROOT).toBe(path.join(tempRoot, '.neo-ai', 'memory-core'));
             expect(spawnCalls[0].opts.env.NEO_PLANE_ID).toBe(DEFAULT_STANDALONE_PLANE_ID);
 
-            const isolatedCfg = createStandaloneConfig({envOverrides: placement});
-            const server      = Neo.create(StandaloneServer, {
+            // Transport stays pinned to 'stdio' even when NEO_TRANSPORT is set in envOverrides.
+            const isolatedCfg = createStandaloneConfig({
+                envOverrides: {
+                    ...placement,
+                    NEO_TRANSPORT: 'streamable-http'
+                }
+            });
+            expect(isolatedCfg.transport).toBe('stdio');
+
+            const server = Neo.create(StandaloneServer, {
                 aiConfig     : isolatedCfg,
                 connectOnBoot: false
             });
@@ -224,21 +247,84 @@ test.describe('Standalone Memory Core MCP Server', () => {
                 await server.ready();
                 expect(server.getPlaneMembers()).toHaveLength(3);
                 expect(fs.existsSync(path.join(tempRoot, 'index.sqlite'))).toBe(true);
-                expect(fs.existsSync(path.join(tempRoot, 'logs', 'mcp.log'))).toBe(true);
+                // Shared createLogger writes daily mc-standalone-YYYY-MM-DD.log inside the logPath directory.
+                const logFiles = fs.readdirSync(path.join(tempRoot, 'logs'));
+                expect(logFiles.some(name => /^mc-standalone-\d{4}-\d{2}-\d{2}\.log$/.test(name))).toBe(true);
             } finally {
                 server.destroy();
                 isolatedCfg.destroy();
             }
 
-            // Partial relocation (dataRoot moved while standaloneIndexPath stays on build-time default) must fail closed BEFORE creating SQLite/log files.
+            // Non-stdio transport overlay fails closed at boot.
+            fs.writeFileSync(badTransportCfg, JSON.stringify({transport: 'streamable-http'}), 'utf8');
+            const badTransportProvider = createStandaloneConfig({envOverrides: placement});
+            const badTransportServer   = Neo.create(StandaloneServer, {
+                aiConfig     : badTransportProvider,
+                configFile   : badTransportCfg,
+                connectOnBoot: false
+            });
+            try {
+                await expect(badTransportServer.ready()).rejects.toThrow(/supports only "stdio" transport/);
+            } finally {
+                badTransportServer.destroy();
+                badTransportProvider.destroy();
+            }
+
+            // Direct `--serve` entry path beats inherited foreign NEO_PLANE_DATA_ROOT / NEO_MEMORY_WAL_DIR / NEO_TRANSPORT.
+            const foreignWalDir  = path.join(foreignPlaneRoot, 'memory-wal');
+            const foreignLogDir  = path.join(foreignPlaneRoot, 'logs');
+            const serveTransport = new StdioClientTransport({
+                command: process.execPath,
+                args   : [STANDALONE_BIN, '--serve', '--workspace', 'probe/ws'],
+                cwd    : REPO_ROOT,
+                stderr : 'pipe',
+                env    : {
+                    ...process.env,
+                    HOME               : serveHome,
+                    NEO_PLANE_ID       : 'neo-local-canonical',
+                    NEO_PLANE_DATA_ROOT: foreignPlaneRoot,
+                    NEO_MEMORY_WAL_DIR : foreignWalDir,
+                    NEO_MC_LOG_PATH    : foreignLogDir,
+                    NEO_TRANSPORT      : 'streamable-http'
+                }
+            });
+            const serveClient = new Client({name: 'standalone-serve-probe', version: '1.0.0'});
+            await serveClient.connect(serveTransport);
+            try {
+                const serveHealth = (await serveClient.callTool({name: 'healthcheck', arguments: {}})).structuredContent;
+                expect(serveHealth.plane.id).toBe(DEFAULT_STANDALONE_PLANE_ID);
+                expect(serveHealth.plane.dataRoot).toBe(path.join(serveHome, '.neo-ai', 'memory-core'));
+                expect(serveHealth.workspace).toBe('probe/ws');
+
+                const serveWrite = await serveClient.callTool({
+                    name     : 'add_memory',
+                    arguments: {
+                        prompt         : 'Direct --serve entry path isolation check.',
+                        decisionContext: 'Verify standalonePlacement overrides inherited foreign NEO_MEMORY_WAL_DIR.',
+                        response       : 'Wrote under standalone root without touching foreign plane.',
+                        agent          : 'free-text-agent'
+                    }
+                });
+                expect(serveWrite.isError).toBeFalsy();
+            } finally {
+                await serveClient.close();
+            }
+            expect(fs.existsSync(foreignWalDir)).toBe(false);
+            expect(fs.existsSync(foreignLogDir)).toBe(false);
+            expect(fs.existsSync(path.join(serveHome, '.neo-ai', 'memory-core', 'wal'))).toBe(true);
+
+            // Partial relocation (dataRoot moved to badTarget while standaloneIndexPath stays on its default under secondTempHome —
+            // outside badTarget, still resolved === default so assertPlaneMemberCoherence flags it, and never touching real ~/.neo-ai).
             const partialCfg = createStandaloneConfig({
+                homedir     : secondTempHome,
                 envOverrides: {
                     NEO_PLANE_ID       : DEFAULT_STANDALONE_PLANE_ID,
                     NEO_PLANE_DATA_ROOT: badTarget,
                     NEO_MEMORY_WAL_DIR : path.join(badTarget, 'wal'),
-                    NEO_MC_LOG_PATH    : path.join(badTarget, 'logs', 'mcp.log')
+                    NEO_MC_LOG_PATH    : path.join(badTarget, 'logs')
                 }
             });
+            expect(partialCfg.standaloneIndexPath).toBe(path.join(secondTempHome, '.neo-ai', 'memory-core', 'index.sqlite'));
 
             const brokenServer = Neo.create(StandaloneServer, {
                 aiConfig     : partialCfg,
@@ -247,7 +333,8 @@ test.describe('Standalone Memory Core MCP Server', () => {
 
             try {
                 await expect(brokenServer.ready()).rejects.toThrow(/assertPlaneMemberCoherence/);
-                expect(fs.existsSync(path.join(badTarget, 'logs', 'mcp.log'))).toBe(false);
+                expect(fs.existsSync(path.join(badTarget, 'logs'))).toBe(false);
+                expect(fs.existsSync(path.join(secondTempHome, '.neo-ai'))).toBe(false);
             } finally {
                 brokenServer.destroy();
                 partialCfg.destroy();
@@ -260,6 +347,9 @@ test.describe('Standalone Memory Core MCP Server', () => {
         } finally {
             fs.rmSync(tempRoot, {recursive: true, force: true});
             fs.rmSync(badTarget, {recursive: true, force: true});
+            fs.rmSync(secondTempHome, {recursive: true, force: true});
+            fs.rmSync(serveHome, {recursive: true, force: true});
+            fs.rmSync(foreignPlaneRoot, {recursive: true, force: true});
         }
     });
 
@@ -377,11 +467,20 @@ test.describe('Standalone Memory Core MCP Server', () => {
         expect(visitedBasenames).not.toContain('SessionService.mjs');
         expect(visitedBasenames).not.toContain('ChromaManager.mjs');
 
-        expect(parseStandaloneArgs(['--workspace', 'org/repo', '--data-root=/tmp/mc', '--debug'])).toMatchObject({
-            dataRoot : '/tmp/mc',
-            debug    : true,
-            mode     : 'launch',
-            workspace: 'org/repo'
+        expect(parseStandaloneArgs([
+            '--serve',
+            '--workspace', 'org/repo',
+            '--data-root=/tmp/mc',
+            '--session-id', 'sess-42',
+            '--config=/tmp/custom.json',
+            '--debug'
+        ])).toMatchObject({
+            configFile: '/tmp/custom.json',
+            dataRoot  : '/tmp/mc',
+            debug     : true,
+            mode      : 'serve',
+            sessionId : 'sess-42',
+            workspace : 'org/repo'
         });
 
         const helpOut = execFileSync(process.execPath, [STANDALONE_BIN, '--help'], {encoding: 'utf8'});
@@ -492,6 +591,10 @@ test.describe('Standalone Memory Core MCP Server', () => {
             expect(walLines[0].workspace).toBe('org/workspace-alpha');
             expect(walLines[0].workspaceSource).toBe('explicit-slug');
             expect(walLines[0].graphProjectionVersion).toBe(1);
+            // Keep metadata.agent for display, omit unverified agentIdentity until promotion's rostered --owner stamps it.
+            expect(walLines[0].metadata.agent).toBe('codex-cli');
+            expect('agentIdentity' in walLines[0]).toBe(false);
+            expect('agentIdentity' in (walLines[0].graphProjection?.memoryProperties || {})).toBe(false);
 
             // Write one memory in a second workspace ('org/workspace-beta') to verify default workspace isolation.
             const sessionBeta = await connectStandaloneStdioClient({
@@ -559,6 +662,53 @@ test.describe('Standalone Memory Core MCP Server', () => {
                 expect('distance' in topHit).toBe(false);
                 expect('compositeScore' in topHit).toBe(false);
 
+                // lexicalRankScore (|bm25| / (1 + |bm25|)) rises with relevance and never rises down the ranked list.
+                const sessionRank = await connectStandaloneStdioClient({
+                    dataRoot,
+                    workspace: 'org/workspace-rank',
+                    sessionId: 'session-rank-1'
+                });
+                try {
+                    await sessionRank.client.callTool({
+                        name     : 'add_memory',
+                        arguments: {
+                            prompt         : 'Weak mention of quaternionic in a long unrelated maintenance log entry with many filler words.',
+                            decisionContext: 'Routine filesystem cleanup across alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima.',
+                            response       : 'Completed routine archival sweep across mike november oscar papa quebec romeo sierra tango uniform victor whiskey.'
+                        }
+                    });
+                    await sessionRank.client.callTool({
+                        name     : 'add_memory',
+                        arguments: {
+                            prompt         : 'Medium quaternionic algebra notes for camera rotation interpolation.',
+                            decisionContext: 'Compared Euler gimbal lock against quaternionic slerp normalization across viewport frames.',
+                            response       : 'Verified unit norm preservation under repeated frame composition.'
+                        }
+                    });
+                    await sessionRank.client.callTool({
+                        name     : 'add_memory',
+                        arguments: {
+                            prompt         : 'Quaternionic rotor derivation: quaternionic multiplication and quaternionic conjugate.',
+                            decisionContext: 'Quaternionic basis products stabilize quaternionic orientation updates.',
+                            response       : 'Shipped quaternionic slerp kernel.'
+                        }
+                    });
+
+                    const ranked = (await sessionRank.client.callTool({
+                        name     : 'query_raw_memories',
+                        arguments: {query: 'quaternionic', nResults: 10}
+                    })).structuredContent;
+
+                    expect(ranked.count).toBe(3);
+                    expect(ranked.results[0].lexicalRankScore).toBeGreaterThan(ranked.results[2].lexicalRankScore);
+                    for (let i = 0; i < ranked.results.length - 1; i++) {
+                        expect(ranked.results[i].bm25Score).toBeLessThanOrEqual(ranked.results[i + 1].bm25Score);
+                        expect(ranked.results[i].lexicalRankScore).toBeGreaterThanOrEqual(ranked.results[i + 1].lexicalRankScore);
+                    }
+                } finally {
+                    await sessionRank.close();
+                }
+
                 // Punctuation-only query with zero alphanumeric tokens returns empty array cleanly
                 const emptySearch = (await session2.client.callTool({
                     name     : 'query_raw_memories',
@@ -608,7 +758,7 @@ test.describe('Standalone Memory Core MCP Server', () => {
                     name     : 'healthcheck',
                     arguments: {}
                 })).structuredContent;
-                expect(healthAfterLiveAppend.storage.memoryCount).toBe(4);
+                expect(healthAfterLiveAppend.storage.memoryCount).toBe(7);
                 expect(healthAfterLiveAppend.storage.walBytes).toBeGreaterThan(0);
             } finally {
                 await session2.close();
@@ -634,7 +784,7 @@ test.describe('Standalone Memory Core MCP Server', () => {
 
             const rebuiltIndex = new StandaloneSqliteIndex({indexPath, walDir});
             try {
-                expect(rebuiltIndex.getStorageStats().memoryCount).toBe(4);
+                expect(rebuiltIndex.getStorageStats().memoryCount).toBe(7);
                 const rebuiltHits = rebuiltIndex.queryRawMemories({
                     query    : 'hotfix quorum telemetry',
                     workspace: 'org/workspace-alpha'
@@ -660,11 +810,11 @@ test.describe('Standalone Memory Core MCP Server', () => {
                 });
 
                 fs.appendFileSync(latestWalPath, partialRecord, 'utf8');
-                expect(rebuiltIndex.getStorageStats().memoryCount).toBe(4);
+                expect(rebuiltIndex.getStorageStats().memoryCount).toBe(7);
                 expect(Number(rebuiltIndex.getIndexMeta().latestSegmentBytes)).toBe(preSize);
 
                 fs.appendFileSync(latestWalPath, '\n', 'utf8');
-                expect(rebuiltIndex.getStorageStats().memoryCount).toBe(5);
+                expect(rebuiltIndex.getStorageStats().memoryCount).toBe(8);
                 expect(Number(rebuiltIndex.getIndexMeta().latestSegmentBytes)).toBe(fs.statSync(latestWalPath).size);
             } finally {
                 rebuiltIndex.close();
