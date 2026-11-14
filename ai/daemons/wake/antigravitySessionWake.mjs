@@ -79,6 +79,39 @@ function transcriptFor(appDataDir, threadId) {
     return path.join(parent, 'transcript.jsonl');
 }
 
+
+/** @summary Recognizes only the native sidecar system envelope containing the exact opaque wake. */
+export function isAntigravityWakeSystemMessage(item, text) {
+    if (item?.type !== 'SYSTEM_MESSAGE' || item.source !== 'SYSTEM' || item.status !== 'DONE' ||
+        typeof item.content !== 'string' || item.truncated_fields) return false;
+    const match = item.content.match(/^The following is a <SYSTEM_MESSAGE> not actually sent by the user\. It is provided by the system as important information to pay attention to\.\n\n<SYSTEM_MESSAGE>\n\[Message\] timestamp=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) sender=system priority=MESSAGE_PRIORITY_HIGH content=(.*)\n<\/SYSTEM_MESSAGE>$/);
+    return Boolean(match && !Number.isNaN(Date.parse(match[1])) && match[2] === text);
+}
+
+/** @summary Looks for the exact native opaque message after a pre-send same-file cursor. */
+export function hasAntigravityPendingSystemWake({appDataDir,threadId,text,cursor}) {
+    if (!cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 || typeof text !== 'string') return false;
+    let fd;
+    try {
+        fd = fs.openSync(transcriptFor(appDataDir,threadId),fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const stat = fs.fstatSync(fd), bytes = stat.size - cursor.offset;
+        if (!stat.isFile() || stat.dev !== cursor.dev || stat.ino !== cursor.ino || bytes < 0 || bytes > 4*1024*1024) return false;
+        const buf = Buffer.alloc(bytes);
+        if (fs.readSync(fd,buf,0,bytes,cursor.offset) !== bytes) return false;
+        const lines = buf.toString('utf8').split('\n');
+        lines.pop();
+        let latest = false;
+        for (const line of lines) {
+            let item;
+            try { item = JSON.parse(line) } catch { return false }
+            if (item?.type === 'USER_INPUT' || item?.type === 'SYSTEM_MESSAGE') {
+                latest = isAntigravityWakeSystemMessage(item,text);
+            }
+        }
+        return latest;
+    } catch { return false } finally { if (fd !== undefined) fs.closeSync(fd) }
+}
+
 /**
  * @summary Recognizes a new exact user input followed by a model planner response in the same transcript.
  * The cursor must be captured before dispatch. Observed App JSONL shapes are not a vendor API;
@@ -103,8 +136,8 @@ export function readAntigravityWakeReceipt({appDataDir, threadId, text, cursor, 
             let item;
             try { item = JSON.parse(line) } catch { return unknown }
             if (!item || item.truncated_fields) continue;
-            if (item.type === 'USER_INPUT' && item.source === 'USER_EXPLICIT' && item.status === 'DONE' &&
-                item.content === text && Number.isSafeInteger(item.step_index)) {
+            if (((item.type === 'USER_INPUT' && item.source === 'USER_EXPLICIT' && item.status === 'DONE' && item.content === text) ||
+                isAntigravityWakeSystemMessage(item,text)) && Number.isSafeInteger(item.step_index)) {
                 matched = item.step_index;
             } else if (matched !== null && item.type === 'USER_INPUT') {
                 matched = null;

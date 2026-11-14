@@ -1,10 +1,11 @@
-import fs                                                                                              from 'node:fs';
-import os                                                                                              from 'node:os';
-import path                                                                                            from 'node:path';
-import {fileURLToPath}                                                                                 from 'node:url';
-import {resolveAntigravitySidecarAncestor,readAntigravityProcessRows}                                  from './antigravityWakeSidecar.mjs';
-import {observeAntigravitySessionStart,observeAntigravityPreInvocation,handleAntigravityPreInvocation} from './antigravitySessionWake.mjs';
-import {consumeNativeWakePrompt}                                                                       from './fleetPrimarySessionWake.mjs';
+import fs                                                                                                                              from 'node:fs';
+import os                                                                                                                              from 'node:os';
+import path                                                                                                                            from 'node:path';
+import {fileURLToPath}                                                                                                                 from 'node:url';
+import {resolveAntigravitySidecarAncestor,readAntigravityProcessRows}                                                                  from './antigravityWakeSidecar.mjs';
+import {observeAntigravitySessionStart,observeAntigravityPreInvocation,handleAntigravityPreInvocation,hasAntigravityPendingSystemWake} from './antigravitySessionWake.mjs';
+import {readPrimarySessionWake}                                                                                                        from './primarySessionWake.mjs';
+import {consumeNativeWakePrompt}                                                                                                       from './fleetPrimarySessionWake.mjs';
 
 /** @module ai/daemons/wake/antigravityWakeHook
  * @summary App hook callback. No registration occurs merely by importing this module.
@@ -41,8 +42,31 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
             projectRoot:config.projectRoot,generation,statePath,input};
         if (event === 'SessionStart') { await observeAntigravitySessionStart(context); return {} }
         if (event !== 'PreInvocation') return reserved ? deny : {};
-        if (!reserved) { await observeAntigravityPreInvocation(context); return {} }
-        return await handleAntigravityPreInvocation({...context,consume:({threadId,nonce}) =>
+        let wakeInput = input;
+        if (!reserved) {
+            const state = await readPrimarySessionWake({statePath});
+            const nonce = state.inflight?.nonce;
+            if (state.inflight?.status === 'unknown' && state.binding?.threadId === input.conversationId &&
+                state.binding?.generation === generation && typeof nonce === 'string') {
+                const cursor     = privateJson(statePath + '.cursor.json');
+                const marker     = '[NEO_WAKE_V1:' + nonce + '] [WAKE]';
+                let   continuing = false;
+                if (input.invocationNum > 0) {
+                    try {
+                        const claim = privateJson(statePath + '.claim.json');
+                        continuing = claim.admitted === true && claim.nonce === nonce &&
+                            claim.threadId === input.conversationId && claim.generation === generation;
+                    } catch { /* No admitted wake in this invocation. */ }
+                }
+                if (cursor.nonce === nonce &&
+                    hasAntigravityPendingSystemWake({appDataDir,threadId:input.conversationId,text:marker,cursor:cursor.cursor})) {
+                    if (continuing) return {};
+                    wakeInput = {...input,lastUserInput:marker,invocationNum:0};
+                }
+            }
+        }
+        if (wakeInput === input && !reserved) { await observeAntigravityPreInvocation(context); return {} }
+        return await handleAntigravityPreInvocation({...context,input:wakeInput,consume:({threadId,nonce}) =>
             consume({manifestPath,stateDir,agentId:config.agentId,family:'antigravity',threadId,nonce})});
     } catch { return reserved ? deny : {} }
 }
