@@ -98,9 +98,9 @@ test.describe('ai/graph/identityRoots — explicit seed authority (#15431)', () 
  *
  * Claude-family maintainers run as distinct same-bundle Claude Desktop instances. An identity
  * needs a wake route — either a static `subscriptionTemplate` (so Memory Core auto-bootstrap
- * creates a WAKE_SUBSCRIPTION node) or a self-registered runtime subscription. With neither,
- * `checkSunsetted` reads the absence as a terminal sunset and `resumeHarness` spawns a fresh
- * session every heartbeat — the fresh-session loop.
+ * creates a WAKE_SUBSCRIPTION node) or a self-registered runtime subscription. With neither, the
+ * retired heartbeat read the absence as a terminal sunset and spawned a fresh session every
+ * heartbeat — the fresh-session loop.
  *
  * `@neo-opus-vega` (the 3rd same-app harness) had neither and was caught in that loop, so it
  * gets the static template here, mirroring `@neo-opus-ada`. `@neo-opus-grace` is active via a

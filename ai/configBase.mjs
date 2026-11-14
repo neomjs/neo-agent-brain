@@ -2124,7 +2124,35 @@ class ConfigBase extends ConfigProvider {
                      * past their `task.expiresAt` to `Expired`. It bounds how long a Task stays open
                      * after its deadline; one run is one statement over the graph. `<= 0` disables the lane.
                      */
-                    taskExpirySweepMs                : leaf(10 * 60 * 1000, 'NEO_ORCHESTRATOR_TASK_EXPIRY_SWEEP_INTERVAL_MS', 'number')
+                    taskExpirySweepMs                : leaf(10 * 60 * 1000, 'NEO_ORCHESTRATOR_TASK_EXPIRY_SWEEP_INTERVAL_MS', 'number'),
+                    /**
+                     * Cadence of the session-rotation lane: the container-plane lane that turns a
+                     * seat's sunset handover into a fresh session (`orchestrator.sessionRotation`).
+                     * It bounds how long a consumed receipt waits for its request. `<= 0` disables the lane.
+                     */
+                    sessionRotationMs                : leaf(60 * 1000, 'NEO_ORCHESTRATOR_SESSION_ROTATION_INTERVAL_MS', 'number')
+                },
+                /**
+                 * Session rotation: a seat that writes its sunset handover continues in a fresh session
+                 * that the host's wake receiver opens on the plane's signed request.
+                 * @type {Object}
+                 */
+                sessionRotation: {
+                    /**
+                     * How long a receipt may wait for its fresh session, counted from its `sentAt`.
+                     * The plane holds the seat's wakes for at most this long, and a rotation still open
+                     * past it is recorded `incomplete`. Longer than the receiver's own wait for a quiet
+                     * keyboard (`HUMAN_INPUT_DEFER_BOUND` re-drains, about two hours), so a late session
+                     * is not a lost one.
+                     * @type {Number}
+                     */
+                    windowMs     : leaf(3 * HOUR_MS, 'NEO_SESSION_ROTATION_WINDOW_MS', 'number'),
+                    /**
+                     * Minimum time between two rotation requests of one seat. A second receipt inside it
+                     * is refused with its reason, so a seat that sunsets in a loop is not rotated in one.
+                     * @type {Number}
+                     */
+                    minIntervalMs: leaf(HOUR_MS / 2, 'NEO_SESSION_ROTATION_MIN_INTERVAL_MS', 'number')
                 },
                 /**
                  * Chroma daemon recycle policy. The orchestrator kills and respawns the supervised

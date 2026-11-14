@@ -459,6 +459,27 @@ const taskRegistry = [
             }
             return null;
         }
+    },
+    {
+        // Session rotation: a seat's sunset handover becomes a signed request for a fresh session. The
+        // receipt, the turn presence and the session memories are in the graph, so the container plane owns it.
+        taskName        : 'session-rotation',
+        executionKind   : 'in-process-async',
+        maintenanceClass: 'lightweight-signal',
+        backpressure    : 'none',
+        dependencies    : [],
+        getDueTask({state, now, intervals}) {
+            const lastRunAt  = state['session-rotation']?.lastRunAt ?? 0;
+            const intervalMs = intervals.sessionRotation;
+            if (intervalMs > 0 && now - lastRunAt >= intervalMs) {
+                return {
+                    taskName: 'session-rotation',
+                    source  : 'periodic-session-rotation',
+                    reason  : `periodic-session-rotation:${intervalMs}`
+                };
+            }
+            return null;
+        }
     }
 ];
 

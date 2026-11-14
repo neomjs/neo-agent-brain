@@ -1236,9 +1236,9 @@ class MemoryService extends Base {
      * content (every corrupted row had empty `prompt`/`thought`/`response` *metadata* — the Chroma
      * document always embeds non-empty labels, which is why the predicate reads the fields, not the
      * document). The floor is the `memoryWal.minFieldLength` config leaf, defaulting to 1
-     * (= non-empty after trim): deliberately conservative so thin-but-real boot heartbeats
-     * (`resumeHarness.mjs` resume health-check) keep passing until the planned boot-heartbeat
-     * liveness-marker carve-out routes them off this path entirely.
+     * (= non-empty after trim): deliberately conservative so thin-but-real boot heartbeats keep
+     * passing until the planned boot-heartbeat liveness-marker carve-out routes them off this path
+     * entirely.
      *
      * @param {Object} fields
      * @param {String} fields.prompt

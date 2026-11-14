@@ -40,7 +40,7 @@ The wake substrate (Epic [#10671](https://github.com/neomjs/neo/issues/10671)) s
 
 - `ai/daemons/orchestrator/services/SwarmHeartbeatService.mjs` — Neo-singleton swarm-heartbeat lane (5-minute pulse cadence by default; #10789). Folded into the Orchestrator daemon as a config-gated scheduled lane per [#11766](https://github.com/neomjs/neo/issues/11766).
 - `ai/scripts/checkSunsetted.mjs` — sunset / idle-out detector consumed by the heartbeat lane
-- `ai/scripts/resumeHarness.mjs` — recovery dispatcher invoked when a sunsetted agent is detected; Claude recovery targets Claude Desktop Tab 3 (Code tab) via the `osascript` adapter (Cmd+3 → fresh chat), not a terminal-attached CLI
+- `ai/daemons/orchestrator/scheduling/sessionRotation.mjs` — the container-plane `session-rotation` lane: a seat's sunset handover becomes one signed `session/rotate` request, and the host wake receiver opens the fresh session in the seat's own Claude Desktop window (Cmd+3 → Cmd+N)
 - `ai/scripts/wakeSafetyGate.mjs` — fail-closed safety gate consulted before any high-authority recovery action
 
 The heartbeat must run continuously. Rather than a dedicated daemon, the heartbeat `pulse()` is scheduled by the **Orchestrator** — the same persistent process that owns summarization, KB-sync, backup, dream, and golden-path lanes. macOS's native primitive for the long-lived per-user Orchestrator process is **launchd LaunchAgent** (per-user, lives in `~/Library/LaunchAgents/`). Linux's analog is a **systemd user service** (typically `~/.config/systemd/user/`).
@@ -106,7 +106,6 @@ The heartbeat lane needs no separate install step: once the Orchestrator is runn
 The Orchestrator records every lane outcome through `HealthService.recordTaskOutcome(...)`. The heartbeat lane emits `INFO`-level log lines only when something happens — these are the durable observability signals:
 
 - **Stale lock cleared:** `Clearing stale concurrency lock (<age>ms old)` — only when a producer-side lock outlived its TTL.
-- **Sunset recovery:** `Phase 1 Recovery Triggered for <identity>. Reason: ...` — only when the sunset detector fires.
 - **Idle-out nudge:** `Idle-out nudge triggered for <identity>` — only when the per-identity idle threshold trips.
 - **All-agent-idle:** `AllAgentIdle detected: <signal>` — only when the trio-wide idle predicate holds.
 - **Gate-closed:** `Wake safety gate closed; skipping ...` — only when a high-authority dispatch was suppressed.
@@ -282,7 +281,7 @@ Per [#10780](https://github.com/neomjs/neo/issues/10780): before re-enabling Dre
 - **Orchestrator entry-point wrapper:** `ai/daemons/orchestrator/daemon.mjs` (Neo bootstrap + signal handlers + start invocation; the launchd / systemd target)
 - **Orchestrator daemon class:** `ai/daemons/orchestrator/Orchestrator.mjs` (Neo-singleton; #11009; owns the `poll()` scheduler)
 - **Heartbeat lane class:** `ai/daemons/orchestrator/services/SwarmHeartbeatService.mjs` (Neo-singleton; #10789; folded into the Orchestrator as a scheduled lane per #11766)
-- **Heartbeat lane dependencies:** `checkSunsetted.mjs`, `resumeHarness.mjs`, `wakeSafetyGate.mjs`, `heartbeatLock.mjs`, `idleOutNudge.mjs`, `checkAllAgentIdle.mjs`, `trioWakeCooldown.mjs`
+- **Heartbeat lane dependencies:** `checkSunsetted.mjs`, `wakeSafetyGate.mjs`, `heartbeatLock.mjs`, `idleOutNudge.mjs`, `checkAllAgentIdle.mjs`, `trioWakeCooldown.mjs`
 - **Heartbeat fold ADR:** [ADR 0014](../decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md) — classifies the `swarm-heartbeat` lane as `local-only`
 - **Parent epic:** [#10671](https://github.com/neomjs/neo/issues/10671) — Substrate-restart recovery (two-mode: idle-out + sunset)
 - **Implementation tickets:** [#10789](https://github.com/neomjs/neo/issues/10789) — SwarmHeartbeatService Neo-singleton; [#11766](https://github.com/neomjs/neo/issues/11766) — fold into the Orchestrator

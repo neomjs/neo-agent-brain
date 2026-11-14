@@ -29,20 +29,17 @@ test.describe('ai/scripts wake dual-mode exports', () => {
     test('converted wake scripts expose function entrypoints without running CLI wrappers', async () => {
         const [
             sunsetModule,
-            resumeModule,
             allIdleModule,
             nudgeModule,
             swarmModule
         ] = await Promise.all([
             import('../../../../../../ai/scripts/lifecycle/checkSunsetted.mjs'),
-            import('../../../../../../ai/scripts/lifecycle/resumeHarness.mjs'),
             import('../../../../../../ai/scripts/lifecycle/checkAllAgentIdle.mjs'),
             import('../../../../../../ai/scripts/lifecycle/idleOutNudge.mjs'),
             import('../../../../../../ai/scripts/lifecycle/swarmWakeCooldown.mjs')
         ]);
 
         expect(typeof sunsetModule.checkSunsetted).toBe('function');
-        expect(typeof resumeModule.resumeHarness).toBe('function');
         expect(typeof allIdleModule.checkAllAgentIdle).toBe('function');
         expect(typeof nudgeModule.idleOutNudge).toBe('function');
         expect(typeof swarmModule.swarmWakeCooldown).toBe('function');

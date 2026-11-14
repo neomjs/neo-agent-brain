@@ -30,8 +30,8 @@ import {test, expect} from '@playwright/test';
  * @summary Unit coverage for `ai/daemons/orchestrator/services/SwarmHeartbeatService.mjs`.
  *
  * Covers: `beforeSetIdentity` normalization + null-on-empty fork-safety,
- * concurrency-lock skip-vs-clear, sunset-detection-routes-to-resumeHarness, gate-tripped
- * blocks high-authority dispatch, idle-out-nudge routing, push-capable bypass, and that
+ * concurrency-lock skip-vs-clear, a sunset routes nowhere (the session-rotation lane owns it),
+ * gate-tripped blocks high-authority dispatch, idle-out-nudge routing, push-capable bypass, and that
  * `pulse()` runs no Task expiry sweep (the container-plane `task-expiry-sweep` lane owns it).
  *
  * After the core.Base contract restoration: `initAsync()` is identity-agnostic
@@ -54,7 +54,7 @@ import {test, expect} from '@playwright/test';
  *
  * Stubbing strategy: SwarmHeartbeatService exposes test-stubbable instance-method seams
  * (`checkHeartbeatLock`, `clearHeartbeatLock`, `checkGateOpen`,
- * `readGate`, `checkSunsetted`, `resumeHarness`, `idleOutNudge`, `checkAllAgentIdle`,
+ * `readGate`, `checkSunsetted`, `idleOutNudge`, `checkAllAgentIdle`,
  * `swarmWakeCooldown`, `runScript`, `runScriptJson`, `runCmd`, `getUnreadCount`,
  * `getIssuesCount`, `isPushCapable`,
  * `getReadinessSentinelMessages`, `getActiveBackoffWindow`) precisely so unit tests can
@@ -146,7 +146,6 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         SwarmHeartbeatService.checkGateOpen      = async () => true;
         SwarmHeartbeatService.readGate           = async () => ({state: 'enabled', reason: '', trippedAt: null, trippedBy: null});
         SwarmHeartbeatService.checkSunsetted     = async () => null;
-        SwarmHeartbeatService.resumeHarness      = async () => {};
         SwarmHeartbeatService.idleOutNudge       = async () => {};
         SwarmHeartbeatService.checkAllAgentIdle  = async () => null;
         SwarmHeartbeatService.swarmWakeCooldown  = async () => {};
@@ -251,106 +250,21 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         expect(sunsetChecks).toEqual(['@test']);
     });
 
-    test('pulse() skips fresh-session-spawn when wake safety gate is closed', async () => {
+    test('pulse() acts on no sunset and nudges no seat that has one: the session-rotation lane owns it (#1383)', async () => {
         applyDefaultStubs();
-        SwarmHeartbeatService.checkGateOpen = async () => false;
-        SwarmHeartbeatService.readGate      = async () => ({state: 'tripped', reason: 'test-tripped', trippedAt: null, trippedBy: 'test'});
-
-        const resumeCalls = [];
-        SwarmHeartbeatService.checkSunsetted = async () => {
-            return {
-                sunsetted         : true,
-                reason            : 'No active WAKE_SUBSCRIPTION',
-                originSessionId   : 'sid-123',
-                abandonedCount    : 0,
-                recommended_action: 'sunset_restart'
-            };
-        };
-        SwarmHeartbeatService.resumeHarness = async (...args) => { resumeCalls.push(args) };
-
-        await SwarmHeartbeatService.pulse();
-
-        // Gate closed → no resumeHarness dispatch.
-        expect(resumeCalls.length).toBe(0);
-    });
-
-    test('pulse() routes sunset to resumeHarness when gate is open', async () => {
-        applyDefaultStubs();
-        const resumeCalls = [];
-        SwarmHeartbeatService.checkSunsetted = async () => {
-            return {
-                sunsetted         : true,
-                reason            : 'Subscription missing',
-                originSessionId   : 'sid-456',
-                abandonedCount    : 2,
-                recommended_action: 'sunset_restart'
-            };
-        };
-        SwarmHeartbeatService.resumeHarness = async (...args) => { resumeCalls.push(args) };
-
-        await SwarmHeartbeatService.pulse();
-
-        expect(resumeCalls.length).toBe(1);
-        expect(resumeCalls[0]).toEqual(['@test', 'Subscription missing', 'sid-456', 2]);
-    });
-
-    test('getResumeHarnessTargetMetadata prefers addressed active bridge route (#12536)', async () => {
-        applyDefaultStubs();
-        const originalList = WakeSubscriptionService.list;
-        WakeSubscriptionService.list = async () => ({
-            subscriptions: [{
-                id                   : 'WAKE_SUB:generic',
-                trigger              : 'SENT_TO_ME',
-                harnessTarget        : 'bridge-daemon',
-                status               : 'active',
-                updatedAt            : '2026-06-06T22:00:00.000Z',
-                harnessTargetMetadata: {
-                    appName    : 'Claude',
-                    tabShortcut: '3'
-                }
-            }, {
-                id                   : 'WAKE_SUB:addressed',
-                trigger              : 'SENT_TO_ME',
-                harnessTarget        : 'bridge-daemon',
-                status               : 'active',
-                updatedAt            : '2026-06-06T21:00:00.000Z',
-                harnessTargetMetadata: {
-                    appName        : 'Claude',
-                    tabShortcut    : '3',
-                    instanceAddress: '/Users/example/.claude-instances/neo-opus-vega',
-                    addressType    : 'userDataDir'
-                }
-            }]
+        const nudgeCalls = [];
+        SwarmHeartbeatService.checkSunsetted = async () => ({
+            sunsetted         : true,
+            sunset            : true,
+            reason            : 'Sunset receipt MESSAGE:r1 waits for its session rotation',
+            recommended_action: 'no_action'
         });
+        SwarmHeartbeatService.idleOutNudge = async identity => { nudgeCalls.push(identity) };
 
-        try {
-            await expect(SwarmHeartbeatService.getResumeHarnessTargetMetadata('@neo-opus-vega')).resolves.toMatchObject({
-                appName        : 'Claude',
-                instanceAddress: '/Users/example/.claude-instances/neo-opus-vega',
-                addressType    : 'userDataDir'
-            });
-        } finally {
-            WakeSubscriptionService.list = originalList;
-        }
-    });
+        await SwarmHeartbeatService.pulse();
 
-    test('resumeHarness fails closed when route metadata lookup fails (#12536)', async () => {
-        applyDefaultStubs();
-        const originalGetMetadata = SwarmHeartbeatService.getResumeHarnessTargetMetadata;
-        SwarmHeartbeatService.getResumeHarnessTargetMetadata = async () => {
-            throw new Error('simulated route lookup failure')
-        };
-
-        try {
-            await expect(SwarmHeartbeatService.resumeHarness(
-                '@neo-opus-ada',
-                'sunset_restart',
-                'sid-route-failure',
-                0
-            )).resolves.toBeUndefined();
-        } finally {
-            SwarmHeartbeatService.getResumeHarnessTargetMetadata = originalGetMetadata;
-        }
+        expect(nudgeCalls).toEqual([]);
+        expect(SwarmHeartbeatService.resumeHarness).toBeUndefined();
     });
 
     test('pulse() routes idle_out_nudge when gate is open and recommendation matches', async () => {

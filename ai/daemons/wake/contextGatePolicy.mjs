@@ -63,7 +63,8 @@ export const DEFAULT_CONTEXT_GATE_MAX_TOKENS = 250_000;
 
 /**
  * Default warn level, in tokens, at which a delivered wake logs that the session is approaching
- * the gate. A seat that sees this warning should sunset before the next wake defers.
+ * the gate. Both thresholds are wake-delivery policy for an idle session, never a sunset trigger:
+ * a seat ends its session by its own window share, and its handover rotates it.
  * @type {Number}
  */
 export const DEFAULT_CONTEXT_GATE_WARN_TOKENS = 200_000;

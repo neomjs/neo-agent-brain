@@ -32,8 +32,7 @@
  *   defensive lock-check is layer-2 against detector-dispatcher race windows.
  *
  * **Safety gate integration:** consults `wakeSafetyGate.mjs` before
- * any action. Operator override `WAKE_GATE_OVERRIDE=1` bypasses the gate. Same
- * fail-closed pattern as `resumeHarness.mjs`.
+ * any action. Operator override `WAKE_GATE_OVERRIDE=1` bypasses the gate.
  *
  * **Lock release path:** the lock is NOT cleared on dispatcher success — it
  * stays held until `checkInflightLock` (called by `checkSunsetted.mjs` on the
@@ -53,7 +52,6 @@
  * @see ai/daemons/SwarmHeartbeatService.mjs       — caller; routes on `recommended_action`
  * @see ai/services/memory-core/WakeSubscriptionService.mjs — `emitHeartbeatPulse` Shape B primitive
  * @see ai/scripts/lifecycle/swarmWakeCooldown.mjs  — sibling for swarm-wide all-idle case
- * @see ai/scripts/lifecycle/resumeHarness.mjs     — sibling for sunset-restart case
  * @see test/playwright/unit/ai/scripts/idleOutNudge.spec.mjs
  */
 import Neo                                                       from 'neo.mjs/src/Neo.mjs';
@@ -73,7 +71,7 @@ import {isEntryModule}                                           from '../../ser
 /**
  * @summary Dispatch a single idle-out heartbeat pulse to the target identity.
  *
- * Sequence (mirrors `resumeHarness.mjs` defense-in-depth pattern):
+ * Sequence (defense in depth):
  *   1. Wake safety gate check (with `WAKE_GATE_OVERRIDE` operator bypass)
  *   2. Initialize Memory Core services
  *   3. Defensive in-flight lock check (handles detector-dispatcher race window)

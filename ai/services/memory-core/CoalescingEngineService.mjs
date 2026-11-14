@@ -131,6 +131,17 @@ class CoalescingEngineService extends Base {
     resolveDeliveryReadState = null
 
     /**
+     * @member {Function|null} resolveDeliveryHold=null
+     * @protected
+     * @summary Entrypoint-injected `(recipient) => Boolean`: whether a seat's digest waits in its queue.
+     * Today that is the session-rotation hold (`WakeSubscriptionService#holdsWakesForRotation`): no
+     * wake reaches a session that ended with a sunset handover.
+     *
+     * FAIL-SAFE like the read-state reader: null, a falsy answer or a throw delivers.
+     */
+    resolveDeliveryHold = null
+
+    /**
      * @member {Number|null} refractoryMs=null
      * @protected
      * @summary Entrypoint-injected post-delivery refractory in milliseconds.
@@ -207,14 +218,17 @@ class CoalescingEngineService extends Base {
      * @param {Number} dispatchConfig.flushHardCapSeconds
      * @param {Object}          [collaborators]                          Wiring, not configuration.
      * @param {Function|null}   [collaborators.resolveDeliveryReadState] `(messageId, recipient) => {readAt?}`
+     * @param {Function|null}   [collaborators.resolveDeliveryHold]      `(recipient) => Boolean`
      */
     configure({coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds} = {},
-        {resolveDeliveryReadState = null} = {}
+        {resolveDeliveryReadState = null, resolveDeliveryHold = null} = {}
     ) {
         const values = {coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds};
 
-        if (resolveDeliveryReadState !== null && typeof resolveDeliveryReadState !== 'function') {
-            throw new Error("CoalescingEngineService.configure requires 'resolveDeliveryReadState' to be a function or null");
+        for (const [name, collaborator] of Object.entries({resolveDeliveryReadState, resolveDeliveryHold})) {
+            if (collaborator !== null && typeof collaborator !== 'function') {
+                throw new Error(`CoalescingEngineService.configure requires '${name}' to be a function or null`);
+            }
         }
 
         for (const [name, value] of Object.entries(values)) {
@@ -230,6 +244,7 @@ class CoalescingEngineService extends Base {
         this.refractoryMs             = flushRefractorySeconds * 1000;
         this.hardCapMs                = flushHardCapSeconds * 1000;
         this.resolveDeliveryReadState = resolveDeliveryReadState;
+        this.resolveDeliveryHold      = resolveDeliveryHold;
     }
 
     /**
@@ -350,6 +365,24 @@ class CoalescingEngineService extends Base {
     }
 
     /**
+     * @summary Whether {@link #resolveDeliveryHold} keeps a subscription's digest queued. A hold that
+     * throws delivers: a withheld wake must never be the cost of an unreadable hold.
+     * @param {Object} subscription
+     * @returns {Boolean}
+     * @protected
+     */
+    _holdsDelivery(subscription) {
+        if (!this.resolveDeliveryHold || !subscription.agentIdentity) return false;
+
+        try {
+            return this.resolveDeliveryHold(subscription.agentIdentity) === true
+        } catch (error) {
+            logger.warn(`[CoalescingEngine] the delivery hold for ${subscription.id} could not be read, so it delivers: ${error.message}`);
+            return false
+        }
+    }
+
+    /**
      * Resolves the effective coalescing window in milliseconds for a subscription.
      * Reads `harnessTargetMetadata.coalesceWindow` (seconds), falls back to default,
      * clamps to [0, maxWindowSeconds].
@@ -429,6 +462,18 @@ class CoalescingEngineService extends Base {
                 }, holdMs);
                 return;
             }
+        }
+
+        // A held seat keeps its queue, and the flush is tried again at the hard cap. On release the
+        // read-state reconciliation below drops what a fresh session read meanwhile. A forced flush
+        // leaves the queue as well: the messages stay unread in the mailbox either way.
+        if (this._holdsDelivery(subscription)) {
+            if (!force) {
+                state.timer = setTimeout(() => {
+                    void this._flush(subscriptionId);
+                }, this.hardCapMs);
+            }
+            return;
         }
 
         this.coalesceState.delete(subscriptionId);

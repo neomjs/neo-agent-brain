@@ -463,7 +463,7 @@ class ConfigBase extends ConfigProvider {
                  * Minimum per-field length (after trim) for `prompt`/`thought`/`response` accepted
                  * by `add_memory`. Default 1 = reject only empty/whitespace-only fields — the
                  * unambiguous corrupted-memory class. Deliberately conservative: boot
-                 * heartbeats (`resumeHarness.mjs` health-check) carry thin-but-real content and
+                 * heartbeats carry thin-but-real content and
                  * must keep passing until the planned boot-heartbeat liveness-marker carve-out
                  * routes them off this path. Raise only with a derived threshold.
                  * @type {number}

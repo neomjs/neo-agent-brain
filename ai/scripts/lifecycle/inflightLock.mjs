@@ -10,7 +10,7 @@ export const MAX_ABANDONED_ACTIONS = 3;
  * the stretch ends when the seat does something (a memory, a presence beacon, an outbound message —
  * the caller passes the newest of them), never when a timer runs out: an age-out re-nudged the same
  * silent seat inside the stretch, and three such re-nudges tripped the fleet-wide safety gate for one
- * closed window. `sunset_restart` keeps the boot ramp — a spawn that never produced a memory is the
+ * closed window. Any other mode keeps the boot ramp — a spawn that never produced a memory is the
  * incident class the gate exists for.
  * @type {String[]}
  */
@@ -43,7 +43,7 @@ export function getLockPath(mode, identity, {wakeDaemonDir}={}) {
  * stays in flight until activity clears it.
  *
  * @param {string} identity Agent identity.
- * @param {string} mode Recovery mode, usually `sunset_restart` or `idle_out_nudge`.
+ * @param {string} mode Recovery mode, usually `idle_out_nudge`.
  * @param {number} latestActivityTimestampMs The identity's newest activity stamp (memory, presence beacon or outbound message).
  * @param {Object} options
  * @param {String} options.wakeDaemonDir Resolved wake-daemon data member.

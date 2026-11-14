@@ -171,7 +171,6 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
             'README.md',
             'learn',
             'test/playwright/unit/ai/mcp/server/shared/services/RequestContextService.spec.mjs',
-            'test/playwright/unit/ai/scripts/lifecycle/resumeHarness.spec.mjs',
             'test/playwright/unit/ai/scripts/migrations/renameAgentIdentities.spec.mjs'
         ], /neo-opus-4-7|neo-gemini-3-1-pro|neo_opus_4_7|neo_gemini_3_1_pro/);
 

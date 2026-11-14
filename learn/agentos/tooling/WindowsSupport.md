@@ -33,11 +33,8 @@ and the daemon/tooling scripts.
   assumptions, such as the `prepare` script's POSIX `if [ ... ]` expression.
 - Existing CI runs on `ubuntu-latest` only. There is no current Windows matrix
   providing native Agent OS proof.
-- The codebase has targeted Windows handling where it has been required:
-  `ai/scripts/lifecycle/windowsBatchSpawn.mjs` dispatches `.cmd` / `.bat`
-  wrappers through `cmd.exe` with repo-owned quoting, and
-  `test/playwright/unit/ai/scripts/lifecycle/resumeHarness.spec.mjs` covers that
-  behavior.
+- A sunset's fresh session is opened by the macOS wake receiver
+  (`ai/daemons/wake/localWakeAdapters.mjs`); Windows has no receiver adapter.
 - Some diagnostics intentionally stay POSIX-only. For example,
   `ai/scripts/diagnostics/diagnoseMcpConcurrency.mjs` reports that `lsof` is
   required on macOS / Linux when it is unavailable.

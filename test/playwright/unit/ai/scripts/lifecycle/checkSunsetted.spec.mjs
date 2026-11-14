@@ -14,16 +14,14 @@ setup({
     }
 });
 
-import {test, expect}                    from '@playwright/test';
-import {execFileSync}                    from 'child_process';
-import {existsSync, mkdtempSync, rmSync} from 'fs';
-import fs                                from 'fs/promises';
-import os                                from 'os';
-import path                              from 'path';
-import Neo                               from 'neo.mjs/src/Neo.mjs';
-import * as core                         from 'neo.mjs/src/core/_export.mjs';
-import {getLockPath, writeInflightLock}  from '../../../../../../ai/scripts/lifecycle/inflightLock.mjs';
-import SQLite                            from '../../../../../../ai/graph/storage/SQLite.mjs';
+import {test, expect}        from '@playwright/test';
+import {execFileSync}        from 'child_process';
+import {mkdtempSync, rmSync} from 'fs';
+import os                    from 'os';
+import path                  from 'path';
+import Neo                   from 'neo.mjs/src/Neo.mjs';
+import * as core             from 'neo.mjs/src/core/_export.mjs';
+import SQLite                from '../../../../../../ai/graph/storage/SQLite.mjs';
 
 /**
  * @summary Creates one disposable file-backed graph that a fresh detector process can reopen.
@@ -73,15 +71,13 @@ async function createGraphScenario() {
  * shape directly (e.g. `SwarmHeartbeatService.pulse()`'s sunset routing).
  *
  * Tests are arranged by detector-quadrant coverage matrix:
- *   - (sunset=T, idle_out=F): missing/disabled/degraded subscription
+ *   - (sunset=T, idle_out=F): the newest self-message is an open sunset handover
  *   - (sunset=F, idle_out=T): active subscription + stale memory > threshold
- *   - (sunset=F, idle_out=F): active subscription + fresh memory (no_action)
+ *   - (sunset=F, idle_out=F): active subscription + fresh memory, or no handover (no_action)
  *   - (sunset=T, idle_out=T): structurally impossible — invariant
- *
- * Plus lock-downgrade tests (in-flight lock causes either signal to drop to false).
  */
 test.describe('ai/scripts/checkSunsetted', () => {
-    test('checkSunsetted.mjs returns a valid JSON string even for unknown agents', async () => {
+    test('checkSunsetted.mjs returns a valid JSON string even for unknown agents, and a missing route is no sunset (#1383)', async () => {
         const scriptPath = path.resolve(process.cwd(), 'ai/scripts/lifecycle/checkSunsetted.mjs');
         const output     = execFileSync('node', [scriptPath, '@neo-unknown-agent'], { encoding: 'utf-8' });
         const parsed     = JSON.parse(output);
@@ -89,15 +85,49 @@ test.describe('ai/scripts/checkSunsetted', () => {
         expect(parsed.identity).toBe('@neo-unknown-agent');
         expect(typeof parsed.sunsetted).toBe('boolean');
         expect(typeof parsed.reason).toBe('string');
-        // Unknown agent with no subscription should be considered sunsetted
-        expect(parsed.sunsetted).toBe(true);
-        expect(parsed.reason).toContain('No active WAKE_SUBSCRIPTION');
+        // A seat sunsets by writing a handover; an unknown agent wrote none, so a missing route is not one.
+        expect(parsed.sunsetted).toBe(false);
+        expect(parsed.reason).toBe('');
         // Detector contract: structured signals + evidence
-        expect(parsed.sunset).toBe(true);
+        expect(parsed.sunset).toBe(false);
         expect(parsed.idle_out_candidate).toBe(false);
         expect(parsed.evidence.subscription_active).toBe(false);
         expect(parsed.evidence.subscription_status).toBe('missing');
-        expect(parsed.recommended_action).toBe('sunset_restart');
+        expect(parsed.recommended_action).toBe('no_action');
+    });
+
+    test('detector contract: the seat\'s newest self-message, when it is an open sunset handover, is the sunset (#1383)', async () => {
+        const testIdentity = '@neo-receipt-test';
+        const scenario     = await createGraphScenario();
+        const scriptPath   = path.resolve(process.cwd(), 'ai/scripts/lifecycle/checkSunsetted.mjs');
+        const insertStmt   = scenario.db.prepare(`INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`);
+        const selfMessage  = (id, minutesAgo, taggedConcepts) => insertStmt.run(id, testIdentity, JSON.stringify({
+            id, label: 'MESSAGE', type: 'MESSAGE',
+            properties: {from: testIdentity, to: testIdentity, subject: 'self', sentAt: new Date(Date.now() - minutesAgo * 60000).toISOString(), taggedConcepts}
+        }));
+        const detect = () => JSON.parse(execFileSync('node', [scriptPath, testIdentity], {encoding: 'utf-8', env: scenario.env}));
+
+        // An active route and a fresh memory: the route alone says nothing about a sunset.
+        insertStmt.run('receipt-sub', testIdentity, JSON.stringify({
+            id        : 'receipt-sub', label: 'WAKE_SUBSCRIPTION', type: 'WAKE_SUBSCRIPTION',
+            properties: {agentIdentity: testIdentity, harnessTarget: 'a2a-webhook', status: 'active'}
+        }));
+
+        try {
+            selfMessage('MESSAGE:receipt-handover', 10, ['sunset-protocol-handover']);
+
+            const sunset = detect();
+
+            expect(sunset).toMatchObject({sunset: true, sunsetted: true, idle_out_candidate: false, recommended_action: 'no_action'});
+            expect(sunset.reason).toContain('MESSAGE:receipt-handover');
+
+            // A newer self-message that is not a handover (a rescinding note) ends it.
+            selfMessage('MESSAGE:receipt-rescinded', 2, []);
+
+            expect(detect()).toMatchObject({sunset: false, reason: ''});
+        } finally {
+            scenario.cleanup();
+        }
     });
 
     test('checkSunsetted.mjs extracts originSessionId from AGENT_MEMORY for a known identity', async () => {
@@ -417,47 +447,12 @@ test.describe('ai/scripts/checkSunsetted', () => {
             });
             const parsed = JSON.parse(output);
 
-            expect(parsed.sunset).toBe(true);  // disabled → sunset (subscription_active=false)
+            expect(parsed.sunset).toBe(false);  // no handover → no sunset; the disabled route only rules out a nudge
             expect(parsed.evidence.subscription_active).toBe(false);
             expect(parsed.evidence.subscription_status).toBe('disabled');
-            expect(parsed.recommended_action).toBe('sunset_restart');
+            expect(parsed.recommended_action).toBe('no_action');
         } finally {
             scenario.cleanup();
-        }
-    });
-
-    test('detector contract: in-flight sunset_restart lock downgrades sunset signal to false (#10673 AC2)', async () => {
-        test.skip(skipCiSubstrateData, 'CI-skip: substrate data not seeded - bucket C (#10903)');
-
-        // When a sunset_restart is already in flight (per inflightLock.mjs), the detector
-        // MUST NOT recommend another sunset_restart action. The lock is the data-layer mutex
-        // that prevents the runaway-spawn pattern documented in the forensic record.
-        const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
-        await GraphService.initAsync();
-
-        const testIdentity  = '@neo-locked-sunset-test';
-        const wakeDaemonDir = mkdtempSync(path.join(os.tmpdir(), 'neo-sunset-lock-'));
-        const lockPath      = getLockPath('sunset_restart', testIdentity, {wakeDaemonDir});
-
-        // Acquire an in-flight lock to simulate ongoing sunset_restart action.
-        await writeInflightLock(testIdentity, 'sunset_restart', 0, {wakeDaemonDir});
-
-        try {
-            const scriptPath = path.resolve(process.cwd(), 'ai/scripts/lifecycle/checkSunsetted.mjs');
-            const output     = execFileSync('node', [scriptPath, testIdentity], {
-                encoding: 'utf-8',
-                env     : {...process.env, NEO_AI_DAEMON_DIR: wakeDaemonDir}
-            });
-            const parsed = JSON.parse(output);
-
-            // No subscription would normally → sunset=true; lock downgrades to no-action.
-            expect(parsed.sunset).toBe(false);
-            expect(parsed.idle_out_candidate).toBe(false);
-            expect(parsed.recommended_action).toBe('no_action');
-            expect(parsed.reason).toContain('in-flight');
-        } finally {
-            if (existsSync(lockPath)) await fs.unlink(lockPath);
-            rmSync(wakeDaemonDir, {recursive: true, force: true})
         }
     });
 
@@ -499,7 +494,7 @@ test.describe('ai/scripts/checkSunsetted', () => {
         test.skip(skipCiSubstrateData, 'CI-skip: substrate data not seeded - bucket C (#10903)');
 
         // The two signals are mutually exclusive by construction:
-        //   - sunset=true requires subscription_active=false
+        //   - a sunset (an open handover) suppresses the nudge
         //   - idle_out_candidate=true requires subscription_active=true
         // No detector input can produce both true simultaneously. This test documents the
         // invariant by exercising every plausible input shape and asserting NEVER both.
