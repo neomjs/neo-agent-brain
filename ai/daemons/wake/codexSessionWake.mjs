@@ -171,7 +171,11 @@ export async function listCodexWakeTargets({home, workspaceRoot}) {
             if (error.code === 'CODEX_NON_ROOT') continue;
             throw error
         }
-    if (!results.length && rows.length > 100) throw new Error('Codex candidate inventory exceeds bound');
+    }
+    // The 101st row is a sentinel: only an older timestamp proves that no uninspected
+    // root can tie or precede the newest root. An empty inventory beyond the bound is unknown.
+    if (rows.length > 100 && (!results.length || rows[100].created_at_ms >= results[0].startedAt)) {
+        throw new Error('Codex newest root cannot be determined within the candidate bound')
     }
     if (results.length > 1 && results[0].startedAt === results[1].startedAt) throw new Error('Codex latest root start is ambiguous');
     return results
@@ -218,16 +222,6 @@ export async function readCodexWakeTarget({home, threadId}) {
 }
 
 /**
- * @summary Enqueues a caller-fenced wake without creating or resuming a thread.
- * @param {Object} options
- * @param {String} options.binary Absolute admitted Codex CLI binary.
- * @param {String} options.home Absolute seat Codex home.
- * @param {String} options.threadId Caller-selected root UUID.
- * @param {String} options.text Unique opaque wake text, not mailbox content.
- * @param {Function} [options.execute] Injected execFile-compatible test seam.
- * @returns {Promise<Object>} Enqueue evidence only; receipt is separately observed.
- */
-/**
  * @summary Reads the latest observed root turn lifecycle; incomplete or oversized evidence is unknown.
  * @param {Object} options Codex home and thread UUID.
  * @returns {Promise<Object>} Idle, busy, or unknown; not a lock against a new turn.
@@ -273,6 +267,17 @@ export async function readCodexWakeActivity({home, threadId}) {
     } finally { await handle.close() }
 }
 
+/**
+ * @summary Enqueues a caller-fenced wake without creating or resuming a thread.
+ * @param {Object} options
+ * @param {String} options.binary Absolute admitted Codex CLI binary.
+ * @param {String} options.home Absolute seat Codex home.
+ * @param {String} options.threadId Caller-selected root UUID.
+ * @param {String} options.text Unique opaque wake text, not mailbox content.
+ * @param {Function} [options.execute] Injected execFile-compatible test seam.
+ * @param {Function} options.verifyAdmission Proves the runtime hook for the selected root.
+ * @returns {Promise<Object>} Enqueue evidence only; receipt is separately observed.
+ */
 export async function sendCodexSessionWake({binary, home, threadId, text, execute = run, verifyAdmission}) {
     if (!path.isAbsolute(binary || '') || typeof text !== 'string' || !/^\[NEO_WAKE_V1:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\] \[WAKE\]$/i.test(text)) {
         throw new Error('Codex wake requires absolute binary and bounded opaque text')

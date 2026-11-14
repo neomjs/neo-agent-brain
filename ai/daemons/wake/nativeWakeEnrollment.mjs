@@ -1,3 +1,7 @@
+/**
+ * @module ai/daemons/wake/nativeWakeEnrollment
+ * @summary Private per-seat enrollment and validation for native wake delivery.
+ */
 import {constants}       from 'node:fs';
 import fs                from 'node:fs/promises';
 import path              from 'node:path';

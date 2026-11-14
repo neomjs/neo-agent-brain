@@ -73,6 +73,9 @@ test.describe('buildWakeReceiverManifest — key authority', () => {
         const rebuilt = buildWakeReceiverManifest({...options, adapterConfigById: {}, existingRoutes: result.manifest.routes});
         expect(rebuilt.manifest.routes[sub.id].adapterConfig.primarySession).toEqual(config);
         expect(() => buildWakeReceiverManifest({...options, adapterConfigById: {}})).toThrow('host-owned');
+        expect(() => buildWakeReceiverManifest({...options, instance: {type:'userDataDir',address:'/unbound'},
+            adapterConfigById: {[sub.id]: {primarySession: {agentId:'seat-a',family:'codex-desktop'}}}
+        })).toThrow('host-owned');
         expect(() => buildWakeReceiverManifest({...options, callerIdentity: '@other'})).toThrow('host-owned');
     });
     test('uses the server-issued key and never mints one', () => {

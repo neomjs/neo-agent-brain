@@ -28,21 +28,14 @@ import {
     isSessionRotation,
     routeAdmits
 } from './sessionRotation.mjs';
-import {isEntryModule}       from '../../services/shared/isEntryModule.mjs';
-import {stagePrimaryWake}    from './primaryWakeSpool.mjs';
-import {readNativeWakeOptIn} from './nativeWakeEnrollment.mjs';
+import {isEntryModule}                                                        from '../../services/shared/isEntryModule.mjs';
+import {hasPrimaryWakeRecipient, primaryWakeSeatForAddress, stagePrimaryWake} from './primaryWakeSpool.mjs';
+import {readNativeWakeOptIn}                                                  from './nativeWakeEnrollment.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 
 function isSeatId(value) {
     return typeof value === 'string' && /^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/.test(value)
-}
-
-function hasNativeRecipient(result, record) {
-    const recipient = result?.recipient, uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    return recipient?.seat === record.route.agentIdentity && recipient.recordKey === record.recordKey &&
-        typeof recipient.generation === 'string' && recipient.generation.length > 0 &&
-        uuid.test(recipient.threadId || '') && uuid.test(recipient.nonce || '')
 }
 
 /**
@@ -181,8 +174,7 @@ export async function loadWakeReceiverManifest(manifestPath) {
             const config   = route.adapterConfig?.primarySession,
                   fields   = ['instanceHome', 'appBundle', 'agentId', 'family', 'projectId', 'projectRoot', 'hookNodePath', 'hookModulePath'],
                   absolute = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root,
-                  address  = absolute(config?.instanceHome) && {addressType:'userDataDir',instanceAddress:
-                      config.family === 'codex-desktop' ? path.join(config.instanceHome,'electron-profile') : config.instanceHome};
+                  seat     = primaryWakeSeatForAddress({family:config?.family,instanceAddress:metadata.instanceAddress,agentId:config?.agentId});
 
             if (!config || typeof config !== 'object' || Array.isArray(config) ||
                 Object.keys(config).some(key => !fields.includes(key)) ||
@@ -194,7 +186,7 @@ export async function loadWakeReceiverManifest(manifestPath) {
                 !/^@[a-z0-9][a-z0-9-]*$/.test(route.agentIdentity) ||
                 (config.projectRoot !== undefined && !absolute(config.projectRoot)) ||
                 (config.projectId !== undefined && (typeof config.projectId !== 'string' || !config.projectId)) ||
-                metadata.addressType !== address?.addressType || metadata.instanceAddress !== address?.instanceAddress ||
+                metadata.addressType !== 'userDataDir' || seat?.instanceHome !== config.instanceHome ||
                 route.admits !== WAKE_DIGEST_EVENT_TYPE) {
                 throw new Error(`Wake receiver route '${subscriptionId}' has invalid primary-session admission`);
             }
@@ -507,9 +499,8 @@ export function createWakeReceiver({
                     if (!native && !isSessionRotation(dispatching.envelope) && manifestPath && metadata?.adapter === 'osascript' &&
                         ['Codex', 'Antigravity'].includes(metadata.appName) && metadata.addressType === 'userDataDir') {
                         const family = metadata.appName === 'Codex' ? 'codex-desktop' : 'antigravity',
-                              home   = family === 'codex-desktop' ? path.dirname(metadata.instanceAddress || '') : metadata.instanceAddress,
-                              parent = path.dirname(home || ''), agentId = path.basename(path.dirname(parent));
-                        if (path.isAbsolute(home || '') && path.basename(parent) === 'harness' && path.basename(home) === family && isSeatId(agentId)) {
+                              seat   = primaryWakeSeatForAddress({family,instanceAddress:path.normalize(metadata.instanceAddress || ''),allowUnmatchedProfile:true}), agentId = seat?.agentId;
+                        if (seat) {
                             let optIn;
                             try {
                                 const optPath = path.join(path.dirname(manifestPath), 'primary-session-seats', `${agentId}.json`);
@@ -549,7 +540,7 @@ export function createWakeReceiver({
                         continue;
                     }
 
-                    if (native && (outcome !== 'delivered' || !hasNativeRecipient(result, dispatching))) {
+                    if (native && (outcome !== 'delivered' || !hasPrimaryWakeRecipient(result?.recipient, {seat:dispatching.route.agentIdentity, recordKey:dispatching.recordKey}))) {
                         await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-invalid-outcome'});
                         continue;
                     }

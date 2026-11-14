@@ -339,7 +339,19 @@ export async function handleAntigravityPreInvocation({input,consume,...context})
     if (typeof text !== 'string' || !text.startsWith('[NEO_WAKE_V1:')) return {};
     const match = text.match(/^\[NEO_WAKE_V1:([0-9a-f-]{36})\] \[WAKE\]$/i);
     const deny  = {terminationBehavior:'terminate',injectSteps:[{errorMessage:{userMessage:'Wake admission refused.'}}]};
-    if (!match || !UUID.test(match[1]) || !await observeAntigravityPreInvocation({...context,input})) return deny;
+    if (!match || !UUID.test(match[1])) return deny;
+    let observed = false;
+    try { observed = await observeAntigravityPreInvocation({...context,input}) } catch { /* Refuse and reconcile only an authenticated spent wake. */ }
+    if (!observed) {
+        if (Array.isArray(input.workspacePaths) && input.workspacePaths.includes(context.projectRoot) &&
+            Number.isSafeInteger(input.invocationNum) && input.invocationNum >= 0 && UUID.test(input.conversationId || '')) {
+            // The App/lease-authenticated caller has witnessed this exact native marker. This
+            // request can only write a negative claim after host route and nonce checks; it cannot
+            // disclose the digest. Unknown/foreign invocations never reach this path.
+            try { await consume({threadId:input.conversationId,nonce:match[1],denyOnly:true}) } catch { /* Leave unknown for safe retry. */ }
+        }
+        return deny
+    }
     if (input.invocationNum > 0) {
         try {
             const claim = JSON.parse(fs.readFileSync(context.statePath + '.claim.json','utf8'));

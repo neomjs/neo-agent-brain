@@ -1,11 +1,12 @@
-import {test, expect}                                                                                    from '@playwright/test';
-import fs                                                                                                from 'node:fs/promises';
-import os                                                                                                from 'node:os';
-import path                                                                                              from 'node:path';
-import {randomUUID}                                                                                      from 'node:crypto';
-import {WakeReceiverState}                                                                               from '../../../../../../ai/daemons/wake/receiverState.mjs';
-import {dispatchFleetPrimarySessionWake, enrollNativeWake, readNativeWakeOptIn, consumeNativeWakePrompt} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
-import {runPrimarySessionWakeCli}                                                                        from '../../../../../../ai/scripts/fleet/primarySessionWake.mjs';
+import {test, expect}                                                                                                                 from '@playwright/test';
+import fs                                                                                                                             from 'node:fs/promises';
+import os                                                                                                                             from 'node:os';
+import path                                                                                                                           from 'node:path';
+import {randomUUID}                                                                                                                   from 'node:crypto';
+import {WakeReceiverState}                                                                                                            from '../../../../../../ai/daemons/wake/receiverState.mjs';
+import {dispatchFleetPrimarySessionWake, drainFleetPrimaryWakeRecord, enrollNativeWake, readNativeWakeOptIn, consumeNativeWakePrompt} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
+import {stagePrimaryWake}                                                                                                             from '../../../../../../ai/daemons/wake/primaryWakeSpool.mjs';
+import {runPrimarySessionWakeCli}                                                                                                     from '../../../../../../ai/scripts/fleet/primarySessionWake.mjs';
 
 let tempDir, state, manifestPath, stateDir;
 test.beforeEach(async () => {
@@ -110,6 +111,99 @@ test('a pending marker follows the peer across a new main start and an old root 
     admitted = {threadId:newRoot};
     expect((await dispatch()).recipient.threadId).toBe(newRoot);
     expect(sent).toHaveLength(2)
+});
+
+for (const failure of ['resident-unavailable', 'selection-null', 'selection-throws']) {
+    test(`a spent same-root denial recovers exactly once after ${failure}`, async () => {
+        const seat      = '@fixture', threadId = randomUUID(), generation = '123:birth', turnId = randomUUID(), sent = [];
+        const agentId   = 'fixture', family = 'codex-desktop', sub = 'WAKE_SUB:retry';
+        let   selector  = 'ready', proof = null;
+        const live      = async () => ({generation,workspaceRoot:tempDir});
+        const transport = {
+            listCodexWakeTargets: async () => {
+                if (selector === 'throws') throw new Error('private driver detail');
+                return selector === 'null' ? [] : [{root:true,threadId,startedAt:1000,receiptOffset:0}]
+            },
+            readCodexWakeActivity   : async () => ({state:'idle'}),
+            verifyCodexWakeAdmission: async () => ({verified:true}),
+            sendCodexSessionWake    : async request => {sent.push(request); return {state:'enqueued'}},
+            readCodexWakeReceipt    : async ({text}) => proof === text ? {state:'turn-started',threadId,turnId} : {state:'unknown'}
+        };
+        const route = {agentIdentity:seat,admits:'wake/digest',harnessTargetMetadata:{adapter:'primary-session'},adapterConfig:{primarySession:{agentId,family,
+            instanceHome:path.join(tempDir,'home'),appBundle:path.join(tempDir,'ChatGPT.app')}}};
+        const envelope = {eventType:'wake/digest',agentIdentity:seat,subscriptionId:sub,
+            payload:{totalEvents:1,breakdown:{sent_to_me:{count:1,latest:{subject:'private digest'}}}}};
+        const {record} = await state.accept({subscriptionId:sub,eventId:failure,envelope,route});
+        await enrollNativeWake({manifestPath,stateDir,agentId,family});
+        await fs.writeFile(manifestPath,JSON.stringify({schemaVersion:1,routes:{[sub]:route}}));
+        const options = {state,stateDir,manifestPath,codexTransport:transport,inspectResident:live};
+        const pump    = () => drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId:sub,route,
+            dispatch:(item, extra) => dispatchFleetPrimarySessionWake(item,{...extra,...options})});
+        const claimPath = path.join(stateDir,'primary-sessions','fixture.json.claim.json');
+        await stagePrimaryWake(record,{state,stateDir}); await pump();
+        expect(sent).toHaveLength(1);
+        const oldNonce = sent[0].text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+        const base     = {manifestPath,stateDir,agentId,family,threadId,turnId,nonce:oldNonce,codexTransport:transport,inspectResident:live};
+        // A different thread, nonce or unproven native turn cannot spend this attempt.
+        expect(await consumeNativeWakePrompt({...base,threadId:randomUUID()})).toEqual({admitted:false});
+        expect(await consumeNativeWakePrompt({...base,nonce:randomUUID()})).toEqual({admitted:false});
+        expect(await consumeNativeWakePrompt({...base,turnId:null,inspectResident:async()=>null})).toEqual({admitted:false});
+        await expect(fs.stat(claimPath)).rejects.toMatchObject({code:'ENOENT'});
+        // An unknown submit/crash or a different process generation alone never triggers retry.
+        expect(await consumeNativeWakePrompt({...base,inspectResident:async()=>({generation:'other',workspaceRoot:tempDir})})).toEqual({admitted:false});
+        await pump(); expect(sent).toHaveLength(1);
+        // A failed claim read/write, like a crash before the denial is durable, is still unknown.
+        await fs.mkdir(claimPath);
+        await expect(consumeNativeWakePrompt({...base,inspectResident:async()=>null})).rejects.toThrow();
+        await fs.rmdir(claimPath);
+        await pump(); expect(sent).toHaveLength(1);
+        selector = failure === 'selection-null' ? 'null' : failure === 'selection-throws' ? 'throws' : 'ready';
+        const failedResident = failure === 'resident-unavailable' ? async()=>null : live;
+        expect(await consumeNativeWakePrompt({...base,inspectResident:failedResident})).toEqual({admitted:false});
+        const claim = JSON.parse(await fs.readFile(claimPath,'utf8'));
+        expect(claim).toMatchObject({nonce:oldNonce,threadId,turnId,generation,admitted:false,
+            reason:failure === 'resident-unavailable' ? 'resident-unavailable' : 'selection-unavailable'});
+        expect(await consumeNativeWakePrompt(base)).toEqual({admitted:false});
+        selector = 'ready'; await pump();
+        expect((await stagePrimaryWake(record,{state,stateDir})).reason).toBe(`native-recipient:${claim.reason}`);
+        expect(sent).toHaveLength(1);
+        await pump(); expect(sent).toHaveLength(2);
+        const newNonce = sent[1].text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+        expect(newNonce).not.toBe(oldNonce);
+        expect(await consumeNativeWakePrompt(base)).toEqual({admitted:false});
+        const granted = await consumeNativeWakePrompt({...base,nonce:newNonce});
+        expect(granted.admitted).toBe(true); expect(granted.digest).toContain('private digest');
+        expect(await consumeNativeWakePrompt({...base,nonce:newNonce})).toEqual({admitted:false});
+        proof = sent[1].text; await pump();
+        expect((await stagePrimaryWake(record,{state,stateDir})).status).toBe('delivered');
+        expect(sent).toHaveLength(2)
+    })
+}
+
+test('App denial-only cannot spend another attempt, epoch, or an already granted claim', async () => {
+    const agentId = 'fixture', seat = '@fixture', family = 'antigravity', threadId = randomUUID(), nonce = randomUUID(), generation = '123:birth';
+    const sub     = 'WAKE_SUB:deny-only', route = {agentIdentity:seat,admits:'wake/digest',harnessTargetMetadata:{adapter:'primary-session'},
+        adapterConfig:{primarySession:{agentId,family,instanceHome:path.join(tempDir,'home'),appBundle:path.join(tempDir,'App.app')}}};
+    const envelope = {eventType:'wake/digest',agentIdentity:seat,subscriptionId:sub,payload:{totalEvents:1}};
+    await enrollNativeWake({manifestPath,stateDir,agentId,family});
+    await fs.writeFile(manifestPath,JSON.stringify({schemaVersion:1,routes:{[sub]:route}}));
+    const {record}  = await state.accept({subscriptionId:sub,eventId:'deny-only',envelope,route});
+    const directory = path.join(stateDir,'primary-sessions'), statePath = path.join(directory,'fixture.json'), claimPath = statePath + '.claim.json';
+    await fs.mkdir(directory,{mode:0o700});
+    await fs.writeFile(statePath,JSON.stringify({version:1,binding:{seat,family,generation,threadId},
+        inflight:{status:'unknown',nonce,recordKey:record.recordKey}}),{mode:0o600});
+    const request = {manifestPath,stateDir,agentId,family,threadId,nonce,denyOnly:true,expectedGeneration:generation};
+    for (const changed of [{threadId:randomUUID()},{nonce:randomUUID()},{expectedGeneration:'other'}]) {
+        expect(await consumeNativeWakePrompt({...request,...changed})).toEqual({admitted:false})
+    }
+    await expect(fs.stat(claimPath)).rejects.toMatchObject({code:'ENOENT'});
+    const granted = {nonce,threadId,generation,recordKey:record.recordKey,admitted:true};
+    await fs.writeFile(claimPath,JSON.stringify(granted),{mode:0o600});
+    expect(await consumeNativeWakePrompt(request)).toEqual({admitted:false});
+    expect(JSON.parse(await fs.readFile(claimPath,'utf8'))).toEqual(granted);
+    await fs.unlink(claimPath);
+    expect(await consumeNativeWakePrompt(request)).toEqual({admitted:false});
+    expect(JSON.parse(await fs.readFile(claimPath,'utf8'))).toMatchObject({nonce,threadId,generation,admitted:false,reason:'selection-unavailable'})
 });
 
 test('withdrawal of enrollment while a recipient is proving its root prevents content redemption', async () => {

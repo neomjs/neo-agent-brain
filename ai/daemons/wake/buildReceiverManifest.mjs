@@ -52,8 +52,9 @@ import crypto from 'node:crypto';
 import fs     from 'node:fs/promises';
 import path   from 'node:path';
 
-import {loadWakeReceiverManifest} from './receiver.mjs';
-import {withOutboxLock}           from './outboxLock.mjs';
+import {loadWakeReceiverManifest}  from './receiver.mjs';
+import {withOutboxLock}            from './outboxLock.mjs';
+import {primaryWakeSeatForAddress} from './primaryWakeSpool.mjs';
 import {
     DEFAULT_CONTEXT_GATE_ACTIVE_WITHIN_MS,
     DEFAULT_CONTEXT_GATE_MAX_TOKENS,
@@ -199,14 +200,8 @@ const GUI_INSTANCE_ADDRESS_TYPES = ['pid', 'userDataDir'];
 
 /** @summary Binds native host config to the registry seat and profile supplied by the host. */
 function nativeConfigMatchesInstance(config, instance) {
-    if (!config || !['codex-desktop', 'antigravity'].includes(config.family) ||
-        typeof config.agentId !== 'string' || !/^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/.test(config.agentId) ||
-        typeof config.instanceHome !== 'string' || !path.isAbsolute(config.instanceHome) ||
-        path.normalize(config.instanceHome) !== config.instanceHome) return false;
-    const home    = config.instanceHome, parent = path.dirname(home),
-          profile = config.family === 'codex-desktop' ? path.join(home, 'electron-profile') : home;
-    return path.basename(home) === config.family && path.basename(parent) === 'harness' &&
-        path.basename(path.dirname(parent)) === config.agentId && instance?.type === 'userDataDir' && instance.address === profile
+    return instance?.type === 'userDataDir' && typeof config?.instanceHome === 'string' && typeof config.agentId === 'string' &&
+        primaryWakeSeatForAddress({family:config.family,instanceAddress:instance.address,agentId:config.agentId})?.instanceHome === config.instanceHome
 }
 
 /**

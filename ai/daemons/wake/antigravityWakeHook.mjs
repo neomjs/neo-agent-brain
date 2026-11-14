@@ -66,8 +66,15 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
             }
         }
         if (wakeInput === input && !reserved) { await observeAntigravityPreInvocation(context); return {} }
-        return await handleAntigravityPreInvocation({...context,input:wakeInput,consume:({threadId,nonce}) =>
-            consume({manifestPath,stateDir,agentId:config.agentId,family:'antigravity',threadId,nonce})});
+        return await handleAntigravityPreInvocation({...context,input:wakeInput,consume:async ({threadId,nonce,denyOnly}) => {
+            if (denyOnly) {
+                // No negative claim request for an unrelated thread or an unbound nonce.
+                const current = await readPrimarySessionWake({statePath});
+                if (current.binding?.threadId !== threadId || current.binding?.generation !== generation ||
+                    current.inflight?.status !== 'unknown' || current.inflight?.nonce !== nonce) return {admitted:false};
+            }
+            return consume({manifestPath,stateDir,agentId:config.agentId,family:'antigravity',threadId,nonce,denyOnly,expectedGeneration:generation})
+        }});
     } catch { return reserved ? deny : {} }
 }
 

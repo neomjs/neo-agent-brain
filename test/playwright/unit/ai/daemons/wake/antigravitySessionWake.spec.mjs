@@ -279,8 +279,17 @@ test('App callback redeems a bound native system wake with unrelated lastUserInp
         const marker  = '[NEO_WAKE_V1:'+nonce+'] [WAKE]';
         const content = 'The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-14T16:24:03Z sender=system priority=MESSAGE_PRIORITY_HIGH content='+marker+'\n</SYSTEM_MESSAGE>';
         fs.appendFileSync(transcript,JSON.stringify({type:'SYSTEM_MESSAGE',source:'SYSTEM',status:'DONE',step_index:1,content})+'\n');
-        let   calls   = 0;
-        const input   = {conversationId:id,workspacePaths:[projectRoot],invocationNum:2,lastUserInput:'unrelated human input'};
+        let   calls            = 0;
+        const input            = {conversationId:id,workspacePaths:[projectRoot],invocationNum:2,lastUserInput:'unrelated human input'};
+        const negativeRequests = [];
+        const starts           = fs.readFileSync(statePath+'.starts.json','utf8');
+        fs.unlinkSync(statePath+'.starts.json');
+        const denied = await handleAntigravityWakeHook({...base,event:'PreInvocation',input,
+            consume:async request=>{negativeRequests.push(request);return {admitted:false}}});
+        expect(denied.terminationBehavior).toBe('terminate');
+        expect(negativeRequests).toEqual([{manifestPath,stateDir,agentId:'neo-test',family:'antigravity',
+            threadId:id,nonce,denyOnly:true,expectedGeneration:generation}]);
+        fs.writeFileSync(statePath+'.starts.json',starts,{mode:0o600});
         const consume = async()=>{calls++;return {admitted:true,digest:'safe'}};
         expect((await handleAntigravityWakeHook({...base,event:'PreInvocation',input,consume})).injectSteps[0].ephemeralMessage).toContain('safe');
         expect(calls).toBe(1);
@@ -381,4 +390,23 @@ test('native metadata fences forks, malformed summaries and changing identity tu
         expect((await observeAntigravitySessionStart({...ctx,input:{conversationId:unknown,workspacePaths:['/p']}}))?.threadId).toBe(unknown);
         expect(latestAntigravityWakeTarget(ctx)?.threadId).toBe(unknown);
     } finally {db.close();fs.rmSync(root,{recursive:true,force:true})}
+});
+
+test('an authenticated spent marker requests only a negative claim when root observation is unavailable', async () => {
+    const root     = fs.mkdtempSync(path.join(os.tmpdir(),'agy-negative-'));
+    const threadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', nonce = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const context  = {databasePath:path.join(root,'missing.db'),projectId:'p',projectRoot:'/project',generation:'10:epoch',statePath:path.join(root,'seat')};
+    const input    = {conversationId:threadId,workspacePaths:['/project'],invocationNum:0,lastUserInput:`[NEO_WAKE_V1:${nonce}] [WAKE]`};
+    const requests = [];
+    try {
+        const consume = async request => {requests.push(request);return {admitted:false}};
+        const denied  = await handleAntigravityPreInvocation({...context,input,consume});
+        expect(denied.terminationBehavior).toBe('terminate');
+        expect(requests).toEqual([{threadId,nonce,denyOnly:true}]);
+        requests.length=0;
+        await handleAntigravityPreInvocation({...context,input:{...input,workspacePaths:['/wrong']},consume});
+        await handleAntigravityPreInvocation({...context,input:{...input,conversationId:'invalid'},consume});
+        await handleAntigravityPreInvocation({...context,input:{...input,lastUserInput:'ordinary'},consume});
+        expect(requests).toEqual([]);
+    } finally {fs.rmSync(root,{recursive:true,force:true})}
 });

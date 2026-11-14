@@ -126,11 +126,12 @@ test.describe('ai/daemons/wake/receiver', () => {
     });
 
     function nativeManifest() {
-        const result = structuredClone(manifest), route = result.routes[subscriptionId];
+        const result       = structuredClone(manifest), route = result.routes[subscriptionId];
+        const instanceHome = path.join(stateDir, 'agents', 'fleet-seat', 'harness', 'codex-desktop');
         optIn = {agentId: 'fleet-seat', family: 'codex-desktop', stateDir};
         route.admits = 'wake/digest';
-        route.harnessTargetMetadata = {adapter: 'primary-session', addressType: 'userDataDir', instanceAddress: '/seat/electron-profile'};
-        route.adapterConfig = {...route.adapterConfig, primarySession: {instanceHome: '/seat', appBundle: '/Applications/Codex.app', agentId: 'fleet-seat', family: 'codex-desktop', hookNodePath:'/bin/node', hookModulePath:'/brain/hook.mjs'}};
+        route.harnessTargetMetadata = {adapter: 'primary-session', addressType: 'userDataDir', instanceAddress: path.join(instanceHome,'electron-profile')};
+        route.adapterConfig = {...route.adapterConfig, primarySession: {instanceHome, appBundle: '/Applications/Codex.app', agentId: 'fleet-seat', family: 'codex-desktop', hookNodePath:'/bin/node', hookModulePath:'/brain/hook.mjs'}};
         return result
     }
 

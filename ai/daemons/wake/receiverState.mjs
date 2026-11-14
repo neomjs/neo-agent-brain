@@ -197,7 +197,7 @@ export class WakeReceiverState {
     /**
      * @summary Restores interrupted native records for receipt reconciliation; legacy effects remain unknown.
      *
-     * @returns {Promise<Number>} Number of records terminalized.
+     * @returns {Promise<Number>} Number of interrupted records recovered to pending or unknown.
      */
     async recoverInterrupted() {
         const interrupted = await this.list('dispatching');

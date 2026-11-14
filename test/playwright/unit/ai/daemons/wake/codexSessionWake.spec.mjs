@@ -1,4 +1,5 @@
 import {test, expect}                                                                                                 from '@playwright/test';
+import crypto                                                                                                         from 'node:crypto';
 import Database                                                                                                       from 'better-sqlite3';
 import fs                                                                                                             from 'node:fs/promises';
 import os                                                                                                             from 'node:os';
@@ -82,6 +83,29 @@ test.describe('Codex session wake', () => {
         db.close()
     });
 
+
+    test('the 101-row sentinel holds only when an unseen newest root or tie remains possible', async () => {
+        const db     = new Database(path.join(home, 'state_5.sqlite'));
+        const insert = db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, 0, ?, ?, ?, NULL)');
+        const ids    = [];
+        try {
+            for (let i = 0; i < 101; i++) {
+                const candidate = crypto.randomUUID();
+                const rollout   = path.join(path.dirname(file), `rollout-2026-11-14-${candidate}.jsonl`);
+                await fs.writeFile(rollout, line(meta({id:candidate, session_id:candidate, forked_from_id:id})));
+                insert.run(candidate, rollout, home, 2, 'vscode', 'user', 'Codex Desktop');
+                ids.push(candidate);
+            }
+            // 101 newer excluded forks leave the true latest root beyond the query bound.
+            await expect(listCodexWakeTargets({home, workspaceRoot:home})).rejects.toThrow('candidate bound');
+            db.prepare('UPDATE threads SET created_at_ms=3 WHERE id=?').run(id);
+            // The sentinel is strictly older than the proven root: no unseen tie can exist.
+            expect((await listCodexWakeTargets({home, workspaceRoot:home}))[0].threadId).toBe(id);
+            db.prepare('UPDATE threads SET created_at_ms=3 WHERE id!=?').run(id);
+            // Even if all fetched ties except the root are excluded, a further tied root may exist.
+            await expect(listCodexWakeTargets({home, workspaceRoot:home})).rejects.toThrow('candidate bound');
+        } finally { db.close() }
+    });
     test('holds busy and unknown activity instead of queueing', async () => {
         expect(await readCodexWakeActivity({home, threadId: id})).toEqual({state: 'idle'});
         await fs.appendFile(file, line(start()));

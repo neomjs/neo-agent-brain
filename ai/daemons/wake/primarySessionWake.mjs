@@ -1,3 +1,7 @@
+/**
+ * @module ai/daemons/wake/primarySessionWake
+ * @summary Durable native wake binding, dispatch serialization and receipt reconciliation.
+ */
 import fs                from 'node:fs/promises';
 import {randomUUID}      from 'node:crypto';
 import {withOutboxLock}  from './outboxLock.mjs';

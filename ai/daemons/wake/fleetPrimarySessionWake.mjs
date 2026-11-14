@@ -17,7 +17,7 @@ import * as codex                                                              f
 import {formatLocalWakeDigest}                                                 from './localWakeAdapters.mjs';
 import {withOutboxLock}                                                        from './outboxLock.mjs';
 import {bindPrimarySession, deliverPrimarySessionWake, readPrimarySessionWake} from './primarySessionWake.mjs';
-import {primaryWakeSpoolPath}                                                  from './primaryWakeSpool.mjs';
+import {hasPrimaryWakeRecipient, primaryWakeSpoolPath}                         from './primaryWakeSpool.mjs';
 import {WakeReceiverState}                                                     from './receiverState.mjs';
 import {observePrimaryWakeSelection}                                           from './primaryWakeSelection.mjs';
 import {readPrivateWakeJson as readPrivate, readNativeWakeOptIn}               from './nativeWakeEnrollment.mjs';
@@ -92,7 +92,7 @@ async function latestRoot(config, live, statePath, appDataDir, codexTransport, a
  */
 export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,family,threadId,nonce,turnId,
     inspectResident = observePrimaryWakeResident,codexTransport = codex,antigravityTransport = antigravity,
-    appDataDir = path.join(os.homedir(),'.gemini','antigravity')}) {
+    appDataDir = path.join(os.homedir(),'.gemini','antigravity'), denyOnly = false, expectedGeneration = null}) {
     const denied = {admitted:false};
     if (!UUID.test(nonce ?? '') || !UUID.test(threadId ?? '')) return denied;
     const enrollment = await readNativeWakeOptIn({manifestPath,agentId,family});
@@ -114,12 +114,31 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
         const claimPath = statePath + '.claim.json';
         const previous  = await readPrivate(claimPath);
         if (previous?.nonce === nonce) return denied;
+        // A correlated hook has spent this marker. Only this exact bound attempt may certify its
+        // refusal; a missing Codex turn ID cannot establish a native hook invocation.
+        const refuseSpent = async reason => {
+            if (family === 'codex-desktop' && !UUID.test(turnId ?? '')) return denied;
+            return withOutboxLock(manifestPath,async () => {
+                const liveRoute = (await readPrivate(manifestPath))?.routes?.[subscriptionId];
+                if (!isDeepStrictEqual(liveRoute,route) ||
+                    (await readNativeWakeOptIn({manifestPath,agentId,family}))?.stateDir !== stateDir) return denied;
+                await writeFileAtomic(claimPath, JSON.stringify({nonce,recordKey:inflight.recordKey,threadId,
+                    generation:binding.generation,turnId:typeof turnId === 'string' ? turnId : null,admitted:false,reason}), {mode:0o600,fsync:true});
+                return denied
+            })
+        };
+        // The App-owned adapter may report an already-correlated native invocation whose root
+        // observer failed. This path cannot grant content or act on a different bound nonce.
+        if (denyOnly === true) return family === 'antigravity' && expectedGeneration === binding.generation
+            ? refuseSpent('selection-unavailable') : denied;
         const live = await Promise.resolve().then(() => inspectResident(config)).catch(() => null);
-        if (!live || live.generation !== binding.generation) return denied;
-        const selected = await latestRoot(config,live,statePath,appDataDir,codexTransport,antigravityTransport,binding.seat,inspectResident);
-        const matches  = selected?.root === true && selected.threadId === threadId;
-        // A known successor is a positive rejection. An incomplete inventory can recover.
-        if (selected?.root !== true) return denied;
+        if (!live) return refuseSpent('resident-unavailable');
+        if (live.generation !== binding.generation) return denied;
+        let selected;
+        try { selected = await latestRoot(config,live,statePath,appDataDir,codexTransport,antigravityTransport,binding.seat,inspectResident) }
+        catch { return refuseSpent('selection-unavailable') }
+        const matches = selected?.root === true && selected.threadId === threadId;
+        if (selected?.root !== true) return refuseSpent('selection-unavailable');
         // Serialize only the grant of mailbox contents with a manifest change. No native
         // command or inventory scan runs under this global publication lock.
         return withOutboxLock(manifestPath,async () => {
@@ -199,8 +218,9 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         home, binary, threadId, workspaceRoot:live.workspaceRoot, generation, manifestPath, stateDir, agentId:config.agentId,
         runtimePid:live.pid, nodePath:config.hookNodePath, modulePath:config.hookModulePath
     });
-    const cursorPath = statePath + '.cursor.json';
-    let   result     = await deliverPrimarySessionWake({
+    const cursorPath   = statePath + '.cursor.json';
+    let   denialReason = null,
+          result     = await deliverPrimarySessionWake({
         statePath,seat,generation:deliveryGeneration,family,recordKey:record.recordKey,isRecordedDelivered:recorded,
         readTarget: async binding => {
             if (binding.generation !== generation) return null;
@@ -231,7 +251,10 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
             if (saved?.nonce !== nonce) return null;
             const claim = await readPrivate(statePath + '.claim.json');
             if (claim?.nonce !== nonce || claim.recordKey !== recordKey || claim.generation !== binding.generation || claim.threadId !== threadId) return null;
-            if (claim.admitted === false) return {...binding,recordKey,nonce,status:'not-sent'};
+            if (claim.admitted === false) {
+                denialReason = ['resident-unavailable', 'selection-unavailable'].includes(claim.reason) ? claim.reason : null;
+                return {...binding,recordKey,nonce,status:'not-sent'}
+            }
             if (claim.admitted !== true) return null;
             const proof = isCodex ? await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptToken:claim.receiptToken,receiptOffset:saved.cursor}) :
                 antigravityTransport.readAntigravityWakeReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor});
@@ -240,6 +263,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
             return {...binding,recordKey,nonce,status:'consumed'}
         }
     });
+    if (result.status === 'pending' && denialReason) result = {...result,reason:`native-recipient:${denialReason}`};
     if (result.status === 'delivered' && result.nonce) result = {...result,recipient:{...prior.binding,recordKey:record.recordKey,nonce:result.nonce}};
     return result
 }
@@ -288,11 +312,14 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         isDeepStrictEqual((await readPrivate(manifestPath))?.routes?.[subscriptionId],current) &&
         (await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family}))?.stateDir === stateDir;
     const result = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute});
-    if (result?.status === 'delivered' && result.recipient?.seat === route.agentIdentity &&
-        result.recipient.recordKey === record.recordKey && UUID.test(result.recipient.nonce ?? '') &&
-        UUID.test(result.recipient.threadId ?? '') && typeof result.recipient.generation === 'string' && result.recipient.generation) {
+    if (result?.status === 'delivered' && hasPrimaryWakeRecipient(result.recipient, {seat:route.agentIdentity, recordKey:record.recordKey})) {
         const {recordKey} = record;
         await writeFileAtomic(pointerPath+'.result', JSON.stringify({recordKey,subscriptionId,recipient:result.recipient}), {mode:0o600,fsync:true})
+    } else {
+        // Only fixed diagnostics cross back to the receiver; never project vendor errors or payloads.
+        const reason = ['native-recipient:resident-unavailable', 'native-recipient:selection-unavailable'].includes(result?.reason)
+            ? result.reason : result?.status === 'unknown' ? 'native-recipient:receipt-unproven' : 'native-recipient:awaiting-readiness';
+        await writeFileAtomic(pointerPath+'.status', JSON.stringify({recordKey:record.recordKey,subscriptionId,reason}), {mode:0o600,fsync:true})
     }
 }
 

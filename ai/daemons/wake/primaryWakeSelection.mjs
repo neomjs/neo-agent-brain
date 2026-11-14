@@ -1,3 +1,7 @@
+/**
+ * @module ai/daemons/wake/primaryWakeSelection
+ * @summary Generation-bound monotonic selection of a proven native wake root.
+ */
 import fs                from 'node:fs/promises';
 import path              from 'node:path';
 import {withOutboxLock}  from './outboxLock.mjs';
