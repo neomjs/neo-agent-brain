@@ -942,59 +942,78 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
             fs.rmSync(root, {recursive: true, force: true})
         }
     });
-});
 
-/**
- * Community-multiplier internal-author resolution. Replaces the prior hardcoded
- * `meta.author !== 'tobiu'` check with a set read from the plane's AgentIdentity nodes. An unread
- * plane must degrade safely (multiplier OFF), not invert into boosting every ticket.
- */
-test.describe('Neo.ai.daemons.services.IssueIngestor — community-multiplier internal-author set', () => {
-    let IssueIngestorClass;
+    test('ingestIssueStates() normalizes legacy anchor-written issue edge weights once and preserves later reinforcements (#1527)', async () => {
+        const persistedBatches = [],
+              previousTestDb   = GraphService.db,
+              root             = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-ingestor-legacy-reset-')),
+              edges            = [
+                  {id: 'e-bug-discussed-boosted', source: 'SESSION_SUMMARY:1', target: 'issue-20747', type: 'DISCUSSED_IN',      properties: {weight: 1.96}},
+                  {id: 'e-bug-discussed-fresh',   source: 'SESSION_SUMMARY:2', target: 'issue-20747', type: 'DISCUSSED_IN',      properties: {weight: 0.8}},
+                  {id: 'e-bug-message',           source: 'MESSAGE:m1',        target: 'issue-20747', type: 'REFERENCES_TICKET', properties: {weight: 2.0}},
+                  {id: 'e-blocked-message',       source: 'MESSAGE:m2',        target: 'issue-20895', type: 'REFERENCES_TICKET', properties: {weight: 0.05}},
+                  {id: 'e-blocked-discussed',     source: 'SESSION_SUMMARY:3', target: 'issue-20895', type: 'DISCUSSED_IN',      properties: {weight: 0.05}},
+                  {id: 'e-closed-msg-boosted',    source: 'MESSAGE:m3',        target: 'issue-1999',  type: 'REFERENCES_TICKET', properties: {weight: 2.0}},
+                  {id: 'e-closed-msg-discounted', source: 'MESSAGE:m4',        target: 'issue-1999',  type: 'REFERENCES_TICKET', properties: {weight: 0.05}},
+                  {id: 'e-closed-retired-goal',   source: 'goal-1',            target: 'issue-1999',  type: 'ADVANCED_BY',       properties: {weight: 0.1}}
+              ],
+              weightOf = id => edges.find(edge => edge.id === id).properties.weight,
+              write    = (file, lines) => fs.writeFileSync(path.join(root, file), ['---', ...lines, '---', '# body'].join('\n'));
 
-    // a graph service whose store answers these AgentIdentity nodes
-    const graphOf  = nodes => ({db: {storage: {db: {prepare: () => ({all: () => nodes.map(node => ({data: JSON.stringify(node)}))})}}}}),
-          internal = new Set(['owner-login', 'their-agent']);
+        fs.mkdirSync(path.join(root, 'issues'), {recursive: true});
+        write('issues/issue-20747.md', ['id: 20747', 'title: Open Bug',    'state: OPEN',   'author: neo-opus-grace', 'labels:', '  - bug', '  - ai']);
+        write('issues/issue-20895.md', ['id: 20895', 'title: Blocked Bug', 'state: OPEN',   'author: neo-opus-grace', 'labels:', '  - bug', 'blockedBy:', "  - '#101'"]);
+        write('issues/issue-101.md',   ['id: 101',   'title: Blocker',     'state: OPEN',   'author: neo-opus-grace']);
+        write('issues/issue-1999.md',  ['id: 1999',  'title: Closed Item', 'state: CLOSED', 'author: neo-opus-grace', 'labels:', '  - bug']);
 
-    test.beforeAll(async () => {
-        // The default export is the singleton instance; the static set + decision live on its class.
-        IssueIngestorClass = (await import('../../../../../../ai/services/ingestion/IssueIngestor.mjs')).default.constructor;
-    });
+        GraphService.db = {
+            autoSave                 : true,
+            nodes                    : {get: () => null},
+            edges                    : {items: edges},
+            getAdjacentNodes         : () => {},
+            acknowledgeLocalMutations: () => {},
+            storage                  : {
+                addEdges: batch => persistedBatches.push(batch.map(e => ({...e, properties: {...e.properties}})))
+            }
+        };
+        StorageRouter.getGraphCollection = async () => ({
+            upsert: async () => {},
+            get   : async () => ({ids: [], metadatas: [], documents: []}),
+            add   : async () => {}
+        });
 
-    test('readInternalAuthorLogins reads the plane\'s members as bare logins, former logins included', () => {
-        // another operator's plane: its agents and people count, a node without an account type does not
-        const logins = IssueIngestorClass.readInternalAuthorLogins(graphOf([
-            {id: '@their-agent',      label: 'AgentIdentity', properties: {accountType: 'agent', formerLogins: ['@their-old-handle']}},
-            {id: '@their-owner',      label: 'AgentIdentity', properties: {accountType: 'human', githubLogin: '@owner-login'}},
-            {id: '@fixture-leftover', label: 'AgentIdentity', properties: {}}
-        ]));
+        try {
+            await IssueIngestor.ingestIssueStates({contentRoot: root, strict: true});
 
-        expect([...logins]).toEqual(['their-agent', 'their-old-handle', 'owner-login']);
-    });
+            expect(weightOf('e-bug-discussed-boosted')).toBe(0.98);
+            expect(weightOf('e-bug-discussed-fresh')).toBe(0.8);
+            expect(weightOf('e-bug-message')).toBe(1.0);
+            expect(weightOf('e-blocked-message')).toBe(1.0);
+            expect(weightOf('e-blocked-discussed')).toBe(1.0);
+            expect(weightOf('e-closed-msg-boosted')).toBe(1.0);
+            expect(weightOf('e-closed-msg-discounted')).toBe(1.0);
+            expect(weightOf('e-closed-retired-goal')).toBe(0.1);
+            expect(persistedBatches).toHaveLength(1);
+            expect(persistedBatches[0].map(edge => edge.id)).toEqual([
+                'e-bug-discussed-boosted',
+                'e-bug-message',
+                'e-blocked-message',
+                'e-blocked-discussed',
+                'e-closed-msg-boosted',
+                'e-closed-msg-discounted'
+            ]);
 
-    test('readInternalAuthorLogins answers an empty set when the plane cannot be read', () => {
-        expect(IssueIngestorClass.readInternalAuthorLogins({db: null}).size).toBe(0);
-    });
+            edges.find(edge => edge.id === 'e-bug-discussed-boosted').properties.weight = 1.18;
+            persistedBatches.length = 0;
 
-    test('isCommunityAuthor: an internal author is NOT a community author (no boost)', () => {
-        expect(IssueIngestorClass.isCommunityAuthor('owner-login', internal)).toBe(false);
-        expect(IssueIngestorClass.isCommunityAuthor('their-agent', internal)).toBe(false);
-    });
+            await IssueIngestor.ingestIssueStates({contentRoot: root, strict: true});
 
-    test('isCommunityAuthor: an external author IS a community author (boost eligible)', () => {
-        expect(IssueIngestorClass.isCommunityAuthor('some-external-contributor', internal)).toBe(true);
-    });
-
-    test('isCommunityAuthor: a missing author is never a community author', () => {
-        expect(IssueIngestorClass.isCommunityAuthor('', internal)).toBe(false);
-        expect(IssueIngestorClass.isCommunityAuthor(undefined, internal)).toBe(false);
-        expect(IssueIngestorClass.isCommunityAuthor(null, internal)).toBe(false);
-    });
-
-    test('isCommunityAuthor: an empty internal-author registry disables the multiplier (safe degrade, not boost-all)', () => {
-        // Negative-mutation guard: with an empty set, even an "external" author must NOT be boosted —
-        // the `size > 0` clause is what prevents the inverted every-ticket-boosted failure mode.
-        expect(IssueIngestorClass.isCommunityAuthor('some-external-contributor', new Set())).toBe(false);
-        expect(IssueIngestorClass.isCommunityAuthor('tobiu', new Set())).toBe(false);
+            expect(weightOf('e-bug-discussed-boosted')).toBe(1.18);
+            expect(persistedBatches).toHaveLength(0);
+        } finally {
+            GraphService.db                  = previousTestDb;
+            StorageRouter.getGraphCollection = _originalGetGraphCollection;
+            fs.rmSync(root, {recursive: true, force: true});
+        }
     });
 });

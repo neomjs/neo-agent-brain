@@ -36,14 +36,11 @@ import {
     isActionableComputedRecommendation           as isActionableRouteRecommendation,
     isContentComputedRecommendation              as isContentRouteRecommendation,
     isRoutingConflictFocusCandidate              as isRouteConflictFocusCandidate,
+    readInternalAuthorLogins,
     renderComputedGoldenPathContradictionSection as renderRouteContradictionSection,
     renderComputedGoldenPathEmptySection         as renderRouteEmptySection,
     renderComputedGoldenPathFailureSection       as renderRouteFailureSection
 } from './computedGoldenPathRouting.mjs';
-import {
-    memberLoginsOf,
-    readAgentIdentityNodes
-} from '../../graph/agentIdentityParticipation.mjs';
 import {
     CORPUS_PROJECTION_CONSUMER,
     createCorpusProjectionAdmissionFingerprint,
@@ -1252,12 +1249,10 @@ class GoldenPathSynthesizer extends Base {
             scoringStats.candidateAdmissionStopReason = 'semantic-corpus-exhausted'
         }
 
-        let internalAuthorLogins = new Set();
-        try {
-            internalAuthorLogins = new Set(memberLoginsOf(readAgentIdentityNodes(GraphService.db?.storage?.db), {formerLogins: true}))
-        } catch (error) {
-            logger.warn(`[GoldenPathSynthesizer] AgentIdentity nodes unavailable; community multiplier off for this pass: ${error.message}`)
-        }
+        const internalAuthorLogins = readInternalAuthorLogins(
+            GraphService,
+            error => logger.warn(`[GoldenPathSynthesizer] AgentIdentity nodes unavailable; community multiplier off for this pass: ${error.message}`)
+        );
 
         // Candidate admission is a bounded whole-prefix loop: every widened pass rebuilds the full
         // state/blocker/actionability/liveness chain, then commits only the final successful attempt.

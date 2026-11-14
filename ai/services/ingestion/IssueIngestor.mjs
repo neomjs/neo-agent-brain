@@ -8,19 +8,82 @@ import {
     Memory_GraphService as GraphService,
     Memory_StorageRouter as StorageRouter
 } from '../../services.mjs';
-import logger                      from '../../mcp/server/memory-core/logger.mjs';
-import {ANCHORED_ISSUE_EDGE_TYPES} from '../memory-core/GraphService.mjs';
-import {CORPUS_PROJECTION_OWNER}   from '../graph/corpusProjectionContract.mjs';
+import logger                    from '../../mcp/server/memory-core/logger.mjs';
 import {
-    memberLoginsOf,
-    readAgentIdentityNodes
-} from '../../graph/agentIdentityParticipation.mjs';
+    ANCHORED_ISSUE_EDGE_TYPES,
+    PROTECTED_EDGE_TYPES,
+    isMessageRecordEdge,
+    syncCachedEdgeProperties
+} from '../memory-core/GraphService.mjs';
+import {CORPUS_PROJECTION_OWNER} from '../graph/corpusProjectionContract.mjs';
+import {
+    getComputedIssueEmphasisMultiplier,
+    readInternalAuthorLogins
+} from '../graph/computedGoldenPathRouting.mjs';
 import {
     normalizeDiscussionRoutingProjection as normalizeSourceDiscussionRoutingProjection
 } from '../github-workflow/shared/discussionRoutingDisposition.mjs';
 
+export const LEGACY_ANCHOR_RESET_MARKER_ID = 'issue_ingestor_legacy_anchor_reset_v1';
+
 const PULL_GAP_LABELS              = Object.freeze(['KB_GAP', 'TOOLING_GAP', 'RETROSPECTIVE']);
 const ANCHORED_ISSUE_EDGE_TYPE_SET = new Set(ANCHORED_ISSUE_EDGE_TYPES);
+const PROTECTED_EDGE_TYPE_SET      = new Set(PROTECTED_EDGE_TYPES);
+const normalizedInMemoryStores     = new WeakSet();
+
+/**
+ * @summary Resolves the normalized weight for an issue-adjacent edge during the one-shot legacy
+ * anchor reset, or `null` when the stored weight already satisfies the scent-decay contract.
+ * @param {Object} edge Edge descriptor `{source, target, type, properties}`.
+ * @param {Map<String, Object>} issueNodesById Hydrated `ISSUE` node map keyed by graph node id.
+ * @param {Set<String>} internalAuthorLogins Plane internal author logins.
+ * @returns {Number|null}
+ */
+function resolveNormalizedLegacyIssueEdgeWeight(edge, issueNodesById, internalAuthorLogins) {
+    const {source, target, type, properties} = edge || {};
+    const issueEndpoints                     = [source, target].filter(id => typeof id === 'string' && id.startsWith('issue-'));
+
+    if (issueEndpoints.length === 0) return null;
+
+    const rawWeight = Number(properties?.weight);
+    if (!Number.isFinite(rawWeight) || rawWeight <= 0) return null;
+
+    if (source === 'frontier' && type === 'GUIDES') return null;
+
+    if (isMessageRecordEdge({source})) {
+        return rawWeight !== 1.0 ? 1.0 : null;
+    }
+
+    if (ANCHORED_ISSUE_EDGE_TYPE_SET.has(type)) {
+        return (rawWeight < 0.1 || rawWeight > 1.0) ? 1.0 : null;
+    }
+
+    if (PROTECTED_EDGE_TYPE_SET.has(type)) {
+        return (rawWeight < 0.1 || rawWeight > 1.0) ? 1.0 : null;
+    }
+
+    if (rawWeight < 0.1) {
+        return 1.0;
+    }
+
+    if (rawWeight > 1.0) {
+        const multiplier = Math.max(
+            1.0,
+            ...issueEndpoints.map(id => {
+                const rawNode = issueNodesById.get(id) || GraphService.db?.nodes?.get?.(id);
+                const node    = rawNode?.isRecord
+                    ? {id: rawNode.get('id'), type: rawNode.get('label'), properties: rawNode.get('properties')}
+                    : rawNode;
+
+                return node ? getComputedIssueEmphasisMultiplier(node, internalAuthorLogins) : 1.0;
+            })
+        );
+
+        return Math.min(1.0, Number((rawWeight / multiplier).toFixed(6)));
+    }
+
+    return null;
+}
 
 /**
  * @summary Loads the source revision's exact path→provider-id map for one corpus facet.
@@ -202,24 +265,6 @@ class IssueIngestor extends Base {
     }
 
     /**
-     * @summary Bare GitHub logins of the plane's internal authors, its agents and its people, read from
-     * their AgentIdentity nodes: current logins and `formerLogins`, because a ticket authored before a
-     * handle rename keeps its old author string in the corpus. Nodes that cannot be read answer an empty
-     * set, which disables the community multiplier (safe degrade) instead of boosting every ticket.
-     * @param {Object} [graphService=GraphService] Graph service whose store holds the identity nodes.
-     * @returns {Set<String>}
-     * @static
-     */
-    static readInternalAuthorLogins(graphService = GraphService) {
-        try {
-            return new Set(memberLoginsOf(readAgentIdentityNodes(graphService.db?.storage?.db), {formerLogins: true}))
-        } catch (error) {
-            logger.warn(`[IssueIngestor] the identity nodes did not answer, so the community multiplier is off for this run: ${error.message}`);
-            return new Set()
-        }
-    }
-
-    /**
      * @summary Validates the source-owned Discussion routing projection as one atomic tuple. A
      * missing or malformed field degrades the entire tuple together, so graph/vector consumers
      * never observe a v1 schema paired with contradictory legacy reason/evidence fields.
@@ -271,17 +316,162 @@ class IssueIngestor extends Base {
     }
 
     /**
-     * @summary Whether a ticket author qualifies for the community-multiplier boost: true when the
-     * author exists, the internal-author set is non-empty, and the author is not in it. The non-empty
-     * guard makes an unread plane degrade safely (multiplier off) rather than treating every ticket as
-     * community-authored.
-     * @param {String} author Ticket GitHub author login (bare form).
-     * @param {Set<String>} internalAuthorLogins The run's internal authors ({@link IssueIngestor.readInternalAuthorLogins}).
-     * @returns {Boolean}
-     * @static
+     * @summary Performs a one-shot normalization of legacy anchor-written issue edge weights, stamped
+     * into `SchemaVersion` (`issue_ingestor_legacy_anchor_reset_v1`) so subsequent multi-session
+     * `linkNodes` reinforcements above `1.0` are preserved.
+     *
+     * Strips historical open-issue `bug` / community emphasis multipliers and `0.05` blocker discounts
+     * across `OPEN` and `CLOSED` issue edges while preserving unboosted decayed scent weights (`0.1..1.0`),
+     * retired-goal `ADVANCED_BY` weights (`0.1`), and `frontier -> GUIDES` synthesis edges.
+     *
+     * @param {Array<{issueId: String, meta: Object}>} [parsedIssues=[]] Issues parsed during Pass 1.
+     * @returns {{skipped: Boolean, repairedCount: Number}}
      */
-    static isCommunityAuthor(author, internalAuthorLogins) {
-        return Boolean(author) && internalAuthorLogins.size > 0 && !internalAuthorLogins.has(author)
+    normalizeLegacyAnchoredIssueEdgesOnce(parsedIssues = []) {
+        if (!GraphService.db) {
+            return {skipped: true, repairedCount: 0};
+        }
+
+        const sqliteDb = GraphService.db?.storage?.db || null;
+        const hasTable = name => Boolean(sqliteDb.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1"
+        ).get(name));
+
+        if (sqliteDb) {
+            if (hasTable('SchemaVersion') &&
+                sqliteDb.prepare('SELECT 1 FROM SchemaVersion WHERE id = ? LIMIT 1').get(LEGACY_ANCHOR_RESET_MARKER_ID)) {
+                return {skipped: true, repairedCount: 0};
+            }
+        } else if (normalizedInMemoryStores.has(GraphService.db)) {
+            return {skipped: true, repairedCount: 0};
+        }
+
+        const internalAuthorLogins = readInternalAuthorLogins(
+            GraphService,
+            error => logger.warn(`[IssueIngestor] AgentIdentity nodes unavailable during legacy anchor weight reset: ${error.message}`)
+        );
+        const issueNodesById = new Map();
+
+        if (sqliteDb && hasTable('Nodes')) {
+            const nodeRows = sqliteDb.prepare("SELECT id, data FROM Nodes WHERE id LIKE 'issue-%'").all();
+            for (const row of nodeRows) {
+                try {
+                    const parsed = JSON.parse(row.data);
+                    issueNodesById.set(row.id, {...parsed, id: parsed?.id || row.id});
+                } catch {
+                    // Ignore malformed node payloads; Pass 1 overlay or default 1.0 multiplier applies.
+                }
+            }
+        }
+
+        for (const item of parsedIssues) {
+            if (!item?.issueId || !item?.meta) continue;
+            const {issueId, meta} = item;
+            issueNodesById.set(issueId, {
+                id        : issueId,
+                type      : 'ISSUE',
+                state     : meta.state,
+                properties: {
+                    state : meta.state,
+                    labels: Array.isArray(meta.labels) ? meta.labels : [],
+                    author: meta.author || null
+                }
+            });
+        }
+
+        if (sqliteDb) {
+            GraphService.db.storage?.assertTestWriteIsolated?.();
+
+            let repairedCount = 0;
+
+            sqliteDb.transaction(() => {
+                if (hasTable('Edges')) {
+                    const edgeRows       = sqliteDb.prepare("SELECT id, source, target, type, data FROM Edges WHERE source LIKE 'issue-%' OR target LIKE 'issue-%'").all();
+                    const updateEdgeStmt = sqliteDb.prepare('UPDATE Edges SET data = ? WHERE id = ?');
+
+                    for (const row of edgeRows) {
+                        let parsed;
+                        try {
+                            parsed = JSON.parse(row.data);
+                        } catch {
+                            continue;
+                        }
+
+                        const nextWeight = resolveNormalizedLegacyIssueEdgeWeight({
+                            source    : row.source,
+                            target    : row.target,
+                            type      : row.type,
+                            properties: parsed?.properties
+                        }, issueNodesById, internalAuthorLogins);
+
+                        if (nextWeight === null) continue;
+
+                        parsed.properties = {...(parsed.properties || {}), weight: nextWeight};
+                        updateEdgeStmt.run(JSON.stringify(parsed), row.id);
+                        repairedCount++;
+
+                        syncCachedEdgeProperties(
+                            GraphService.db,
+                            {id: row.id, source: row.source, target: row.target},
+                            {weight: nextWeight}
+                        );
+                    }
+                }
+
+                sqliteDb.exec(`
+                    CREATE TABLE IF NOT EXISTS SchemaVersion (
+                        id TEXT PRIMARY KEY,
+                        version INTEGER NOT NULL,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                `);
+                sqliteDb.prepare(`
+                    INSERT INTO SchemaVersion (id, version, updated_at)
+                    VALUES (?, 1, CURRENT_TIMESTAMP)
+                    ON CONFLICT(id) DO UPDATE SET
+                        version = excluded.version,
+                        updated_at = excluded.updated_at
+                `).run(LEGACY_ANCHOR_RESET_MARKER_ID);
+            })();
+
+            if (repairedCount > 0) {
+                GraphService.db.acknowledgeLocalMutations?.();
+                logger.info(`[IssueIngestor] Normalized ${repairedCount} legacy anchor-weighted issue edges.`);
+            }
+
+            return {skipped: false, repairedCount};
+        }
+
+        const edges    = GraphService.db.edges?.items || [];
+        const repaired = [];
+
+        for (const edge of edges) {
+            const properties = edge?.isRecord ? edge.get('properties') : edge?.properties;
+            const nextWeight = resolveNormalizedLegacyIssueEdgeWeight({
+                source: edge?.isRecord ? edge.get('source') : edge?.source,
+                target: edge?.isRecord ? edge.get('target') : edge?.target,
+                type  : edge?.isRecord ? edge.get('type')   : edge?.type,
+                properties
+            }, issueNodesById, internalAuthorLogins);
+
+            if (nextWeight === null) continue;
+
+            if (edge?.isRecord) {
+                edge.set({properties: {...(properties || {}), weight: nextWeight}});
+            } else {
+                (edge.properties ||= {}).weight = nextWeight;
+            }
+            repaired.push(edge);
+        }
+
+        normalizedInMemoryStores.add(GraphService.db);
+
+        if (repaired.length > 0 && GraphService.db.autoSave && GraphService.db.storage?.addEdges) {
+            GraphService.db.storage.addEdges(repaired);
+            GraphService.db.acknowledgeLocalMutations?.();
+        }
+
+        return {skipped: false, repairedCount: repaired.length};
     }
 
     /**
@@ -402,6 +592,8 @@ class IssueIngestor extends Base {
                 }
             }
         }
+
+        this.normalizeLegacyAnchoredIssueEdgesOnce(parsedIssues);
 
         // Pass 2: Link edges and process open issues
         const extractIssueId = (str) => {

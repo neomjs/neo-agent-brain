@@ -442,6 +442,56 @@ test.describe('buildComputedRouteFromPass — canonical pass outcome → typed c
     });
 });
 
+test.describe('computedGoldenPathRouting — community-multiplier internal-author set (#1527)', () => {
+    let isCommunityAuthor, readInternalAuthorLogins;
+
+    const graphOf  = nodes => ({db: {storage: {db: {prepare: () => ({all: () => nodes.map(node => ({data: JSON.stringify(node)}))})}}}}),
+          internal = new Set(['owner-login', 'their-agent']);
+
+    test.beforeAll(async () => {
+        ({
+            isCommunityAuthor,
+            readInternalAuthorLogins
+        } = await import('../../../../../../ai/services/graph/computedGoldenPathRouting.mjs'));
+    });
+
+    test('readInternalAuthorLogins reads the plane\'s members as bare logins, former logins included', () => {
+        const logins = readInternalAuthorLogins(graphOf([
+            {id: '@their-agent',      label: 'AgentIdentity', properties: {accountType: 'agent', formerLogins: ['@their-old-handle']}},
+            {id: '@their-owner',      label: 'AgentIdentity', properties: {accountType: 'human', githubLogin: '@owner-login'}},
+            {id: '@fixture-leftover', label: 'AgentIdentity', properties: {}}
+        ]));
+
+        expect([...logins]).toEqual(['their-agent', 'their-old-handle', 'owner-login']);
+    });
+
+    test('readInternalAuthorLogins answers an empty set and notifies onError when the plane cannot be read', () => {
+        const errors = [];
+        expect(readInternalAuthorLogins({db: null}, error => errors.push(error.message)).size).toBe(0);
+        expect(errors).toHaveLength(1);
+    });
+
+    test('isCommunityAuthor: an internal author is NOT a community author (no boost)', () => {
+        expect(isCommunityAuthor('owner-login', internal)).toBe(false);
+        expect(isCommunityAuthor('their-agent', internal)).toBe(false);
+    });
+
+    test('isCommunityAuthor: an external author IS a community author (boost eligible)', () => {
+        expect(isCommunityAuthor('some-external-contributor', internal)).toBe(true);
+    });
+
+    test('isCommunityAuthor: a missing author is never a community author', () => {
+        expect(isCommunityAuthor('', internal)).toBe(false);
+        expect(isCommunityAuthor(undefined, internal)).toBe(false);
+        expect(isCommunityAuthor(null, internal)).toBe(false);
+    });
+
+    test('isCommunityAuthor: an empty internal-author registry disables the multiplier (safe degrade, not boost-all)', () => {
+        expect(isCommunityAuthor('some-external-contributor', new Set())).toBe(false);
+        expect(isCommunityAuthor('tobiu', new Set())).toBe(false);
+    });
+});
+
 test.describe('computedGoldenPathRouting — read-time issue emphasis multiplier (#1527)', () => {
     let getComputedIssueEmphasisMultiplier;
 

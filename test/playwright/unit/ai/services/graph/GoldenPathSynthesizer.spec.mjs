@@ -2363,6 +2363,145 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(handoffContent).toContain(`5. **${internalEnhId}**: Score 10.40 (Semantic: 5.00, Structural: 0.40)`);
     });
 
+    test('legacy anchor-written SQLite edge weights normalize once so read-time emphasis never double-multiplies and post-migration reinforcements survive (#1527)', async () => {
+        const {
+            default: IssueIngestor,
+            LEGACY_ANCHOR_RESET_MARKER_ID
+        } = await import('../../../../../../ai/services/ingestion/IssueIngestor.mjs');
+        const OpenAiCompatible             = (await import('../../../../../../ai/provider/OpenAiCompatible.mjs')).default;
+        const originalGetGraphCollection   = StorageRouter.getGraphCollection;
+        const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
+        const originalEmbedText            = TextEmbeddingService.embedText;
+        const originalGenerate             = OpenAiCompatible.prototype.generate;
+        const sqliteDb                     = GraphService.db.storage.db;
+        const internalBugId                = 'issue-20747';
+        const communityBugId               = 'issue-20748';
+        const blockedBugId                 = 'issue-20895';
+        const openBlockerId                = 'issue-101';
+        const identityId                   = '@test-legacy-reset-internal';
+        const summaryInternalId            = 'SESSION_SUMMARY:legacy-20747';
+        const msgInternalId                = 'MESSAGE:legacy-m-20747';
+        const summaryCommunityId           = 'SESSION_SUMMARY:legacy-20748';
+        const msgCommunityId               = 'MESSAGE:legacy-m-20748';
+        const msgBlockedId                 = 'MESSAGE:legacy-m-20895';
+        const root                         = fs.mkdtempSync(path.join(os.tmpdir(), 'gp-legacy-anchor-reset-'));
+        const createdNodes                 = [
+            internalBugId,
+            communityBugId,
+            blockedBugId,
+            openBlockerId,
+            identityId,
+            summaryInternalId,
+            msgInternalId,
+            summaryCommunityId,
+            msgCommunityId,
+            msgBlockedId
+        ];
+
+        const readSqliteEdgeWeight = (source, target, type) => Number(
+            sqliteDb.prepare(
+                "SELECT json_extract(data, '$.properties.weight') AS weight FROM Edges WHERE source = ? AND target = ? AND type = ?"
+            ).get(source, target, type)?.weight
+        );
+
+        fs.mkdirSync(path.join(root, 'issues'), {recursive: true});
+        const writeIssue = (num, title, author, labels, extra = []) => fs.writeFileSync(
+            path.join(root, `issues/issue-${num}.md`),
+            [
+                '---',
+                `id: ${num}`,
+                `title: ${title}`,
+                'state: OPEN',
+                `author: ${author}`,
+                'labels:',
+                ...labels.map(label => `  - ${label}`),
+                ...extra,
+                '---',
+                `# ${title}`
+            ].join('\n')
+        );
+
+        writeIssue(20747, 'Internal bug with legacy anchor weights',  'test-legacy-internal-author', ['bug', 'ai']);
+        writeIssue(20748, 'Community bug with legacy anchor weights', 'external-legacy-contributor', ['bug', 'ai']);
+        writeIssue(20895, 'Blocked bug with legacy discount weight',  'test-legacy-internal-author', ['bug', 'ai'], ['blockedBy:', "  - '#101'"]);
+        writeIssue(101,   'Open upstream blocker',                    'test-legacy-internal-author', ['ai']);
+
+        sqliteDb.prepare('DELETE FROM SchemaVersion WHERE id = ?').run(LEGACY_ANCHOR_RESET_MARKER_ID);
+
+        GraphService.upsertNode({id: 'frontier', type: 'SYSTEM_TENET', properties: {name: 'Active Context Frontier'}});
+        GraphService.upsertGlobalNode({
+            id        : identityId,
+            type      : 'AgentIdentity',
+            properties: {accountType: 'agent', githubLogin: 'test-legacy-internal-author'}
+        });
+        [internalBugId, communityBugId, blockedBugId, openBlockerId].forEach(id => {
+            GraphService.upsertNode({id, type: 'ISSUE', properties: {state: 'OPEN'}});
+        });
+        GraphService.upsertNode({id: summaryInternalId,  type: 'SESSION_SUMMARY'});
+        GraphService.upsertNode({id: summaryCommunityId, type: 'SESSION_SUMMARY'});
+        GraphService.upsertNode({id: msgInternalId,      type: 'MESSAGE'});
+        GraphService.upsertNode({id: msgCommunityId,     type: 'MESSAGE'});
+        GraphService.upsertNode({id: msgBlockedId,       type: 'MESSAGE'});
+
+        GraphService.linkNodes(summaryInternalId,  internalBugId,  'DISCUSSED_IN',      1.96);
+        GraphService.linkNodes(msgInternalId,      internalBugId,  'REFERENCES_TICKET', 2.0);
+        GraphService.linkNodes(summaryCommunityId, communityBugId, 'DISCUSSED_IN',      2.45);
+        GraphService.linkNodes(msgCommunityId,     communityBugId, 'REFERENCES_TICKET', 2.5);
+        GraphService.linkNodes(msgBlockedId,       blockedBugId,   'REFERENCES_TICKET', 0.05);
+
+        StorageRouter.getGraphCollection = async () => ({
+            get   : async () => ({ids: [], metadatas: []}),
+            upsert: async () => {},
+            query : async () => ({
+                ids      : [[communityBugId, internalBugId, blockedBugId]],
+                distances: [[0.1, 0.1, 0.1]]
+            })
+        });
+        StorageRouter.getSummaryCollection  = async () => ({get: async () => ({documents: ['Legacy anchor normalization proof']})});
+        TextEmbeddingService.embedText      = async () => buildConfiguredEmbedding();
+        OpenAiCompatible.prototype.generate = async () => ({content: '{"strategic_brief":"stub"}'});
+
+        try {
+            await IssueIngestor.ingestIssueStates({contentRoot: root, strict: true});
+
+            const markerRow = sqliteDb.prepare('SELECT id, version FROM SchemaVersion WHERE id = ?').get(LEGACY_ANCHOR_RESET_MARKER_ID);
+            expect(markerRow).toEqual({id: LEGACY_ANCHOR_RESET_MARKER_ID, version: 1});
+
+            expect(readSqliteEdgeWeight(summaryInternalId,  internalBugId,  'DISCUSSED_IN')).toBe(0.98);
+            expect(readSqliteEdgeWeight(msgInternalId,      internalBugId,  'REFERENCES_TICKET')).toBe(1.0);
+            expect(readSqliteEdgeWeight(summaryCommunityId, communityBugId, 'DISCUSSED_IN')).toBe(0.98);
+            expect(readSqliteEdgeWeight(msgCommunityId,     communityBugId, 'REFERENCES_TICKET')).toBe(1.0);
+            expect(readSqliteEdgeWeight(msgBlockedId,       blockedBugId,   'REFERENCES_TICKET')).toBe(1.0);
+
+            const firstPass     = await GoldenPathSynthesizer.synthesizeGoldenPath({repoEnrichmentEnabled: false});
+            const firstHandoff  = fs.readFileSync(tmpHandoffFile, 'utf-8');
+            const firstRouteIds = firstPass.computedRoute.route.items.map(item => item.id);
+
+            expect(firstRouteIds).toEqual([communityBugId, internalBugId]);
+            expect(firstHandoff).not.toContain(blockedBugId);
+            expect(firstHandoff).toContain(`1. **${communityBugId}**: Score 12.45 (Semantic: 5.00, Structural: 2.45)`);
+            expect(firstHandoff).toContain(`2. **${internalBugId}**: Score 11.96 (Semantic: 5.00, Structural: 1.96)`);
+
+            GraphService.linkNodes(summaryInternalId, internalBugId, 'DISCUSSED_IN', 1.0);
+            expect(readSqliteEdgeWeight(summaryInternalId, internalBugId, 'DISCUSSED_IN')).toBeCloseTo(1.08, 6);
+
+            await IssueIngestor.ingestIssueStates({contentRoot: root, strict: true});
+            expect(readSqliteEdgeWeight(summaryInternalId, internalBugId, 'DISCUSSED_IN')).toBeCloseTo(1.08, 6);
+
+            await GoldenPathSynthesizer.synthesizeGoldenPath({repoEnrichmentEnabled: false});
+            const secondHandoff = fs.readFileSync(tmpHandoffFile, 'utf-8');
+
+            expect(secondHandoff).toContain(`**${internalBugId}**: Score 12.16 (Semantic: 5.00, Structural: 2.16)`);
+        } finally {
+            StorageRouter.getGraphCollection    = originalGetGraphCollection;
+            StorageRouter.getSummaryCollection  = originalGetSummaryCollection;
+            TextEmbeddingService.embedText      = originalEmbedText;
+            OpenAiCompatible.prototype.generate = originalGenerate;
+            GraphService.removeNodes(createdNodes);
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+
     test('D2 admission withholds before both stores and preserves the last-known-good handoff (#17627)', async () => {
         const originalGetCorpusProjectionAdmission = Synthesizer.getCorpusProjectionAdmission;
         const originalGetGraphCollection           = StorageRouter.getGraphCollection;

@@ -1,3 +1,4 @@
+import {memberLoginsOf, readAgentIdentityNodes}                  from '../../graph/agentIdentityParticipation.mjs';
 import {normalizeDiscussionRoutingProjection}                    from '../github-workflow/shared/discussionRoutingDisposition.mjs';
 import {normalizeLabels}                                         from './issueFocusSections.mjs';
 import {formatGoldenPathCapturedAt as formatGoldenPathTimestamp} from './goldenPathTimestamp.mjs';
@@ -96,6 +97,41 @@ function getComputedRecommendationNodeType(nodeData) {
 }
 
 /**
+ * @summary Reads bare GitHub logins of the plane's internal members (`agent` and `human` `AgentIdentity` nodes),
+ * including `formerLogins` so historical tickets authored before handle renames remain recognized as internal.
+ *
+ * Degrades safely to an empty `Set` (invoking `onError` when supplied) if the store or `AgentIdentity` query is
+ * unavailable, keeping community emphasis disabled rather than inverting into boosting every ticket.
+ *
+ * @param {Object|null|undefined} graphService Graph service whose SQLite handle holds `AgentIdentity` nodes.
+ * @param {Function} [onError] Optional callback invoked when reading `AgentIdentity` nodes fails.
+ * @returns {Set<String>}
+ */
+export function readInternalAuthorLogins(graphService, onError) {
+    try {
+        return new Set(memberLoginsOf(readAgentIdentityNodes(graphService?.db?.storage?.db), {formerLogins: true}))
+    } catch (error) {
+        onError?.(error);
+        return new Set()
+    }
+}
+
+/**
+ * @summary Determines whether a ticket author qualifies as an external community author.
+ *
+ * Returns `true` only when `author` is non-empty, `internalAuthorLogins` is non-empty, and `author`
+ * is absent from `internalAuthorLogins`. Requiring a non-empty registry ensures an unreadable plane
+ * degrades safely (community emphasis off) rather than treating every ticket as community-authored.
+ *
+ * @param {String|null|undefined} author Bare GitHub login on the work item.
+ * @param {Set<String>} [internalAuthorLogins] Bare logins of the plane's internal members ({@link readInternalAuthorLogins}).
+ * @returns {Boolean}
+ */
+export function isCommunityAuthor(author, internalAuthorLogins) {
+    return Boolean(author) && Boolean(internalAuthorLogins?.size > 0) && !internalAuthorLogins.has(author)
+}
+
+/**
  * @summary Computes read-time structural emphasis for `ISSUE` candidates (`+0.5` triaged community, `+1.0` `bug`).
  * @param {Object} nodeData Parsed graph node payload.
  * @param {Set<String>} [internalAuthorLogins] Plane internal author logins; empty disables community emphasis.
@@ -109,7 +145,7 @@ export function getComputedIssueEmphasisMultiplier(nodeData, internalAuthorLogin
 
     let multiplier = 1.0;
 
-    if (Boolean(author) && internalAuthorLogins?.size > 0 && !internalAuthorLogins.has(author) && labels.length > 0) {
+    if (isCommunityAuthor(author, internalAuthorLogins) && labels.length > 0) {
         multiplier += 0.5;
     }
 

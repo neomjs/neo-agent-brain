@@ -159,14 +159,60 @@ const ANCHORED_ISSUE_EDGE_TYPE_SET = new Set(ANCHORED_ISSUE_EDGE_TYPES);
 const MESSAGE_ID_PREFIX = 'MESSAGE:';
 
 /**
+ * @summary Checks whether an edge originates from a `MESSAGE:` record node.
+ *
  * An edge a MESSAGE node sources is the sender's record (reply, thread, ticket, tag and session links):
  * decayGlobalTopology neither decays nor prunes it, and getInboundStructuralSupport counts it as total,
  * never decaying, support. Message ids carry the prefix by construction (MailboxService).
  * @param {Object} edge `{source}` as cached or stored.
  * @returns {Boolean}
  */
-function isMessageRecordEdge(edge) {
+export function isMessageRecordEdge(edge) {
     return typeof edge?.source === 'string' && edge.source.startsWith(MESSAGE_ID_PREFIX);
+}
+
+/**
+ * @summary Synchronizes edge property updates across `GraphService.db.edges` without splitting
+ * `autoInitRecords: false` secondary-index raw objects from hydrated `Record` instances.
+ * @param {Object|null|undefined} db Graph database instance.
+ * @param {{id: String, source?: String, target?: String}} edgeRef Edge identity and endpoints.
+ * @param {Object} propertyPatch Properties to merge onto cached edge instances.
+ */
+export function syncCachedEdgeProperties(db, {id, source, target}, propertyPatch) {
+    const edgeStore = db?.edges;
+    if (!edgeStore || !id) return;
+
+    const refs    = new Set();
+    const mapEdge = edgeStore.map instanceof Map
+        ? edgeStore.map.get(id)
+        : edgeStore.get?.(id);
+
+    if (mapEdge) refs.add(mapEdge);
+
+    if (typeof edgeStore.getByIndex === 'function') {
+        for (const [property, value] of [['source', source], ['target', target]]) {
+            if (!value) continue;
+            for (const indexed of edgeStore.getByIndex(property, value)) {
+                if (indexed?.id === id) refs.add(indexed);
+            }
+        }
+    }
+
+    for (const ref of refs) {
+        if (ref.isRecord) {
+            ref.set({
+                properties: {
+                    ...(ref.get('properties') || {}),
+                    ...propertyPatch
+                }
+            });
+        } else {
+            ref.properties = {
+                ...(ref.properties || {}),
+                ...propertyPatch
+            };
+        }
+    }
 }
 
 /**
@@ -981,16 +1027,11 @@ class GraphService extends Base {
                 }
 
                 // Keep RAM cache functionally coherent if edge actively exists
-                let ramEdge = this.db.edges.get(existing.id);
-                if (ramEdge) {
-                    if (ramEdge.isRecord) {
-                        const newProps = { ...(ramEdge.get('properties') || {}), ...edgeProperties, weight: newWeight };
-                        ramEdge.set({properties: newProps});
-                    } else {
-                        ramEdge.properties.weight = newWeight;
-                        Object.assign(ramEdge.properties, edgeProperties);
-                    }
-                }
+                syncCachedEdgeProperties(
+                    this.db,
+                    {id: existing.id, source, target},
+                    {...edgeProperties, weight: newWeight}
+                );
 
                 if (typeof this.db.acknowledgeLocalMutations === 'function') {
                     this.db.acknowledgeLocalMutations();
