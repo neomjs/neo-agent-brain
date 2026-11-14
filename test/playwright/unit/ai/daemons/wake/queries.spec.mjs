@@ -34,128 +34,93 @@ test.describe('ai/daemons/wake/queries', () => {
         }
     });
 
-    test.describe('getUnreadSunsetHandovers', () => {
-        test('finds unread MESSAGE nodes tagged with sunset-protocol-handover', () => {
-            const messageData = {
-                type      : 'MESSAGE',
-                properties: {
-                    taggedConcepts: ['sunset-protocol-handover', 'other-concept']
-                }
-            };
-            db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run('msg-1', JSON.stringify(messageData));
+    // A message node as the store writes it: `{id, label, properties}`, no `type`
+    const SINCE    = '2026-11-14T12:00:00.000Z',
+          handover = (id, properties = {}, label = 'MESSAGE') => ({id, label, properties: {
+              sentAt: '2026-11-14T15:17:47.449Z', taggedConcepts: ['sunset-protocol-handover'], ...properties
+          }}),
+          insert   = node => db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(node.id, JSON.stringify(node)),
+          read     = () => getUnreadSunsetHandovers(db, {sinceIso: SINCE});
 
-            const results = getUnreadSunsetHandovers(db);
-            expect(results.length).toBe(1);
-            expect(results[0].type).toBe('MESSAGE');
+    test.describe('getUnreadSunsetHandovers', () => {
+        test('finds an unread handover in the shape the store writes', () => {
+            insert(handover('MESSAGE:1', {taggedConcepts: ['sunset-protocol-handover', 'other-concept']}));
+
+            expect(read().map(node => node.id)).toEqual(['MESSAGE:1']);
+            expect(read()[0].label).toBe('MESSAGE');
         });
 
-        test('ignores read MESSAGE nodes', () => {
-            const messageData = {
-                type      : 'MESSAGE',
-                properties: {
-                    readAt        : new Date().toISOString(),
-                    taggedConcepts: ['sunset-protocol-handover']
-                }
-            };
-            db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run('msg-1', JSON.stringify(messageData));
+        test('leaves a handover sent before the bound: no rotation can act on it any more', () => {
+            insert(handover('MESSAGE:old', {sentAt: '2026-06-20T03:31:45.548Z'}));
+            insert(handover('MESSAGE:edge', {sentAt: SINCE}));
 
-            const results = getUnreadSunsetHandovers(db);
-            expect(results.length).toBe(0);
+            expect(read().map(node => node.id)).toEqual(['MESSAGE:edge']);
+        });
+
+        test('ignores a read handover', () => {
+            insert(handover('MESSAGE:1', {readAt: new Date().toISOString()}));
+
+            expect(read()).toEqual([]);
         });
 
         test('ignores summary-processed handovers without marking recipient readAt', () => {
-            const messageData = {
-                type      : 'MESSAGE',
-                properties: {
-                    handoverSummaryProcessedAt: new Date().toISOString(),
-                    readAt                    : null,
-                    taggedConcepts            : ['sunset-protocol-handover']
-                }
-            };
-            db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run('msg-1', JSON.stringify(messageData));
+            insert(handover('MESSAGE:1', {handoverSummaryProcessedAt: new Date().toISOString(), readAt: null}));
 
-            const results = getUnreadSunsetHandovers(db);
-            expect(results.length).toBe(0);
+            expect(read()).toEqual([]);
         });
 
-        test('ignores nodes without the taggedConcept', () => {
-            const messageData = {
-                type      : 'MESSAGE',
-                properties: {
-                    taggedConcepts: ['some-other-concept']
-                }
-            };
-            db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run('msg-1', JSON.stringify(messageData));
+        test('ignores a message without the taggedConcept', () => {
+            insert(handover('MESSAGE:1', {taggedConcepts: ['some-other-concept']}));
 
-            const results = getUnreadSunsetHandovers(db);
-            expect(results.length).toBe(0);
+            expect(read()).toEqual([]);
         });
 
-        test('ignores non-MESSAGE nodes', () => {
-            const nodeData = {
-                type      : 'EPISODIC',
-                properties: {
-                    taggedConcepts: ['sunset-protocol-handover']
-                }
-            };
-            db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run('msg-1', JSON.stringify(nodeData));
+        test('ignores a node that is not a message', () => {
+            insert(handover('EPISODIC:1', {}, 'EPISODIC'));
 
-            const results = getUnreadSunsetHandovers(db);
-            expect(results.length).toBe(0);
+            expect(read()).toEqual([]);
         });
     });
 
     test.describe('markSunsetHandoversSummaryProcessed', () => {
         test('receipt and completion preserve intervening recipient and other property writes', () => {
-            const node = {id: 'msg-stale', type: 'MESSAGE', properties: {
-                readAt: null, taggedConcepts: ['sunset-protocol-handover'], extra: 'before'
-            }};
-            db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(node.id, JSON.stringify(node));
-            const stale = getUnreadSunsetHandovers(db)[0];
+            const node = handover('MESSAGE:stale', {readAt: null, extra: 'before'});
+            insert(node);
+            const stale = read()[0];
             db.prepare("UPDATE Nodes SET data = json_set(data, '$.properties.readAt', ?, '$.properties.extra', ?) WHERE id = ?")
                 .run('2026-11-06T00:00:00Z', 'after', node.id);
 
             writeSunsetFocusItemsReceipt(db, node.id, {named: 2, placed: 1});
             let stored = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(node.id).data);
             expect(stored.properties).toMatchObject({readAt: '2026-11-06T00:00:00Z', extra: 'after', focusItemsReceipt: {named: 2, placed: 1}});
-            expect(getUnreadSunsetHandovers(db).map(item => item.id)).toEqual([node.id]);
+            expect(read().map(item => item.id)).toEqual([node.id]);
 
             markSunsetHandoversSummaryProcessed(db, [stale]);
             stored = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(node.id).data);
             expect(stored.properties).toMatchObject({readAt: '2026-11-06T00:00:00Z', extra: 'after', focusItemsReceipt: {named: 2, placed: 1}});
             expect(stored.properties.handoverSummaryProcessedAt).toEqual(expect.any(String));
-            expect(getUnreadSunsetHandovers(db)).toEqual([])
+            expect(read()).toEqual([])
         });
 
         test('missing receipt remains pending after read; a historical read without a receipt stays excluded', () => {
-            const insert = db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)');
-            for (const id of ['pending', 'historical']) {
-                insert.run(id, JSON.stringify({id, type: 'MESSAGE', properties: {
-                    readAt: '2026-11-06T00:00:00Z', taggedConcepts: ['sunset-protocol-handover']
-                }}));
+            for (const id of ['MESSAGE:pending', 'MESSAGE:historical']) {
+                insert(handover(id, {readAt: '2026-11-06T00:00:00Z'}));
             }
-            writeSunsetFocusItemsReceipt(db, 'pending', 'missing');
-            const stored = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get('pending').data);
+            writeSunsetFocusItemsReceipt(db, 'MESSAGE:pending', 'missing');
+            const stored = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get('MESSAGE:pending').data);
             expect(stored.properties.focusItemsReceipt).toBe('missing');
-            expect(getUnreadSunsetHandovers(db).map(item => item.id)).toEqual(['pending']);
+            expect(read().map(item => item.id)).toEqual(['MESSAGE:pending']);
             markSunsetHandoversSummaryProcessed(db, [stored]);
-            expect(getUnreadSunsetHandovers(db)).toEqual([])
+            expect(read()).toEqual([])
         });
 
         test('sets the summary-processed marker without consuming the inbox read state', () => {
-            const node = {
-                id        : 'msg-1',
-                type      : 'MESSAGE',
-                properties: {
-                    readAt        : null,
-                    taggedConcepts: ['sunset-protocol-handover']
-                }
-            };
-            db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(node.id, JSON.stringify(node));
+            const node = handover('MESSAGE:1', {readAt: null});
+            insert(node);
 
             markSunsetHandoversSummaryProcessed(db, [node]);
 
-            const row         = db.prepare('SELECT data FROM Nodes WHERE id = ?').get('msg-1');
+            const row         = db.prepare('SELECT data FROM Nodes WHERE id = ?').get('MESSAGE:1');
             const updatedNode = JSON.parse(row.data);
 
             expect(updatedNode.properties.handoverSummaryProcessedAt).toBeDefined();

@@ -268,6 +268,8 @@ export function buildSummaryTrigger({now, lastRunAt, intervalMs, handovers = [],
  * @param {Object} options.state Current orchestrator task state.
  * @param {Number} options.now Current timestamp in milliseconds.
  * @param {Number} options.summarySweepIntervalMs Periodic summary sweep interval.
+ * @param {String} options.handoverSinceIso Oldest handover this lane still stamps: one sent before the
+ *     session-rotation window can no longer rotate, so its receipt count and defect-note serve no one.
  * @param {Function} [options.getUnreadSunsetHandoversFn] Test seam for handover reads.
  * @param {Function} [options.getPendingSummarizationJobsFn] Test seam for pending marker reads.
  * @param {Function} [options.getPendingMemorySummaryBackfillJobsFn] Test seam for miniSummary backlog.
@@ -284,6 +286,7 @@ export function getDueTask({
     state,
     now,
     summarySweepIntervalMs,
+    handoverSinceIso,
     getUnreadSunsetHandoversFn = getUnreadSunsetHandovers,
     getPendingSummarizationJobsFn = getPendingSummarizationJobs,
     getPendingSummarizationCountFn = getPendingSummarizationCount,
@@ -295,7 +298,7 @@ export function getDueTask({
     publishFocusItemsDefect,
     log
 }) {
-    const handovers   = getUnreadSunsetHandoversFn(db);
+    const handovers   = getUnreadSunsetHandoversFn(db, {sinceIso: handoverSinceIso});
     const pendingJobs = handovers.length > 0 ? [] : getPendingSummarizationJobsFn(db);
     const lastRunAt   = state.summary?.lastRunAt || 0;
     // Only count the unsummarized-session backlog when the periodic sweep is the path that will

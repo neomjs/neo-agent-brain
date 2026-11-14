@@ -71,6 +71,8 @@ const taskRegistry = [
                 state,
                 now,
                 summarySweepIntervalMs : intervals.summarySweep,
+                // a handover past the rotation window can no longer rotate, so the lane leaves it
+                handoverSinceIso       : new Date(now - intervals.sessionRotationWindow).toISOString(),
                 publishFocusItemsDefect: hooks.publishFocusItemsDefect,
                 log                    : hooks.log
             });
