@@ -86,9 +86,17 @@ function insertRoute(db, {identity = SEAT, id = 'WAKE_SUB:rotate', url = 'http:/
 function insertSelfMessage(db, id, minutesAgo, {identity = SEAT, handover = true, focusItemsReceipt = {named: 2, placed: 2}, sessionRotation} = {}) {
     insertNode(db, id, 'MESSAGE', {
         from          : identity, to: identity, subject: handover ? '[sunset]' : '[sunset-rescinded]', sentAt: at(minutesAgo),
-        taggedConcepts: handover ? ['sunset-protocol-handover'] : [],
+        taggedConcepts: handover ? ['sunset-protocol-handover'] : ['sunset-rescinded'],
         ...(focusItemsReceipt === 'unconsumed' ? {} : {focusItemsReceipt}),
         ...(sessionRotation ? {sessionRotation} : {})
+    })
+}
+
+// The live shape of a successor marker (Vega's MESSAGE:8a2e1490, replying to her handover MESSAGE:a55cc803).
+function insertSuccessor(db, id, minutesAgo, inReplyTo, identity = SEAT) {
+    insertNode(db, id, 'MESSAGE', {
+        from          : identity, to: identity, subject: '[sunset successor]', sentAt: at(minutesAgo), inReplyTo,
+        taggedConcepts: ['sunset-successor'], wakeSuppressed: true
     })
 }
 
@@ -187,19 +195,56 @@ test.describe('session-rotation lane (#1383)', () => {
         expect(rotationOf(db, 'MESSAGE:receipt')).toBeUndefined()
     });
 
-    test('AC-4: a newer session that saved a memory since the receipt gets no request, and the refusal says so', async () => {
+    test('#1712 AC-1: a Memory Core id that changes inside the old transcript neither holds back the request nor completes it (Clio\'s three ids)', async () => {
         const db = createGraph();
 
         insertRoute(db);
-        insertMemory(db, 'mem-old', 12, 'session-old');
+        insertMemory(db, 'mem-c3373e53', 14, 'c3373e53');
         insertSelfMessage(db, 'MESSAGE:receipt', 10);
-        insertMemory(db, 'mem-new', 4, 'session-new');
+        insertMemory(db, 'mem-3c9a08d0', 10 - 19 / 60, '3c9a08d0'); // the sunset turn's own diary, 19 s after the receipt
 
-        const {outcome, sent} = await runLane(db);
+        expect(holdsWakes({read: readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN)}), hasRotationRoute: true, now: NOW, windowMs: WINDOW_MS})).toBe(true);
+        expect((await runLane(db)).sent).toHaveLength(1);
+        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'requested', oldSessionId: 'c3373e53'});
 
-        expect(sent).toEqual([]);
-        expect(outcome.refused).toBe(1);
-        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'refused', reason: 'newer-session'})
+        insertMemory(db, 'mem-9ed19770', 3, '9ed19770'); // a turn woken later in the same transcript
+
+        expect((await runLane(db, {now: NOW + MIN})).outcome).toMatchObject({completed: 0, waiting: 1});
+        expect(rotationOf(db, 'MESSAGE:receipt').state).toBe('requested')
+    });
+
+    test('#1712 AC-2: a marker replying to the receipt refuses a rotation not yet requested; one replying to another message changes nothing', async () => {
+        const answered = createGraph();
+
+        insertRoute(answered);
+        insertSelfMessage(answered, 'MESSAGE:receipt', 10);
+        insertSuccessor(answered, 'MESSAGE:successor', 4, 'receipt'); // a bare id names the same message
+
+        expect((await runLane(answered)).sent).toEqual([]);
+        expect(rotationOf(answered, 'MESSAGE:receipt')).toMatchObject({state: 'refused', reason: 'successor-present'});
+
+        const elsewhere = createGraph();
+
+        insertRoute(elsewhere);
+        insertSelfMessage(elsewhere, 'MESSAGE:receipt', 10);
+        insertSuccessor(elsewhere, 'MESSAGE:other-successor', 4, 'MESSAGE:an-older-handover');
+
+        expect((await runLane(elsewhere)).sent).toHaveLength(1)
+    });
+
+    test('#1712 AC-3: a successor marker never switches its receipt off as the newest self-message; a rescinding note still does', () => {
+        const db   = createGraph(),
+              read = () => readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN)});
+
+        insertSelfMessage(db, 'MESSAGE:receipt', 10);
+        insertSuccessor(db, 'MESSAGE:successor', 4, 'MESSAGE:receipt');
+
+        // no memory after the marker yet, so the successor's session is still unknown
+        expect(read()).toMatchObject({receipt: {id: 'MESSAGE:receipt'}, successor: {id: 'MESSAGE:successor', sentAt: at(4), sessionId: null}});
+
+        insertSelfMessage(db, 'MESSAGE:rescinded', 2, {handover: false});
+
+        expect(read()).toBeNull()
     });
 
     test('AC-7: a prompt after the receipt refuses it; with no prompt since, the request goes whether the operator is present or away', async () => {
@@ -272,6 +317,9 @@ test.describe('session-rotation lane (#1383)', () => {
 
         for (const part of [SEAT, 'MESSAGE:receipt', 'away until 2026-11-14T08:00:00.000Z']) expect(away).toContain(part);
 
+        // the fresh session learns the marker that completes its rotation from the prompt itself
+        for (const part of ['[sunset successor]', 'tagged sunset-successor', 'inReplyTo MESSAGE:receipt']) expect(present).toContain(part);
+
         expect(present).toContain('The operator is present.')
     });
 
@@ -291,7 +339,7 @@ test.describe('session-rotation lane (#1383)', () => {
         expect((await runLane(missing)).sent).toHaveLength(1)
     });
 
-    test('AC-11: a session that saves a memory after the request completes the rotation with both ids and the messages the hold kept', async () => {
+    test('AC-11 + #1712 AC-2: the earliest marker after the request completes the rotation with both ids and the messages the hold kept', async () => {
         const db = createGraph();
 
         insertRoute(db);
@@ -302,6 +350,8 @@ test.describe('session-rotation lane (#1383)', () => {
         }});
         insertDirectMessage(db, 'MESSAGE:held-1', 20);
         insertDirectMessage(db, 'MESSAGE:held-2', 12);
+        insertSuccessor(db, 'MESSAGE:successor', 8, 'MESSAGE:receipt');
+        insertSuccessor(db, 'MESSAGE:successor-again', 7, 'MESSAGE:receipt');
         insertMemory(db, 'mem-fresh', 6, 'session-fresh');
         insertDirectMessage(db, 'MESSAGE:after', 2);
 
@@ -310,7 +360,7 @@ test.describe('session-rotation lane (#1383)', () => {
         expect(sent).toEqual([]);
         expect(outcome.completed).toBe(1);
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({
-            state: 'completed', oldSessionId: 'session-old', newSessionId: 'session-fresh', heldMessages: 2
+            state: 'completed', successorMessageId: 'MESSAGE:successor', oldSessionId: 'session-old', newSessionId: 'session-fresh', heldMessages: 2
         });
         expect(logs.some(({level, message}) => level === 'INFO' && message.includes('session-old → session-fresh'))).toBe(true)
     });
