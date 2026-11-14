@@ -859,9 +859,10 @@ export function processAutomationIdLines(indent = '  ') {
  * @param {String|null} [options.freshSessionShortcut] Command-key shortcut that opens a fresh session.
  * @param {Number|null} [options.freshSessionDeadlineSeconds] Seconds the rotation has left: the script
  *   refuses the fresh-session keystroke once they pass, so a slow activation cannot open a late session.
- * @param {{path: String, sessionId: String}|null} [options.freshSessionHolder] The seat holder's record and the
- *   session that held it at the rotation's first attempt: the script re-reads the record right before
- *   Cmd+N and refuses the keystroke when another session holds the seat or the record cannot be read.
+ * @param {{path: String, sessionId: String|null}|null} [options.freshSessionHolder] The seat holder's record and
+ *   the session that held it at the rotation's first attempt (`null`: no record then). The script re-reads the
+ *   record right before Cmd+N and refuses the keystroke when another session holds the seat, when the
+ *   record cannot be read, or when a record appeared where none was.
  * @param {Number|null} [options.instancePid] Resolved Unix PID when instance-addressed.
  * @param {String} [options.tabShortcut] Command-key shortcut for the harness tab.
  * @returns {String[]} `osascript` argv fragments ending with the digest.
@@ -940,10 +941,16 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
         if (fencedFreshSession) {
             args.push('-e', '      if (current date) > rotationDeadline then error "Rotation deadline passed before the fresh session"');
         }
-        if (freshSessionHolder?.path && freshSessionHolder?.sessionId) {
+        if (freshSessionHolder?.path && freshSessionHolder.sessionId) {
             args.push(
                 '-e', `      tell current application to set rotationHolderNow to (do shell script "cat " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}")`,
                 '-e', `      if rotationHolderNow does not contain "${escapeAppleScript(freshSessionHolder.sessionId)}" then error "Seat holder changed before the fresh session"`
+            );
+        } else if (freshSessionHolder?.path) {
+            // No holder at the first attempt: the record must still be absent, so a session opened since is seen.
+            args.push(
+                '-e', `      tell current application to set rotationHolderNow to (do shell script "cat " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}" & " 2>/dev/null; true")`,
+                '-e', '      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"'
             );
         }
         args.push('-e', `      keystroke "${escapeAppleScript(freshSessionShortcut)}" using command down`);

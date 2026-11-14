@@ -269,6 +269,45 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
         expect(lines[fresh - 2]).toBe('      if rotationHolderNow does not contain "old-session" then error "Seat holder changed before the fresh session"')
     });
 
+    test('Emmy\'s Round-2 control: with no holder at the first attempt, the script requires the record still absent before Cmd+N', () => {
+        const lines = buildOsascriptArgs({
+                  appName: 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7,
+                  freshSessionHolder: {path: '/seats/ada/listeners/neo-opus-ada.json', sessionId: null}
+              }).map(String),
+              fresh = lines.indexOf('      keystroke "n" using command down');
+
+        expect(lines[fresh - 4]).toBe('      tell current application to set rotationHolderNow to (do shell script "cat " & quoted form of "/seats/ada/listeners/neo-opus-ada.json" & " 2>/dev/null; true")');
+        expect(lines[fresh - 2]).toBe('      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"')
+    });
+
+    test('the receiver hands the adapter the expected absence when the first attempt found no holder', async () => {
+        const stateDir         = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-rotation-absent-')),
+              listenerStateDir = path.join(stateDir, 'listeners'),
+              state            = new WakeReceiverState({stateDir}),
+              seen             = [];
+
+        try {
+            await state.init();
+            const receiver = createWakeReceiver({
+                manifest: {schemaVersion: 1, routes: {'WAKE_SUB:rotate': {
+                    signingKey: 'e'.repeat(64), agentIdentity: '@neo-opus-ada', admits: SESSION_ROTATE_EVENT_TYPE,
+                    harnessTargetMetadata: {adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir', instanceAddress: '/seats/ada'},
+                    adapterConfig: {attemptTimeoutMs: 100}
+                }}},
+                state, listenerStateDir, logger: {error() {}, warn() {}, log() {}},
+                dispatch: async (record, deps) => { seen.push(deps); return 'delivered' }
+            });
+
+            await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+            await receiver.drain();
+
+            expect(seen[0].rotationHolder).toEqual({path: path.join(listenerStateDir, 'neo-opus-ada.json'), sessionId: null});
+            await new Promise(resolve => receiver.server.close(() => resolve()));
+        } finally {
+            await fs.rm(stateDir, {recursive: true, force: true})
+        }
+    });
+
     test('the idle clock is read last: after the pid lookup and the dialog probe, before the first keystroke', async () => {
         const order  = [];
         const result = await dispatchLocalWake(rotationRecord(), quietEffects({

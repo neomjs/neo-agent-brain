@@ -454,8 +454,10 @@ export function createWakeReceiver({
 
                     dispatching.seatHolder = baseline ?? null;
                     rotationGuard          = () => readSeatHolder(identity) !== (baseline ?? null) ? ROTATION_SUPERSEDED : null;
-                    rotationHolder         = typeof baseline === 'string'
-                        ? {path: path.join(listenerStateDir, `${identity.replace(/^@/, '')}.json`), sessionId: baseline.split('#')[0]}
+                    // The script re-checks the same fact before Cmd+N: the baseline's session, or the record's
+                    // absence when the first attempt found none.
+                    rotationHolder         = listenerStateDir
+                        ? {path: path.join(listenerStateDir, `${identity.replace(/^@/, '')}.json`), sessionId: typeof baseline === 'string' ? baseline.split('#')[0] : null}
                         : null;
                 }
 
