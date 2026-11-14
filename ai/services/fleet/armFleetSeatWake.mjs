@@ -187,10 +187,12 @@ export async function armFleetSeatWake({
 
     const client  = createClient({baseUrl: plan.resources['memory-core'].url, credential});
     const publish = () => armRoute({
-        listSubscriptions: async () => (await client.callTool('manage_wake_subscription', {action: 'list'}))?.subscriptions,
+        listSubscriptions    : async () => (await client.callTool('manage_wake_subscription', {action: 'list'}))?.subscriptions,
         manifestPath,
-        tuple            : {identity, instanceAddress: address.instanceAddress, instanceType: address.addressType},
-        adapterConfigById: primarySession && subscriptionId ? {[subscriptionId]: {primarySession}} : undefined,
+        tuple                : {identity, instanceAddress: address.instanceAddress, instanceType: address.addressType},
+        adapterConfigById    : primarySession && subscriptionId ? {[subscriptionId]: {primarySession}} : undefined,
+        desiredSubscriptionId: subscriptionId,
+        desiredAdapter       : dispatch.adapter,
         logger
     });
     let result, subscriptionId = null, subscriptionRequested = false;

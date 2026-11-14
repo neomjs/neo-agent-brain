@@ -197,6 +197,18 @@ const RECORD_ROUTING_METADATA_KEYS = ['addressType', 'instanceAddress', 'userDat
  */
 const GUI_INSTANCE_ADDRESS_TYPES = ['pid', 'userDataDir'];
 
+/** @summary Binds native host config to the registry seat and profile supplied by the host. */
+function nativeConfigMatchesInstance(config, instance) {
+    if (!config || !['codex-desktop', 'antigravity'].includes(config.family) ||
+        typeof config.agentId !== 'string' || !/^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/.test(config.agentId) ||
+        typeof config.instanceHome !== 'string' || !path.isAbsolute(config.instanceHome) ||
+        path.normalize(config.instanceHome) !== config.instanceHome) return false;
+    const home    = config.instanceHome, parent = path.dirname(home),
+          profile = config.family === 'codex-desktop' ? path.join(home, 'electron-profile') : home;
+    return path.basename(home) === config.family && path.basename(parent) === 'harness' &&
+        path.basename(path.dirname(parent)) === config.agentId && instance?.type === 'userDataDir' && instance.address === profile
+}
+
 /**
  * Builds the manifest object for a set of subscription records.
  *
@@ -323,7 +335,7 @@ export function buildWakeReceiverManifest({
         const supplied = adapterConfigById[id] || {};
         if (receiverMetadata.adapter === 'primary-session') {
             const primarySession = supplied.primarySession || (existing?.harnessTargetMetadata?.adapter === 'primary-session' && existing.agentIdentity === agentIdentity ? existing.adapterConfig?.primarySession : null);
-            if (!instance || !primarySession || trigger !== 'SENT_TO_ME' || agentIdentity !== callerIdentity) {
+            if (!nativeConfigMatchesInstance(primarySession, instance) || trigger !== 'SENT_TO_ME' || agentIdentity !== callerIdentity) {
                 delete routes[id];
                 skipped.push({subscriptionId: id, reason: 'primary-session requires host-owned per-seat admission', withdrewPublishedRoute: Boolean(existing)});
                 continue;
@@ -355,6 +367,7 @@ export function buildWakeReceiverManifest({
             // made the summary assert an adapter that was not in the manifest, which reads as
             // confirmation and sends the operator looking somewhere else.
             adapter       : receiverMetadata.adapter || null,
+            ...(receiverMetadata.adapter === 'primary-session' ? {hostNativeAdmitted: true} : {}),
             keyFingerprint: fingerprintSigningKey(signingKey),
             // A pid tuple passes every gate while the pid itself is ephemeral — say so where the
             // operator can see it, rather than re-publishing it silently (durable = userDataDir).
