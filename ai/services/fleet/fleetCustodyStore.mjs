@@ -57,6 +57,9 @@ export const REFUSAL_CODES = Object.freeze({
     unresolved                   : 'refused: unresolved',
     publishingInFlight           : 'refused: publishing-in-flight',
     channel                      : 'refused: channel',
+    scheduledFor                 : 'refused: scheduledFor',
+    contentLockWindow            : 'refused: content-lock-window',
+    scheduleNotReached           : 'refused: schedule-not-reached',
     notFound                     : 'refused: not-found',
     who                          : 'refused: who'
 });

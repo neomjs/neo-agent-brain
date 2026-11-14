@@ -9217,6 +9217,10 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
             expect(payloadSchema.required).toEqual(['channel', 'account', 'text', 'media', 'hypothesis', 'format']);
             expect(payloadSchema.properties.channel.enum).toEqual(['x', 'linkedin']);
             expect(payloadSchema.properties.format.enum).toEqual(['post', 'link-reply', 'reply']);
+            expect(payloadSchema.properties.scheduledFor).toMatchObject({
+                type    : 'string',
+                nullable: true
+            });
 
             expect(revisionSchema).toBeDefined();
             expect(revisionSchema.additionalProperties).toBe(false);
@@ -9275,6 +9279,332 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                         })
                     )
                 ).rejects.toMatchObject({code: 'refused: unknown-field'});
+            }
+        });
+
+        test('AC-6a (#1695): parsePublishSchedule resolves Europe/Berlin CET, CEST, and DST boundaries, rejects malformed schedules, and leaves 6-field revisionDigest unchanged', async () => {
+            const {
+                PUBLISH_LOCK_TIMEZONE,
+                parsePublishSchedule,
+                computePublishRevisionDigest
+            } = await import('../../../../../../ai/services/memory-core/MailboxService.mjs');
+            const publishDigestExports = await import('../../../../../../ai/services/memory-core/helpers/publishDigest.mjs');
+
+            expect(PUBLISH_LOCK_TIMEZONE).toBe('Europe/Berlin');
+            expect(MailboxService.constructor.PUBLISH_LOCK_TIMEZONE).toBe('Europe/Berlin');
+            expect(Object.hasOwn(publishDigestExports, 'zonedWallTimeToUtcMs')).toBe(false);
+            expect(parsePublishSchedule(undefined)).toBeNull();
+            expect(parsePublishSchedule(null)).toBeNull();
+
+            // Winter CET (UTC+01:00): D = 2026-11-18 -> D-1 18:00 CET = 2026-11-17T17:00:00.000Z; earliestRelease = 2026-11-17T23:00:00.000Z
+            expect(parsePublishSchedule('2026-11-18')).toMatchObject({
+                ok                : true,
+                scheduledFor      : '2026-11-18',
+                timeZone          : 'Europe/Berlin',
+                targetDate        : '2026-11-18',
+                lockDate          : '2026-11-17',
+                lockCutoffIso     : '2026-11-17T17:00:00.000Z',
+                earliestReleaseIso: '2026-11-17T23:00:00.000Z'
+            });
+
+            // Summer CEST (UTC+02:00): D = 2026-07-15 -> D-1 18:00 CEST = 2026-07-14T16:00:00.000Z; earliestRelease = 2026-07-14T22:00:00.000Z
+            expect(parsePublishSchedule('2026-07-15')).toMatchObject({
+                ok                : true,
+                scheduledFor      : '2026-07-15',
+                targetDate        : '2026-07-15',
+                lockDate          : '2026-07-14',
+                lockCutoffIso     : '2026-07-14T16:00:00.000Z',
+                earliestReleaseIso: '2026-07-14T22:00:00.000Z'
+            });
+
+            // Spring-forward DST transition in Europe/Berlin (2026-03-29 02:00 CET -> 03:00 CEST)
+            expect(parsePublishSchedule('2026-03-29')).toMatchObject({
+                ok                : true,
+                targetDate        : '2026-03-29',
+                lockDate          : '2026-03-28',
+                lockCutoffIso     : '2026-03-28T17:00:00.000Z',
+                earliestReleaseIso: '2026-03-28T23:00:00.000Z'
+            });
+            expect(parsePublishSchedule('2026-03-30')).toMatchObject({
+                ok                : true,
+                targetDate        : '2026-03-30',
+                lockDate          : '2026-03-29',
+                lockCutoffIso     : '2026-03-29T16:00:00.000Z',
+                earliestReleaseIso: '2026-03-29T22:00:00.000Z'
+            });
+
+            // Fall-back DST transition in Europe/Berlin (2026-10-25 03:00 CEST -> 02:00 CET)
+            expect(parsePublishSchedule('2026-10-25')).toMatchObject({
+                ok                : true,
+                targetDate        : '2026-10-25',
+                lockDate          : '2026-10-24',
+                lockCutoffIso     : '2026-10-24T16:00:00.000Z',
+                earliestReleaseIso: '2026-10-24T22:00:00.000Z'
+            });
+            expect(parsePublishSchedule('2026-10-26')).toMatchObject({
+                ok                : true,
+                targetDate        : '2026-10-26',
+                lockDate          : '2026-10-25',
+                lockCutoffIso     : '2026-10-25T17:00:00.000Z',
+                earliestReleaseIso: '2026-10-25T23:00:00.000Z'
+            });
+
+            // Explicit-offset ISO timestamp crossing UTC midnight into Berlin next day (00:30 CET on 2026-11-18)
+            expect(parsePublishSchedule('2026-11-17T23:30:00Z')).toMatchObject({
+                ok                : true,
+                targetDate        : '2026-11-18',
+                lockDate          : '2026-11-17',
+                lockCutoffIso     : '2026-11-17T17:00:00.000Z',
+                earliestReleaseIso: '2026-11-17T23:30:00.000Z'
+            });
+
+            // Rejects rollover calendar dates, naive offset-less timestamps, and non-strings
+            for (const badSchedule of ['2026-02-30', '2026-13-01', '2026-11-18T09:00:00', '', '   ', 20261118]) {
+                expect(parsePublishSchedule(badSchedule)).toMatchObject({
+                    ok  : false,
+                    code: 'refused: scheduledFor'
+                });
+            }
+
+            // 6-field revisionDigest invariance when scheduledFor is added or changed
+            const undatedPayload = buildValidPublishPayload();
+            const datedPayload   = buildValidPublishPayload({scheduledFor: '2026-11-18'});
+            expect(computePublishRevisionDigest(datedPayload)).toBe(computePublishRevisionDigest(undatedPayload));
+        });
+
+        test('AC-6b (#1695): addMessage enforces server-time D-1 18:00 Europe/Berlin lock across CET and CEST and rejects malformed or backdated fields', async () => {
+            const {computePublishRevisionDigest} = await import('../../../../../../ai/services/memory-core/MailboxService.mjs');
+            const undatedPayload                 = buildValidPublishPayload();
+            const datedPayload                   = buildValidPublishPayload({scheduledFor: '2026-11-18'});
+            const originalNow                    = MailboxService._now;
+            let   fakeNowMs                      = Date.parse('2026-11-17T17:00:00.000Z'); // Exact D-1 18:00:00.000 CET for 2026-11-18
+            MailboxService._now  = () => fakeNowMs;
+
+            try {
+                const onTimeCreated = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : '[requestPublish] on-time dated launch post',
+                        body          : datedPayload.text,
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: datedPayload
+                    })
+                );
+                expect(onTimeCreated.revision.createdAt).toBe('2026-11-17T17:00:00.000Z');
+                expect(onTimeCreated.revision.payload.scheduledFor).toBe('2026-11-18');
+                expect(onTimeCreated.revisionDigest).toBe(computePublishRevisionDigest(undatedPayload));
+
+                // 1ms late in winter CET (17:00:00.001Z) is refused with `refused: content-lock-window`
+                fakeNowMs = Date.parse('2026-11-17T17:00:00.001Z');
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.addMessage({
+                            to            : '@tobiu',
+                            subject       : '[requestPublish] 1ms late winter CET',
+                            body          : datedPayload.text,
+                            taggedConcepts: ['requestPublish'],
+                            requestPublish: datedPayload
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: content-lock-window'});
+
+                // Summer CEST boundary: 16:00:00.000Z succeeds, 16:00:00.001Z refuses (`refused: content-lock-window`)
+                const summerPayload = buildValidPublishPayload({scheduledFor: '2026-07-15'});
+                fakeNowMs = Date.parse('2026-07-14T16:00:00.000Z');
+                const summerCreated = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : '[requestPublish] exact CEST cutoff',
+                        body          : summerPayload.text,
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: summerPayload
+                    })
+                );
+                expect(summerCreated.revision.payload.scheduledFor).toBe('2026-07-15');
+
+                fakeNowMs = Date.parse('2026-07-14T16:00:00.001Z');
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.addMessage({
+                            to            : '@tobiu',
+                            subject       : '[requestPublish] 1ms late CEST cutoff',
+                            body          : summerPayload.text,
+                            taggedConcepts: ['requestPublish'],
+                            requestPublish: summerPayload
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: content-lock-window'});
+
+                // Malformed / naive scheduledFor and caller-backdating fields are refused at admission
+                fakeNowMs = Date.parse('2026-11-16T12:00:00.000Z');
+                for (const invalidVal of ['2026-02-30', '2026-11-18T09:00:00']) {
+                    await expect(
+                        RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                            MailboxService.addMessage({
+                                to            : '@tobiu',
+                                subject       : `invalid scheduledFor ${invalidVal}`,
+                                body          : datedPayload.text,
+                                taggedConcepts: ['requestPublish'],
+                                requestPublish: buildValidPublishPayload({scheduledFor: invalidVal})
+                            })
+                        )
+                    ).rejects.toMatchObject({code: 'refused: scheduledFor'});
+                }
+
+                for (const backdateField of ['createdAt', 'lockedAt']) {
+                    await expect(
+                        RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                            MailboxService.addMessage({
+                                to            : '@tobiu',
+                                subject       : `backdate ${backdateField}`,
+                                body          : datedPayload.text,
+                                taggedConcepts: ['requestPublish'],
+                                requestPublish: buildValidPublishPayload({
+                                    scheduledFor   : '2026-11-18',
+                                    [backdateField]: '2026-11-16T10:00:00.000Z'
+                                })
+                            })
+                        )
+                    ).rejects.toMatchObject({code: 'refused: unknown-field'});
+                }
+            } finally {
+                MailboxService._now = originalNow;
+            }
+        });
+
+        test('AC-6c (#1695): editPublishRequest and attestPublishRevision refuse late agent mutations and scheduledFor: null clearing, reset inline attestation to null on edit, and allow forward re-dating', async () => {
+            const datedPayload = buildValidPublishPayload({scheduledFor: '2026-11-18'});
+            const originalNow  = MailboxService._now;
+            let   fakeNowMs    = Date.parse('2026-11-17T16:00:00.000Z');
+            MailboxService._now = () => fakeNowMs;
+
+            try {
+                const onTimeCreated = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : '[requestPublish] dated post for edit/attest lock checks',
+                        body          : datedPayload.text,
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: datedPayload
+                    })
+                );
+
+                const reviewMsg = await RequestContextService.run({agentIdentityNodeId: '@neo-opus-ada'}, () =>
+                    MailboxService.addMessage({
+                        to     : '@tobiu',
+                        subject: `[requestPublish-review] APPROVED ${onTimeCreated.revisionDigest}`,
+                        body   : `Verified claims and receipts for revisionDigest ${onTimeCreated.revisionDigest}`
+                    })
+                );
+
+                fakeNowMs = Date.parse('2026-11-17T18:30:00.000Z'); // 90m after D-1 18:00 CET cutoff for 2026-11-18
+
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.editPublishRequest({
+                            taskId: onTimeCreated.messageId,
+                            patch : {text: 'Late agent copy tweak after 18:00 CET.'}
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: content-lock-window'});
+
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.editPublishRequest({
+                            taskId: onTimeCreated.messageId,
+                            patch : {scheduledFor: null}
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: content-lock-window'});
+
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.attestPublishRevision({
+                            taskId           : onTimeCreated.messageId,
+                            reviewerMessageId: reviewMsg.messageId,
+                            revisionDigest   : onTimeCreated.revisionDigest
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: content-lock-window'});
+
+                // Forward re-dating to 2026-11-19 (cutoff 2026-11-18T17:00:00.000Z) succeeds, ignores any inline attestation on edit, and allows attestPublishRevision
+                const redated = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.editPublishRequest({
+                        taskId: onTimeCreated.messageId,
+                        patch : {
+                            scheduledFor: '2026-11-19',
+                            attestation : {
+                                reviewerMessageId: reviewMsg.messageId,
+                                revisionDigest   : onTimeCreated.revisionDigest
+                            }
+                        }
+                    })
+                );
+                expect(redated.revisionNumber).toBe(2);
+                expect(redated.revisionDigest).toBe(onTimeCreated.revisionDigest);
+                expect(redated.revision.payload.scheduledFor).toBe('2026-11-19');
+                expect(redated.revision.approval).toBeNull();
+                expect(redated.revision.attestation).toBeNull();
+
+                const attestedRedated = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.attestPublishRevision({
+                        taskId           : onTimeCreated.messageId,
+                        reviewerMessageId: reviewMsg.messageId,
+                        revisionDigest   : redated.revisionDigest
+                    })
+                );
+                expect(attestedRedated.attestation).toMatchObject({
+                    reviewerMessageId: reviewMsg.messageId,
+                    revisionDigest   : redated.revisionDigest
+                });
+            } finally {
+                MailboxService._now = originalNow;
+            }
+        });
+
+        test('AC-6d (#1695): human operator (@tobiu) retains edit and approval authority after the D-1 18:00 Europe/Berlin lock cutoff', async () => {
+            const datedPayload = buildValidPublishPayload({scheduledFor: '2026-11-19'});
+            const originalNow  = MailboxService._now;
+            let   fakeNowMs    = Date.parse('2026-11-18T15:00:00.000Z');
+            MailboxService._now = () => fakeNowMs;
+
+            try {
+                const created = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : '[requestPublish] operator override check',
+                        body          : datedPayload.text,
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: datedPayload
+                    })
+                );
+
+                fakeNowMs = Date.parse('2026-11-18T19:00:00.000Z'); // Past 2026-11-19's D-1 18:00 CET cutoff (17:00Z)
+                const operatorEdited = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.editPublishRequest({
+                        taskId: created.messageId,
+                        patch : {text: 'Operator urgent precision edit on D-1 evening.'}
+                    })
+                );
+                expect(operatorEdited.revisionNumber).toBe(2);
+                expect(operatorEdited.revision.createdBy).toBe('@tobiu');
+                expect(operatorEdited.revision.payload.scheduledFor).toBe('2026-11-19');
+                expect(operatorEdited.revision.attestation).toBeNull();
+
+                const operatorApproved = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.approvePublishRevision({
+                        taskId        : created.messageId,
+                        revisionDigest: operatorEdited.revisionDigest
+                    })
+                );
+                expect(operatorApproved.approval).toMatchObject({
+                    approvedBy    : '@tobiu',
+                    approvedAt    : '2026-11-18T19:00:00.000Z',
+                    revisionNumber: 2,
+                    revisionDigest: operatorEdited.revisionDigest
+                });
+            } finally {
+                MailboxService._now = originalNow;
             }
         });
     });
