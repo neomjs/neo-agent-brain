@@ -9,11 +9,13 @@
  * route that admits only `session/rotate` envelopes, and every other route admits only `wake/digest`.
  * So a rotation cannot be typed into a seat as a wake, and a wake digest cannot open a session.
  *
- * **Why typing waits for a quiet keyboard.** A typed delivery races a person using the same computer:
- * the frontmost assertion catches focus lost before a keystroke batch, while focus lost between a check
- * and a keystroke sends the text to another window. A rotation types a whole
- * boot prompt and submits it, so it starts only after a quiet minute of keyboard and pointer, and an
- * unreadable idle clock defers rather than guessing.
+ * **Why typing waits for a pause, and only briefly.** A typed delivery races a person using the same
+ * computer: the frontmost assertion catches focus lost before a keystroke batch, while focus lost between
+ * a check and a keystroke sends the text to another window. So a rotation types at a pause in keyboard and
+ * pointer, and an unreadable idle clock defers rather than guessing. It waits for that pause only
+ * {@link ROTATION_MAX_AGE_MS}: a sunset is terminal and its fresh session starts at once, while every
+ * minute of waiting lets wakes reach a session that has ended and lets a person restart the seat by hand,
+ * after which a late rotation is a second live session of the seat.
  *
  * Pure (no fs, spawn or timers), so Memory Core, the manifest builder, the receiver and its adapters
  * share one fact set without widening any of their dependency closures. The rotation lane and the wake
@@ -45,11 +47,31 @@ export const SESSION_ROTATE_EVENT_TYPE = 'session/rotate';
 export const WAKE_DIGEST_EVENT_TYPE = 'wake/digest';
 
 /**
- * How long the host's keyboard and pointer must be untouched before a rotation types. Sized to the
- * receiver's 60 s re-drain, so a deferred rotation is re-asked once per quiet window.
+ * How long the host's keyboard and pointer must be untouched before a rotation types: a pause between
+ * bursts, so the activation never takes focus from a person mid-keystroke.
  * @type {Number}
  */
-export const HUMAN_INPUT_QUIET_MS = 60 * 1000;
+export const HUMAN_INPUT_QUIET_MS = 3 * 1000;
+
+/**
+ * How long after the receiver accepted a rotation it may still type it. Past it the rotation fails
+ * without a keystroke (`session-rotate-expired`): a late session is a copy, not a recovery.
+ * @type {Number}
+ */
+export const ROTATION_MAX_AGE_MS = 60 * 1000;
+
+/**
+ * How soon the receiver asks a deferred rotation again, instead of at its next periodic re-drain.
+ * @type {Number}
+ */
+export const ROTATION_RETRY_MS = 1000;
+
+/**
+ * Defer reason: the seat's window lost the front before the first keystroke, so nothing was typed and
+ * the rotation may try again inside its age.
+ * @type {String}
+ */
+export const ROTATION_ACTIVATION_LOST = 'activation-lost';
 
 /**
  * Defer reason: a person used the keyboard or pointer within {@link HUMAN_INPUT_QUIET_MS}.
@@ -62,13 +84,6 @@ export const HUMAN_INPUT_ACTIVE = 'human-input-active';
  * @type {String}
  */
 export const HUMAN_INPUT_UNKNOWN = 'human-input-unknown';
-
-/**
- * How many times a rotation may defer for human input before it surfaces as failed: about two hours of
- * re-drains. A dialog clears in seconds and keeps its own, shorter bound; a working person does not.
- * @type {Number}
- */
-export const HUMAN_INPUT_DEFER_BOUND = 120;
 
 /**
  * @summary The envelope type a subscription's route admits, or `null` for the wake default.
@@ -152,6 +167,29 @@ export function evaluateHumanInput(idleMs) {
  */
 export function isHumanInputDefer(reason) {
     return reason === HUMAN_INPUT_ACTIVE || reason === HUMAN_INPUT_UNKNOWN
+}
+
+/**
+ * @summary Whether a rotation the receiver accepted at `acceptedAt` is too old to type. An unreadable
+ * accept time is too old: a rotation that cannot be aged cannot be shown to be on time.
+ * @param {String} acceptedAt The receiver record's accept time.
+ * @param {Number} now
+ * @returns {Boolean}
+ */
+export function isRotationExpired(acceptedAt, now) {
+    const age = now - Date.parse(acceptedAt);
+
+    return !(age < ROTATION_MAX_AGE_MS)
+}
+
+/**
+ * @summary Whether a failed delivery script stopped before its first keystroke. The activation phase
+ * asserts `"after activation"`, and every keystroke comes after it, so such a failure typed nothing.
+ * @param {String} [reason] The adapter's `outcomeReason`: the script's error text.
+ * @returns {Boolean}
+ */
+export function isPreKeystrokeFailure(reason) {
+    return /after activation/.test(String(reason ?? ''))
 }
 
 /**

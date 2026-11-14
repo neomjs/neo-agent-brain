@@ -20,11 +20,12 @@ import {createReceiverLiveness}                  from './receiverLiveness.mjs';
 import {evaluateContextGate, isIdleOnlyEnvelope} from './contextGatePolicy.mjs';
 import {dispatchLocalWake, probeSessionContext}  from './localWakeAdapters.mjs';
 import {
-    HUMAN_INPUT_DEFER_BOUND,
+    ROTATION_MAX_AGE_MS,
+    ROTATION_RETRY_MS,
     SESSION_ROTATE_EVENT_TYPE,
     WAKE_DIGEST_EVENT_TYPE,
     hasReceiptIdentity,
-    isHumanInputDefer,
+    isRotationExpired,
     isSessionRotation,
     routeAdmits
 } from './sessionRotation.mjs';
@@ -269,6 +270,8 @@ export function verifyWakeSignature(rawBody, signingKey, signature) {
  * @param {Object} [options.stepBoundsMs=STEP_BOUNDS_MS] Bound per step: `accept`, `reload`, `drain`, and `dispatch` as
  *   headroom over the route's `attemptTimeoutMs`.
  * @param {Number} [options.watchdogIntervalMs=STEP_WATCHDOG_INTERVAL_MS]
+ * @param {Number} [options.rotationRetryMs=ROTATION_RETRY_MS] How soon a deferred rotation is asked again.
+ * @param {Function} [options.clock=Date.now] The clock a rotation's age is read against.
  * @returns {{server:http.Server,drain:Function,setManifest:Function,track:Function}}
  */
 export function createWakeReceiver({
@@ -284,7 +287,9 @@ export function createWakeReceiver({
     onAccepted         = null,
     onStuck            = null,
     stepBoundsMs       = STEP_BOUNDS_MS,
-    watchdogIntervalMs = STEP_WATCHDOG_INTERVAL_MS
+    watchdogIntervalMs = STEP_WATCHDOG_INTERVAL_MS,
+    rotationRetryMs    = ROTATION_RETRY_MS,
+    clock              = Date.now
 } = {}) {
     if (!manifest?.routes || !(state instanceof WakeReceiverState)) {
         throw new Error('createWakeReceiver requires a loaded manifest and WakeReceiverState');
@@ -297,8 +302,17 @@ export function createWakeReceiver({
     // first wake, and the only remedy was the restart an incident is most likely to forbid.
     let activeManifest = manifest;
     let drainPromise   = Promise.resolve();
+    let rotationRetry  = null;
 
     const inFlight = new Set();
+
+    // A deferred rotation is asked again within about a second rather than at the next periodic
+    // re-drain, so the pause it waits for is the first one, not the first one a minute later.
+    const scheduleRotationRetry = () => {
+        if (rotationRetry) return;
+        rotationRetry = setTimeout(() => { rotationRetry = null; void drain() }, rotationRetryMs);
+        rotationRetry.unref?.()
+    };
 
     /**
      * @summary Holds a step under the watchdog until it settles.
@@ -382,6 +396,20 @@ export function createWakeReceiver({
                         adapterConfig: current.adapterConfig}} : {})
                 });
                 if (!dispatching) continue;
+
+                // A rotation past its age is never typed: the seat may have been restarted since, and a
+                // late session would be a second live session of it.
+                if (isSessionRotation(dispatching.envelope) && isRotationExpired(dispatching.acceptedAt, clock())) {
+                    await watched.transition(record.recordKey, 'dispatching', 'failed', {
+                        outcomeReason     : 'session-rotate-expired',
+                        dispatchFinishedAt: new Date(clock()).toISOString()
+                    });
+                    logger.error?.(
+                        `[Wake Receiver] rotation EXPIRED ${record.subscriptionId}: not typed within ` +
+                        `${ROTATION_MAX_AGE_MS} ms of its accept; failed without a keystroke`
+                    );
+                    continue;
+                }
 
                 // The context gate: after the non-idempotency marker, before the adapter runs.
                 // A defer returns the record to `pending` — the wake waits for the target session
@@ -561,25 +589,21 @@ export function createWakeReceiver({
                     // either the seat returns to composer state (deliver, envelope identity intact)
                     // or the bound exhausts into an OBSERVABLE failure. A defer that can park
                     // forever is the silent non-delivery failure mode wearing a polite name.
-                    // The human-input gate shares this contract with its own, longer bound: a
-                    // rotation waits for a quiet keyboard, and a person works for longer than a
-                    // dialog stays open.
+                    // A rotation's bound is its age instead (checked at the top of each pass): it
+                    // defers for a person at the keyboard, a dialog or a lost activation, and is asked
+                    // again within about a second until it types or expires.
                     if (outcome === 'deferred') {
                         const deferCount = (dispatching.deferCount || 0) + 1,
-                              humanInput = isHumanInputDefer(outcomeReason),
-                              gateName   = humanInput ? 'human-input' : 'dialog',
-                              bound      = humanInput ? HUMAN_INPUT_DEFER_BOUND : DIALOG_DEFER_BOUND;
+                              rotation   = isSessionRotation(dispatching.envelope);
 
-                        if (deferCount > bound) {
-                            const exhausted = `${gateName}-defer-bound-exhausted:${outcomeReason || 'unknown'}`;
-
+                        if (!rotation && deferCount > DIALOG_DEFER_BOUND) {
                             await watched.transition(record.recordKey, 'dispatching', 'failed', {
-                                outcomeReason     : exhausted,
+                                outcomeReason     : `dialog-defer-bound-exhausted:${outcomeReason || 'unknown'}`,
                                 deferCount,
                                 dispatchFinishedAt: new Date().toISOString()
                             });
                             logger.error?.(
-                                `[Wake Receiver] ${gateName} gate EXHAUSTED ${record.subscriptionId} after ` +
+                                `[Wake Receiver] dialog gate EXHAUSTED ${record.subscriptionId} after ` +
                                 `${deferCount} deferrals (${outcomeReason}); surfacing as failed — ` +
                                 'the mailbox stays authoritative'
                             );
@@ -591,14 +615,15 @@ export function createWakeReceiver({
                             deferredAt : new Date().toISOString(),
                             deferReason: outcomeReason || 'interactive-dialog-pending'
                         });
-                        logger.warn?.(humanInput
-                            ? `[Wake Receiver] human-input gate DEFERRED ${record.subscriptionId}: someone is ` +
-                              `using this computer (${outcomeReason}); the rotation waits for a quiet minute ` +
-                              `(defer #${deferCount}/${bound})`
+                        logger.warn?.(rotation
+                            ? `[Wake Receiver] rotation DEFERRED ${record.subscriptionId} (${outcomeReason}); ` +
+                              `asked again in ${rotationRetryMs} ms, never past ${ROTATION_MAX_AGE_MS} ms ` +
+                              `after its accept (defer #${deferCount})`
                             : `[Wake Receiver] dialog gate DEFERRED ${record.subscriptionId}: a pending ` +
                               `interactive prompt holds the seat's input path; the wake waits for ` +
-                              `composer state (defer #${deferCount}/${bound})`
+                              `composer state (defer #${deferCount}/${DIALOG_DEFER_BOUND})`
                         );
+                        if (rotation) scheduleRotationRetry();
                         continue;
                     }
                 } catch (error) {
@@ -689,7 +714,10 @@ export function createWakeReceiver({
         }
     });
 
-    server.on('close', () => clearInterval(watchdog));
+    server.on('close', () => {
+        clearInterval(watchdog);
+        clearTimeout(rotationRetry)
+    });
 
     return {server, drain, setManifest, track};
 }

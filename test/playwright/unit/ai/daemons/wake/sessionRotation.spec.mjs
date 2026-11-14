@@ -6,14 +6,17 @@ import path           from 'node:path';
 
 import {
     HUMAN_INPUT_ACTIVE,
-    HUMAN_INPUT_DEFER_BOUND,
     HUMAN_INPUT_QUIET_MS,
     HUMAN_INPUT_UNKNOWN,
+    ROTATION_ACTIVATION_LOST,
+    ROTATION_MAX_AGE_MS,
     SESSION_ROTATE_EVENT_TYPE,
     admittedEventType,
     evaluateHumanInput,
     hasReceiptIdentity,
     isHumanInputDefer,
+    isPreKeystrokeFailure,
+    isRotationExpired,
     isSessionRotation,
     rotationEventId,
     rotationPrompt,
@@ -99,13 +102,30 @@ test.describe('ai/daemons/wake/sessionRotation — the contract', () => {
         expect(rotationPrompt(rotationEnvelope({payload: {}}))).toBeNull()
     });
 
-    test('a rotation types only after a quiet minute, and an unreadable clock defers', () => {
-        expect(evaluateHumanInput(HUMAN_INPUT_QUIET_MS)).toEqual({action: 'type'});
-        expect(evaluateHumanInput(HUMAN_INPUT_QUIET_MS - 1)).toEqual({action: 'defer', reason: HUMAN_INPUT_ACTIVE});
+    test('a rotation types at a 3 s pause, not a quiet minute, and an unreadable clock defers', () => {
+        expect(evaluateHumanInput(3_000)).toEqual({action: 'type'});
+        expect(evaluateHumanInput(2_999)).toEqual({action: 'defer', reason: HUMAN_INPUT_ACTIVE});
         expect(evaluateHumanInput(null)).toEqual({action: 'defer', reason: HUMAN_INPUT_UNKNOWN});
         expect(isHumanInputDefer(HUMAN_INPUT_ACTIVE)).toBe(true);
         expect(isHumanInputDefer(HUMAN_INPUT_UNKNOWN)).toBe(true);
         expect(isHumanInputDefer('interactive-dialog-pending')).toBe(false)
+    });
+
+    test('a rotation is on time for a minute after its accept, and an unreadable accept time is late', () => {
+        const accepted = Date.parse('2026-11-14T21:54:52.831Z');
+
+        expect(isRotationExpired('2026-11-14T21:54:52.831Z', accepted + ROTATION_MAX_AGE_MS - 1)).toBe(false);
+        expect(isRotationExpired('2026-11-14T21:54:52.831Z', accepted + ROTATION_MAX_AGE_MS)).toBe(true);
+        // The 21:54Z receipt was typed 9 min after its accept, into a seat restarted by hand.
+        expect(isRotationExpired('2026-11-14T21:54:52.831Z', Date.parse('2026-11-14T22:03:55.277Z'))).toBe(true);
+        expect(isRotationExpired(undefined, accepted)).toBe(true)
+    });
+
+    test('only a failure in the activation phase typed nothing', () => {
+        // Grace's 21:04Z rotation, verbatim from the receiver's record.
+        expect(isPreKeystrokeFailure('4154:4160: execution error: Target app lost frontmost status after activation (-2700)')).toBe(true);
+        expect(isPreKeystrokeFailure('execution error: Target app lost frontmost status before prompt clear (-2700)')).toBe(false);
+        expect(isPreKeystrokeFailure(undefined)).toBe(false)
     });
 
     test('the idle clock is read from IOHIDSystem without a grant', () => {
@@ -165,12 +185,26 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
     test('a person at the keyboard defers the rotation without a single keystroke', async () => {
         const calls  = [];
         const result = await dispatchLocalWake(rotationRecord(), quietEffects({
-            readHumanIdleMs: () => 5_000,
+            readHumanIdleMs: () => 1_000,
             spawnAsync     : async (command, args) => { calls.push({command, args}); return '' }
         }));
 
         expect(result).toEqual({outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE});
         expect(typedPaste(calls)).toHaveLength(0)
+    });
+
+    test('a window that loses the front before the first keystroke defers the rotation; a later loss fails it', async () => {
+        const run = message => dispatchLocalWake(rotationRecord(), quietEffects({
+            spawnAsync: async (command, args) => {
+                if (args.some(arg => String(arg).includes('keystroke "v"'))) throw new Error(message);
+                return ''
+            }
+        }));
+
+        expect(await run('4154:4160: execution error: Target app lost frontmost status after activation (-2700)'))
+            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST});
+        expect(await run('execution error: Target app lost frontmost status before wake paste (-2700)'))
+            .toMatchObject({outcome: 'failed'})
     });
 
     test('the idle clock is read last: after the pid lookup and the dialog probe, before the first keystroke', async () => {
@@ -379,27 +413,47 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
         expect(probes, 'a wake on a gated route is still probed').toBe(1)
     });
 
-    test('a person at the keyboard parks the rotation past the dialog bound, then surfaces it as failed', async () => {
-        dispatchResult = {outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE};
-        // Accepted directly, as the dialog-gate arms do: an HTTP accept starts a drain of its own,
-        // which would shift the count by one.
+    // A receiver of its own over the same state: these arms set the retry interval and the clock.
+    const rotationReceiver = (results, options) => createWakeReceiver({
+        manifest,
+        state,
+        dispatch: async record => { dispatched.push(record); return results.shift() ?? 'delivered' },
+        logger  : {error() {}, warn() {}, log() {}},
+        ...options
+    });
+    const rotationKey = getWakeRecordKey({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1'});
+
+    test('a person at the keyboard defers the rotation, and it is asked again within a second, not at the next re-drain', async () => {
+        const quick = rotationReceiver([{outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE}], {rotationRetryMs: 20});
+
+        // Accepted directly, as the dialog-gate arms do: an HTTP accept starts a drain of its own.
         await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await quick.drain();
 
-        const key = getWakeRecordKey({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1'});
-        let   record;
+        expect(await state.read(rotationKey)).toMatchObject({state: 'pending', deferCount: 1, deferReason: HUMAN_INPUT_ACTIVE});
 
-        for (let i = 0; i < HUMAN_INPUT_DEFER_BOUND; i++) {
-            await receiver.drain();
-        }
-        record = await state.read(key);
-        expect(record.state).toBe('pending');
-        expect(record.deferCount).toBe(HUMAN_INPUT_DEFER_BOUND);
-        expect(record.deferReason).toBe(HUMAN_INPUT_ACTIVE);
+        await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('delivered');
+        expect(dispatched).toHaveLength(2)
+    });
 
-        await receiver.drain();
-        record = await state.read(key);
-        expect(record.state).toBe('failed');
-        expect(record.outcomeReason).toBe(`human-input-defer-bound-exhausted:${HUMAN_INPUT_ACTIVE}`)
+    test('a rotation past its age fails without a keystroke, however long it was deferred', async () => {
+        const late = rotationReceiver([], {clock: () => Date.now() + ROTATION_MAX_AGE_MS});
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await late.drain();
+
+        expect(dispatched).toEqual([]);
+        expect(await state.read(rotationKey)).toMatchObject({state: 'failed', outcomeReason: 'session-rotate-expired'})
+    });
+
+    test('a lost activation is asked again inside the age, like a person at the keyboard', async () => {
+        const quick = rotationReceiver([{outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST}], {rotationRetryMs: 20});
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await quick.drain();
+
+        await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('delivered');
+        expect(dispatched).toHaveLength(2)
     });
 });
 

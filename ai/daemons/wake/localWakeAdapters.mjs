@@ -20,7 +20,9 @@ import {
 } from './instanceResolver.mjs';
 import {withOutboxLock}      from './outboxLock.mjs';
 import {
+    ROTATION_ACTIVATION_LOST,
     evaluateHumanInput,
+    isPreKeystrokeFailure,
     isSessionRotation,
     rotationPrompt
 } from './sessionRotation.mjs';
@@ -756,6 +758,13 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record}) 
         tabShortcut         : resolvedMeta.tabShortcut
     });
     const outcome = await spawnOsascriptOnce(effects, args, record.subscriptionId);
+
+    // A rotation whose window lost the front before the first keystroke typed nothing, so it may try
+    // again inside its age; past that phase Cmd+N may have opened a session, and a retry would open two.
+    if (rotation && outcome?.outcome === 'failed' && isPreKeystrokeFailure(outcome.outcomeReason)) {
+        return {outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST}
+    }
+
     return outcome;
 }
 

@@ -567,3 +567,98 @@ test.describe('session-rotation lane (#1383)', () => {
         }
     });
 });
+
+test.describe('session-rotation lane: the receipt turn ends at its close (#1722)', () => {
+    const SEC = 1 / 60; // `at` counts minutes
+
+    // The stored interval shape: every event rewrites `lastProgressAt`, and only a close sets `terminal`.
+    function insertInterval(db, turnId, {startedAgo, progressAgo = startedAgo, closed = false, expiresIn = 60}) {
+        insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:${turnId}`, 'AGENT_TURN_PRESENCE', {
+            agentIdentity: SEAT, turnId, startedAt: at(startedAgo), lastProgressAt: at(progressAgo),
+            status       : closed ? 'terminal' : 'active', terminalState: closed ? 'completed' : null, expiresAt: at(-expiresIn)
+        })
+    }
+
+    function closeInterval(db, turnId, closedAgo) {
+        const id   = `AGENT_TURN_PRESENCE:${SEAT}:${turnId}`,
+              node = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data);
+
+        Object.assign(node.properties, {status: 'terminal', terminalState: 'completed', lastProgressAt: at(closedAgo)});
+        db.prepare('UPDATE Nodes SET data = ? WHERE id = ?').run(JSON.stringify(node), id)
+    }
+
+    test('Mnemosyne\'s 22:04:52Z sunset: an interval its own turn opened 280 ms after the receipt is no prompt; the turn waits until its close, then rotates', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        insertSelfMessage(db, 'MESSAGE:receipt', 10);
+        // Times relative to the receipt, read from the live rows.
+        insertInterval(db, 'prompt-start',  {startedAgo: 10 + 318.654 * SEC, expiresIn: 45});                                // UserPromptSubmit, never closed
+        insertInterval(db, 'tool-beacon',   {startedAgo: 10 + 101.655 * SEC, progressAgo: 10 - 0.229 * SEC, expiresIn: 50}); // PostToolUse, never closed
+        insertInterval(db, 'receipt-tail',  {startedAgo: 10 - 0.280 * SEC, expiresIn: 60});                                  // opened after the receipt
+
+        const open = await runLane(db);
+
+        expect(open.sent).toEqual([]);
+        expect(open.outcome).toMatchObject({requested: 0, refused: 0, waiting: 1});
+
+        closeInterval(db, 'receipt-tail', 10 - 82.453 * SEC); // its add_memory, 82 s after the receipt
+
+        const closed = await runLane(db, {now: NOW + MIN});
+
+        expect(closed.sent).toHaveLength(1);
+        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'requested'})
+    });
+
+    test('activity that starts after the receipt turn\'s close refuses the request; an interval between the receipt and the close does not', async () => {
+        const restarted = createGraph();
+
+        insertRoute(restarted);
+        insertSelfMessage(restarted, 'MESSAGE:receipt', 10);
+        insertInterval(restarted, 'sunset-turn', {startedAgo: 12, progressAgo: 9.7, closed: true});
+        insertInterval(restarted, 'fresh-by-hand', {startedAgo: 5}); // a person restarted the seat after the sunset
+
+        expect((await runLane(restarted)).sent).toEqual([]);
+        expect(rotationOf(restarted, 'MESSAGE:receipt')).toMatchObject({state: 'refused', reason: 'prompted-after-receipt'});
+
+        const tail = createGraph();
+
+        insertRoute(tail);
+        insertSelfMessage(tail, 'MESSAGE:receipt', 10);
+        insertInterval(tail, 'sunset-turn', {startedAgo: 12, progressAgo: 9.7, closed: true});
+        insertInterval(tail, 'receipt-tail', {startedAgo: 9.9, expiresIn: 55}); // opened by the turn after its receipt, never closed
+
+        expect((await runLane(tail)).sent).toHaveLength(1)
+    });
+
+    test('older intervals that never closed hold nothing once the receipt turn closed (the 18:49Z receipt)', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        insertSelfMessage(db, 'MESSAGE:receipt', 10);
+        insertInterval(db, 'task-notification-turn', {startedAgo: 17.7, progressAgo: 16.9, expiresIn: 53});
+        insertInterval(db, 'stop-hook-turn',         {startedAgo: 14.4, progressAgo: 13.7, expiresIn: 56});
+        insertInterval(db, 'sunset-turn',            {startedAgo: 12.1, progressAgo: 9.8, closed: true});
+
+        expect(readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)}).liveTurnUntil).toBeNull();
+        expect((await runLane(db)).sent).toHaveLength(1)
+    });
+
+    test('the wake hold stays on through the receipt turn\'s own tail and ends with activity after its close', () => {
+        const db    = createGraph(),
+              holds = () => holdsWakes({read: readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)}), hasRotationRoute: true, now: NOW, windowMs: WINDOW_MS});
+
+        insertSelfMessage(db, 'MESSAGE:receipt', 10);
+        insertInterval(db, 'receipt-tail', {startedAgo: 10 - 0.28 * SEC});
+
+        expect(holds()).toBe(true);
+
+        closeInterval(db, 'receipt-tail', 9);
+
+        expect(holds()).toBe(true);
+
+        insertInterval(db, 'fresh-by-hand', {startedAgo: 4});
+
+        expect(holds()).toBe(false)
+    });
+});

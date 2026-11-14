@@ -27,8 +27,16 @@ const bareMessageId = id => String(id ?? '').replace(/^MESSAGE:/, '');
  * other message changes nothing.
  *
  * The session reads key on the receipt's time. The old session is the one that saved the seat's newest
- * memory at or before the receipt. A prompted turn is a turn-presence interval started after the receipt
- * without a wake-submit nonce: a prompt that a person or a fresh session submitted, never a typed wake.
+ * memory at or before the receipt.
+ *
+ * **The receipt's turn ends at its close.** One turn leaves several intervals whose turn ids never join
+ * (the prompt's, a tool-progress beacon's, the one `add_memory` closes), and only the closed one ends,
+ * so no interval names the turn. Its close does: the earliest `terminal` interval whose last progress is
+ * at or after the receipt. Before that close the turn is live while any interval is, and nothing reads as
+ * a prompt, since an interval opened after the receipt is still the turn's own tail. After it, the turn
+ * holds nothing, and a prompted turn is an interval started after the close without a wake-submit nonce:
+ * a person or a fresh session, never a typed wake. With no close and nothing live, a prompted turn is
+ * one started after the receipt.
  *
  * @param {Object} db Open `better-sqlite3` handle on the graph store.
  * @param {String} identity Canonical `@<identity>`.
@@ -39,8 +47,8 @@ const bareMessageId = id => String(id ?? '').replace(/^MESSAGE:/, '');
  * lastRequestedAt}`, or `null` without a receipt. `receipt` is `{id, sentAt, focusItemsReceipt,
  * sessionRotation}`; `successor` is the marker's `{id, sentAt}` or `null`, and names no session, since
  * the marker carries no sender session and a memory saved after it may be another session's;
- * `liveTurnUntil` is when a turn begun by the receipt's time stops counting as live (the turn that wrote
- * it, until `add_memory` closes it); `lastRequestedAt` is the newest rotation request among the seat's
+ * `liveTurnUntil` is the latest `expiresAt` among the unexpired active intervals while the receipt's
+ * turn has no close, else `null`; `lastRequestedAt` is the newest rotation request among the seat's
  * OTHER self-messages in the range.
  */
 export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().toISOString()}) {
@@ -75,21 +83,27 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
               LIMIT 1
           `).get(identity, sentAt),
           oldSessionId = memory?.sessionId || null,
-          promptedTurn = db.prepare(`
+          closedAt     = db.prepare(`
+              SELECT MIN(json_extract(data, '$.properties.lastProgressAt')) AS at
+              FROM Nodes
+              WHERE id >= ? AND id < ?
+                AND json_extract(data, '$.properties.status') = 'terminal'
+                AND json_extract(data, '$.properties.lastProgressAt') >= ?
+          `).get(...turnRange, sentAt).at,
+          liveUntil    = closedAt ? null : db.prepare(`
+              SELECT MAX(json_extract(data, '$.properties.expiresAt')) AS until
+              FROM Nodes
+              WHERE id >= ? AND id < ?
+                AND COALESCE(json_extract(data, '$.properties.status'), 'active') = 'active'
+                AND json_extract(data, '$.properties.expiresAt') > ?
+          `).get(...turnRange, nowIso).until,
+          promptedAt   = liveUntil ? null : db.prepare(`
               SELECT MIN(json_extract(data, '$.properties.startedAt')) AS at
               FROM Nodes
               WHERE id >= ? AND id < ?
                 AND json_extract(data, '$.properties.startedAt') > ?
                 AND json_extract(data, '$.properties.wakeSubmitNonce') IS NULL
-          `).get(...turnRange, sentAt),
-          liveTurn = db.prepare(`
-              SELECT MAX(json_extract(data, '$.properties.expiresAt')) AS until
-              FROM Nodes
-              WHERE id >= ? AND id < ?
-                AND json_extract(data, '$.properties.startedAt') <= ?
-                AND COALESCE(json_extract(data, '$.properties.status'), 'active') = 'active'
-                AND json_extract(data, '$.properties.expiresAt') > ?
-          `).get(...turnRange, sentAt, nowIso);
+          `).get(...turnRange, closedAt || sentAt).at;
 
     const requestedAts = messages.filter(message => message !== newest).map(message => message.properties.sessionRotation?.requestedAt).filter(Boolean);
 
@@ -102,8 +116,8 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
         },
         oldSessionId,
         successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt} : null,
-        promptedTurnAt : promptedTurn?.at || null,
-        liveTurnUntil  : liveTurn?.until || null,
+        promptedTurnAt : promptedAt || null,
+        liveTurnUntil  : liveUntil || null,
         lastRequestedAt: requestedAts.sort().at(-1) || null
     }
 }
