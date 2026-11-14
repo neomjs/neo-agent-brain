@@ -1,11 +1,11 @@
-import {test, expect}                                                                                            from '@playwright/test';
-import crypto                                                                                                    from 'node:crypto';
-import fs                                                                                                        from 'node:fs/promises';
-import os                                                                                                        from 'node:os';
-import path                                                                                                      from 'node:path';
-import {createWakeReceiver, loadWakeReceiverManifest}                                                            from '../../../../../../ai/daemons/wake/receiver.mjs';
-import {WakeReceiverState}                                                                                       from '../../../../../../ai/daemons/wake/receiverState.mjs';
-import {dispatchFleetPrimarySessionWake, drainFleetPrimaryWakeRecord, consumeNativeWakePrompt, enrollNativeWake} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
+import {test, expect}                                                                                                                       from '@playwright/test';
+import crypto                                                                                                                               from 'node:crypto';
+import fs                                                                                                                                   from 'node:fs/promises';
+import os                                                                                                                                   from 'node:os';
+import path                                                                                                                                 from 'node:path';
+import {createWakeReceiver, loadWakeReceiverManifest}                                                                                       from '../../../../../../ai/daemons/wake/receiver.mjs';
+import {WakeReceiverState}                                                                                                                  from '../../../../../../ai/daemons/wake/receiverState.mjs';
+import {dispatchFleetPrimarySessionWake, drainFleetPrimaryWakeRecord, startFleetPrimaryWakePump, consumeNativeWakePrompt, enrollNativeWake} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
 
 test.describe('signed native wake receiver integration', () => {
     let root, stateDir, manifestPath, state, server, receiver, url, manifest, delivered, sends, consumed, mode, lastNonce, nativeInputs;
@@ -120,5 +120,36 @@ test.describe('signed native wake receiver integration', () => {
         await pump(changed.routes[sub]); await receiver.drain();
         expect(sends).toBe(1);
         expect(await state.list('delivered')).toHaveLength(1);
+    });
+
+    test('a missing first seat record cannot starve the next seat in the Fleet pump', async () => {
+        await new Promise(resolve => server.close(resolve));
+        receiver = createWakeReceiver({manifest,state,manifestPath,logger:{log(){},warn(){},error(){}}});
+        server = receiver.server; await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+        url = `http://127.0.0.1:${server.address().port}/wake`;
+        expect((await post(1)).status).toBe(202); await receiver.drain();
+        const bad = structuredClone(manifest.routes[sub]);
+        bad.agentIdentity = '@broken'; bad.adapterConfig.primarySession.agentId = 'broken';
+        manifest.routes = {'WAKE_SUB:broken':bad, ...manifest.routes};
+        await fs.writeFile(manifestPath,JSON.stringify(manifest),{mode:0o600});
+        await enrollNativeWake({manifestPath,stateDir,agentId:'broken',family});
+        await fs.writeFile(path.join(stateDir,'primary-sessions','broken.request.json'),JSON.stringify({recordKey:'f'.repeat(64)}),{mode:0o600});
+        let finish;
+        const done     = new Promise(resolve => {finish=resolve});
+        const warnings = [];
+        const pump     = startFleetPrimaryWakePump({manifestPath,intervalMs:10000,logger:{warn:message => warnings.push(message)},
+            drainRecord:async options => {
+                await drainFleetPrimaryWakeRecord({...options,dispatch:(record, driverOptions) =>
+                    dispatchFleetPrimarySessionWake(record,{...driverOptions,inspectResident:resident,codexTransport:transport})});
+                if (options.subscriptionId === sub) finish()
+            }});
+        let timeout;
+        try {
+            await Promise.race([done,new Promise((_,reject) => {timeout=setTimeout(() => reject(new Error('later seat starved')),2000)})]);
+        } finally { clearTimeout(timeout); await pump.stop() }
+        await receiver.drain();
+        expect(warnings.some(message => message.includes('WAKE_SUB:broken'))).toBe(true);
+        expect(await state.list('delivered')).toHaveLength(1);
+        expect(sends).toBe(1);
     });
 });

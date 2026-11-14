@@ -111,3 +111,30 @@ test('a pending marker follows the peer across a new main start and an old root 
     expect((await dispatch()).recipient.threadId).toBe(newRoot);
     expect(sent).toHaveLength(2)
 });
+
+test('withdrawal of enrollment while a recipient is proving its root prevents content redemption', async () => {
+    const agentId = 'fixture', seat = '@fixture', family = 'codex-desktop', threadId = randomUUID(), nonce = randomUUID();
+    const config  = {agentId,family,instanceHome:path.join(tempDir,'home'),appBundle:path.join(tempDir,'ChatGPT.app')};
+    const sub     = 'WAKE_SUB:revocation';
+    const route   = {agentIdentity:seat,harnessTargetMetadata:{adapter:'primary-session'},adapterConfig:{primarySession:config}};
+    await enrollNativeWake({manifestPath,stateDir,agentId,family});
+    await fs.writeFile(manifestPath,JSON.stringify({schemaVersion:1,routes:{[sub]:route}}));
+    const envelope  = {eventType:'wake/digest',agentIdentity:seat,subscriptionId:sub,payload:{totalEvents:1}};
+    const {record}  = await state.accept({subscriptionId:sub,eventId:'revocation',envelope,route});
+    const directory = path.join(stateDir,'primary-sessions');
+    await fs.mkdir(directory,{mode:0o700});
+    await fs.writeFile(path.join(directory,'fixture.json'),JSON.stringify({version:1,
+        binding:{seat,family,generation:'live',threadId},inflight:{status:'unknown',nonce,recordKey:record.recordKey}}),{mode:0o600});
+    const entered = Promise.withResolvers(), release = Promise.withResolvers();
+    const attempt = consumeNativeWakePrompt({manifestPath,stateDir,agentId,family,threadId,nonce,
+        inspectResident:async () => ({generation:'live',workspaceRoot:tempDir}),
+        codexTransport:{listCodexWakeTargets:async () => {
+            entered.resolve();
+            await release.promise;
+            return [{root:true,threadId,startedAt:100}]
+        }}});
+    await entered.promise;
+    try { await fs.unlink(path.join(tempDir,'primary-session-seats','fixture.json')) } finally { release.resolve() }
+    expect(await attempt).toEqual({admitted:false});
+    await expect(fs.stat(path.join(directory,'fixture.json.claim.json'))).rejects.toMatchObject({code:'ENOENT'})
+});

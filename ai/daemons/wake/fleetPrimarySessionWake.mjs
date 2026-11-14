@@ -120,10 +120,17 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
         const matches  = selected?.root === true && selected.threadId === threadId;
         // A known successor is a positive rejection. An incomplete inventory can recover.
         if (selected?.root !== true) return denied;
-        const receiptToken = randomUUID();
-        await writeFileAtomic(claimPath, JSON.stringify({nonce,receiptToken,recordKey:inflight.recordKey,threadId,generation:binding.generation,
-            turnId: typeof turnId === 'string' ? turnId : null, admitted:matches}), {mode:0o600,fsync:true});
-        return matches ? {admitted:true,digest:formatLocalWakeDigest(record.envelope)+'\n[NEO_WAKE_RECEIVED:'+receiptToken+']'} : denied
+        // Serialize only the grant of mailbox contents with a manifest change. No native
+        // command or inventory scan runs under this global publication lock.
+        return withOutboxLock(manifestPath,async () => {
+            const liveRoute = (await readPrivate(manifestPath))?.routes?.[subscriptionId];
+            if (!isDeepStrictEqual(liveRoute,route) ||
+                (await readNativeWakeOptIn({manifestPath,agentId,family}))?.stateDir !== stateDir) return denied;
+            const receiptToken = randomUUID();
+            await writeFileAtomic(claimPath, JSON.stringify({nonce,receiptToken,recordKey:inflight.recordKey,threadId,generation:binding.generation,
+                turnId: typeof turnId === 'string' ? turnId : null, admitted:matches}), {mode:0o600,fsync:true});
+            return matches ? {admitted:true,digest:formatLocalWakeDigest(record.envelope)+'\n[NEO_WAKE_RECEIVED:'+receiptToken+']'} : denied
+        })
     })
 }
 
@@ -133,7 +140,7 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
  * @param {Object} options Receiver state plus optional App-sidecar process proof.
  * @returns {Promise<Object>} Delivered only on recipient evidence. Uncertain sends stay pending for reconciliation.
  */
-export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, manifestPath, sidecar, inspectResident = observePrimaryWakeResident,
+export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, manifestPath, sidecar, currentRoute, inspectResident = observePrimaryWakeResident,
     codexTransport = codex, antigravityTransport = antigravity, appDataDir = path.join(os.homedir(), '.gemini', 'antigravity')} = {}) {
     const route = record?.route, config = route?.adapterConfig?.primarySession, seat = route?.agentIdentity;
     if (!config || !bareFamily.has(config.family) || !isKey(record.recordKey)) return pending('invalid native route');
@@ -210,7 +217,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
             return admission?.verified === true ? root : null
         },
         send: async ({binding,nonce}) => {
-            if (binding.generation !== generation) return {status:'not-sent'};
+            if (binding.generation !== generation || (currentRoute && !await currentRoute())) return {status:'not-sent'};
             const {threadId} = binding, text = wakeText(nonce), root = await select();
             if (root?.threadId !== threadId) return {status:'not-sent'};
             const cursor = isCodex ? root.receiptOffset : antigravityTransport.captureAntigravityWakeCursor({appDataDir,threadId});
@@ -276,15 +283,11 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
     if (!['pending','dispatching'].includes(record.state) || record.subscriptionId !== subscriptionId ||
         record.envelope?.subscriptionId !== subscriptionId || record.route?.agentIdentity !== route.agentIdentity ||
         record.envelope?.agentIdentity !== route.agentIdentity || record.envelope?.eventType !== 'wake/digest') return;
-    const publicRoute = {agentIdentity:route.agentIdentity,harnessTargetMetadata:route.harnessTargetMetadata,adapterConfig:route.adapterConfig};
-    // Manifest publication uses this same lock; ownership and route cannot change between the
-    // last manifest check and acceptance of the bounded native send. The recipient independently
-    // verifies ownership again when it attempts to claim the content.
-    const result = await withOutboxLock(manifestPath,async () => {
-        const latest = (await readPrivate(manifestPath))?.routes?.[subscriptionId];
-        if (!isDeepStrictEqual(latest,current)) return pending('manifest changed');
-        return dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar})
-    });
+    const publicRoute  = {agentIdentity:route.agentIdentity,harnessTargetMetadata:route.harnessTargetMetadata,adapterConfig:route.adapterConfig};
+    const currentRoute = async () =>
+        isDeepStrictEqual((await readPrivate(manifestPath))?.routes?.[subscriptionId],current) &&
+        (await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family}))?.stateDir === stateDir;
+    const result = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute});
     if (result?.status === 'delivered' && result.recipient?.seat === route.agentIdentity &&
         result.recipient.recordKey === record.recordKey && UUID.test(result.recipient.nonce ?? '') &&
         UUID.test(result.recipient.threadId ?? '') && typeof result.recipient.generation === 'string' && result.recipient.generation) {
@@ -298,7 +301,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
  * independently consumes its requests. An inactive host reads only its enrollment directory.
  * @returns {{stop:Function}} Stops scheduling and waits for an in-flight pass.
  */
-export function startFleetPrimaryWakePump({manifestPath,intervalMs=5000,logger=console}) {
+export function startFleetPrimaryWakePump({manifestPath,intervalMs=5000,logger=console,drainRecord=drainFleetPrimaryWakeRecord}) {
     let timer, stopped=false, running=Promise.resolve();
     async function tick() {
         try {
@@ -309,10 +312,14 @@ export function startFleetPrimaryWakePump({manifestPath,intervalMs=5000,logger=c
                 for (const [subscriptionId,route] of Object.entries(manifest?.routes ?? {})) {
                     const config = route?.adapterConfig?.primarySession;
                     if (config?.family !== 'codex-desktop' || route.harnessTargetMetadata?.adapter !== 'primary-session') continue;
-                    const enrollment = await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family});
-                    if (!enrollment) continue;
-                    const stateDir = enrollment.stateDir, state=new WakeReceiverState({stateDir});
-                    await drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route})
+                    try {
+                        const enrollment = await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family});
+                        if (!enrollment) continue;
+                        const stateDir = enrollment.stateDir, state=new WakeReceiverState({stateDir});
+                        await drainRecord({state,stateDir,manifestPath,subscriptionId,route})
+                    } catch {
+                        logger.warn?.(`Native wake route ${subscriptionId} could not reconcile; its signed record remains pending.`)
+                    }
                 }
             }
         } catch { logger.warn?.('Native wake pass could not reconcile a seat; signed records remain pending.') }
