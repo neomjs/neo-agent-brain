@@ -37,11 +37,11 @@ const bareMessageId = id => String(id ?? '').replace(/^MESSAGE:/, '');
  * @param {String} [options.nowIso=new Date().toISOString()] The clock a live turn is read against.
  * @returns {Object|null} `{receipt, oldSessionId, successor, promptedTurnAt, liveTurnUntil,
  * lastRequestedAt}`, or `null` without a receipt. `receipt` is `{id, sentAt, focusItemsReceipt,
- * sessionRotation}`; `successor` is `{id, sentAt, sessionId}` or `null`, its `sessionId` the one of the
- * seat's first memory at or after the marker (`null` until that memory lands, since the marker carries
- * none); `liveTurnUntil` is when a turn begun by the receipt's time stops counting as live (the turn that
- * wrote it, until `add_memory` closes it); `lastRequestedAt` is the newest rotation request among the
- * seat's OTHER self-messages in the range.
+ * sessionRotation}`; `successor` is the marker's `{id, sentAt}` or `null`, and names no session, since
+ * the marker carries no sender session and a memory saved after it may be another session's;
+ * `liveTurnUntil` is when a turn begun by the receipt's time stops counting as live (the turn that wrote
+ * it, until `add_memory` closes it); `lastRequestedAt` is the newest rotation request among the seat's
+ * OTHER self-messages in the range.
  */
 export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().toISOString()}) {
     const bare     = identity.replace(/^@/, ''),
@@ -75,15 +75,6 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
               LIMIT 1
           `).get(identity, sentAt),
           oldSessionId = memory?.sessionId || null,
-          successorMemory = marker && db.prepare(`
-              SELECT json_extract(data, '$.properties.sessionId') AS sessionId
-              FROM Nodes
-              WHERE json_extract(data, '$.label') = 'AGENT_MEMORY'
-                AND json_extract(data, '$.properties.agentIdentity') = ?
-                AND json_extract(data, '$.properties.timestamp') >= ?
-              ORDER BY json_extract(data, '$.properties.timestamp') ASC
-              LIMIT 1
-          `).get(identity, marker.properties.sentAt),
           promptedTurn = db.prepare(`
               SELECT MIN(json_extract(data, '$.properties.startedAt')) AS at
               FROM Nodes
@@ -110,7 +101,7 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
             sessionRotation  : newest.properties.sessionRotation ?? null
         },
         oldSessionId,
-        successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt, sessionId: successorMemory?.sessionId || null} : null,
+        successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt} : null,
         promptedTurnAt : promptedTurn?.at || null,
         liveTurnUntil  : liveTurn?.until || null,
         lastRequestedAt: requestedAts.sort().at(-1) || null

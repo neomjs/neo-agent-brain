@@ -239,8 +239,7 @@ test.describe('session-rotation lane (#1383)', () => {
         insertSelfMessage(db, 'MESSAGE:receipt', 10);
         insertSuccessor(db, 'MESSAGE:successor', 4, 'MESSAGE:receipt');
 
-        // no memory after the marker yet, so the successor's session is still unknown
-        expect(read()).toMatchObject({receipt: {id: 'MESSAGE:receipt'}, successor: {id: 'MESSAGE:successor', sentAt: at(4), sessionId: null}});
+        expect(read()).toMatchObject({receipt: {id: 'MESSAGE:receipt'}, successor: {id: 'MESSAGE:successor', sentAt: at(4)}});
 
         insertSelfMessage(db, 'MESSAGE:rescinded', 2, {handover: false});
 
@@ -339,7 +338,7 @@ test.describe('session-rotation lane (#1383)', () => {
         expect((await runLane(missing)).sent).toHaveLength(1)
     });
 
-    test('AC-11 + #1712 AC-2: the earliest marker after the request completes the rotation with both ids and the messages the hold kept', async () => {
+    test('AC-11 + #1712 AC-2: the earliest marker after the request completes the rotation with the marker, the old id and the messages the hold kept', async () => {
         const db = createGraph();
 
         insertRoute(db);
@@ -352,17 +351,19 @@ test.describe('session-rotation lane (#1383)', () => {
         insertDirectMessage(db, 'MESSAGE:held-2', 12);
         insertSuccessor(db, 'MESSAGE:successor', 8, 'MESSAGE:receipt');
         insertSuccessor(db, 'MESSAGE:successor-again', 7, 'MESSAGE:receipt');
-        insertMemory(db, 'mem-fresh', 6, 'session-fresh');
+        insertMemory(db, 'mem-resumed', 6, 'session-old-resumed'); // the first memory after the marker is the old transcript's, resumed
+        insertMemory(db, 'mem-fresh', 5, 'session-fresh');
         insertDirectMessage(db, 'MESSAGE:after', 2);
 
         const {outcome, sent, logs} = await runLane(db);
 
         expect(sent).toEqual([]);
         expect(outcome.completed).toBe(1);
+        // a marker names no sender session, so no memory after it is attributed to the successor
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({
-            state: 'completed', successorMessageId: 'MESSAGE:successor', oldSessionId: 'session-old', newSessionId: 'session-fresh', heldMessages: 2
+            state: 'completed', successorMessageId: 'MESSAGE:successor', oldSessionId: 'session-old', newSessionId: null, heldMessages: 2
         });
-        expect(logs.some(({level, message}) => level === 'INFO' && message.includes('session-old → session-fresh'))).toBe(true)
+        expect(logs.some(({level, message}) => level === 'INFO' && message.includes('session-old → successor MESSAGE:successor'))).toBe(true)
     });
 
     test('AC-12: a rotation open past its window is recorded incomplete and requests nothing else', async () => {
