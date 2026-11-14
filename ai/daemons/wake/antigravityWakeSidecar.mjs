@@ -20,7 +20,7 @@ export function resolveAntigravitySidecarAncestor({sidecarPid, rows}) {
     while (current && !seen.has(current.pid)) {
         seen.add(current.pid);
         const command = current.command || '';
-        const match   = command.match(/^(.*?)\/Contents\/MacOS\/Antigravity(?:\s|$)/);
+        const match   = command.match(/^(.*?\/Antigravity\.app)\/Contents\/MacOS\/Antigravity(?:\s|$)/);
         if (match) {
             const profile = command.match(/(?:^|\s)--user-data-dir=(.*?)(?=\s--|$)/);
             if (!profile || !path.isAbsolute(profile[1]) || !current.startedAt || !path.isAbsolute(match[1])) return null;
@@ -40,12 +40,18 @@ export function readAntigravityProcessRows() {
     }).filter(Boolean);
 }
 
-/** @summary Validates sidecar native endpoint and executable against the discovered App bundle. */
+/**
+ * @summary Validates the vendor's bare loopback host:port or an HTTP(S) loopback origin.
+ * The original environment is never rewritten; this only gates the App-provided capability.
+ */
 export function validateAntigravitySidecarCapability({environment, appBundle, realpath = fs.realpathSync}) {
     try {
-        const endpoint = new URL(environment.ANTIGRAVITY_LS_ADDRESS);
-        if (!['http:', 'https:'].includes(endpoint.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname) ||
-            endpoint.username || endpoint.password || !endpoint.port) return false;
+        const address = environment?.ANTIGRAVITY_LS_ADDRESS;
+        if (typeof address !== 'string') return false;
+        const match = /^(?:(?:https?):\/\/)?(?:127\.0\.0\.1|localhost|\[::1\]):([1-9]\d{0,4})(?:\/)?$/.exec(address);
+        if (!match || Number(match[1]) > 65535) return false;
+        // A bare address has no path, including a slash; a URL may use its canonical root slash.
+        if (!address.includes('://') && address.endsWith('/')) return false;
         const bundle = realpath(appBundle), exe = realpath(environment.ANTIGRAVITY_AGENTAPI_EXE);
         return exe === path.join(bundle, 'Contents', 'Resources', 'bin', 'language_server');
     } catch { return false }
@@ -62,7 +68,16 @@ export async function runAntigravitySidecar({stateDir, manifestPath, environment
         !Number.isSafeInteger(intervalMs) || intervalMs < 100 || typeof dispatch !== 'function') throw new TypeError('Invalid sidecar configuration');
     while (!signal?.aborted) {
         const app = resolveAntigravitySidecarAncestor({sidecarPid, rows:readRows()});
-        if (!app || !validateCapability({environment, appBundle:app.appBundle})) throw new Error('Antigravity App capability unavailable');
+        if (!app) {
+            const error = new Error('Antigravity App ancestor unavailable');
+            error.code = 'AGY_ANCESTOR_UNAVAILABLE';
+            throw error
+        }
+        if (!validateCapability({environment, appBundle:app.appBundle})) {
+            const error = new Error('Antigravity App capability unavailable');
+            error.code = 'AGY_CAPABILITY_UNAVAILABLE';
+            throw error
+        }
         await dispatch({stateDir, manifestPath, environment, sidecarPid, ...app});
         if (signal?.aborted) break;
         await new Promise(resolve => {
@@ -86,7 +101,12 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-    main().catch(() => { console.error('Antigravity sidecar stopped'); process.exitCode = 1 });
+    main().catch(error => {
+        const reason = ['AGY_ANCESTOR_UNAVAILABLE', 'AGY_CAPABILITY_UNAVAILABLE'].includes(error?.code)
+            ? error.code : 'AGY_STARTUP_FAILURE';
+        console.error('Antigravity sidecar stopped: ' + reason);
+        process.exitCode = 1
+    });
 }
 
 /**
