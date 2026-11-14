@@ -1,10 +1,33 @@
-import {test, expect}                                                                                                                                                                                                                                                                                                                                                                                                 from '@playwright/test';
-import fs                                                                                                                                                                                                                                                                                                                                                                                                             from 'node:fs';
-import {execFileSync}                                                                                                                                                                                                                                                                                                                                                                                                 from 'node:child_process';
-import os                                                                                                                                                                                                                                                                                                                                                                                                             from 'node:os';
-import path                                                                                                                                                                                                                                                                                                                                                                                                           from 'node:path';
-import Database                                                                                                                                                                                                                                                                                                                                                                                                       from 'better-sqlite3';
-import {readAntigravityWakeTarget, sendAntigravitySessionWake, captureAntigravityWakeCursor, readAntigravityWakeReceipt, isAntigravityWakeSystemMessage, hasAntigravityPendingSystemWake, classifyAntigravitySessionStart, initializeAntigravityStarts, observeAntigravitySessionStart, latestAntigravityWakeTarget, observeAntigravityPreInvocation, verifyAntigravityWakeAdmission, handleAntigravityPreInvocation} from '../../../../../../ai/daemons/wake/antigravitySessionWake.mjs';
+import {resolveAntigravitySidecarAncestor, runAntigravitySidecar, materializeAntigravitySidecar, validateAntigravitySidecarCapability, materializeAntigravityWakeHooks}                                                                                                                                                                                                              from '../../../../../../ai/daemons/wake/antigravityWakeSidecar.mjs';
+import protobuf                                                                                                                                                                                                                                                                                                                                                                      from 'protobufjs/minimal.js';
+import {test, expect}                                                                                                                                                                                                                                                                                                                                                                from '@playwright/test';
+import fs                                                                                                                                                                                                                                                                                                                                                                            from 'node:fs';
+import {execFileSync}                                                                                                                                                                                                                                                                                                                                                                from 'node:child_process';
+import os                                                                                                                                                                                                                                                                                                                                                                            from 'node:os';
+import path                                                                                                                                                                                                                                                                                                                                                                          from 'node:path';
+import Database                                                                                                                                                                                                                                                                                                                                                                      from 'better-sqlite3';
+import {readAntigravityWakeTarget, sendAntigravitySessionWake, captureAntigravityWakeCursor, readAntigravityWakeReceipt, isAntigravityWakeSystemMessage, hasAntigravityPendingSystemWake, initializeAntigravityStarts, observeAntigravitySessionStart, latestAntigravityWakeTarget, observeAntigravityPreInvocation, verifyAntigravityWakeAdmission, handleAntigravityPreInvocation} from '../../../../../../ai/daemons/wake/antigravitySessionWake.mjs';
+
+
+function fixtureSummary(id, project, parent = '', depth = 0, fork = '') {
+    const metadata = protobuf.Writer.create();
+    if (parent) metadata.uint32(42).string(parent);
+    metadata.uint32(50).string(id);
+    if (depth) metadata.uint32(136).uint32(depth);
+    metadata.uint32(146).string(project);
+    const summary = protobuf.Writer.create().uint32(34).string('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee').uint32(138).bytes(metadata.finish());
+    if (fork) summary.uint32(194).string(fork);
+    return Buffer.from(summary.finish());
+}
+
+function prepareFixtureDb(db) {
+    db.exec('ALTER TABLE conversation_summaries ADD COLUMN raw_summary BLOB');
+}
+
+function insertFixture(db, id, project, parent, depth, killed, source, status) {
+    db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?,?)')
+        .run(id,project,parent,depth,killed,source,status,fixtureSummary(id,project,parent,depth));
+}
 
 test('selects only an explicit live root in the selected project', () => {
     const root         = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-target-'));
@@ -12,9 +35,10 @@ test('selects only an explicit live root in the selected project', () => {
     const a            = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     try {
         db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT)');
-        const insert = db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?)');
-        insert.run(a, 'project', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE');
-        insert.run(b, 'project', a, 1, 0, '', 'CASCADE_RUN_STATUS_IDLE');
+        prepareFixtureDb(db);
+        const insert = (...args) => insertFixture(db,...args);
+        insert(a, 'project', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE');
+        insert(b, 'project', a, 1, 0, '', 'CASCADE_RUN_STATUS_IDLE');
         expect(readAntigravityWakeTarget({databasePath, projectId:'project', threadId:a})?.threadId).toBe(a);
         expect(readAntigravityWakeTarget({databasePath, projectId:'wrong', threadId:a})).toBeNull();
         expect(readAntigravityWakeTarget({databasePath, projectId:'project', threadId:b})).toBeNull();
@@ -57,28 +81,6 @@ test('receipt requires post-cursor exact user input followed by a model response
     } finally { fs.rmSync(root,{recursive:true,force:true}) }
 });
 
-test('SessionStart classification refuses existing, helper, killed and concurrent roots', () => {
-    const root         = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-start-'));
-    const databasePath = path.join(root, 'summary.db'), db = new Database(databasePath);
-    const a            = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', c = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-    try {
-        db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT)');
-        const insert = db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?)');
-        insert.run(a, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE');
-        const classify = (threadId, priorThreadIds) => classifyAntigravitySessionStart({databasePath,projectId:'p',threadId,priorThreadIds});
-        expect(classify(a,[a])).toBeNull();
-        insert.run(b, 'p', a, 1, 0, '', 'CASCADE_RUN_STATUS_IDLE');
-        expect(classify(b,[a])).toBeNull();
-        insert.run(c, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE');
-        expect(classify(c,[a])?.threadId).toBe(c);
-        db.prepare('UPDATE conversation_summaries SET killed=1 WHERE conversation_id=?').run(c);
-        expect(classify(c,[a])).toBeNull();
-        db.prepare('UPDATE conversation_summaries SET parent_conversation_id=\'\', nesting_depth=0 WHERE conversation_id=?').run(b);
-        expect(classify(c,[a])).toBeNull();
-    } finally { db.close(); fs.rmSync(root,{recursive:true,force:true}) }
-});
-
-import {resolveAntigravitySidecarAncestor, runAntigravitySidecar, materializeAntigravitySidecar, validateAntigravitySidecarCapability, materializeAntigravityWakeHooks} from '../../../../../../ai/daemons/wake/antigravityWakeSidecar.mjs';
 
 test('sidecar requires a unique exact App ancestor and passes lease facts to the dispatcher', async () => {
     const rows = [
@@ -133,11 +135,12 @@ test('generation census and hook admission reject stale, helper, replay and unob
     const ctx = {databasePath,projectId:'p',projectRoot:'/project',generation:'9:epoch',statePath};
     try {
         db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT)');
-        const insert = db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?)');
-        insert.run(old,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
+        prepareFixtureDb(db);
+        const insert = (...args) => insertFixture(db,...args);
+        insert(old,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
         await initializeAntigravityStarts(ctx);
         expect(latestAntigravityWakeTarget(ctx)).toBeNull();
-        insert.run(current,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
+        insert(current,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
         await observeAntigravitySessionStart({...ctx,input:{conversationId:current,workspacePaths:['/project']}});
         expect(latestAntigravityWakeTarget(ctx)?.threadId).toBe(current);
         const input = {conversationId:current,workspacePaths:['/project'],invocationNum:0,lastUserInput:'hello'};
@@ -154,7 +157,7 @@ test('generation census and hook admission reject stale, helper, replay and unob
         expect(await handleAntigravityPreInvocation({...ctx,input:{...input,lastUserInput:marker,invocationNum:1},consume})).toEqual({});
         expect(calls).toBe(1);
         expect((await handleAntigravityPreInvocation({...ctx,input:{...input,conversationId:old,lastUserInput:marker},consume})).terminationBehavior).toBe('terminate');
-        insert.run(successor,'p','',0,1,'','CASCADE_RUN_STATUS_IDLE');
+        insert(successor,'p','',0,1,'','CASCADE_RUN_STATUS_IDLE');
         expect(latestAntigravityWakeTarget(ctx)).toBeNull();
         expect((await handleAntigravityPreInvocation({...ctx,input:{...input,lastUserInput:marker},consume})).terminationBehavior).toBe('terminate');
     } finally { db.close(); fs.rmSync(root,{recursive:true,force:true}) }
@@ -187,6 +190,7 @@ test('native hook callback binds a verified lease and rejects a foreign conversa
     const databasePath = path.join(data,'conversation_summaries.db'), db=new Database(databasePath);
     try {
         db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT)');
+        prepareFixtureDb(db);
         const route = {agentIdentity:'@neo-test',harnessTargetMetadata:{adapter:'primary-session'},adapterConfig:{primarySession:{
             family:'antigravity',agentId:'neo-test',instanceHome:home,appBundle,projectId:'p',projectRoot}}};
         const manifestPath = path.join(root,'manifest.json');
@@ -196,7 +200,7 @@ test('native hook callback binds a verified lease and rejects a foreign conversa
         const rows = [{pid:10,ppid:1,startedAt:'epoch',command:appBundle+'/Contents/MacOS/Antigravity --user-data-dir='+home},
             {pid:11,ppid:10,startedAt:'epoch',command:'hook'}];
         await initializeAntigravityStarts({databasePath,projectId:'p',generation,statePath});
-        db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?)').run(id,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
+        insertFixture(db,id,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
         const base = {manifestPath,stateDir,appDataDir:data,sidecarPid:11,readRows:()=>rows};
         await handleAntigravityWakeHook({...base,event:'SessionStart',input:{conversationId:id,workspacePaths:[projectRoot]}});
         let   calls  = 0;
@@ -254,6 +258,7 @@ test('App callback redeems a bound native system wake with unrelated lastUserInp
     const databasePath = path.join(data,'conversation_summaries.db'), db=new Database(databasePath);
     try {
         db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT)');
+        prepareFixtureDb(db);
         const route = {agentIdentity:'@neo-test',harnessTargetMetadata:{adapter:'primary-session'},adapterConfig:{primarySession:{
             family:'antigravity',agentId:'neo-test',instanceHome:home,appBundle,projectId:'p',projectRoot}}};
         const manifestPath = path.join(root,'manifest.json');
@@ -263,7 +268,7 @@ test('App callback redeems a bound native system wake with unrelated lastUserInp
         const rows = [{pid:10,ppid:1,startedAt:'epoch',command:appBundle+'/Contents/MacOS/Antigravity --user-data-dir='+home},
             {pid:11,ppid:10,startedAt:'epoch',command:'hook'}];
         await initializeAntigravityStarts({databasePath,projectId:'p',generation,statePath});
-        db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?)').run(id,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
+        insertFixture(db,id,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
         const base = {manifestPath,stateDir,appDataDir:data,sidecarPid:11,readRows:()=>rows};
         await handleAntigravityWakeHook({...base,event:'SessionStart',input:{conversationId:id,workspacePaths:[projectRoot]}});
         const logs       = path.join(data,'brain',id,'.system_generated','logs');fs.mkdirSync(logs,{recursive:true});
@@ -325,4 +330,55 @@ test('transcript cursor refuses a symlinked conversation ancestor', () => {
         fs.symlinkSync(other,path.join(root,'brain',id));
         expect(()=>captureAntigravityWakeCursor({appDataDir:root,threadId:id})).toThrow();
     } finally {fs.rmSync(root,{recursive:true,force:true})}
+});
+
+test('native metadata fences forks, malformed summaries and changing identity tuples', async () => {
+    const root         = fs.mkdtempSync(path.join(os.tmpdir(),'agy-proto-'));
+    const databasePath = path.join(root,'summary.db'),statePath=path.join(root,'seat.json'),db=new Database(databasePath);
+    const old          = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', fork='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        current='cccccccc-cccc-4ccc-8ccc-cccccccccccc', unknown='dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        child='ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const ctx = {databasePath,projectId:'p',projectRoot:'/p',generation:'g',statePath};
+    try {
+        db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT)');
+        prepareFixtureDb(db);
+        const put  = (...args)=>insertFixture(db,...args);
+        const blob = db.prepare('UPDATE conversation_summaries SET raw_summary=? WHERE conversation_id=?');
+        put(old,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
+        await initializeAntigravityStarts(ctx);
+        put(child,'p',old,1,0,'','CASCADE_RUN_STATUS_IDLE');
+        expect(await observeAntigravitySessionStart({...ctx,input:{conversationId:child,workspacePaths:['/p']}})).toBeNull();
+        put(fork,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
+        blob.run(fixtureSummary(fork,'p','',0,old),fork);
+        expect(readAntigravityWakeTarget({...ctx,threadId:fork})).toBeNull();
+        put(current,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
+        expect((await observeAntigravitySessionStart({...ctx,input:{conversationId:current,workspacePaths:['/p']}}))?.threadId).toBe(current);
+        expect(await observeAntigravitySessionStart({...ctx,input:{conversationId:fork,workspacePaths:['/p']}})).toBeNull();
+        expect(latestAntigravityWakeTarget(ctx)?.threadId).toBe(current);
+        blob.run(fixtureSummary(current,'other'),current);
+        expect(latestAntigravityWakeTarget(ctx)).toBeNull();
+        blob.run(fixtureSummary(current,'p'),current);
+        expect(latestAntigravityWakeTarget(ctx)?.threadId).toBe(current);
+        put(unknown,'p','',0,0,'','CASCADE_RUN_STATUS_IDLE');
+        blob.run(Buffer.from([0x8a,0x01,0xff]),unknown);
+        expect(await observeAntigravitySessionStart({...ctx,input:{conversationId:unknown,workspacePaths:['/p']}})).toBeNull();
+        expect(latestAntigravityWakeTarget(ctx)).toBeNull();
+        blob.run(Buffer.concat([fixtureSummary(unknown,'p'),Buffer.from([0x22,0x24]),Buffer.from('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')]),unknown);
+        expect(readAntigravityWakeTarget({...ctx,threadId:unknown})).toBeNull();
+        blob.run(Buffer.concat([fixtureSummary(unknown,'p'),Buffer.from([0x20,0x01])]),unknown);
+        expect(readAntigravityWakeTarget({...ctx,threadId:unknown})).toBeNull();
+        blob.run(Buffer.alloc(0),unknown);
+        expect(readAntigravityWakeTarget({...ctx,threadId:unknown})).toBeNull();
+        const duplicateMetadata = protobuf.Writer.create().uint32(50).string(unknown)
+            .uint32(146).string('p').uint32(146).string('p').finish();
+        blob.run(Buffer.from(protobuf.Writer.create().uint32(34).string(unknown)
+            .uint32(138).bytes(duplicateMetadata).finish()),unknown);
+        expect(readAntigravityWakeTarget({...ctx,threadId:unknown})).toBeNull();
+        blob.run(Buffer.from(protobuf.Writer.create().uint32(34).string(unknown)
+            .uint32(138).bytes(protobuf.Writer.create().uint32(146).string('p').finish()).finish()),unknown);
+        expect(readAntigravityWakeTarget({...ctx,threadId:unknown})).toBeNull();
+        blob.run(fixtureSummary(unknown,'p'),unknown);
+        expect((await observeAntigravitySessionStart({...ctx,input:{conversationId:unknown,workspacePaths:['/p']}}))?.threadId).toBe(unknown);
+        expect(latestAntigravityWakeTarget(ctx)?.threadId).toBe(unknown);
+    } finally {db.close();fs.rmSync(root,{recursive:true,force:true})}
 });

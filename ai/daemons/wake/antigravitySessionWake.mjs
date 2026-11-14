@@ -1,4 +1,5 @@
 import Database    from 'better-sqlite3';
+import protobuf    from 'protobufjs/minimal.js';
 import path        from 'node:path';
 import crypto      from 'node:crypto';
 import fs          from 'node:fs';
@@ -17,9 +18,62 @@ function validateInputs(databasePath, projectId) {
         throw new TypeError('Absolute database path and explicit project ID required');
     }
 }
+
+/**
+ * @summary Reads only the native summary identity fields; malformed or ambiguous wire data is unavailable.
+ * The observed schema is CascadeTrajectorySummary { trajectory_id:4, trajectory_metadata:17,
+ * fork_parent_conversation_id:24 }; metadata has parent:5, root:6, nesting_depth:17, project_id:18.
+ * Proto3 omits empty optional parent/fork and zero depth. Required tuple fields must be present.
+ */
+function nativeIdentity(raw) {
+    if (!Buffer.isBuffer(raw) || !raw.length || raw.length > 1024 * 1024) return null;
+    try {
+        const parse = (reader, fields) => {
+            const seen = new Set(), result = {};
+            while (reader.pos < reader.len) {
+                const tag = reader.uint32(), field = tag >>> 3, wire = tag & 7;
+                if (!field || wire === 3 || wire === 4 || wire > 5) throw new Error('invalid wire');
+                const spec = fields[field];
+                if (spec) {
+                    if (seen.has(field) || wire !== spec.wire) throw new Error('duplicate or wrong wire');
+                    seen.add(field);
+                    result[spec.name] = spec.wire === 2 ? reader.bytes() : reader.uint32();
+                } else {
+                    reader.skipType(wire)
+                }
+                if (reader.pos > reader.len) throw new Error('truncated wire');
+            }
+            return result;
+        };
+        const summary = parse(protobuf.Reader.create(raw), {
+            4:{name:'id',wire:2}, 17:{name:'metadata',wire:2}, 24:{name:'fork',wire:2}
+        });
+        if (!summary.id || !summary.metadata) return null;
+        const metadata = parse(protobuf.Reader.create(summary.metadata), {
+            5:{name:'parent',wire:2}, 6:{name:'root',wire:2},
+            17:{name:'depth',wire:0}, 18:{name:'project',wire:2}
+        });
+        if (!metadata.root || !metadata.project) return null;
+        const decoder = new TextDecoder('utf-8', {fatal:true});
+        const string  = value => value ? decoder.decode(value) : '';
+        return {id:string(summary.id),fork:string(summary.fork),parent:string(metadata.parent),
+            root:string(metadata.root),project:string(metadata.project),depth:metadata.depth ?? 0};
+    } catch { return null }
+}
+
+/** @summary Distinguishes a proven copied root from an unavailable candidate; unknown never falls back. */
+function rootDisposition(row) {
+    if (!row || !UUID.test(row.conversation_id || '')) return 'unknown';
+    const metadata = nativeIdentity(row.raw_summary);
+    if (!metadata || !UUID.test(metadata.id) || metadata.project !== row.project_id ||
+        metadata.root !== row.conversation_id || metadata.parent !== row.parent_conversation_id ||
+        metadata.depth !== row.nesting_depth) return 'unknown';
+    if (metadata.fork) return UUID.test(metadata.fork) ? 'fork' : 'unknown';
+    return row.parent_conversation_id === '' && row.nesting_depth === 0 && row.killed === 0 &&
+        row.source === '' && STATES.has(row.status) ? 'root' : 'unknown';
+}
 function eligible(row) {
-    return row && UUID.test(row.conversation_id) && row.parent_conversation_id === '' &&
-        row.nesting_depth === 0 && row.killed === 0 && row.source === '' && STATES.has(row.status);
+    return rootDisposition(row) === 'root';
 }
 function withDatabase(databasePath, fn) {
     const db = new Database(databasePath, {readonly: true, fileMustExist: true});
@@ -34,7 +88,7 @@ export function readAntigravityWakeTarget({databasePath, projectId, threadId}) {
     validateInputs(databasePath, projectId);
     if (!UUID.test(threadId || '')) return null;
     return withDatabase(databasePath, db => {
-        const row = db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status FROM conversation_summaries WHERE conversation_id = ? AND project_id = ?').get(threadId, projectId);
+        const row = db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status, raw_summary FROM conversation_summaries WHERE conversation_id = ? AND project_id = ?').get(threadId, projectId);
         return eligible(row) ? {threadId: row.conversation_id, projectId: row.project_id, status: row.status} : null;
     });
 }
@@ -181,26 +235,6 @@ export function readAntigravityWakeReceipt({appDataDir,threadId,text,cursor,rece
     } catch { return unknown }
 }
 
-/**
- * @summary Validates a SessionStart candidate against a host-captured pre-creation census.
- * This is classification only: the supervisor must attest the hook's App ancestry and retain
- * the census under its generation-bound, single-use creation permit. A helper cannot bind.
- * Concurrent new roots are ambiguous, and a killed newest root never falls back to an older one.
- * @returns {Object|null} Candidate metadata if exactly one newly observed project root exists.
- */
-export function classifyAntigravitySessionStart({databasePath, projectId, threadId, priorThreadIds}) {
-    validateInputs(databasePath, projectId);
-    if (!UUID.test(threadId || '') || !Array.isArray(priorThreadIds) ||
-        priorThreadIds.some(id => !UUID.test(id)) || new Set(priorThreadIds).size !== priorThreadIds.length) return null;
-    const previous = new Set(priorThreadIds);
-    return withDatabase(databasePath, db => {
-        const rows      = db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status FROM conversation_summaries WHERE project_id = ? AND parent_conversation_id = ? AND nesting_depth = 0').all(projectId, '');
-        const additions = rows.filter(row => !previous.has(row.conversation_id));
-        if (additions.length !== 1 || additions[0].conversation_id !== threadId || !eligible(additions[0])) return null;
-        return {threadId, projectId, status: additions[0].status};
-    });
-}
-
 /** @summary Initializes the generation census before accepting any SessionStart event. */
 export async function initializeAntigravityStarts({databasePath,projectId,generation,statePath}) {
     validateInputs(databasePath, projectId);
@@ -230,14 +264,33 @@ export async function observeAntigravitySessionStart({databasePath,projectId,pro
         let state;
         try { state = JSON.parse(fs.readFileSync(file,'utf8')) } catch { return null }
         if (state?.generation !== generation || state.projectId !== projectId || !Array.isArray(state.priorThreadIds)) return null;
-        const target = classifyAntigravitySessionStart({databasePath,projectId,threadId:input.conversationId,priorThreadIds:state.priorThreadIds});
-        if (!target) return null;
-        state.priorThreadIds.push(target.threadId);
-        state.threadId = target.threadId;
-        state.sequence = (state.sequence || 0) + 1;
-        state.witness = false;
-        writeFileAtomicSync(file,JSON.stringify(state),{mode:0o600,fsync:true});
-        return target;
+
+        const prior     = new Set(state.priorThreadIds);
+        const additions = withDatabase(databasePath, db => {
+            const ids  = db.prepare("SELECT conversation_id FROM conversation_summaries WHERE project_id=? AND parent_conversation_id='' AND nesting_depth=0").all(projectId);
+            const load = db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status, raw_summary FROM conversation_summaries WHERE project_id=? AND conversation_id=?');
+            return ids.filter(row => !prior.has(row.conversation_id))
+                .map(row => {
+                    const value = load.get(projectId,row.conversation_id);
+                    return {row:value, disposition:rootDisposition(value)};
+                });
+        });
+        const ignored    = additions.filter(item => item.disposition === 'fork').map(item => item.row);
+        const candidates = additions.filter(item => item.disposition !== 'fork');
+        // A positively identified fork may be retired from the pending census. Unknown, killed,
+        // malformed or multiple possible roots stay pending and must not reactivate an older root.
+        state.priorThreadIds.push(...ignored.map(row => row.conversation_id));
+        const candidate = candidates.length === 1 ? candidates[0] : null;
+        const row       = candidate?.row;
+        const accepted  = row && row.conversation_id === input.conversationId && candidate.disposition === 'root';
+        if (accepted) {
+            state.priorThreadIds.push(row.conversation_id);
+            state.threadId = row.conversation_id;
+            state.sequence = (state.sequence || 0) + 1;
+            state.witness = false;
+        }
+        if (ignored.length || accepted) writeFileAtomicSync(file,JSON.stringify(state),{mode:0o600,fsync:true});
+        return accepted ? {threadId:row.conversation_id,projectId:row.project_id,status:row.status} : null;
     });
 }
 
