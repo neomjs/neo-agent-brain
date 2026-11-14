@@ -57,6 +57,109 @@ x-neo-harness-tool-projection:
   operatorOnlyTiers:
     - admin
 
+x-neo-exact-tool-profiles:
+  description: >
+    Server-pinned exact profiles declare their complete operation set and any
+    profile-scoped input schemas here. ToolService compiles this single OpenAPI
+    authority for both tools/list visibility and tools/call validation; unknown
+    or malformed profiles fail closed.
+  profiles:
+    standalone:
+      description: >
+        Zero-daemon standalone Memory Core npx surface backed by canonical JSONL
+        WAL segments and a derived node:sqlite FTS5 BM25 index. Exposes only
+        health, tool handbook, episodic write, recent turn recall (deterministic
+        summaryFallback excerpt), lexical FTS5 search, and session recall.
+      tools:
+        healthcheck: {}
+        get_mcp_tool_handbook: {}
+        add_memory: {}
+        query_recent_turns:
+          inputSchema:
+            type: object
+            properties:
+              workspace:
+                type: string
+                description: "Optional workspace key override. Defaults to the active resolved workspace; pass '*' for cross-workspace recall."
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 100
+                default: 20
+                description: Maximum number of turns to return (clamped 1..100).
+              before:
+                type: object
+                description: "Pagination cursor ({timestamp, id}) returned as nextCursor from a previous page."
+                properties:
+                  timestamp:
+                    type: string
+                  id:
+                    type: string
+              detail:
+                type: string
+                enum: [summary, full]
+                default: summary
+                description: "'summary' returns summaryFallback=true with a deterministic bounded excerpt; 'full' includes prompt, decisionContext, and response."
+              projection:
+                type: string
+                enum: [public, private]
+                default: private
+                description: "'public' omits decisionContext/thought on detail='full'; 'private' preserves it."
+        query_raw_memories:
+          inputSchema:
+            type: object
+            required:
+              - query
+            properties:
+              query:
+                type: string
+                description: Natural-language search query evaluated against the derived SQLite FTS5 BM25 index (retrievalMode='lexical-fts5').
+              workspace:
+                type: string
+                description: "Optional workspace key override. Defaults to the active resolved workspace; pass '*' to search across all workspaces."
+              nResults:
+                type: integer
+                minimum: 1
+                maximum: 100
+                default: 10
+                description: Maximum number of lexical hits to return.
+              sessionId:
+                type: string
+                description: Optional filter restricting search to one sessionId.
+              detail:
+                type: string
+                enum: [summary, full]
+                default: full
+                description: "'full' returns full turn fields with miniSummary and summaryFallback=true; 'summary' omits raw turn bodies."
+              projection:
+                type: string
+                enum: [public, private]
+                default: private
+                description: "'public' omits decisionContext/thought on detail='full'; 'private' preserves it."
+        get_session_memories:
+          inputSchema:
+            type: object
+            required:
+              - sessionId
+            properties:
+              sessionId:
+                type: string
+                description: Session ID whose chronological turns should be retrieved.
+              workspace:
+                type: string
+                description: "Optional workspace key override. Defaults to the active resolved workspace; pass '*' to include all workspaces."
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 1000
+                default: 100
+                description: Maximum number of memories to return.
+              offset:
+                type: integer
+                minimum: 0
+                default: 0
+                description: Zero-based pagination offset.
+
 paths:
   /community/batches/admit:
     post:
