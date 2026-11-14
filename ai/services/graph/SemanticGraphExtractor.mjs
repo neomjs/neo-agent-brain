@@ -37,6 +37,35 @@ const TRI_VECTOR_RELATIONSHIPS = Object.freeze([
 ]);
 
 /**
+ * @summary Normalizes an anchor assertion timestamp to an ISO string when parseable.
+ * @param {String|Number|null|undefined} value
+ * @returns {String|null}
+ */
+function normalizeAssertionIso(value) {
+    if (typeof value === 'string') {
+        return Number.isFinite(Date.parse(value)) ? value : null;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return new Date(value).toISOString();
+    }
+    return null;
+}
+
+/**
+ * @summary Returns the newer of two parseable ISO assertion timestamps.
+ * @param {String|null|undefined} a
+ * @param {String|null|undefined} b
+ * @returns {String|null}
+ */
+function latestAssertionIso(a, b) {
+    const isoA = normalizeAssertionIso(a),
+          isoB = normalizeAssertionIso(b);
+    if (!isoA) return isoB;
+    if (!isoB) return isoA;
+    return Date.parse(isoB) >= Date.parse(isoA) ? isoB : isoA;
+}
+
+/**
  * @class Neo.ai.daemons.services.SemanticGraphExtractor
  * @extends Neo.core.Base
  * @singleton
@@ -390,9 +419,9 @@ class SemanticGraphExtractor extends Base {
     /**
      * Deterministically reduces chunk-level Tri-Vector payloads into one session payload.
      *
-     * @summary Anchor & Echo: This is the deterministic map-reduce floor, not semantic-perfect
-     * synthesis. Chunks are processed in monotonic chunk order; graph nodes dedupe by
-     * `(type, name)`, and edges are remapped through the deduped node ids before graph commit.
+     * @summary Anchor & Echo: Chunks reduce in monotonic order by `(type, name)`; `gravity_well`
+     * stamps `gravity_well_asserted_at` only when a chunk asserts the node as a strategic anchor,
+     * so unasserted passes never keep or refresh anchor liveness unconditionally.
      *
      * @param {Object[]} payloads Chunk-level Tri-Vector payloads
      * @param {Object} chunkPlan Chunk plan emitted by `sessionChunker`
@@ -404,7 +433,8 @@ class SemanticGraphExtractor extends Base {
               nodeIdRemap  = new Map(),
               edgeByTuple  = new Map(),
               summaries    = [],
-              roadmapItems = [];
+              roadmapItems = [],
+              assertedAt   = new Date().toISOString();
 
         let featureNamespace = null;
 
@@ -431,9 +461,15 @@ class SemanticGraphExtractor extends Base {
                         ...node,
                         type,
                         name,
-                        tags: Array.isArray(node.tags) ? [...new Set(node.tags)] : []
+                        gravity_well: node.gravity_well === true,
+                        tags        : Array.isArray(node.tags) ? [...new Set(node.tags)] : []
                     };
                     delete storedNode.confidence;
+                    if (storedNode.gravity_well) {
+                        storedNode.gravity_well_asserted_at = normalizeAssertionIso(node.gravity_well_asserted_at) ?? assertedAt;
+                    } else {
+                        delete storedNode.gravity_well_asserted_at;
+                    }
                     nodeByTuple.set(key, storedNode);
                     if (node.id) {
                         nodeIdRemap.set(node.id, storedNode.id);
@@ -449,7 +485,11 @@ class SemanticGraphExtractor extends Base {
                     storedNode.description = node.description;
                 }
                 if (node.gravity_well === true) {
-                    storedNode.gravity_well = true;
+                    storedNode.gravity_well             = true;
+                    storedNode.gravity_well_asserted_at = latestAssertionIso(
+                        storedNode.gravity_well_asserted_at,
+                        normalizeAssertionIso(node.gravity_well_asserted_at) ?? assertedAt
+                    );
                 }
                 if (typeof node.strategic_weight === 'number') {
                     storedNode.strategic_weight = Math.max(
@@ -813,9 +853,9 @@ class SemanticGraphExtractor extends Base {
     /**
      * Commits a reduced Tri-Vector payload to the Native Edge Graph.
      *
-     * @summary Anchor & Echo: Chunked extraction completes every chunk before this method runs,
-     * preserving the historical single graph-write phase and avoiding partial writes on chunk failure.
-     * Closed classifications use their catch-all values for legacy input; self-confidence is not written.
+     * @summary Anchor & Echo: Commits only after every chunk succeeds; stamps `gravity_well_asserted_at`
+     * when `gravity_well` is asserted so anchor liveness is bounded by `strategicAnchorWindowMs` and
+     * open work-item state, without refreshing or wiping an existing window on non-asserting mentions.
      *
      * @param {Object} payload Session-level Tri-Vector payload
      * @param {Object} session Wrapped session object
@@ -828,6 +868,7 @@ class SemanticGraphExtractor extends Base {
         const artifact      = payload.session_artifact;
         const excluded      = new Set(excludedNodeTypes.map(type => String(type).toUpperCase()));
         const excludedNodes = new Set();
+        const assertedAt    = new Date().toISOString();
 
         // Was a hand-written `frontier` spec upserted through plain upsertNode, which carried
         // two defects: the local description had drifted from the boot manifest, making the
@@ -855,6 +896,18 @@ class SemanticGraphExtractor extends Base {
             nodeId = this.normalizeMemorySessionGraphNodeId(nodeId);
             nodeId = canonicalizeSemanticGraphNodeId({id: nodeId, type: nodeType, name: node.name});
 
+            GraphService.db?.getAdjacentNodes?.(nodeId, 'both');
+            const existingNode  = GraphService.db?.nodes?.get(nodeId),
+                  existingProps = (existingNode?.isRecord ? existingNode.get('properties') : existingNode?.properties) || null,
+                  anchorProps   = node.gravity_well === true
+                      ? {
+                          gravity_well            : true,
+                          gravity_well_asserted_at: normalizeAssertionIso(node.gravity_well_asserted_at) ?? assertedAt
+                      }
+                      : existingProps?.gravity_well === true
+                          ? {}
+                          : {gravity_well: false};
+
             GraphService.upsertNode({
                 id              : nodeId,
                 type            : nodeType,
@@ -862,9 +915,9 @@ class SemanticGraphExtractor extends Base {
                 description     : node.description || '',
                 semanticVectorId: session.id,
                 properties      : {
-                    logical_layer   : TRI_VECTOR_LAYERS.includes(node.logical_layer) ? node.logical_layer : 'Unknown',
-                    stability       : TRI_VECTOR_STABILITIES.includes(node.stability) ? node.stability : 'UNKNOWN',
-                    gravity_well    : node.gravity_well === true,
+                    logical_layer: TRI_VECTOR_LAYERS.includes(node.logical_layer) ? node.logical_layer : 'Unknown',
+                    stability    : TRI_VECTOR_STABILITIES.includes(node.stability) ? node.stability : 'UNKNOWN',
+                    ...anchorProps,
                     strategic_weight: typeof node.strategic_weight === 'number' ? node.strategic_weight : (node.gravity_well ? 1.0 : 0.1),
                     tags            : Array.isArray(node.tags) ? node.tags : [],
                     context_source  : session.meta.sessionId

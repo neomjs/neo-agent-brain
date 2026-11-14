@@ -14,6 +14,21 @@ import {isDeepStrictEqual}                     from 'node:util';
 import {normalizeNodeDescription, projectNode} from './nodeProjection.mjs';
 import {LEGACY_RAW_MEMORY_NODE_LABEL}          from './helpers/rawMemoryGraphIdentity.mjs';
 
+const WORK_ITEM_LABELS = new Set(['ISSUE', 'PULL_REQUEST', 'DISCUSSION']);
+
+/**
+ * @summary True when a work-item state (`CLOSED` or `MERGED`) ends strategic-anchor liveness.
+ * @param {String|null|undefined} state
+ * @returns {Boolean}
+ */
+function isTerminalWorkItemState(state) {
+    if (typeof state !== 'string') {
+        return false;
+    }
+    const normalized = state.trim().toUpperCase();
+    return normalized === 'CLOSED' || normalized === 'MERGED';
+}
+
 /**
  * @summary Applies canonical row visibility to a node or edge snapshot.
  * Row-level-security visibility predicate for an in-memory graph **node or edge**, mirroring
@@ -370,6 +385,8 @@ class GraphService extends Base {
      * authoritative only when it declares `type === 'ADR'` alongside `adrAuthority.admitted === true`,
      * so echoing an existing node's `adrAuthority` on a non-`ADR` write never relabels or overwrites it.
      * An undeclared competing canonical ADR claim refuses mutation and retains the last admitted state.
+     * Closed or merged work items (`ISSUE`, `PULL_REQUEST`, `DISCUSSION`) clear `gravity_well` while
+     * preserving historical `strategic_weight`, because an anchor is only live while its item is open.
      *
      * @important The `type` string is mapped directly to `node.label` to comply with strict Graph Database taxonomy (Node Labels).
      * @param {Object} nodeData
@@ -457,6 +474,11 @@ class GraphService extends Base {
                 p.semanticVectorId = currentAuth.semanticVectorId;
             }
 
+            if (WORK_ITEM_LABELS.has(updatedLabel) && isTerminalWorkItemState(p.state)) {
+                p.gravity_well = false;
+                delete p.gravity_well_asserted_at;
+            }
+
             if (currentUserId !== undefined && p.userId === undefined) {
                 p.userId = currentUserId;
             }
@@ -475,7 +497,8 @@ class GraphService extends Base {
                 }
             }
         } else {
-            let p = {
+            const initialLabel = type || 'NODE';
+            let   p            = {
                 name       : name || id,
                 description: description || '',
                 semanticVectorId,
@@ -484,13 +507,18 @@ class GraphService extends Base {
                 ...(properties || {})
             };
 
+            if (WORK_ITEM_LABELS.has(initialLabel) && isTerminalWorkItemState(p.state)) {
+                p.gravity_well = false;
+                delete p.gravity_well_asserted_at;
+            }
+
             if (currentUserId !== undefined && p.userId === undefined) {
                 p.userId = currentUserId;
             }
 
             this.db.addNode({
                 id,
-                label     : type || 'NODE',
+                label     : initialLabel,
                 properties: p
             });
             // logger.debug(`Successfully added node to Database RAM: ${id}`);
@@ -1459,11 +1487,13 @@ class GraphService extends Base {
      * capture time for it, so its freshness is unknown: a consumer that acts on it re-reads the item's provider
      * for currency.
      *
-     * Geometry columns carry the Brain's own meaning, never the property bag: `gravityWell` (1 for a REM
-     * strategic anchor, else 0), `strategicWeight` (a number or null) and `lastActivityAt` (epoch ms or null),
-     * read from the field {@link GraphService#sceneActivitySources} names for the node's kind. The answer's
-     * `activitySources` names that field per kind with `sourceCapturedAt: null`: the store keeps no capture time
-     * for any source, so a value's freshness is unknown, and a reader's own read time is not it.
+     * Geometry columns carry the Brain's own meaning, never the property bag: `gravityWell` (1 only for a
+     * live REM strategic anchor — `gravity_well === true`, not a `CLOSED` or `MERGED` work item, and
+     * `gravity_well_asserted_at` within `strategicAnchorWindowMs` — else 0), `strategicWeight` (a number or
+     * null) and `lastActivityAt` (epoch ms or null), read from the field {@link GraphService#sceneActivitySources}
+     * names for the node's kind. The answer's `activitySources` names that field per kind with
+     * `sourceCapturedAt: null`: the store keeps no capture time for any source, so a value's freshness is
+     * unknown, and a reader's own read time is not it.
      * @param {Object} [data]
      * @param {Number} [data.maxNodes=250000]
      * @param {Number} [data.maxEdges=500000]
@@ -1486,11 +1516,13 @@ class GraphService extends Base {
             rlsClause = `(user_id = ? OR user_id = ? OR user_id IS NULL
                           OR json_extract(data, '$.properties.sharedEntity') = 1
                           OR json_extract(data, '$.properties.visibility') = 'team')`,
-            sources   = this.sceneActivitySources,
-            visible   = new Map(),
-            links     = new Map(),
-            degree    = new Map(),
-            text      = value => typeof value === 'string' ? value : null,
+            sources        = this.sceneActivitySources,
+            anchorWindowMs = aiConfig.strategicAnchorWindowMs,
+            nowMs          = Date.now(),
+            visible        = new Map(),
+            links          = new Map(),
+            degree         = new Map(),
+            text           = value => typeof value === 'string' ? value : null,
             // an ISO string (issues, memories, retrospectives) or a file's mtime, as whole ms
             epochMs   = value => {
                 const ms = typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : NaN;
@@ -1514,10 +1546,16 @@ class GraphService extends Base {
 
         await pages('Nodes', node => {
             if (isRlsVisible(node, rlsUserId)) {
-                const properties = node.properties || {},
-                      kind       = text(node.label),
-                      work       = kind === 'ISSUE' || kind === 'PULL_REQUEST',
-                      assigned   = work && Array.isArray(properties.assignees) ? properties.assignees.map(actor) : null;
+                const properties   = node.properties || {},
+                      kind         = text(node.label),
+                      work         = kind === 'ISSUE' || kind === 'PULL_REQUEST',
+                      statefulWork = work || kind === 'DISCUSSION',
+                      nodeState    = statefulWork ? text(properties.state) : null,
+                      assigned     = work && Array.isArray(properties.assignees) ? properties.assignees.map(actor) : null,
+                      assertedAtMs = properties.gravity_well === true ? epochMs(properties.gravity_well_asserted_at) : null,
+                      liveAnchor   = assertedAtMs !== null
+                          && (!statefulWork || !isTerminalWorkItemState(nodeState))
+                          && (nowMs - assertedAtMs) <= anchorWindowMs;
 
                 visible.set(node.id, {
                     id             : node.id,
@@ -1526,8 +1564,8 @@ class GraphService extends Base {
                     authoredBy     : work ? actor(properties.author) : null,
                     assignedTo     : assigned?.every(Boolean) ? [...new Set(assigned)].sort() : null,
                     memoryOf       : kind === 'AGENT_MEMORY' ? actor(properties.agentIdentity) : null,
-                    state          : work || kind === 'DISCUSSION' ? text(properties.state) : null,
-                    gravityWell    : properties.gravity_well === true ? 1 : 0,
+                    state          : nodeState,
+                    gravityWell    : liveAnchor ? 1 : 0,
                     strategicWeight: Number.isFinite(properties.strategic_weight) ? properties.strategic_weight : null,
                     lastActivityAt : Object.hasOwn(sources, kind) ? epochMs(properties[sources[kind]]) : null
                 })

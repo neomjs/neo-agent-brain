@@ -800,6 +800,11 @@ class ConfigBase extends ConfigProvider {
              */
             decayFactor: leaf(0.98, 'NEO_GRAPH_DECAY_FACTOR', 'number'),
             /**
+             * Liveness window in milliseconds for REM strategic anchors (`gravity_well` / scene `gravityWell`).
+             * @type {number}
+             */
+            strategicAnchorWindowMs: leaf(30 * DAY_MS, 'NEO_GRAPH_STRATEGIC_ANCHOR_WINDOW_MS', 'number', {parse: parsePositiveWindowMs}),
+            /**
              * Minimum weight threshold for emitting `[GUIDE_GAP]`, `[EXAMPLE_GAP]`, and `[ORPHAN_CONCEPT]`
              * signals on CONCEPT nodes during `GapInferenceEngine.inferConceptGraphGaps`.
              *

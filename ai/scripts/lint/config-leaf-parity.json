@@ -842,6 +842,7 @@
         "storagePaths.graphTest",
         "storagePaths.useTestHarness",
         "storagePaths.useUnitTestDatabase",
+        "strategicAnchorWindowMs",
         "summarizationBatchLimit",
         "summarizationConcurrency",
         "summaryFailureBackoffBaseMs",

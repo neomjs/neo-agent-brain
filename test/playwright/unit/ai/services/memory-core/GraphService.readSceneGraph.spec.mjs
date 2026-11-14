@@ -13,9 +13,10 @@ setup({
     }
 });
 
-import {test, expect}                from '@playwright/test';
-import Neo                           from 'neo.mjs/src/Neo.mjs';
-import * as core                     from 'neo.mjs/src/core/_export.mjs';
+import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
+import                                    'neo.mjs/src/manager/Instance.mjs';
 import SQLite                        from '../../../../../../ai/graph/storage/SQLite.mjs';
 import fs                            from 'fs-extra';
 import path                          from 'path';
@@ -217,14 +218,16 @@ test.describe('GraphService.readSceneGraph — paged across a large graph', () =
         try {
             await storage.ready();
             storage.RequestContextService = {getUserId: () => 'tenant-x'};
+            const assertedAt = new Date().toISOString();
+
             storage.addNodes([
-                node('issue-1',   {gravity_well: true, strategic_weight: 0.8, updatedAt: '2026-09-28T10:00:00.000Z'}),
+                node('issue-1',   {gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.8, updatedAt: '2026-09-28T10:00:00.000Z'}),
                 node('issue-2'),
                 node('issue-3',   {updatedAt: 'not a time'}),
                 node('file-1',    {kind: 'FILE', mtimeMs: 1790590000000.625}),
-                node('memory-1',  {kind: 'AGENT_MEMORY', timestamp: '2026-09-28T09:00:00Z', gravity_well: 'yes'}),
-                node('concept-1', {kind: 'CONCEPT', gravity_well: true, strategic_weight: 0.5, updatedAt: '2026-09-28T08:00:00Z'}),
-                node('private-1', {userId: 'tenant-y', gravity_well: true, strategic_weight: 0.99, updatedAt: '2026-09-28T11:00:00Z'})
+                node('memory-1',  {kind: 'AGENT_MEMORY', timestamp: '2026-09-28T09:00:00Z', gravity_well: 'yes', gravity_well_asserted_at: assertedAt}),
+                node('concept-1', {kind: 'CONCEPT', gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.5, updatedAt: '2026-09-28T08:00:00Z'}),
+                node('private-1', {userId: 'tenant-y', gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.99, updatedAt: '2026-09-28T11:00:00Z'})
             ]);
             GraphService.db = {storage};
 
@@ -242,7 +245,7 @@ test.describe('GraphService.readSceneGraph — paged across a large graph', () =
             expect(row('file-1'), 'a file mtime, in whole ms').toEqual([0, null, 1790590000001]);
             expect(row('memory-1'), 'only a boolean anchor is a well').toEqual([0, null, Date.parse('2026-09-28T09:00:00Z')]);
             expect(row('concept-1'), 'a kind without a source reads null, whatever fields it carries').toEqual([1, 0.5, null]);
-            expect(JSON.stringify(wire), 'the hidden node leaves no trace').not.toMatch(/private-1|0\.99/);
+            expect(JSON.stringify(wire), 'the hidden node leaves no trace').not.toMatch(/private-1|0\.99|gravity_well_asserted_at/);
 
             const
                 specification = yaml.load(await fs.readFile(path.resolve('ai/mcp/server/memory-core/openapi.yaml'), 'utf8')),
@@ -339,6 +342,167 @@ test.describe('GraphService.readSceneGraph — paged across a large graph', () =
             for (const suffix of ['', '-wal', '-shm']) {
                 fs.removeSync(dbPath + suffix)
             }
+        }
+    });
+
+    test('closed or merged work-item anchors read gravityWell 0 and lose the flag on upsert, while open ones read 1 (#1685)', async () => {
+        const
+            GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default,
+            CoreDatabase = (await import('../../../../../../ai/graph/Database.mjs')).default,
+            originalDb   = GraphService.db,
+            dbPath       = path.resolve(process.cwd(), 'tmp', `graph-anchor-state-${globalThis.crypto.randomUUID()}.sqlite`),
+            storage      = Neo.create(SQLite, {dbPath}),
+            db           = Neo.create(CoreDatabase, {id: `graph-anchor-state-${globalThis.crypto.randomUUID()}`, storage}),
+            assertedAt   = new Date().toISOString();
+
+        try {
+            await storage.ready();
+            storage.RequestContextService = {getUserId: () => 'tenant-x'};
+
+            storage.addNodes([
+                node('issue-open',        {state: 'OPEN',   gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.9}),
+                node('issue-closed',      {state: 'CLOSED', gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.9}),
+                node('pr-open',           {kind: 'PULL_REQUEST', state: 'OPEN',   gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.85}),
+                node('pr-merged',         {kind: 'PULL_REQUEST', state: 'MERGED', gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.85}),
+                node('pr-closed',         {kind: 'PULL_REQUEST', state: 'CLOSED', gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.7}),
+                node('discussion-open',   {kind: 'DISCUSSION',   state: 'OPEN',   gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.8}),
+                node('discussion-closed', {kind: 'DISCUSSION',   state: 'CLOSED', gravity_well: true, gravity_well_asserted_at: assertedAt, strategic_weight: 0.8})
+            ]);
+            await storage.load();
+            GraphService.db = db;
+
+            const
+                wire = await GraphService.readSceneGraph(),
+                well = id => wire.nodes.gravityWell[wire.nodes.ids.indexOf(id)],
+                wt   = id => wire.nodes.strategicWeight[wire.nodes.ids.indexOf(id)];
+
+            expect(well('issue-open')).toBe(1);
+            expect(well('pr-open')).toBe(1);
+            expect(well('discussion-open')).toBe(1);
+            expect(well('issue-closed')).toBe(0);
+            expect(well('pr-merged')).toBe(0);
+            expect(well('pr-closed')).toBe(0);
+            expect(well('discussion-closed')).toBe(0);
+            expect(wt('issue-closed'), 'historical weight stays while the anchor flag is cleared').toBe(0.9);
+
+            // When ingestion learns an open work item closed or merged, upsertNode clears gravity_well
+            GraphService.upsertNode({id: 'issue-open', type: 'ISSUE', state: 'CLOSED', properties: {state: 'CLOSED'}});
+            GraphService.upsertNode({id: 'pr-open',    type: 'PULL_REQUEST', state: 'MERGED'});
+            GraphService.upsertNode({id: 'discussion-open', type: 'DISCUSSION', state: 'CLOSED', properties: {state: 'CLOSED'}});
+
+            expect(db.nodes.get('issue-open').properties.gravity_well).toBe(false);
+            expect(db.nodes.get('issue-open').properties.strategic_weight).toBe(0.9);
+            expect(db.nodes.get('pr-open').properties.gravity_well).toBe(false);
+            expect(db.nodes.get('discussion-open').properties.gravity_well).toBe(false);
+
+            // A later extraction pass naming an already-closed item cannot revive its anchor flag
+            GraphService.upsertNode({
+                id        : 'issue-open',
+                type      : 'ISSUE',
+                properties: {gravity_well: true, gravity_well_asserted_at: new Date().toISOString()}
+            });
+            expect(db.nodes.get('issue-open').properties.gravity_well).toBe(false);
+
+            const afterClose = await GraphService.readSceneGraph();
+            expect(afterClose.nodes.gravityWell).toEqual([0, 0, 0, 0, 0, 0, 0]);
+        } finally {
+            GraphService.db = originalDb;
+            db.destroy();
+            if (storage.db?.open) storage.db.close();
+            for (const suffix of ['', '-wal', '-shm']) fs.removeSync(dbPath + suffix);
+        }
+    });
+
+    test('an anchor asserted outside strategicAnchorWindowMs reads 0, and a pass naming it again restores 1 (#1685)', async () => {
+        const
+            aiConfig               = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default,
+            GraphService           = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default,
+            SemanticGraphExtractor = (await import('../../../../../../ai/services/graph/SemanticGraphExtractor.mjs')).default,
+            CoreDatabase           = (await import('../../../../../../ai/graph/Database.mjs')).default,
+            originalDb             = GraphService.db,
+            dbPath                 = path.resolve(process.cwd(), 'tmp', `graph-anchor-window-${globalThis.crypto.randomUUID()}.sqlite`),
+            storage                = Neo.create(SQLite, {dbPath}),
+            db                     = Neo.create(CoreDatabase, {id: `graph-anchor-window-${globalThis.crypto.randomUUID()}`, storage}),
+            windowMs               = aiConfig.strategicAnchorWindowMs,
+            nowMs                  = Date.now(),
+            fallbackWindowMs       = Number.isFinite(windowMs) && windowMs > 0 ? windowMs : 30 * 24 * 60 * 60 * 1000,
+            expiredAt              = new Date(nowMs - fallbackWindowMs - 60_000).toISOString(),
+            freshAt                = new Date(nowMs - 60_000).toISOString();
+
+        try {
+            await storage.ready();
+            storage.RequestContextService = {getUserId: () => null};
+
+            storage.addNodes([
+                node('expired-concept',            {kind: 'CONCEPT', gravity_well: true, gravity_well_asserted_at: expiredAt, strategic_weight: 0.85}),
+                node('session:v13_3_1_release',    {kind: 'SESSION', gravity_well: true, strategic_weight: 0.95}),
+                node('fresh-concept',              {kind: 'CONCEPT', gravity_well: true, gravity_well_asserted_at: freshAt, strategic_weight: 0.75})
+            ]);
+            await storage.load();
+            GraphService.db = db;
+
+            expect(Number.isFinite(windowMs) && windowMs > 0, 'window is a positive configured leaf').toBe(true);
+
+            const
+                before = await GraphService.readSceneGraph(),
+                wellIn = (scene, id) => scene.nodes.gravityWell[scene.nodes.ids.indexOf(id)];
+
+            expect(wellIn(before, 'expired-concept')).toBe(0);
+            expect(wellIn(before, 'session:v13_3_1_release')).toBe(0);
+            expect(wellIn(before, 'fresh-concept')).toBe(1);
+
+            await SemanticGraphExtractor.commitTriVectorPayload({
+                session_artifact: {
+                    graph: {
+                        nodes: [{
+                            id              : 'CONCEPT:ExpiredConcept',
+                            type            : 'CONCEPT',
+                            name            : 'ExpiredConcept',
+                            description     : 'Re-asserted roadmap anchor.',
+                            gravity_well    : true,
+                            strategic_weight: 0.9
+                        }],
+                        edges: []
+                    }
+                }
+            }, {
+                id  : 'reassert-vector',
+                meta: {sessionId: 'reassert-session'}
+            });
+
+            const afterReassert = await GraphService.readSceneGraph();
+            expect(wellIn(afterReassert, 'expired-concept')).toBe(1);
+
+            const stampedAt = db.nodes.get('expired-concept').properties.gravity_well_asserted_at;
+            expect(Number.isFinite(Date.parse(stampedAt))).toBe(true);
+
+            // A later pass mentioning the same concept without gravity_well neither wipes nor refreshes its active window
+            await SemanticGraphExtractor.commitTriVectorPayload({
+                session_artifact: {
+                    graph: {
+                        nodes: [{
+                            id              : 'CONCEPT:ExpiredConcept',
+                            type            : 'CONCEPT',
+                            name            : 'ExpiredConcept',
+                            description     : 'Passing mention in a minor fix.',
+                            gravity_well    : false,
+                            strategic_weight: 0.2
+                        }],
+                        edges: []
+                    }
+                }
+            }, {
+                id  : 'passing-mention-vector',
+                meta: {sessionId: 'passing-mention-session'}
+            });
+
+            expect(db.nodes.get('expired-concept').properties.gravity_well_asserted_at).toBe(stampedAt);
+            expect(wellIn(await GraphService.readSceneGraph(), 'expired-concept')).toBe(1);
+        } finally {
+            GraphService.db = originalDb;
+            db.destroy();
+            if (storage.db?.open) storage.db.close();
+            for (const suffix of ['', '-wal', '-shm']) fs.removeSync(dbPath + suffix);
         }
     });
 });

@@ -13,10 +13,10 @@ setup({
     }
 });
 
-import {test, expect}        from '@playwright/test';
-import Ajv                  from 'ajv';
-import Neo                   from 'neo.mjs/src/Neo.mjs';
-import * as core             from 'neo.mjs/src/core/_export.mjs';
+import {test, expect} from '@playwright/test';
+import Ajv            from 'ajv';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import                       'neo.mjs/src/manager/Instance.mjs';
 import fs                    from 'fs';
 import path                  from 'path';
@@ -25,7 +25,7 @@ import {
     clearAggregatedFrictions,
     getAggregatedFrictions
 } from '../../../../../../ai/services/memory-core/helpers/consumerFrictionHelper.mjs';
-import {readActiveRemCallState} from '../../../../../../ai/services/memory-core/helpers/remRunStateStore.mjs';
+import {readActiveRemCallState}           from '../../../../../../ai/services/memory-core/helpers/remRunStateStore.mjs';
 import {createReasoningOnlyResponseError} from '../../../../../../ai/provider/createStreamFailureError.mjs';
 
 test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
@@ -151,14 +151,14 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
     });
 
     test('the requested Tri-Vector schema closes its vocabularies without asking for self-confidence', async () => {
-        const baseGenerate = OpenAiCompatible.prototype.generate,
+        const baseGenerate  = OpenAiCompatible.prototype.generate,
               priorProvider = aiConfig.graphProvider,
-              payload = {
-                  a2a_version: '1.0',
+              payload       = {
+                  a2a_version     : '1.0',
                   session_artifact: {
-                      feature_namespace: null,
+                      feature_namespace     : null,
                       human_readable_summary: 'A schema vocabulary fixture.',
-                      graph: {
+                      graph                 : {
                           nodes: [{id: 'CLASS:SchemaVocabularyFixture', type: 'CLASS', name: 'SchemaVocabularyFixture',
                               description: 'A structural fixture.', logical_layer: 'Core', stability: 'STABLE'}],
                           edges: [{source: 'CLASS:SchemaVocabularyFixture', target: 'frontier', relationship: 'RELATES_TO'}]
@@ -179,8 +179,8 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
                 id: 'schema-vocabulary-vector', meta: {sessionId: 'schema-vocabulary-session'}, document: 'Describe the fixture.'
             });
 
-            const schema = captured.options.responseSchema,
-                  validate = new Ajv({strict: false}).compile(schema),
+            const schema         = captured.options.responseSchema,
+                  validate       = new Ajv({strict: false}).compile(schema),
                   nodeProperties = schema.properties.session_artifact.properties.graph.properties.nodes.items.properties;
 
             expect(validate(payload), 'the declared vocabulary validates').toBe(true);
@@ -207,12 +207,12 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
               priorProvider = aiConfig.graphProvider,
               typeArrays    = [],
               fixture       = value => ({
-                  a2a_version: '1.0',
+                  a2a_version     : '1.0',
                   session_artifact: {
-                      feature_namespace: value,
-                      roadmap_impact: value,
+                      feature_namespace     : value,
+                      roadmap_impact        : value,
                       human_readable_summary: 'A nullable-field fixture.',
-                      graph: {
+                      graph                 : {
                           nodes: [{id: 'CLASS:NullableFixture', type: 'CLASS', name: 'NullableFixture',
                               description: 'A structural fixture.', logical_layer: 'Core', stability: 'STABLE'}],
                           edges: [{source: 'CLASS:NullableFixture', target: 'frontier', relationship: 'RELATES_TO'}]
@@ -304,10 +304,10 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
 
     test('legacy extraction scores are not reduced or written onto new graph nodes', async () => {
         const payloads = [0.1, 0.9].map(confidence => ({
-            a2a_version: '1.0',
+            a2a_version     : '1.0',
             session_artifact: {graph: {
                 nodes: [{id: 'CLASS:RetiredScoreFixture', type: 'CLASS', name: 'RetiredScoreFixture',
-                    description: 'A legacy payload.', confidence, strategic_weight: confidence,
+                    description  : 'A legacy payload.', confidence, strategic_weight: confidence,
                     logical_layer: 'UI Components', stability: 'STABLE,'}],
                 edges: [{source: 'CLASS:RetiredScoreFixture', target: 'frontier', relationship: 'DEPENDS_UPON'}]
             }}
@@ -1308,5 +1308,76 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
         expect(GraphService.db.edges.items.some(edge =>
             /^issue[-:]/i.test(edge.source) || /^issue[-:]/i.test(edge.target)
         )).toBe(false)
+    });
+
+    test('reduceTriVectorPayloads and commitTriVectorPayload record gravity_well_asserted_at only when asserted (#1685)', async () => {
+        const chunkPlan = {chunked: true, totalEstimatedTokens: 4, chunks: []};
+        const priorIso  = '2026-05-01T00:00:00.000Z';
+
+        const reducedFromLaterChunk = SemanticGraphExtractor.reduceTriVectorPayloads([
+            {
+                a2a_version     : '1.0',
+                session_artifact: {
+                    graph: {
+                        nodes: [
+                            {id: 'CLASS:AnchorLater', type: 'CLASS', name: 'AnchorLater', description: 'chunk 0', gravity_well: false, strategic_weight: 0.2},
+                            {id: 'CLASS:PriorAnchor', type: 'CLASS', name: 'PriorAnchor', description: 'chunk 0', gravity_well: true, gravity_well_asserted_at: priorIso, strategic_weight: 0.8},
+                            {id: 'CLASS:NonAnchor',   type: 'CLASS', name: 'NonAnchor',   description: 'chunk 0', gravity_well: false, strategic_weight: 0.1}
+                        ],
+                        edges: []
+                    }
+                }
+            },
+            {
+                a2a_version     : '1.0',
+                session_artifact: {
+                    graph: {
+                        nodes: [
+                            {id: 'CLASS:AnchorLater', type: 'CLASS', name: 'AnchorLater', description: 'chunk 1 asserts anchor', gravity_well: true, strategic_weight: 0.9},
+                            {id: 'CLASS:PriorAnchor', type: 'CLASS', name: 'PriorAnchor', description: 'chunk 1 does not reassert', gravity_well: false, strategic_weight: 0.4},
+                            {id: 'CLASS:NonAnchor',   type: 'CLASS', name: 'NonAnchor',   description: 'chunk 1 still non-anchor', gravity_well: false, strategic_weight: 0.3}
+                        ],
+                        edges: []
+                    }
+                }
+            }
+        ], chunkPlan);
+
+        const byName = new Map(reducedFromLaterChunk.session_artifact.graph.nodes.map(n => [n.name, n]));
+
+        expect(byName.get('AnchorLater').gravity_well).toBe(true);
+        expect(Number.isFinite(Date.parse(byName.get('AnchorLater').gravity_well_asserted_at))).toBe(true);
+        expect(byName.get('PriorAnchor').gravity_well).toBe(true);
+        expect(byName.get('PriorAnchor').gravity_well_asserted_at, 'unasserted later chunk does not refresh timestamp').toBe(priorIso);
+        expect(byName.get('NonAnchor').gravity_well).toBe(false);
+        expect(byName.get('NonAnchor')).not.toHaveProperty('gravity_well_asserted_at');
+
+        GraphService.upsertNode({
+            id        : 'issue-13624',
+            type      : 'ISSUE',
+            name      : 'Closed epic',
+            state     : 'CLOSED',
+            properties: {state: 'CLOSED'}
+        });
+
+        await SemanticGraphExtractor.commitTriVectorPayload({
+            session_artifact: {
+                graph: {
+                    nodes: [
+                        {id: 'CLASS:CommittedAnchor', type: 'CLASS', name: 'CommittedAnchor', description: 'asserted', gravity_well: true, strategic_weight: 0.95},
+                        {id: 'issue-13624',           type: 'ISSUE', name: 'Closed epic',     description: 'already closed', gravity_well: true, strategic_weight: 0.95}
+                    ],
+                    edges: []
+                }
+            }
+        }, {
+            id  : 'anchor-assertion-vector',
+            meta: {sessionId: 'anchor-assertion-session'}
+        });
+
+        const committedClass = GraphService.db.nodes.items.find(n => n.label === 'CLASS' && n.properties?.name === 'CommittedAnchor');
+        expect(committedClass?.properties.gravity_well).toBe(true);
+        expect(Number.isFinite(Date.parse(committedClass?.properties.gravity_well_asserted_at))).toBe(true);
+        expect(GraphService.db.nodes.get('issue-13624').properties.gravity_well, 'closed issue never retains gravity_well').toBe(false);
     });
 });
