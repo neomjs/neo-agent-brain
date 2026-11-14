@@ -69,6 +69,19 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         expect(source(state({}, [approved(2, {kind: 'outside', seat: null})])).readOpenWork({seat: '@neo-opus-vega'}).awaitingMerge.map(({number}) => number)).toEqual([2])
     });
 
+    test('an outside PR that names a model reaches awaitingMerge with the same families the wake round decides with', () => {
+        const
+            approval = {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},
+            named    = {...row(5), ci: 'green', verdict: 'APPROVED', owner: {kind: 'outside', seat: null, login: 'contributor'},
+                disclosedFamilies: ['claude'], requested: [], reviews: [approval], opinions: [approval]},
+            read     = seatFamilies => createFleetOpenWorkSource({producer: {getState: () => state({}, [named])}, now: at(1), seatFamilies})
+                .readOpenWork().awaitingMerge.map(({number, holder}) => [number, holder.role]);
+
+        // another lab's approval ends the review once the families are known; without them it stays unverified
+        expect(read(() => ({'@neo-gpt': 'gpt'}))).toEqual([[5, 'operator']]);
+        expect(read(() => null)).toEqual([])
+    });
+
     test('an awaiting-merge row ages by its own observation, and an unavailable projection awaits nothing (#779)', () => {
         const
             approval = {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},

@@ -9,7 +9,8 @@ import path                                                                     
 import Neo                                                                                from 'neo.mjs/src/Neo.mjs';
 import * as core                                                                          from 'neo.mjs/src/core/_export.mjs';
 import {createHash}                                                                       from 'node:crypto';
-import {createOpenWorkWakeRound, failedChecksOf, familiesOf, undeliverableOf, wireFleetOpenWorkWakes} from '../../../../../../ai/services/fleet/wireFleetOpenWorkWakes.mjs';
+import {createOpenWorkWakeRound, failedChecksOf, undeliverableOf, wireFleetOpenWorkWakes} from '../../../../../../ai/services/fleet/wireFleetOpenWorkWakes.mjs';
+import {familiesOf}                                                                       from '../../../../../../ai/services/fleet/wireFleetOpenWorkSource.mjs';
 
 const START  = Date.parse('2026-10-13T12:00:00.000Z'), HEAD = 'a'.repeat(40), SEAT = '@neo-opus-ada',
     at       = minute => START + minute * 60000,

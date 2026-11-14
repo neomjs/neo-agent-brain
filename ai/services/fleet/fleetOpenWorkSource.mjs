@@ -24,14 +24,15 @@ import {openWorkFreshness, STALE_AFTER_MS, UNAVAILABLE_AFTER_MS} from './openWor
  * it. A row stored before the snapshot carried titles reads `null`.
  * @param {Object} row
  * @param {Boolean} stale
+ * @param {Object<String,String>|null} seatFamilies The same seat-family map the wake round decides with.
  * @returns {Object}
  * @private
  */
-function summaryOf(row, stale) {
+function summaryOf(row, stale, seatFamilies) {
     const {repo, number, title, head, ci, verdict, mergeable, draft, reviews, reviewRecords, observedAt} = row;
 
     return {repo, number, title: title ?? null, head, ci, verdict, mergeable, draft, reviews: reviews ?? [],
-        ...reviewRecords ? {reviewRecords} : {}, observedAt, stale, holder: holderOf(row)}
+        ...reviewRecords ? {reviewRecords} : {}, observedAt, stale, holder: holderOf(row, {seatFamilies})}
 }
 
 /**
@@ -52,10 +53,12 @@ function emptySeatWork() {
  * @param {Function} options.now `() → epoch ms`.
  * @param {Number}   [options.staleAfterMs]
  * @param {Number}   [options.unavailableAfterMs]
+ * @param {Object<String,String>|null} [options.seatFamilies=null] Seat to model family, from the presence read: an
+ *     outside PR that names a model reads approved only from a seat of a known other family, as in the wake round.
  * @returns {{state: 'ok'|'stale'|'unavailable', observedAt: String|null, coverage: String, reason: String|null,
  *     detail: String|null, unobserved: Number, seats: Object<String, {authored: Object[], reviewing: Object[], credentialRefusal: Object|null, tokenExpiresAt: String|null}>, awaitingMerge: Object[]}}
  */
-export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unavailableAfterMs = UNAVAILABLE_AFTER_MS}) {
+export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unavailableAfterMs = UNAVAILABLE_AFTER_MS, seatFamilies = null}) {
     const
         time          = now(),
         freshnessOf   = observedAt => openWorkFreshness(observedAt, {now: time, staleAfterMs, unavailableAfterMs}),
@@ -89,7 +92,7 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
             continue
         }
 
-        const summary = summaryOf(row, rowFreshness === 'stale');
+        const summary = summaryOf(row, rowFreshness === 'stale', seatFamilies);
 
         row.owner?.seat && seat(row.owner.seat).authored.push(summary);
         row.requested.filter(id => id.startsWith('@')).forEach(id => seat(id).reviewing.push(summary));
@@ -113,11 +116,12 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
  * @param {Object}   options
  * @param {{getState: Function}} options.producer
  * @param {Function} [options.now]
+ * @param {Function} [options.seatFamilies] `() → Object<String,String>|null`, the seats' families at each read.
  * @param {Number}   [options.staleAfterMs]
  * @param {Number}   [options.unavailableAfterMs]
  * @returns {{readOpenWork: Function}}
  */
-export function createFleetOpenWorkSource({producer, now = () => Date.now(), ...bounds}) {
+export function createFleetOpenWorkSource({producer, now = () => Date.now(), seatFamilies = () => null, ...bounds}) {
     return {
         /**
          * @summary One seat's open work, or every seat's, under the producer's envelope. The
@@ -127,7 +131,7 @@ export function createFleetOpenWorkSource({producer, now = () => Date.now(), ...
          * @returns {Object}
          */
         readOpenWork({seat = null} = {}) {
-            const projection = projectOpenWork(producer.getState(), {now, ...bounds});
+            const projection = projectOpenWork(producer.getState(), {now, ...bounds, seatFamilies: seatFamilies()});
 
             return seat
                 ? {...projection, seats: {[seat]: projection.seats[seat] ?? emptySeatWork()}}

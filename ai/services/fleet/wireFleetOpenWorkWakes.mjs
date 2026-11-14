@@ -12,7 +12,7 @@
 import path                                              from 'path';
 import {exhaustedUntilOf}                                from './capacityThrottleState.mjs';
 import {OPEN_WORK_FAILED_CHECKS}                         from '../github-workflow/queries/openWorkQueries.mjs';
-import {fileStore, seatReaders}                          from './wireFleetOpenWorkSource.mjs';
+import {familiesOf, fileStore, seatReaders}              from './wireFleetOpenWorkSource.mjs';
 import {HOLDER_SILENT_MS, planOpenWorkWakes, wakeGateOf} from './openWorkWakes.mjs';
 import {OPEN_WORK_HOLDER_KINDS}                          from './openWorkWakeMessage.mjs';
 import {openWorkFreshness}                               from './openWorkFreshness.mjs';
@@ -540,20 +540,6 @@ export function undeliverableOf(presence) {
     return Object.fromEntries(rows
         .filter(row => typeof row?.identity === 'string' && row.wake?.state === 'undeliverable')
         .map(row => [row.identity, typeof row.wake.reason === 'string' ? row.wake.reason : null]))
-}
-
-/**
- * @summary Each seat's model family, from the verbose presence answer whose rows carry the plane's identity facts.
- * A row without a family is left out, so its seat stays eligible for a pick and verifies no approval.
- * @param {Object} presence The verbose `who_is_online` answer.
- * @returns {Object<String,String>|null} Seat to family; `null` when the answer holds no rows.
- */
-export function familiesOf(presence) {
-    if (!Array.isArray(presence?.agents)) return null;
-
-    return Object.fromEntries(presence.agents
-        .filter(row => typeof row?.identity === 'string' && typeof row.family === 'string' && row.family.length > 0)
-        .map(row => [row.identity, row.family]))
 }
 
 /**
