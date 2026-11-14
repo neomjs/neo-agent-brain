@@ -213,15 +213,17 @@ test.describe('orchestrator/scheduling/summary (#11864 / Epic #11831)', () => {
 
         try {
             db.exec('CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT)');
+            // the shape the store writes: `{id, label, properties}`, no `type`
             for (const id of ['MESSAGE:A', 'MESSAGE:B']) {
                 db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(id, JSON.stringify({
-                    id, type: 'MESSAGE', properties: {
-                        subject: '[sunset]', taggedConcepts: ['sunset-protocol-handover']
+                    id, label: 'MESSAGE', properties: {
+                        sentAt: '2026-11-06T06:00:00Z', subject: '[sunset]', taggedConcepts: ['sunset-protocol-handover']
                     }
                 }));
             }
 
-            const options = {db, state: {summary: {}}, now: 100, summarySweepIntervalMs: 1000},
+            const bound   = {sinceIso: '2026-11-06T00:00:00Z'},
+                  options = {db, state: {summary: {}}, now: 100, summarySweepIntervalMs: 1000, handoverSinceIso: bound.sinceIso},
                   trigger = getDueTask({...options, publishFocusItemsDefect: async () => {
                       throw new Error('first publication rejected')
                   }});
@@ -230,7 +232,7 @@ test.describe('orchestrator/scheduling/summary (#11864 / Epic #11831)', () => {
             db.prepare("UPDATE Nodes SET data = json_set(data, '$.properties.readAt', ?) WHERE id = ?")
                 .run('2026-11-06T07:00:00Z', 'MESSAGE:B');
 
-            const pending = getUnreadSunsetHandovers(db);
+            const pending = getUnreadSunsetHandovers(db, bound);
 
             expect(pending.map(node => node.id).sort()).toEqual(['MESSAGE:A', 'MESSAGE:B']);
             expect(pending.every(node => node.properties.focusItemsReceipt === 'missing')).toBe(true);
@@ -240,7 +242,7 @@ test.describe('orchestrator/scheduling/summary (#11864 / Epic #11831)', () => {
             await getDueTask({...options, publishFocusItemsDefect: async note => published.push(note)}).onSuccess();
 
             expect(published).toHaveLength(2);
-            expect(getUnreadSunsetHandovers(db)).toEqual([]);
+            expect(getUnreadSunsetHandovers(db, bound)).toEqual([]);
             expect(JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get('MESSAGE:B').data)
                 .properties.readAt).toBe('2026-11-06T07:00:00Z');
         } finally {

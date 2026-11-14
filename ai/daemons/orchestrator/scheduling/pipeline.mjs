@@ -153,6 +153,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
                 dataIntegritySweepCheck                : config.orchestrator.intervals.dataIntegritySweepCheckMs,
                 taskExpirySweep                        : config.orchestrator.intervals.taskExpirySweepMs,
                 sessionRotation                        : config.orchestrator.intervals.sessionRotationMs,
+                sessionRotationWindow                  : config.orchestrator.sessionRotation.windowMs,
                 temporalSummary                        : config.temporalSummary.aggregationIntervalMs
             },
             enables: {

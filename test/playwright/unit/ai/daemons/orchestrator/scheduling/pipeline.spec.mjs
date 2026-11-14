@@ -180,6 +180,9 @@ function makeAdapterConfig({dreamMs = 3_600_000, remBacklogCatchupCooldownMs = 3
             },
             communityReconciliation: {
                 enabled: false
+            },
+            sessionRotation: {
+                windowMs: 3 * 3_600_000
             }
         },
         temporalSummary: {
@@ -203,6 +206,18 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
         }});
         expect(await publisher(note)).toBe('accepted');
         expect(calls).toEqual([{owner: orchestrator, value: note}]);
+    });
+
+    test('the summary descriptor reads handovers only inside the session-rotation window', () => {
+        const now        = Date.parse('2026-11-14T15:20:00.000Z'),
+              options    = buildOrchestratorSchedulingOptions({orchestrator: makeOrchestratorAdapterFixture(), config: makeAdapterConfig(), now, registry: []}),
+              descriptor = TASK_REGISTRY.find(item => item.taskName === 'summary');
+        let received;
+
+        descriptor.getDueTask({...options.context, hooks: {...options.context.hooks,
+            summaryGetDueTask(value) {received = value; return null;}
+        }});
+        expect(received.handoverSinceIso).toBe('2026-11-14T12:20:00.000Z');
     });
 
     test('buildOrchestratorSchedulingOptions wires the REM liveness active alarm and dream-ownership gate (#13839)', () => {

@@ -313,21 +313,27 @@ export function getDbNode(db, id) {
 }
 
 /**
- * @summary Reads unread handovers and admitted receipt retries, until summary consumption finishes.
- * A recipient read does not discard a receipt whose mailbox publication is still pending.
+ * @summary Reads unread handovers and admitted receipt retries sent since a bound, until summary consumption
+ * finishes. A recipient read does not discard a receipt whose mailbox publication is still pending.
+ *
+ * A message node is stored `{id, label, properties}`, so the label is what names it. The bound keeps out a
+ * handover no rotation can still act on: an old one gets no receipt count and no defect-note.
  * @param {Object} db
+ * @param {Object} options
+ * @param {String} options.sinceIso Oldest `sentAt` a handover may carry.
  * @returns {Object[]}
  */
-export function getUnreadSunsetHandovers(db) {
+export function getUnreadSunsetHandovers(db, {sinceIso}) {
     const stmt = db.prepare(`
         SELECT id, data FROM Nodes
-        WHERE json_extract(data, '$.type') = 'MESSAGE'
+        WHERE json_extract(data, '$.label') = 'MESSAGE'
+          AND json_extract(data, '$.properties.sentAt') >= ?
           AND (json_extract(data, '$.properties.readAt') IS NULL
                OR json_extract(data, '$.properties.focusItemsReceipt') IS NOT NULL)
           AND json_extract(data, '$.properties.handoverSummaryProcessedAt') IS NULL
           AND json_extract(data, '$.properties.taggedConcepts') LIKE '%"sunset-protocol-handover"%'
     `);
-    const rows           = stmt.all();
+    const rows           = stmt.all(sinceIso);
     const unreadMessages = [];
 
     for (const row of rows) {
