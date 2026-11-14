@@ -129,7 +129,8 @@ test.describe('signed native wake receiver integration', () => {
         url = `http://127.0.0.1:${server.address().port}/wake`;
         expect((await post(1)).status).toBe(202); await receiver.drain();
         const bad = structuredClone(manifest.routes[sub]);
-        bad.agentIdentity = '@broken'; bad.adapterConfig.primarySession.agentId = 'broken';
+        bad.agentIdentity = '@broken';
+        bad.adapterConfig = {...bad.adapterConfig, primarySession:{...bad.adapterConfig.primarySession,agentId:'broken'}};
         manifest.routes = {'WAKE_SUB:broken':bad, ...manifest.routes};
         await fs.writeFile(manifestPath,JSON.stringify(manifest),{mode:0o600});
         await enrollNativeWake({manifestPath,stateDir,agentId:'broken',family});
