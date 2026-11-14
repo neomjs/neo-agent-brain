@@ -48,6 +48,7 @@ function reset() {
     FleetManager.provisionAndStartFn = null;
     FleetManager.repoStatusFn        = null;
     FleetManager.wakeArmFn           = null;
+    FleetManager.rotationArmFn       = null;
     FleetManager.tenantService       = null;
     FleetManager.wakeStateOptions    = null;
     FleetManager.planeBase           = null;
@@ -202,8 +203,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
      * Wires the manager around a recording lifecycle stub, or around the real lifecycle's bookkeeping
      * (`real: true`) where its launch check and status projection are under test.
      */
-    function configure({agent = TENANT_AGENT, arm, real = false, planeBase = 'http://127.0.0.1:3102', provision = async () => ({state: 'running', instanceHome: HOME, ...LAUNCH})}) {
+    function configure({agent = TENANT_AGENT, arm, rotate = null, real = false, planeBase = 'http://127.0.0.1:3102', provision = async () => ({state: 'running', instanceHome: HOME, ...LAUNCH})}) {
         const recorded = [],
+              rotated  = [],
               armCalls = [],
               tenants  = {marker: 'tenant-service'};
 
@@ -213,14 +215,17 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
         FleetManager.planeBase           = planeBase;
         FleetManager.wakeStateOptions    = {wakeReceiverBase: 'http://host.docker.internal:3199', wakeReceiverManifestPath: '/host/wake/routes.json'};
         FleetManager.wakeArmFn           = async args => { armCalls.push(args); return arm(args) };
+        // Without `rotate` the real armer runs, and it answers null for a family with no rotation route
+        FleetManager.rotationArmFn       = rotate ? async args => rotate(args) : null;
         FleetManager.lifecycleService    = lifecycleWithStart({
-            getRegistry : () => ({getAgent: () => agent}),
-            setWakeRoute: real
+            getRegistry     : () => ({getAgent: () => agent}),
+            setWakeRoute    : real
                 ? (...args) => FleetLifecycleService.setWakeRoute(...args)
-                : (id, route, launch) => { recorded.push({id, route, launch}); return true }
+                : (id, route, launch) => { recorded.push({id, route, launch}); return true },
+            setRotationRoute: (id, route, launch) => { rotated.push({id, route, launch}); return true }
         });
 
-        return {recorded, armCalls, tenants}
+        return {recorded, rotated, armCalls, tenants}
     }
 
     test.beforeEach(() => { reset(); FleetLifecycleService.leasesAdopted = true; FleetLifecycleService.processes.delete('agent-a'); });
@@ -295,6 +300,31 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
         expect((await current).wakeRoute).toEqual(READY);
         expect(launches).toBe(2);
         expect(FleetLifecycleService.status('agent-a')).toMatchObject({pid: 4102, wakeRoute: {state: 'ready', subscriptionId: 'WAKE_SUB:x'}});
+    });
+
+    test('the rotation route is armed after the wake route and recorded beside it, from the same launch', async () => {
+        const ROTATION = Object.freeze({...READY, subscriptionId: 'ROTATE_SUB:x'}),
+              {recorded, rotated} = configure({arm: () => READY, rotate: args => ROTATION});
+
+        expect(await FleetManager.startAgent('agent-a')).toMatchObject({wakeRoute: READY, rotationRoute: ROTATION});
+        expect(recorded).toEqual([{id: 'agent-a', route: READY,    launch: LAUNCH}]);
+        expect(rotated).toEqual([{id: 'agent-a', route: ROTATION, launch: LAUNCH}]);
+    });
+
+    test('a Start that Stop cancels while its wake route arms never arms a rotation route and records neither', async () => {
+        const held     = Promise.withResolvers(),
+              rotation = [],
+              {recorded, rotated, armCalls} = configure({arm: () => held.promise, rotate: args => { rotation.push(args); return READY }}),
+              starting = FleetManager.startAgent('agent-a');
+
+        await expect.poll(() => armCalls.length).toBe(1);
+        await FleetManager.stopAgent('agent-a');
+        held.resolve(READY);
+
+        expect(await starting).toMatchObject({canceled: true});
+        expect(rotation).toEqual([]);
+        expect(recorded).toEqual([]);
+        expect(rotated).toEqual([]);
     });
 
     test('a family with no GUI wake leaves the status and the record untouched', async () => {

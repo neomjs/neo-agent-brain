@@ -57,6 +57,25 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
         // the per-seat lane record's store, and the mailbox it is saved for, reach the composer
         expect(captured.laneClaimStore).toBe(laneClaimStore);
         expect(captured.laneClaimSource).toBe('plane:https://plane-a.example');
+        // without a wake-routes reader there is no rotation slot to compose
+        expect(captured.readRotationSnapshot).toBeNull();
+    });
+
+    test('a wake-routes reader becomes the rotation slot: its seats\' rotation records reach the composer as events', async () => {
+        let captured = null;
+
+        wireFleetActivityReadSource({
+            listMessages  : () => [],
+            readPrLane    : async () => ({capability: {state: 'wired'}, events: []}),
+            readWakeRoutes: async () => ({seats: [{agentId: 'ada', rotation: {state: 'completed', receiptId: 'MESSAGE:r1', decidedAt: '2026-11-14T00:30:00.000Z'}}]}),
+            bridge        : stubBridge(),
+            createSource  : opts => { captured = opts; return {readActivitySnapshot() {}} }
+        });
+
+        const snapshot = await captured.readRotationSnapshot({limit: 5});
+
+        expect(snapshot.capability).toMatchObject({source: FLEET_COCKPIT_SOURCES.rotation, state: 'wired'});
+        expect(snapshot.events.map(event => [event.type, event.agentId])).toEqual([['session-rotation', 'ada']]);
     });
 
     test('an injected readPrLane IS the PR/lane slot — plane mode reads the plane, and the content root is never read', () => {

@@ -31,8 +31,9 @@ import {FLEET_COCKPIT_SOURCES}              from '../../../src/fleet/contract/co
  * @type {Object}
  */
 export const FLEET_ACTIVITY_SLOTS = Object.freeze({
-    a2a   : 'a2a',
-    prLane: 'pr-lane'
+    a2a     : 'a2a',
+    prLane  : 'pr-lane',
+    rotation: 'rotation'
 });
 
 /**
@@ -507,6 +508,9 @@ function createLaneRecord(store, source) {
  * @param {Function} options.readPrLaneSnapshot `params => Promise<{capability, events}>` — the
  *   PR/lane adapter's read path. The adapter itself is a pure builder over already-read facts, so
  *   the caller owns the reading and this composer never reaches for GitHub or the graph directly.
+ * @param {Function} [options.readRotationSnapshot] `params => Promise<{capability, events}>` — the session
+ *   rotation slot ({@link module:ai/services/fleet/fleetRotationActivityAdapter}). A Fleet that reads no wake
+ *   routes has no rotations to see, so without this reader the slot is not composed rather than composed blind.
  * @param {Number}   [options.limit=DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT] Default event bound, and the lane observation's page.
  * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox viewer at each call; absent disables the lanes.
  * @param {Object}   [options.laneClaimStore] `{load, save}` for the per-seat lane record; absent keeps it in memory.
@@ -518,7 +522,7 @@ function createLaneRecord(store, source) {
  *   capability from a real adapter, never a composer quietly composing one contributor and calling
  *   the result the fleet's activity — or when a lane store arrives without its source.
  */
-export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity = () => null, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT, laneClaimStore = null, laneClaimSource = null, now = () => Date.now()} = {}) {
+export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, readRotationSnapshot = null, resolveViewerIdentity = () => null, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT, laneClaimStore = null, laneClaimSource = null, now = () => Date.now()} = {}) {
     if (typeof readA2ASnapshot !== 'function' || typeof readPrLaneSnapshot !== 'function') {
         throw new TypeError('[fleetActivityComposer] readA2ASnapshot and readPrLaneSnapshot must be injected')
     }
@@ -538,7 +542,8 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
 
     const slots = [
         {read: readA2ASnapshot,    slot: FLEET_ACTIVITY_SLOTS.a2a},
-        {read: readPrLaneSnapshot, slot: FLEET_ACTIVITY_SLOTS.prLane}
+        {read: readPrLaneSnapshot, slot: FLEET_ACTIVITY_SLOTS.prLane},
+        ...(typeof readRotationSnapshot === 'function' ? [{read: readRotationSnapshot, slot: FLEET_ACTIVITY_SLOTS.rotation}] : [])
     ];
 
     const lanes = createLaneRecord(laneClaimStore, laneClaimSource);

@@ -4473,6 +4473,42 @@ test.describe('FleetLifecycleService.setWakeRoute — the route the Fleet armed 
 
 });
 
+test.describe('FleetLifecycleService.setRotationRoute — the route the receiver opens a fresh session through', () => {
+    const route = Object.freeze({
+        state          : 'ready',
+        reason         : null,
+        adapter        : 'osascript',
+        addressType    : 'userDataDir',
+        instanceAddress: '/agents/claude-seat/harness/claude-desktop/profile',
+        subscriptionId : 'ROTATE_SUB:claude-seat'
+    });
+
+    test.beforeEach(() => { FleetLifecycleService.leasesAdopted = true; FleetLifecycleService.processes.clear(); });
+    test.afterEach(() => { FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false; });
+
+    test('is recorded for its launch, and status projects it through the allowlist', () => {
+        const launch = {pid: 4301, startedAt: '2026-11-14T00:00:00.000Z'};
+
+        FleetLifecycleService.processes.set('claude-seat', {id: 'claude-seat', state: 'running', ...launch});
+
+        expect(FleetLifecycleService.setRotationRoute('claude-seat', {...route, signingKey: 'must-never-be-projected'}, launch)).toBe(true);
+        expect(FleetLifecycleService.status('claude-seat').rotationRoute).toEqual(route);
+    });
+
+    test('a route armed for an earlier launch never lands, an unknown seat records nothing, and a stopped seat reads null', () => {
+        const earlier = {pid: 4301, startedAt: '2026-11-14T00:00:00.000Z'},
+              current = {pid: 4302, startedAt: '2026-11-14T00:00:05.000Z'};
+
+        FleetLifecycleService.processes.set('claude-seat', {id: 'claude-seat', state: 'running', ...current});
+
+        expect(FleetLifecycleService.setRotationRoute('claude-seat', route, earlier)).toBe(false);
+        expect(FleetLifecycleService.setRotationRoute('claude-seat', route)).toBe(false);
+        expect(FleetLifecycleService.setRotationRoute('nobody', route, current)).toBe(false);
+        expect(FleetLifecycleService.status('claude-seat').rotationRoute).toBeNull();
+        expect(FleetLifecycleService.status('nobody').rotationRoute).toBeNull()
+    });
+});
+
 test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-repository outcome on its launch record', () => {
     test.beforeEach(() => { FleetLifecycleService.leasesAdopted = true; FleetLifecycleService.processes.clear(); });
     test.afterEach(() => { FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false; });

@@ -12,10 +12,11 @@
  * free to drift.
  *
  * The observation is deliberately REDACTED to the fleet-disclosure class: the holder identity, the
- * most recent observational `lastPollAt` across that identity's active subscriptions, and its
- * message pull route when it holds one, with that route's own stamp — timestamps and a transport
- * fact only, never the client-held watermark, never endpoint/filter/key-adjacent row properties.
- * Owner-only material stays behind the caller-owner `list` action.
+ * most recent observational `lastPollAt` across that identity's active subscriptions, its
+ * message pull route when it holds one, with that route's own stamp, and the rotation decision on
+ * its newest sunset receipt (state, reason, the receipt and Memory Core session ids, and stamps) —
+ * never the client-held watermark, never endpoint/filter/key-adjacent row properties, never message
+ * content. Owner-only material stays behind the caller-owner `list` action.
  *
  * The graph service loads lazily per call: the fleet server pays the memory-core import cost only
  * when a roster read actually needs wake truth, and a fresh scan per snapshot means no long-lived
@@ -32,6 +33,8 @@
  */
 
 import {PULL_HARNESS_TARGET} from '../../daemons/wake/buildReceiverManifest.mjs';
+import {getActiveSessionRotateRoutes,
+        readSunsetReceipt}   from '../../daemons/wake/sunsetReceipt.mjs';
 import {
     activeWakeSubscriptionStatusSql,
     isActiveWakeSubscriptionStatus,
@@ -90,6 +93,70 @@ const ROUTES_SQL = `
 `
 
 /**
+ * How far back a seat's sunset receipt may lie for its rotation to be read: the Fleet shows a seat's latest
+ * rotation decision, and a receipt older than a day is the activity journal's history, not the seat's state.
+ * @type {Number}
+ */
+const ROTATION_LOOKBACK_MS = 24 * 60 * 60 * 1000
+
+/**
+ * The stamp each rotation state records: when the plane decided the state the record holds.
+ * @type {Readonly<Object>}
+ */
+const DECIDED_AT = Object.freeze({completed: 'completedAt', incomplete: 'incompleteAt', refused: 'refusedAt', requested: 'requestedAt'})
+
+/**
+ * A rotation that could not be read: no known state, which the Fleet reads as `unknown`.
+ * @type {Readonly<Object>}
+ */
+const UNREADABLE_ROTATION = Object.freeze({state: null})
+
+/**
+ * @summary A reader of each seat's rotation: the decision the plane recorded on the seat's newest sunset receipt
+ * (`readSunsetReceipt`), for the seats armed for rotation, the ones holding an active `SESSION_ROTATE` route. A
+ * seat without a route, or whose receipt carries no decision, has none. A read that fails answers
+ * {@link UNREADABLE_ROTATION}, so one unreadable receipt never darkens the rest of the wake axis.
+ * @param {Object} sqlite The graph's `better-sqlite3` handle.
+ * @param {Number} [now=Date.now()]
+ * @returns {Function} `identity => Object|null`: `{state, reason, receiptId, decidedAt, oldSessionId, newSessionId,
+ *     nextEligibleAt}`, or `null` for none.
+ * @private
+ */
+function seatRotationReader(sqlite, now = Date.now()) {
+    let armed
+
+    try {
+        armed = new Set(getActiveSessionRotateRoutes(sqlite).map(route => route.properties.agentIdentity))
+    } catch {
+        return () => UNREADABLE_ROTATION
+    }
+
+    const sinceIso = new Date(now - ROTATION_LOOKBACK_MS).toISOString(),
+          nowIso   = new Date(now).toISOString()
+
+    return identity => {
+        if (!armed.has(identity)) return null
+
+        try {
+            const read   = readSunsetReceipt(sqlite, identity, {sinceIso, nowIso}),
+                  record = read?.receipt.sessionRotation
+
+            return record ? {
+                state         : record.state ?? null,
+                reason        : record.reason ?? null,
+                receiptId     : read.receipt.id,
+                decidedAt     : record[DECIDED_AT[record.state]] ?? null,
+                oldSessionId  : record.oldSessionId ?? null,
+                newSessionId  : record.newSessionId ?? null,
+                nextEligibleAt: record.nextEligibleAt ?? null
+            } : null
+        } catch {
+            return UNREADABLE_ROTATION
+        }
+    }
+}
+
+/**
  * @summary The graph's two read surfaces, once its async init has settled: the durable SQLite handle
  * (production) and the in-process node cache (the test-double seam).
  * @param {Object|null} graphService
@@ -110,28 +177,32 @@ async function graphReadSurfaces(graphService) {
 
 /**
  * @summary Scan the graph for ACTIVE wake subscriptions and return one redacted observation per
- * holder identity: `{identity, lastPollAt, pullRoute}`. `lastPollAt` is null until an authenticated
- * poll has stamped one of that identity's subscriptions; `pullRoute` is `{lastPollAt}` over its
- * message pull routes only, or null when it holds none.
+ * holder identity: `{identity, lastPollAt, pullRoute, rotation}`. `lastPollAt` is null until an
+ * authenticated poll has stamped one of that identity's subscriptions; `pullRoute` is `{lastPollAt}`
+ * over its message pull routes only, or null when it holds none. `rotation` is the decision on the
+ * seat's newest sunset receipt ({@link seatRotationReader}), or null for none; the cache-double
+ * path cannot read receipts and carries no `rotation`, which the Fleet reads as a plane that reports none.
  * @param {Object} [options]
  * @param {Object} [options.graphService] Injectable service exposing `ready()` + `db`; defaults to
  *     the memory-core `GraphService` singleton, imported lazily.
  * @returns {Promise<Object[]>} `[{identity: String, lastPollAt: String|null, pullRoute:
- *     {lastPollAt: String|null}|null}]` (deduplicated).
+ *     {lastPollAt: String|null}|null, rotation: Object|null}]` (deduplicated).
  * @throws {Error} When no read surface is reachable — the adapter maps this to honest `unknown`.
  */
 export async function readActiveWakeSubscriptionObservations({graphService = null} = {}) {
     const {sqlite, items} = await graphReadSurfaces(graphService)
 
     if (sqlite) {
-        return sqlite.prepare(ACTIVE_OBSERVATIONS_SQL)
-            .all()
-            .filter(row => typeof row.agentIdentity === 'string' && row.agentIdentity !== '')
-            .map(row => ({
-                identity  : row.agentIdentity,
-                lastPollAt: stampOf(row.lastPollAt),
-                pullRoute : row.pullRoute === 1 ? {lastPollAt: stampOf(row.pullRouteLastPollAt)} : null
-            }))
+        const
+            rows        = sqlite.prepare(ACTIVE_OBSERVATIONS_SQL).all().filter(row => typeof row.agentIdentity === 'string' && row.agentIdentity !== ''),
+            rotationFor = seatRotationReader(sqlite)
+
+        return rows.map(row => ({
+            identity  : row.agentIdentity,
+            lastPollAt: stampOf(row.lastPollAt),
+            pullRoute : row.pullRoute === 1 ? {lastPollAt: stampOf(row.pullRouteLastPollAt)} : null,
+            rotation  : rotationFor(row.agentIdentity)
+        }))
     }
 
     // Test-double seam only: an injected service with no SQLite handle. Never the production path —

@@ -25,6 +25,13 @@ import {redactCredentials}                         from './redactCredentials.mjs
 
 export const WAKE_ROUTES_SOURCE_LABEL = 'fleet:wakeRoutes'
 
+/**
+ * @summary The decisions a rotation record carries: the receipt's `sessionRotation.state`, written by
+ * `ai/daemons/orchestrator/scheduling/sessionRotation.mjs`.
+ * @type {String[]}
+ */
+export const ROTATION_STATES = Object.freeze(['requested', 'completed', 'refused', 'incomplete'])
+
 const
     DELIVERY_STATES  = Object.freeze(['alive', 'down', 'unknown']),
     // PRESENCE_STATES imports from the adapter sibling — the vocabulary's one exporting home.
@@ -154,7 +161,8 @@ export function createFleetWakeRoutesSource({
                 armed        : explainUnarmed(withPullArming(arming.rowFor(identity), subscription.pullRouteFor(identity)), readFleetArming, agent.id),
                 delivery     : {state: delivery.state, reason: delivery.reason},
                 lastFailure  : failures.rowFor(identity),
-                presence     : presence.rowFor(identity)
+                presence     : presence.rowFor(identity),
+                rotation     : subscription.rotationFor(identity)
             })
         }
 
@@ -200,13 +208,19 @@ export function createFleetWakeRoutesSource({
  * with null staying null: absence of polls renders absence-of-signal, never a verdict. A missing
  * reader or a failed scan degrades EVERY seat's axis with the same reason — never a fabricated
  * `none`. The seat's pull route feeds the arming axis through `pullRouteFor`, never this row: an
- * unreadable axis observes none.
+ * unreadable axis observes none. The same scan carries the seat's rotation ({@link rotationRow}).
  * @param {Function|null} listActiveSubscriptionObservations
- * @returns {Promise<{ok: Boolean, reason: String|null, rowFor: Function, pullRouteFor: Function}>}
+ * @returns {Promise<{ok: Boolean, reason: String|null, rowFor: Function, pullRouteFor: Function, rotationFor: Function}>}
  * @private
  */
 async function readSubscriptionAxis(listActiveSubscriptionObservations) {
-    const unreadable = reason => ({ok: false, reason, rowFor: () => ({state: 'unknown', reason}), pullRouteFor: () => null})
+    const unreadable = reason => ({
+        ok          : false,
+        reason,
+        rowFor      : () => ({state: 'unknown', reason}),
+        pullRouteFor: () => null,
+        rotationFor : () => ({state: 'unknown', reason})
+    })
 
     if (typeof listActiveSubscriptionObservations !== 'function') {
         return unreadable('subscription read path unavailable')
@@ -227,7 +241,8 @@ async function readSubscriptionAxis(listActiveSubscriptionObservations) {
                 lastPollAt: stampOf(observation.lastPollAt),
                 pullRoute : observation.pullRoute !== null && typeof observation.pullRoute === 'object'
                     ? {lastPollAt: stampOf(observation.pullRoute.lastPollAt)}
-                    : null
+                    : null,
+                rotation  : observation.rotation
             })
         }
 
@@ -235,6 +250,7 @@ async function readSubscriptionAxis(listActiveSubscriptionObservations) {
             ok          : true,
             reason      : null,
             pullRouteFor: identity => observations.get(identity)?.pullRoute ?? null,
+            rotationFor : identity => rotationRow(observations.get(identity)?.rotation),
             rowFor      : identity => observations.has(identity)
                 ? {state: 'active', reason: null, lastPollAt: observations.get(identity).lastPollAt}
                 : {state: 'none', reason: null}
@@ -497,6 +513,34 @@ function safeViewer(resolveViewerIdentity) {
         return typeof viewer === 'string' && viewer.length > 0 ? viewer : null
     } catch {
         return null
+    }
+}
+
+/**
+ * @summary A seat's rotation axis: the decision the plane recorded on the seat's newest sunset receipt,
+ * as the subscription observation carries it. `completed` names the old and the new
+ * Memory Core session, which is the retired mark the cockpit renders; `incomplete` with
+ * `no-fresh-session` reports an old session that never handed over, and nothing is stopped. A plane
+ * that reports no rotations, or a seat it holds no row for, reads `unobserved`; a seat without a
+ * receipt record reads `none`; a record outside the contract reads `unknown`.
+ * @param {Object|null|undefined} rotation The observation's `rotation`.
+ * @returns {Object}
+ * @private
+ */
+function rotationRow(rotation) {
+    if (rotation === undefined) return {state: 'unobserved', reason: null};
+    if (rotation === null)      return {state: 'none', reason: null};
+
+    if (!ROTATION_STATES.includes(rotation.state)) return {state: 'unknown', reason: 'rotation record unreadable'};
+
+    return {
+        state         : rotation.state,
+        reason        : stampOf(rotation.reason),
+        receiptId     : stampOf(rotation.receiptId),
+        decidedAt     : stampOf(rotation.decidedAt),
+        oldSessionId  : stampOf(rotation.oldSessionId),
+        newSessionId  : stampOf(rotation.newSessionId),
+        nextEligibleAt: stampOf(rotation.nextEligibleAt)
     }
 }
 

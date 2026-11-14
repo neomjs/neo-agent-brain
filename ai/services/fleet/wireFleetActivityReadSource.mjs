@@ -1,6 +1,7 @@
 import FleetControlBridge              from './FleetControlBridge.mjs';
 import {createFleetActivityReadSource} from './fleetActivityComposer.mjs';
 import {readFleetA2AActivitySnapshot}  from './fleetA2AActivityAdapter.mjs';
+import {readFleetRotationActivitySnapshot} from './fleetRotationActivityAdapter.mjs';
 import {makeReadPrLaneSnapshot}        from './readPrLaneActivitySnapshot.mjs';
 import {withProducerPrLane}            from './producerPrLaneEvents.mjs';
 import {resolveContentOrigins}         from '../graph/contentOrigins.mjs';
@@ -83,6 +84,8 @@ function makeReadA2ASnapshot(listMessages) {
  *     answering it at read time. With one, the slot's pull-request events are the producer's transitions
  *     for every repository (`withProducerPrLane`); the tree or plane reader keeps the issue, lane-claim
  *     and stall events. A producer alone is a readable slot.
+ * @param {Function} [options.readWakeRoutes] The wake-routes source's reader. With one, the activity gains the
+ *     session-rotation slot; without one, it has none.
  * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox scope, resolved per call.
  * @param {Number} [options.limit] Default event bound forwarded to the composer.
  * @param {Object} [options.laneClaimStore] `{load, save}` keeping the per-seat lane record across restarts.
@@ -99,6 +102,7 @@ export function wireFleetActivityReadSource({
     pullsDir,
     readPrLane,
     openWorkProducer = null,
+    readWakeRoutes,
     resolveViewerIdentity,
     limit,
     laneClaimStore,
@@ -133,7 +137,11 @@ export function wireFleetActivityReadSource({
         ? withProducerPrLane(readPrLaneBase, {producer: openWorkProducer})
         : readPrLaneBase ?? (() => { throw new Error('pr-lane activity source not wired — no contentRoot or issuesDir (set fleet.contentRoot / NEO_FLEET_CONTENT_ROOT)') });
 
-    bridge.activitySource = createSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity, limit, laneClaimStore, laneClaimSource});
+    const readRotationSnapshot = typeof readWakeRoutes === 'function'
+        ? params => readFleetRotationActivitySnapshot({readWakeRoutes, limit: params.limit})
+        : null;
+
+    bridge.activitySource = createSource({readA2ASnapshot, readPrLaneSnapshot, readRotationSnapshot, resolveViewerIdentity, limit, laneClaimStore, laneClaimSource});
 
     return bridge.activitySource
 }

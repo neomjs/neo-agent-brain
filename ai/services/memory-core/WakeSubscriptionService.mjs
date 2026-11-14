@@ -1997,7 +1997,8 @@ class WakeSubscriptionService extends Base {
      * `wakeSubscriptionStatusPolicy` in both.
      *
      * @returns {Promise<{identities: String[], observations: Object[]}>} Both sorted by identity
-     *     for deterministic wire output; `observations` rows are `{identity, lastPollAt, pullRoute}`.
+     *     for deterministic wire output; `observations` rows are `{identity, lastPollAt, pullRoute,
+     *     rotation}`, `rotation` being the decision on the seat's newest sunset receipt or null.
      */
     async fleetIdentities() {
         const caller = RequestContextService.getAgentIdentityNodeId();

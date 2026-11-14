@@ -14,6 +14,7 @@ setup({
 })
 
 import {test, expect} from '@playwright/test'
+import Database       from 'better-sqlite3'
 import Neo            from 'neo.mjs/src/Neo.mjs'
 import * as core      from 'neo.mjs/src/core/_export.mjs'
 
@@ -38,7 +39,8 @@ function graphServiceDouble({rows = null, items = null, initError = null} = {}) 
             if (initError) throw new Error(initError)
 
             db = {
-                ...(rows  && {storage: {db: {prepare(sql) { statements.push(sql); return {all: () => rows} }}}}),
+                // the rotate-route query answers no routes, so every seat's rotation reads none
+                ...(rows  && {storage: {db: {prepare(sql) { statements.push(sql); return {all: () => sql.includes('SESSION_ROTATE') ? [] : rows} }}}}),
                 ...(items && {nodes  : {items}})
             }
         },
@@ -155,10 +157,10 @@ test.describe('readActiveWakeSubscriptionObservations — the redacted poll-rece
         })
 
         expect(await readActiveWakeSubscriptionObservations({graphService: service})).toEqual([
-            {identity: '@neo-fable-clio', lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: {lastPollAt: '2026-08-14T15:00:00.000Z'}},
-            {identity: '@neo-opus-vega',  lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: {lastPollAt: null}},
-            {identity: '@neo-gpt-emmy',   lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: null},
-            {identity: '@neo-opus-ada',   lastPollAt: null,                       pullRoute: null}
+            {identity: '@neo-fable-clio', lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: {lastPollAt: '2026-08-14T15:00:00.000Z'}, rotation: null},
+            {identity: '@neo-opus-vega',  lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: {lastPollAt: null},                       rotation: null},
+            {identity: '@neo-gpt-emmy',   lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: null,                                     rotation: null},
+            {identity: '@neo-opus-ada',   lastPollAt: null,                       pullRoute: null,                                     rotation: null}
         ])
     })
 
@@ -244,5 +246,71 @@ test.describe('readWakeRoutesByIdentity — the join to the receiver records', (
 
         await expect(readWakeRoutesByIdentity({graphService: graphServiceDouble()}))
             .rejects.toThrow('graph read surface unavailable')
+    })
+})
+
+/**
+ * Over a real graph store: a seat's rotation is the decision on its newest sunset receipt, read for the seats armed
+ * with a `SESSION_ROTATE` route.
+ */
+test.describe('readActiveWakeSubscriptionObservations — each armed seat\'s rotation (#1692)', () => {
+    const
+        hoursAgo = hours => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString(),
+        graph    = () => {
+            const db = new Database(':memory:')
+
+            db.exec(`
+                CREATE TABLE Nodes (id TEXT PRIMARY KEY, user_id TEXT, data TEXT NOT NULL);
+                CREATE TABLE Edges (id TEXT PRIMARY KEY, user_id TEXT, source TEXT NOT NULL, target TEXT NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL);
+            `)
+
+            return db
+        },
+        insert   = (db, id, label, properties) => db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)').run(id, null, JSON.stringify({id, label, type: label, properties})),
+        route    = (db, identity, trigger) => insert(db, `WAKE_SUB:${identity}:${trigger}`, 'WAKE_SUBSCRIPTION', {agentIdentity: identity, trigger, status: 'active', harnessTarget: 'a2a-webhook'}),
+        receipt  = (db, id, identity, sentAt, sessionRotation) => insert(db, id, 'MESSAGE', {
+            from: identity, to: identity, sentAt, taggedConcepts: ['sunset-protocol-handover'], ...(sessionRotation ? {sessionRotation} : {})
+        }),
+        observe  = async db => Object.fromEntries((await readActiveWakeSubscriptionObservations({graphService: {ready: async () => {}, db: {storage: {db}}}}))
+            .map(observation => [observation.identity, observation.rotation]))
+
+    test('the decision on an armed seat\'s newest receipt, stamped by its own state; an unarmed seat, an undecided receipt and a day-old one read none', async () => {
+        const
+            db             = graph(),
+            completedAt    = hoursAgo(1),
+            refusedAt      = hoursAgo(2),
+            nextEligibleAt = hoursAgo(-1)
+
+        ;['@done', '@refused', '@undecided', '@stale'].forEach(identity => route(db, identity, 'SESSION_ROTATE'))
+        route(db, '@unarmed', 'SENT_TO_ME')
+
+        receipt(db, 'MESSAGE:done',      '@done',      hoursAgo(3),  {state: 'completed', eventId: 'e1', oldSessionId: 's-old', requestedAt: hoursAgo(3), completedAt, newSessionId: 's-new', heldMessages: 2})
+        receipt(db, 'MESSAGE:refused',   '@refused',   hoursAgo(3),  {state: 'refused', reason: 'minimum-interval', oldSessionId: 's-1', refusedAt, nextEligibleAt})
+        receipt(db, 'MESSAGE:undecided', '@undecided', hoursAgo(1),  null)
+        receipt(db, 'MESSAGE:stale',     '@stale',     hoursAgo(25), {state: 'completed', completedAt: hoursAgo(24.5), oldSessionId: 'a', newSessionId: 'b'})
+        receipt(db, 'MESSAGE:unarmed',   '@unarmed',   hoursAgo(1),  {state: 'completed', completedAt: hoursAgo(1), oldSessionId: 'a', newSessionId: 'b'})
+
+        expect(await observe(db)).toEqual({
+            '@done'     : {state: 'completed', reason: null, receiptId: 'MESSAGE:done', decidedAt: completedAt, oldSessionId: 's-old', newSessionId: 's-new', nextEligibleAt: null},
+            '@refused'  : {state: 'refused', reason: 'minimum-interval', receiptId: 'MESSAGE:refused', decidedAt: refusedAt, oldSessionId: 's-1', newSessionId: null, nextEligibleAt},
+            '@undecided': null,
+            '@stale'    : null,
+            '@unarmed'  : null
+        })
+    })
+
+    test('a receipt that cannot be read reads as a rotation of no known state, for its own seat alone', async () => {
+        const db = graph(), requestedAt = hoursAgo(1)
+
+        route(db, '@broken', 'SESSION_ROTATE')
+        route(db, '@fine', 'SESSION_ROTATE')
+        // a self-message whose concepts are not a list: the receipt read throws on it
+        insert(db, 'MESSAGE:broken', 'MESSAGE', {from: '@broken', to: '@broken', sentAt: hoursAgo(1), taggedConcepts: 7})
+        receipt(db, 'MESSAGE:fine', '@fine', hoursAgo(1), {state: 'requested', requestedAt, oldSessionId: 's'})
+
+        const rotations = await observe(db)
+
+        expect(rotations['@broken']).toEqual({state: null})
+        expect(rotations['@fine']).toEqual({state: 'requested', reason: null, receiptId: 'MESSAGE:fine', decidedAt: requestedAt, oldSessionId: 's', newSessionId: null, nextEligibleAt: null})
     })
 })

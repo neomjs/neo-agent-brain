@@ -4570,9 +4570,11 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 silent = observations.find(row => row.identity === '@fleet-silent');
 
             // Every observation row is EXACTLY the redacted observation — endpoint, filter, and
-            // key-adjacent owner material must never ride the roster read.
+            // key-adjacent owner material must never ride the roster read. `rotation` is the plane's
+            // rotation decision for a seat armed for one, and none for these unarmed seats.
             for (const row of observations) {
-                expect(Object.keys(row).sort()).toEqual(['identity', 'lastPollAt', 'pullRoute'])
+                expect(Object.keys(row).sort()).toEqual(['identity', 'lastPollAt', 'pullRoute', 'rotation']);
+                expect(row.rotation).toBeNull()
             }
 
             expect(typeof poller.lastPollAt).toBe('string');
