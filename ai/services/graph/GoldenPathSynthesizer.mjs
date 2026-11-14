@@ -30,11 +30,13 @@ import {
     buildFailureOutcome                          as buildRouteFailureOutcome,
     evaluateDiscussionLiveness                   as evaluateRouteDiscussionLiveness,
     findComputedFocusContradiction               as findRouteFocusContradiction,
+    getComputedIssueEmphasisMultiplier,
     getComputedRecommendationExclusionLabels     as getRouteExclusionLabels,
     getRoutingConflictReasons                    as getRouteConflictReasons,
     isActionableComputedRecommendation           as isActionableRouteRecommendation,
     isContentComputedRecommendation              as isContentRouteRecommendation,
     isRoutingConflictFocusCandidate              as isRouteConflictFocusCandidate,
+    readInternalAuthorLogins,
     renderComputedGoldenPathContradictionSection as renderRouteContradictionSection,
     renderComputedGoldenPathEmptySection         as renderRouteEmptySection,
     renderComputedGoldenPathFailureSection       as renderRouteFailureSection
@@ -1247,6 +1249,11 @@ class GoldenPathSynthesizer extends Base {
             scoringStats.candidateAdmissionStopReason = 'semantic-corpus-exhausted'
         }
 
+        const internalAuthorLogins = readInternalAuthorLogins(
+            GraphService,
+            error => logger.warn(`[GoldenPathSynthesizer] AgentIdentity nodes unavailable; community multiplier off for this pass: ${error.message}`)
+        );
+
         // Candidate admission is a bounded whole-prefix loop: every widened pass rebuilds the full
         // state/blocker/actionability/liveness chain, then commits only the final successful attempt.
         // A returned prefix shorter than requested is the only corpus-exhaustion proof; equality widens.
@@ -1397,6 +1404,8 @@ class GoldenPathSynthesizer extends Base {
                                 })
                             }
                         }
+
+                        struct_score *= getComputedIssueEmphasisMultiplier(nodeData, internalAuthorLogins);
 
                         const index             = semanticIds.indexOf(issueId);
                         const semantic_distance = semanticDistances[index];

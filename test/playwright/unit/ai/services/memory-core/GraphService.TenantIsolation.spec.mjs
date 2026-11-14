@@ -287,9 +287,9 @@ test.describe('GraphService — RLS read-side return boundary (#10011)', () => {
 
         expect(GraphService.getInboundStructuralSupport({id: 'root-b'})).toEqual({
             totalWeight      : 1,
-            decayingWeight   : 1,
+            decayingWeight   : 0,
             totalEdgeCount   : 1,
-            decayingEdgeCount: 1,
+            decayingEdgeCount: 0,
             hasOpenBlocker   : false,
             parentId         : 'parent-team'
         })
@@ -348,9 +348,9 @@ test.describe('GraphService — RLS read-side return boundary (#10011)', () => {
 
             const supportA = {
                 totalWeight      : 3,
-                decayingWeight   : 3,
+                decayingWeight   : 2,
                 totalEdgeCount   : 2,
-                decayingEdgeCount: 2,
+                decayingEdgeCount: 1,
                 hasOpenBlocker   : true,
                 parentId         : 'parent-a'
             };
@@ -362,9 +362,9 @@ test.describe('GraphService — RLS read-side return boundary (#10011)', () => {
 
             const supportB = {
                 totalWeight      : 6,
-                decayingWeight   : 6,
+                decayingWeight   : 5,
                 totalEdgeCount   : 2,
-                decayingEdgeCount: 2,
+                decayingEdgeCount: 1,
                 hasOpenBlocker   : false,
                 parentId         : 'parent-b'
             };
