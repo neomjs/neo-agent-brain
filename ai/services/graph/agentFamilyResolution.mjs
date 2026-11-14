@@ -1,6 +1,7 @@
 import {buildHydrationIndex} from '../../graph/identityHydration.mjs';
 import {migrateResident}     from '../../graph/identityRootsMigration.mjs';
 import {IDENTITIES}          from '../../graph/identityRoots.mjs';
+import {disclosedFamiliesOf} from './disclosedModelFamilies.mjs';
 
 /**
  * @module ai/services/graph/agentFamilyResolution
@@ -52,6 +53,13 @@ function emitWarning(message, warn=console.warn) {
  * @type {String}
  */
 export const UNKNOWN_FAMILY = 'unknown';
+
+/**
+ * GitHub's `authorAssociation` values that make an author one of ours. Any other value is an outside
+ * author, whose family is the one their pull request names ({@link resolveCrossFamilyVerdict}).
+ * @type {Set<String>}
+ */
+const MEMBER_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 /**
  * Social Name → `@`-stripped GitHub login, derived from the canonical identity roster. The PR-body
@@ -504,11 +512,11 @@ export function groupReviewsByFamily(reviews = [], agentFamilies = getCoreSwarmA
 export function hasCrossFamilyReview(pr, agentFamilies = getCoreSwarmAgentFamilies(), options = {}) {
     const verdict = resolveCrossFamilyVerdict(pr, agentFamilies, options);
 
-    // `null` (author family unresolvable) maps to TRUE here, preserving this function's original
-    // reading: an unrostered author is an EXTERNAL contributor, and the mandate exists to stop one
-    // model family self-approving — a risk an external human's PR does not carry. That is why any
-    // classified approver satisfies it. The verdict form below keeps `null` distinct so a gate can
-    // decide for itself rather than inheriting a report's charity.
+    // `null` (no author family to compare) maps to "any classified approver" here. For an outside
+    // author whose pull request names no model, that is the ruling itself: any seat may approve. An
+    // outside pull request that names a model gets a boolean verdict and never reaches this branch.
+    // The verdict form keeps `null` distinct so a gate can decide for itself rather than inheriting a
+    // report's charity.
     return verdict.crossFamily === null
         ? verdict.approvingFamilies.length > 0
         : verdict.crossFamily
@@ -526,31 +534,40 @@ export function hasCrossFamilyReview(pr, agentFamilies = getCoreSwarmAgentFamili
  * connection, so the state filter is the difference between counting approvals and counting
  * attention.
  *
- * **2. An unresolvable author family reports `null`, not a verdict.** The boolean form treats that
- * case as satisfied, and deliberately so — an unrostered author is an external contributor, and the
- * mandate exists to stop one model family self-approving, which is not a risk an external human's
- * PR carries. That charity is right for a report and is not a decision this function should make
- * for a caller. `null` is deliberately neither `true` nor `false`: "the author is not one of ours,
- * so the mandate may not even apply" is a third state, and a consumer that collapses it into either
- * boolean has silently chosen a policy. The gate decides; the resolver reports.
+ * **2. An outside author's family is the family its pull request names.** Operator ruling,
+ * 2026-11-14: outside pull requests are presumed model-written, so one that names a model needs an
+ * approval from another family, and one that names none may be approved by any seat. "Outside" is
+ * GitHub's `authorAssociation` (not an owner, member or collaborator), so it is read only when the
+ * caller passes that fact. The named families come from `pr.disclosedFamilies` when the caller derived
+ * them, otherwise from the body and `pr.commitMessages` ({@link disclosedFamiliesOf}). A pull request
+ * may name several families; an approval counts when its family is none of them.
+ *
+ * **3. No author family to compare reports `null`, not a verdict.** That is an outside pull request
+ * that names no model (`outside: true`, `authorFamilies: []`), or an author who is neither rostered
+ * nor known to be outside. `null` is deliberately neither `true` nor `false`; the gate tells the two
+ * apart by `outside`. The gate decides; the resolver reports.
  *
  * The approving families are returned alongside the verdict because a blocker that cannot name who
  * approved and what family they belong to sends the reader back to the API to find out.
  *
- * @param {Object} pr GitHub PR payload (`author`, `body`, `reviews`).
+ * @param {Object} pr GitHub PR payload (`author`, `body`, `reviews`; `authorAssociation`,
+ *     `disclosedFamilies` and `commitMessages` when the caller has them).
  * @param {Object} [agentFamilies=getCoreSwarmAgentFamilies()] Login-to-family map.
  * @param {Object} [options]
  * @param {Function} [options.warn=console.warn] Runtime-owner warning sink.
- * @returns {{crossFamily: (Boolean|null), authorFamily: (String|null), approvingFamilies: String[], unclassifiedApprovers: String[]}}
+ * @returns {{crossFamily: (Boolean|null), authorFamily: (String|null), authorFamilies: String[], outside: Boolean,
+ *     approvingFamilies: String[], unclassifiedApprovers: String[], approvalsTruncated: Boolean}}
  */
 export function resolveCrossFamilyVerdict(pr, agentFamilies = getCoreSwarmAgentFamilies(), options = {}) {
     const
         // A caller that already resolved the canonical author passes it directly; everyone else
         // keeps the body-parsing path. Same precedence either way — the self-id wins over the opener.
-        authorFamily = (pr?.authorFamily ?? resolveAuthorFamily(pr, agentFamilies, options)) ?? null,
-        reviews      = Array.isArray(pr?.reviews) ? pr.reviews : [],
-        approvals    = reviews.filter(review => review?.state === 'APPROVED'),
-        resolved     = approvals.map(review => resolveReviewerFamily(review, agentFamilies)),
+        rostered       = (pr?.authorFamily ?? resolveAuthorFamily(pr, agentFamilies, options)) ?? null,
+        outside        = !rostered && typeof pr?.authorAssociation === 'string' && !MEMBER_ASSOCIATIONS.has(pr.authorAssociation),
+        authorFamilies = rostered ? [rostered] : outside ? pr.disclosedFamilies ?? disclosedFamiliesOf(pr) : [],
+        reviews        = Array.isArray(pr?.reviews) ? pr.reviews : [],
+        approvals      = reviews.filter(review => review?.state === 'APPROVED'),
+        resolved       = approvals.map(review => resolveReviewerFamily(review, agentFamilies)),
 
         // `UNKNOWN_FAMILY` participates as an ordinary family value — see its declaration for the
         // operator ruling and the trade behind it. Deliberately NOT filtered out: an earlier cut of
@@ -559,12 +576,14 @@ export function resolveCrossFamilyVerdict(pr, agentFamilies = getCoreSwarmAgentF
         approvingFamilies     = [...new Set(resolved.filter(item => item.classified).map(item => item.family))],
         unclassifiedApprovers = resolved.filter(item => !item.classified).map(item => item.login).filter(Boolean);
 
-    const crossFamily = authorFamily === null
+    const crossFamily = authorFamilies.length === 0
         ? null
-        : approvingFamilies.some(family => family !== authorFamily);
+        : approvingFamilies.some(family => !authorFamilies.includes(family));
 
     return {
-        authorFamily,
+        authorFamily: authorFamilies.join(', ') || null,
+        authorFamilies,
+        outside,
         approvingFamilies,
         unclassifiedApprovers,
         approvalsTruncated: Boolean(pr?.approvalsTruncated),
@@ -577,9 +596,9 @@ export function resolveCrossFamilyVerdict(pr, agentFamilies = getCoreSwarmAgentF
         // of absence, and reporting it as `false` would state a fact the data cannot support.
         //
         // So truncation degrades a negative to `null`, which the consumer already fails closed on
-        // with its own message. An unknown AUTHOR short-circuits before any of it: comparing against
-        // `null` would make every classified approver look cross-family.
-        crossFamily: authorFamily === null || (crossFamily === false && Boolean(pr?.approvalsTruncated))
+        // with its own message. No author family short-circuits before any of it: comparing against
+        // nothing would make every classified approver look cross-family.
+        crossFamily: authorFamilies.length === 0 || (crossFamily === false && Boolean(pr?.approvalsTruncated))
             ? null
             : crossFamily
     }

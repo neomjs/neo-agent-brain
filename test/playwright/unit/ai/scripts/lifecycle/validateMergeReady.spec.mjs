@@ -344,10 +344,33 @@ test.describe('validateMergeReady — the cross-family mandate', () => {
         }));
 
         expect(result.strictMergeReady).toBe(false);
-        // Three states, three messages. Reporting "mandate unsatisfied" for an external contributor
-        // would send the reader hunting for a reviewer who was never required.
+        // An author neither rostered nor known to be outside: nobody can say which family it is, so
+        // "mandate unsatisfied" would state a fact the data cannot support.
         expect(result.blockers.some(entry => entry.includes('could not be evaluated') && entry.includes('external-dev'))).toBe(true);
         expect(result.blockers.some(entry => entry.includes('mandate unsatisfied'))).toBe(false);
+    });
+
+    test('an outside pull request that names no model only advises: any family may approve it', () => {
+        const result = validateMergeReady(green({
+            crossFamilyVerdict: {crossFamily: null, authorFamily: null, authorFamilies: [], outside: true, approvingFamilies: ['claude'], authorLogin: 'outside-dev'}
+        }));
+
+        expect(result.strictMergeReady).toBe(true);
+        expect(result.blockers).toEqual([]);
+        expect(result.advisories.some(entry => entry.includes('names no model') && entry.includes('outside-dev'))).toBe(true);
+    });
+
+    test('an outside pull request that names a model is held to it, and its truncated window still blocks', () => {
+        const named = {authorFamily: 'claude', authorFamilies: ['claude'], outside: true, approvingFamilies: ['claude'], authorLogin: 'outside-dev'},
+              same  = validateMergeReady(green({crossFamilyVerdict: {...named, crossFamily: false}})),
+              cut   = validateMergeReady(green({crossFamilyVerdict: {...named, crossFamily: null}}));
+
+        expect(same.strictMergeReady).toBe(false);
+        expect(same.blockers.some(entry => entry.includes("the outside pull request names 'claude'") && entry.includes('[claude]'))).toBe(true);
+        // A named family with no verdict is the truncation case: it must never read as "names no model"
+        expect(cut.strictMergeReady).toBe(false);
+        expect(cut.blockers.some(entry => entry.includes('could not be evaluated'))).toBe(true);
+        expect(cut.advisories.some(entry => entry.includes('names no model'))).toBe(false);
     })
 });
 

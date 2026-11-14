@@ -377,3 +377,60 @@ test.describe('ai/services/graph/agentFamilyResolution — own-entry authority',
         }, families).crossFamily).toBe(true);
     });
 });
+
+/**
+ * An outside author's family is the one the pull request names (operator ruling, 2026-11-14). The
+ * roster here is explicit so each arm reads as the family table it relies on.
+ */
+test.describe('ai/services/graph/agentFamilyResolution — outside authors', () => {
+    const families = {'seat-claude': 'claude', 'seat-gpt': 'gpt'};
+    const approvedBy = (...logins) => logins.map(login => ({state: 'APPROVED', author: {login}}));
+    const outsidePr = overrides => ({
+        author           : {login: 'outside-dev'},
+        authorAssociation: 'CONTRIBUTOR',
+        body             : 'Resolves #1\n\nAuthored by Jo, assisted by Claude Opus 5.5 (Claude Code).',
+        ...overrides
+    });
+
+    test('a Claude-named outside pull request needs an approver from another family', () => {
+        expect(resolveCrossFamilyVerdict(outsidePr({reviews: approvedBy('seat-claude')}), families)).toMatchObject({
+            authorFamily: 'claude', authorFamilies: ['claude'], outside: true, approvingFamilies: ['claude'], crossFamily: false
+        });
+        expect(resolveCrossFamilyVerdict(outsidePr({reviews: approvedBy('seat-claude', 'seat-gpt')}), families).crossFamily).toBe(true)
+    });
+
+    test('a pull request naming two families needs a third, and a commit trailer counts', () => {
+        const pr = outsidePr({
+            commitMessages: ['feat: x\n\nCo-authored-by: Codex <codex@openai.com>'],
+            reviews       : approvedBy('seat-claude', 'seat-gpt')
+        });
+
+        expect(resolveCrossFamilyVerdict(pr, families)).toMatchObject({authorFamilies: ['claude', 'gpt'], crossFamily: false})
+    });
+
+    test('a caller\'s derived families win over re-reading the body', () => {
+        const pr = outsidePr({disclosedFamilies: ['gpt'], reviews: approvedBy('seat-claude')});
+
+        expect(resolveCrossFamilyVerdict(pr, families)).toMatchObject({authorFamilies: ['gpt'], crossFamily: true})
+    });
+
+    test('an outside pull request that names no model reports no verdict, marked outside', () => {
+        const pr = outsidePr({body: 'Resolves #1\n\nA plain description.', reviews: approvedBy('seat-claude')});
+
+        expect(resolveCrossFamilyVerdict(pr, families)).toMatchObject({authorFamily: null, authorFamilies: [], outside: true, crossFamily: null})
+    });
+
+    test('a member, or a caller that passes no association, never reads the body for a family', () => {
+        for (const authorAssociation of ['MEMBER', 'OWNER', 'COLLABORATOR', undefined]) {
+            const verdict = resolveCrossFamilyVerdict(outsidePr({authorAssociation, reviews: approvedBy('seat-claude')}), families);
+
+            expect(verdict, String(authorAssociation)).toMatchObject({authorFamilies: [], outside: false, crossFamily: null})
+        }
+    });
+
+    test('a rostered author keeps its own family whatever its body names', () => {
+        const pr = {author: {login: 'seat-gpt'}, authorAssociation: 'CONTRIBUTOR', body: 'Generated with Claude Code.', reviews: approvedBy('seat-claude')};
+
+        expect(resolveCrossFamilyVerdict(pr, families)).toMatchObject({authorFamilies: ['gpt'], outside: false, crossFamily: true})
+    })
+});

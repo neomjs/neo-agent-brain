@@ -17,6 +17,7 @@ import {
     resolveCrossFamilyVerdict,
     resolveReviewerFamily
 }                           from '../graph/agentFamilyResolution.mjs';
+import {disclosedFamiliesOf} from '../graph/disclosedModelFamilies.mjs';
 import {
     ADD_PULL_REQUEST_REVIEW,
     buildIssueStatesQuery,
@@ -591,6 +592,13 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
         // only the declared author login points the drift signal at what matters: a change to the
         // declared author invalidates the read, a typo fix in the description does not.
         authorSelfIdLogin: parseSelfIdLogin(pullRequest.body ?? '') ?? null,
+        // An outside author's family is the one the pull request names, so the snapshot keeps
+        // GitHub's association and the DERIVED families, never the body or the commit messages.
+        authorAssociation      : pullRequest.authorAssociation ?? null,
+        authorDisclosedFamilies: disclosedFamiliesOf({
+            body          : pullRequest.body ?? '',
+            commitMessages: [pullRequest.firstCommit?.nodes?.[0]?.commit?.message, commit?.message]
+        }),
         // DERIVED hold facts, never raw comment bodies. Same reasoning as `authorSelfIdLogin`: this
         // snapshot is compared by `stableStringify` across two reads, so carrying comment text would
         // make any peer's unrelated comment invalidate the observation. Only comments bearing a
@@ -982,6 +990,9 @@ async function buildMergeReadinessProjection({
     //
     // `approvalsTruncated` rides along because the connection is bounded: a positive witness inside
     // the window is decisive, a negative over a truncated one is missing evidence.
+    //
+    // An author who is neither rostered nor a member is an outside author, whose family is the one
+    // the pull request names (`authorDisclosedFamilies`); the verdict compares approvals against it.
     const crossFamilyVerdict = snapshot.approvals.available
         ? {
             ...resolveCrossFamilyVerdict({
@@ -989,6 +1000,8 @@ async function buildMergeReadinessProjection({
                     selfIdLogin: snapshot.authorSelfIdLogin,
                     openerLogin: snapshot.authorLogin
                 }, undefined, {warn: logger.warn}) ?? null,
+                authorAssociation : snapshot.authorAssociation,
+                disclosedFamilies : snapshot.authorDisclosedFamilies,
                 approvalsTruncated: snapshot.approvals.hasPreviousPage,
                 reviews           : snapshot.approvals.nodes.map(node => ({state: 'APPROVED', author: {login: node.login}}))
             }),

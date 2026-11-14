@@ -460,6 +460,10 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         // PR, and after the §6.1 rule a same-family default would block every arm here for a reason
         // none of them is about. `neo-opus-vega` is claude, `neo-gpt-emmy` is gpt.
         authorLogin = 'neo-opus-vega',
+        // A member by default: only an outside author's family comes from what the PR names.
+        authorAssociation = 'MEMBER',
+        firstCommitMessage = 'feat: the change',
+        headCommitMessage = 'feat: the change',
         // Default body carries a self-id matching the opener, so arms about other things are not
         // silently exercising author drift.
         body = 'Authored by Vega (Claude Opus 5, Claude Code).',
@@ -480,7 +484,9 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         mergeStateStatus,
         reviewDecision,
         author        : authorLogin === null ? null : {login: authorLogin},
+        authorAssociation,
         body,
+        firstCommit   : {nodes: [{commit: {message: firstCommitMessage}}]},
         reviewRequests: {
             pageInfo: {hasNextPage: reviewHasNextPage, endCursor: null},
             nodes   : reviewers.map(login => ({
@@ -499,6 +505,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
             nodes: [{
                 commit: {
                     oid              : checkCommit,
+                    message          : headCommitMessage,
                     statusCheckRollup: checkRollupAvailable ? {
                         contexts: {
                             totalCount: checkTotalCount ?? contexts.length,
@@ -751,6 +758,62 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
     });
 
     /**
+     * @summary An outside author's family is the one the pull request names (operator ruling,
+     * 2026-11-14). The specimen: Claude-named outside PRs merged on a Claude-only approval while the
+     * verdict read every outside author as "does not apply".
+     */
+    test.describe('an outside author is compared with the model the pull request names', () => {
+        const outside = ({approver, ...overrides}) => pullRequest({
+            authorLogin      : 'outside-dev',
+            authorAssociation: 'CONTRIBUTOR',
+            reviews          : [{state: 'APPROVED', submittedAt: '2026-07-29T07:00:00.000Z', commit: {oid: HEAD}, author: {login: approver}}],
+            ...overrides
+        });
+        const run = async overrides => project(dependencies({snapshots: [outside(overrides), outside(overrides)]}));
+        const crossFamily = result => result.predicate.blockers.filter(entry => entry.includes('cross-family'));
+
+        test('a Claude-named pull request blocks on a Claude-only approval and passes on a GPT one', async () => {
+            const body   = 'Resolves #1\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)',
+                  same   = await run({body, approver: 'neo-opus-vega'}),
+                  across = await run({body, approver: 'neo-gpt-emmy'});
+
+            expect(same.predicate.strictMergeReady).toBe(false);
+            expect(crossFamily(same).some(entry => entry.includes("the outside pull request names 'claude'") && entry.includes('[claude]'))).toBe(true);
+            expect(crossFamily(across)).toEqual([]);
+            expect(across.predicate.strictMergeReady).toBe(true)
+        });
+
+        test('a model named only in the first commit\'s trailer counts the same', async () => {
+            const result = await run({
+                body              : 'Resolves #1\n\nThe row now expands on ArrowRight.',
+                firstCommitMessage: 'feat: expand\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>',
+                approver          : 'neo-opus-vega'
+            });
+
+            expect(crossFamily(result).some(entry => entry.includes('mandate unsatisfied'))).toBe(true)
+        });
+
+        test('a pull request that names no model only advises: any family may approve it', async () => {
+            const result = await run({body: 'Resolves #1\n\nA plain description.', approver: 'neo-opus-vega'});
+
+            expect(crossFamily(result)).toEqual([]);
+            expect(result.predicate.advisories.some(entry => entry.includes('names no model'))).toBe(true);
+            expect(result.predicate.strictMergeReady).toBe(true)
+        });
+
+        test('a member whose family does not resolve still blocks, whatever the body names', async () => {
+            const result = await run({
+                authorAssociation: 'MEMBER',
+                body             : 'Generated with Claude Code.',
+                approver         : 'neo-gpt-emmy'
+            });
+
+            expect(crossFamily(result).some(entry => entry.includes('could not be evaluated'))).toBe(true);
+            expect(result.predicate.advisories.some(entry => entry.includes('names no model'))).toBe(false)
+        })
+    });
+
+    /**
      * @summary The T1 window from the live incident: approved, then held, still reporting green.
      *
      * A reviewer approved, then posted `[MERGE_HOLD]` stating the prior approval was not a current
@@ -826,6 +889,12 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         for (const field of ['workflowRun', 'runNumber', 'runAttempt', 'resourcePath', 'databaseId']) {
             expect(GET_MERGE_READINESS).toContain(field);
         }
+    });
+
+    test('the query reads what an outside author\'s family comes from: association, first and head commit messages', () => {
+        expect(GET_MERGE_READINESS).toContain('authorAssociation');
+        expect(GET_MERGE_READINESS).toMatch(/firstCommit: commits\(first: 1\) \{\s*nodes \{\s*commit \{\s*message/);
+        expect(GET_MERGE_READINESS).toMatch(/commits\(last: 1\) \{\s*nodes \{\s*commit \{\s*oid\s*message/)
     });
 
     test('#17373: certification availability stays named but cannot change artifact merge eligibility', async () => {

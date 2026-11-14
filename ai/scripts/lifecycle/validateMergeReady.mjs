@@ -58,7 +58,7 @@ export const MERGEABLE_STATES = ['CLEAN', 'UNSTABLE'];
  * @param {String[]} [pr.reviewRequests] Logins of still-requested reviewers (the explicit author/operator contract); `undefined` (not fetched) fails closed, `[]` asserts fetched-and-empty.
  * @param {String[]} [pr.disposedReviewers] Requested reviewers already disposed (formal review / visible step-out / unrequest).
  * @param {Object} [pr.holdVerdict] Verdict from `resolveMergeHold` — `{held, holders}`. `undefined` (not resolved) fails closed; `held: null` (the comment window was truncated) blocks with its own reason rather than reading as "no hold".
- * @param {Object} [pr.crossFamilyVerdict] Verdict from `resolveCrossFamilyVerdict` — `{crossFamily, authorFamily, approvingFamilies, authorLogin}`. `undefined` (not resolved) fails closed; `crossFamily: null` (author family unresolved) blocks with its own reason rather than collapsing into pass or fail.
+ * @param {Object} [pr.crossFamilyVerdict] Verdict from `resolveCrossFamilyVerdict` — `{crossFamily, authorFamily, authorFamilies, outside, approvingFamilies, authorLogin}`. `undefined` (not resolved) fails closed; `crossFamily: null` blocks with its own reason rather than collapsing into pass or fail, except for an outside pull request that names no model (`outside: true`, no `authorFamilies`), which any family may approve and which only advises.
  * @param {String} [pr.approvedAtOid] Commit oid the approving review was submitted against. Optional: absent means the anchor is not reported, never that it is fresh.
  * @param {String} [pr.headRefOid] Current head oid, paired with `approvedAtOid` to surface a stale approval anchor.
  * @param {String[]} [pr.nonRequiredFailures] Stable labels for failing emitted checks outside the
@@ -109,16 +109,26 @@ export function validateMergeReady(pr = {}) {
     // at all — not a warning, not an unknown. The operator's override stays theirs; the point of
     // this rule is that the override is INFORMED rather than depending on a reviewer noticing.
     //
-    // Fail CLOSED like every other predicate field: an unresolved verdict blocks. `null` is the
-    // author-not-rostered case, which is external-contributor territory rather than a mandate
-    // breach — reported as its own blocker so the reader can see WHY it could not be certified,
-    // instead of being silently folded into either boolean.
+    // Fail CLOSED like every other predicate field: an unresolved verdict blocks. `null` means no
+    // author family to compare. An outside author whose pull request names no model is the one case
+    // that needs none: any seat may approve it (operator ruling, 2026-11-14), so it only advises.
+    // Every other `null` is reported as its own blocker so the reader can see WHY it could not be
+    // certified, instead of being silently folded into either boolean.
+    const namesNoModel = crossFamilyVerdict?.outside === true && !crossFamilyVerdict.authorFamilies?.length,
+          authorOf     = crossFamilyVerdict?.authorLogin ? ` for '${crossFamilyVerdict.authorLogin}'` : '';
+
     if (crossFamilyVerdict === undefined) {
         blockers.push('crossFamilyVerdict was not resolved — cannot certify the cross-family review mandate; failing closed.');
+    } else if (crossFamilyVerdict?.crossFamily === null && namesNoModel) {
+        advisories.push(`cross-family: the outside pull request${authorOf} names no model, so an approval from any family counts.`);
     } else if (crossFamilyVerdict?.crossFamily === null) {
-        blockers.push(`cross-family mandate could not be evaluated: the author family did not resolve${crossFamilyVerdict.authorLogin ? ` for '${crossFamilyVerdict.authorLogin}'` : ''}. An unrostered author is usually an external contributor, for whom the mandate does not apply — confirm that before merging.`);
+        blockers.push(`cross-family mandate could not be evaluated${authorOf}: the author's family did not resolve, or the approval window was truncated before a cross-family approval. Confirm it before merging.`);
     } else if (crossFamilyVerdict?.crossFamily === false) {
-        blockers.push(`cross-family review mandate unsatisfied: author family '${crossFamilyVerdict.authorFamily}', approving families [${(crossFamilyVerdict.approvingFamilies || []).join(', ') || 'none'}]. pull-request-workflow.md §6.1 requires at least one APPROVED review from a different model family; GitHub's reviewDecision cannot express this, so an APPROVED badge is not evidence of it.`);
+        const author = crossFamilyVerdict.outside
+            ? `the outside pull request names '${crossFamilyVerdict.authorFamily}'`
+            : `author family '${crossFamilyVerdict.authorFamily}'`;
+
+        blockers.push(`cross-family review mandate unsatisfied: ${author}, approving families [${(crossFamilyVerdict.approvingFamilies || []).join(', ') || 'none'}]. pull-request-workflow.md §6.1 requires at least one APPROVED review from a different model family; GitHub's reviewDecision cannot express this, so an APPROVED badge is not evidence of it.`);
     }
 
     // A reviewer who withdrew their approval in a comment. Every other gap in this validator fails
