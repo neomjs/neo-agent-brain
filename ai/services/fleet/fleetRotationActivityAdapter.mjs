@@ -6,7 +6,7 @@ import {FLEET_COCKPIT_SOURCES}                              from '../../../src/f
 /**
  * @module ai/services/fleet/fleetRotationActivityAdapter
  * @summary The rotation slot of the Fleet activity history: one event per seat for the decision on its
- * newest sunset receipt (Brain #1383), read from the wake-routes snapshot rather than from the plane, so
+ * newest sunset receipt (`ai/daemons/wake/sunsetReceipt.mjs`), read from the wake-routes snapshot rather than from the plane, so
  * the `rotation` axis of `fleetWakeRoutes` stays the one projection of that record.
  *
  * A seat's row carries only its newest receipt's decision. Each state is its own event (`requested`, then

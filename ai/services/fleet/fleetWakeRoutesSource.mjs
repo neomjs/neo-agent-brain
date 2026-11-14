@@ -26,7 +26,8 @@ import {redactCredentials}                         from './redactCredentials.mjs
 export const WAKE_ROUTES_SOURCE_LABEL = 'fleet:wakeRoutes'
 
 /**
- * @summary The decisions a rotation record carries (Brain #1383's `sessionRotation.state`).
+ * @summary The decisions a rotation record carries: the receipt's `sessionRotation.state`, written by
+ * `ai/daemons/orchestrator/scheduling/sessionRotation.mjs`.
  * @type {String[]}
  */
 export const ROTATION_STATES = Object.freeze(['requested', 'completed', 'refused', 'incomplete'])
@@ -516,8 +517,8 @@ function safeViewer(resolveViewerIdentity) {
 }
 
 /**
- * @summary A seat's rotation axis: the decision the plane recorded on the seat's newest sunset receipt
- * (Brain #1383), as the subscription observation carries it. `completed` names the old and the new
+ * @summary A seat's rotation axis: the decision the plane recorded on the seat's newest sunset receipt,
+ * as the subscription observation carries it. `completed` names the old and the new
  * Memory Core session, which is the retired mark the cockpit renders; `incomplete` with
  * `no-fresh-session` reports an old session that never handed over, and nothing is stopped. A plane
  * that reports no rotations, or a seat it holds no row for, reads `unobserved`; a seat without a
