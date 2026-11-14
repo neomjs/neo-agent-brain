@@ -76,6 +76,14 @@ test.describe('ai/daemons/wake/receiverState', () => {
         });
     });
 
+    test('restart replays only an interrupted native attempt for receipt reconciliation', async () => {
+        const native = await accept({eventId: 'native', sourceEventIds: [],
+            route: {agentIdentity: '@neo-gpt', harnessTargetMetadata: {adapter: 'primary-session'}}});
+        await state.transition(native.record.recordKey, 'pending', 'dispatching');
+        expect(await state.recoverInterrupted()).toBe(1);
+        expect(await state.read(native.record.recordKey)).toMatchObject({state: 'pending', outcomeReason: 'receiver-restarted-native-reconciliation'});
+    });
+
     test('a stale expected state cannot regress a terminal record', async () => {
         const accepted = await accept();
         await state.transition(accepted.record.recordKey, 'pending', 'dispatching');

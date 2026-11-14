@@ -111,6 +111,7 @@
         "neo-agent-skills": "^1.8.2",
         "neo.mjs": "https://github.com/neomjs/neo/archive/cc24c59e0d2470b75cfccaaa62b52cfd053bddb2.tar.gz",
         "playwright": "1.65.0",
+        "protobufjs": "7.6.5",
         "semver": "^7.8.6",
         "smol-toml": "1.9.1",
         "ws": "^8.22.2",

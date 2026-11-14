@@ -152,6 +152,16 @@ function arm({agent = AGENT, plane = fakePlane(), publish = async () => ({armed:
 }
 
 test.describe('armFleetSeatWake — the address is the launch profile', () => {
+    test('host-admitted native canary publishes config only for its own subscription', async () => {
+        const config = {instanceHome: HOME, appBundle: '/opt/generation/Codex.app', agentId: AGENT.id, family: 'codex-desktop'},
+              run    = arm({primarySession: config}), result = await run.result;
+        expect(result).toMatchObject({state: 'ready', adapter: 'primary-session', recipientState: 'unknown'});
+        expect(run.plane.subscribeCalls()[0].harnessTargetMetadata).toEqual({adapter: 'primary-session', url: `${RECEIVER}/wake`});
+        expect(run.armCalls[0].adapterConfigById).toEqual({'WAKE_SUB:minted': {primarySession: config}});
+        const bad = arm({primarySession: {...config, agentId: 'other'}});
+        expect((await bad.result).state).toBe('unarmed');
+        expect(bad.plane.subscribeCalls()).toHaveLength(0);
+    });
     test('the wake address IS the --user-data-dir each GUI family launches with', () => {
         const antigravityHome = '/agents/neo-gemini-pro/harness/antigravity',
               antigravity     = deriveHarnessLaunchSpec({harnessType: 'antigravity', instanceHome: antigravityHome, binaryPath: '/app/Antigravity', cwd: '/agents/neo-gemini-pro/repo'}),

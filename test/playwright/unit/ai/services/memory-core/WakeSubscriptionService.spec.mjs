@@ -1179,6 +1179,31 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
         });
     });
 
+    test('primary-session accepts only wake webhooks without host paths', async () => {
+        await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+            const input = {trigger: 'SENT_TO_ME', harnessTarget: 'a2a-webhook',
+                harnessTargetMetadata: {adapter: 'primary-session', url: BOOT_URL}};
+            expect((await WakeSubscriptionService.subscribe(input)).subscriptionId).toMatch(/^WAKE_SUB:/);
+            await expect(WakeSubscriptionService.subscribe({...input, trigger: 'SESSION_ROTATE'})).rejects.toThrow('only SENT_TO_ME');
+            await expect(WakeSubscriptionService.subscribe({...input, harnessTarget: 'bridge-daemon'})).rejects.toThrow('a2a-webhook');
+            await expect(WakeSubscriptionService.subscribe({...input, harnessTargetMetadata: {...input.harnessTargetMetadata, instanceHome: '/foreign'}})).rejects.toThrow('no host coordinates');
+        });
+    });
+
+    test('primary-session refresh removes legacy path metadata while preserving its signing key', async () => {
+        await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+            const url = 'http://host.docker.internal:3199/migrate-native',
+                  old = await WakeSubscriptionService.subscribe({trigger: 'SENT_TO_ME', harnessTarget: 'a2a-webhook',
+                      harnessTargetMetadata: {adapter: 'osascript', appName: 'Codex', url,
+                          addressType: 'userDataDir', instanceAddress: '/legacy'}}),
+                  next = await WakeSubscriptionService.subscribe({trigger: 'SENT_TO_ME', harnessTarget: 'a2a-webhook',
+                      harnessTargetMetadata: {adapter: 'primary-session', url}});
+            expect(next.subscriptionId).toBe(old.subscriptionId);
+            const row = GraphService.db.nodes.get(next.subscriptionId).properties;
+            expect(row.harnessTargetMetadata).toEqual({adapter: 'primary-session', url, signingKey: old.signingKey});
+        });
+    });
+
     test('subscribe with bridge-daemon + a non-opencode adapter still requires appName', async () => {
         await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
             await expect(WakeSubscriptionService.subscribe({
@@ -2917,10 +2942,10 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             })]
         ]) {
             test(`the push digest waits while a sunset receipt waits for its rotation, and ${release} releases it with the wakes queued before the receipt (#1383)`, async () => {
-                const sqlite     = GraphService.db.storage.db,
-                      receiptId  = 'MESSAGE:push-hold-receipt',
-                      receipt    = {from: '@alice', to: '@alice', subject: '[sunset]', sentAt: new Date(Date.now() - 60 * 1000).toISOString(), taggedConcepts: ['sunset-protocol-handover']},
-                      insert     = (id, label, properties) => sqlite.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)')
+                const sqlite    = GraphService.db.storage.db,
+                      receiptId = 'MESSAGE:push-hold-receipt',
+                      receipt   = {from: '@alice', to: '@alice', subject: '[sunset]', sentAt: new Date(Date.now() - 60 * 1000).toISOString(), taggedConcepts: ['sunset-protocol-handover']},
+                      insert    = (id, label, properties) => sqlite.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)')
                           .run(id, '@alice', JSON.stringify({id, label, type: label, properties})),
                       setReceipt = changes => sqlite.prepare('UPDATE Nodes SET data = ? WHERE id = ?')
                           .run(JSON.stringify({id: receiptId, label: 'MESSAGE', type: 'MESSAGE', properties: {...receipt, ...changes}}), receiptId),

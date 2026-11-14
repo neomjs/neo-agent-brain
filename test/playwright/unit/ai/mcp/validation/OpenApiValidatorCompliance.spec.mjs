@@ -265,14 +265,14 @@ const expectedMemoryCoreToolTiers = {
     // from the default loaded surface rather than advertised to every agent. For the telemetry operation
     // that access control is the only custody lever available, because storing identity in a telemetry row
     // is forbidden; the archive additionally stamps an authenticated custodian.
-    save_nl_transaction                    : 'extended',
-    get_nl_transaction                     : 'extended',
-    mark_nl_transaction_replayed           : 'extended',
-    admit_nl_actions                       : 'extended',
+    save_nl_transaction         : 'extended',
+    get_nl_transaction          : 'extended',
+    mark_nl_transaction_replayed: 'extended',
+    admit_nl_actions            : 'extended',
     // The Fleet host's open-work intake, its delivery read-back and its copy's publication, not agent tools.
-    admit_open_work_wake                   : 'extended',
-    read_open_work_wake_delivery           : 'extended',
-    publish_open_work_copy                 : 'extended',
+    admit_open_work_wake        : 'extended',
+    read_open_work_wake_delivery: 'extended',
+    publish_open_work_copy      : 'extended',
     // a seat's read of its own entry in that copy
     read_own_open_work                     : 'read',
     healthcheck                            : 'read',
@@ -561,7 +561,7 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
         expect(listMessagesSchema.properties.limit.default).toBe(50);
         expect(listMessagesSchema.properties.offset.default).toBe(0);
 
-        expect(adapter.enum).toEqual(['osascript', 'tmux', 'claude-courier', 'codex-app-server', 'opencode-server', 'kimi-server', 'kimi-pull-bridge']);
+        expect(adapter.enum).toEqual(['osascript', 'tmux', 'claude-courier', 'codex-app-server', 'opencode-server', 'kimi-server', 'kimi-pull-bridge', 'primary-session']);
 
         expect(coalesceWindow.type).toBe('integer');
         expect(coalesceWindow.minimum).toBe(0);

@@ -3,7 +3,7 @@ import os           from 'node:os';
 import path         from 'node:path';
 import {randomUUID} from 'node:crypto';
 
-import {runManifestBuilder} from './buildReceiverManifest.mjs';
+import {runManifestBuilder, wakeRouteWithdrawalReasonFor} from './buildReceiverManifest.mjs';
 
 /**
  * Per-harness parent directory holding one GUI instance directory per seat, keyed by bare identity.
@@ -162,6 +162,9 @@ export async function armSeatWakeRoute({
     listSubscriptions,
     manifestPath,
     tuple: knownTuple,
+    adapterConfigById,
+    desiredSubscriptionId,
+    desiredAdapter,
     env        = process.env,
     harness    = 'claude',
     homeDir,
@@ -229,7 +232,8 @@ export async function armSeatWakeRoute({
             instanceType   : tuple.instanceType,
             logger,
             manifestPath,
-            subscriptionsPath
+            subscriptionsPath,
+            adapterConfigById
         });
 
         // "The builder returned" is NOT "this seat is reachable". The builder withdraws the caller's own
@@ -243,6 +247,14 @@ export async function armSeatWakeRoute({
             toBareIdentity(route?.agentIdentity) === toBareIdentity(tuple.identity)
         );
 
+        const nativeIds = new Set(subscriptions.filter(row => row?.harnessTargetMetadata?.adapter === 'primary-session' &&
+            !wakeRouteWithdrawalReasonFor(row)).map(row => row.id));
+        const refusedNative = (result?.skipped ?? []).find(row => nativeIds.has(row.subscriptionId));
+        if (refusedNative) {
+            return {armed: false, identity: tuple.identity, routeCount: ownRoutes.length,
+                reason: `native route ${refusedNative.subscriptionId} was not admitted`, skipped: result.skipped}
+        }
+
         if (!ownRoutes.length) {
             return {
                 armed     : false,
@@ -253,38 +265,37 @@ export async function armSeatWakeRoute({
             };
         }
 
-        // Owning a route is not the same as being reachable BY IT. Every harness in
-        // INSTANCE_DIR_BY_HARNESS is a GUI harness, so this path exists to arm the `osascript`
-        // route — the one whose address is a restart-durable userDataDir. The adapter itself is
-        // declared by the SUBSCRIPTION, not by this function: `harness` only chooses the instance
-        // directory. So a subscription still declaring a non-GUI adapter publishes cleanly, keeps
-        // this seat's own route, and leaves `armed: true` describing a tuple while the delivery
-        // path is unchanged. Measured on a live seat: `armed: true, routeCount: 1, skipped: []`
-        // with the published adapter still `opencode-server`, and the seat still unwakeable.
-        // Reporting success there is the same lie as the nine-routes case above, one layer in.
-        //
-        // `route.adapter` is the adapter the route will actually USE, read by the builder at
-        // publish time — not a default, and not a re-read of the input subscription. Reading the
-        // input here instead would compare the request with itself and always agree.
-        // EVERY own route must be on the armed adapter. An `includes` check over the distinct adapter
-        // set is the same class of partial predicate as trusting a successful call: a mixed own set
-        // (`opencode-server` + `osascript`) satisfies it, and the aggregate then reports
-        // `armed: true` with `adapter: 'osascript'` while part of the seat cannot be reached.
-        //
-        // The predicate is per-ROUTE, not per-adapter-set, so a route carrying no adapter at all also
-        // fails — a set-derived check would see an empty set, find no foreign adapter, and wave it
-        // through.
+        if (desiredSubscriptionId && !ownRoutes.some(route => route.subscriptionId === desiredSubscriptionId)) {
+            return {armed: false, identity: tuple.identity, routeCount: ownRoutes.length,
+                reason: `the publish carried no route for ${desiredSubscriptionId}`, skipped: result?.skipped ?? []}
+        }
+        if (desiredSubscriptionId && !['osascript', 'primary-session'].includes(desiredAdapter)) {
+            return {armed: false, identity: tuple.identity, routeCount: ownRoutes.length,
+                reason: 'the desired subscription adapter is invalid', skipped: result?.skipped ?? []}
+        }
+
+        // Check every published own route, not the requested subscription's input alone. Fleet may
+        // retain a separately host-admitted native wake beside a GUI rotation; all other adapters,
+        // including a missing one, fail closed. Untargeted legacy callers remain osascript-only.
         const publishedAdapters = [...new Set(ownRoutes
             .map(route => route?.adapter)
             .filter(Boolean))];
-        const nonArmedRoutes = ownRoutes.filter(route => route?.adapter !== ARMED_ADAPTER);
+        const nonArmedRoutes = ownRoutes.filter(route => {
+            const expected = route.subscriptionId === desiredSubscriptionId ? desiredAdapter : null;
+            if (expected && route.adapter !== expected) return true;
+            if (route.adapter === ARMED_ADAPTER) return false;
+            return route.adapter !== 'primary-session' || !desiredSubscriptionId || !route.hostNativeAdmitted ||
+                (expected === 'primary-session' && !adapterConfigById?.[route.subscriptionId]?.primarySession)
+        });
 
         if (nonArmedRoutes.length) {
             const foreignAdapters = publishedAdapters.filter(adapter => adapter !== ARMED_ADAPTER);
 
             // Two named shapes, because they need different repairs: a single stale route is a
             // mis-pointed subscription, while a mixed set means the seat is half-migrated.
-            const reason = publishedAdapters.length > 1
+            const reason = desiredSubscriptionId
+                ? `published routes for ${tuple.identity} do not satisfy the requested ${desiredAdapter} route ${desiredSubscriptionId} or a separately host-admitted native route`
+                : publishedAdapters.length > 1
                 ? `${nonArmedRoutes.length} of ${ownRoutes.length} route(s) for ${tuple.identity} are published on adapter '${foreignAdapters.join(', ')}' while arming harness '${harness}' arms '${ARMED_ADAPTER}' — this is a MIXED route set, and a seat with any route on another adapter is NOT reliably reachable; the delivery path was NOT switched for those routes, so update EVERY subscription for this seat to '${ARMED_ADAPTER}' with this instanceAddress and re-arm`
                 : `the route for ${tuple.identity} is published on adapter '${publishedAdapters.join(', ') || 'none'}', but arming harness '${harness}' arms '${ARMED_ADAPTER}' — the instance tuple was derived and the delivery path was NOT switched; update the subscription's adapter to '${ARMED_ADAPTER}' with this instanceAddress and re-arm`;
 
@@ -303,7 +314,7 @@ export async function armSeatWakeRoute({
             identity       : tuple.identity,
             routeCount     : ownRoutes.length,
             subscriptionIds: ownRoutes.map(route => route.subscriptionId),
-            adapter        : ARMED_ADAPTER,
+            adapter        : desiredAdapter || ARMED_ADAPTER,
             skipped        : result?.skipped ?? []
         }
     } catch (error) {

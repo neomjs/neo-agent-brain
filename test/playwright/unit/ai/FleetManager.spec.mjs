@@ -218,8 +218,8 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
         // Without `rotate` the real armer runs, and it answers null for a family with no rotation route
         FleetManager.rotationArmFn       = rotate ? async args => rotate(args) : null;
         FleetManager.lifecycleService    = lifecycleWithStart({
-            getRegistry     : () => ({getAgent: () => agent}),
-            setWakeRoute    : real
+            getRegistry : () => ({getAgent: () => agent}),
+            setWakeRoute: real
                 ? (...args) => FleetLifecycleService.setWakeRoute(...args)
                 : (id, route, launch) => { recorded.push({id, route, launch}); return true },
             setRotationRoute: (id, route, launch) => { rotated.push({id, route, launch}); return true }
@@ -236,13 +236,14 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
 
         expect(await FleetManager.startAgent('agent-a')).toEqual({state: 'running', instanceHome: HOME, ...LAUNCH, wakeRoute: READY});
         expect(armCalls[0]).toEqual({
-            agent        : TENANT_AGENT,
-            instanceHome : HOME,
-            planeBase    : 'http://127.0.0.1:3102',
-            receiverBase : 'http://host.docker.internal:3199',
-            manifestPath : '/host/wake/routes.json',
-            tenantService: tenants,
-            startSignal  : expect.any(AbortSignal)
+            agent         : TENANT_AGENT,
+            instanceHome  : HOME,
+            planeBase     : 'http://127.0.0.1:3102',
+            receiverBase  : 'http://host.docker.internal:3199',
+            manifestPath  : '/host/wake/routes.json',
+            primarySession: null,
+            tenantService : tenants,
+            startSignal   : expect.any(AbortSignal)
         });
         expect(recorded).toEqual([{id: 'agent-a', route: READY, launch: LAUNCH}]);
     });
@@ -291,8 +292,8 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
               current = FleetManager.startAgent('agent-a');
 
         await expect.poll(() => FleetManager.lifecycleService.pendingStarts.get('agent-a')?.size).toBe(2);
-        await expect.poll(() => launches).toBe(1);
-        expect(armCalls).toHaveLength(1);
+        await expect.poll(() => armCalls.length).toBe(1);
+        expect(launches).toBe(1);
 
         slow.resolve({...READY, state: 'unarmed', reason: 'the earlier launch failed late', subscriptionId: null});
 
@@ -303,7 +304,7 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
     });
 
     test('the rotation route is armed after the wake route and recorded beside it, from the same launch', async () => {
-        const ROTATION = Object.freeze({...READY, subscriptionId: 'ROTATE_SUB:x'}),
+        const ROTATION            = Object.freeze({...READY, subscriptionId: 'ROTATE_SUB:x'}),
               {recorded, rotated} = configure({arm: () => READY, rotate: args => ROTATION});
 
         expect(await FleetManager.startAgent('agent-a')).toMatchObject({wakeRoute: READY, rotationRoute: ROTATION});
@@ -312,10 +313,10 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
     });
 
     test('a Start that Stop cancels while its wake route arms never arms a rotation route and records neither', async () => {
-        const held     = Promise.withResolvers(),
-              rotation = [],
+        const held                          = Promise.withResolvers(),
+              rotation                      = [],
               {recorded, rotated, armCalls} = configure({arm: () => held.promise, rotate: args => { rotation.push(args); return READY }}),
-              starting = FleetManager.startAgent('agent-a');
+              starting                      = FleetManager.startAgent('agent-a');
 
         await expect.poll(() => armCalls.length).toBe(1);
         await FleetManager.stopAgent('agent-a');
