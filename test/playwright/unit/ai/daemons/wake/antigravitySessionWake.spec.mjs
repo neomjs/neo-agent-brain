@@ -410,3 +410,29 @@ test('an authenticated spent marker requests only a negative claim when root obs
         expect(requests).toEqual([]);
     } finally {fs.rmSync(root,{recursive:true,force:true})}
 });
+
+test('sidecar accepts only canonical loopback endpoints without altering the environment', async () => {
+    const exe     = '/a/Antigravity.app/Contents/Resources/bin/language_server';
+    const env     = address=>({ANTIGRAVITY_LS_ADDRESS:address,ANTIGRAVITY_AGENTAPI_EXE:exe,fixtureSecret:'sentinel'});
+    const valid   = ['127.0.0.1:1','localhost:65535','[::1]:4444','http://localhost:8080','https://[::1]:443/'];
+    const invalid = ['127.0.0.1:0','localhost:65536','localhost:01','localhost:123/','localhost:123/path',
+        'https://localhost:443/path','https://user@localhost:123','http://localhost:123/#fragment',
+        '0.0.0.0:123','127.0.0.2:123','example.com:123','localhost:123?x=1','http://localhost'];
+    for (const address of valid) expect(validateAntigravitySidecarCapability({environment:env(address),appBundle:'/a/Antigravity.app',realpath:x=>x}),address).toBe(true);
+    for (const address of invalid) expect(validateAntigravitySidecarCapability({environment:env(address),appBundle:'/a/Antigravity.app',realpath:x=>x}),address).toBe(false);
+    const supplied = env('127.0.0.1:123'),controller=new AbortController(); let received;
+    const rows     = [{pid:1,ppid:0,command:'/a/Antigravity.app/Contents/MacOS/Antigravity --user-data-dir=/profile',startedAt:'epoch'},
+        {pid:2,ppid:1,command:'/a/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper worker',startedAt:'epoch'},
+        {pid:3,ppid:2,command:'sidecar',startedAt:'epoch'}];
+    await runAntigravitySidecar({stateDir:'/state',manifestPath:'/manifest',sidecarPid:3,readRows:()=>rows,
+        environment:supplied,signal:controller.signal,validateCapability:args=>validateAntigravitySidecarCapability({...args,realpath:x=>x}),
+        dispatch:async args=>{received=args;controller.abort()}});
+    expect(received.environment).toBe(supplied);
+    expect(received.appPid).toBe(1);
+});
+
+test('sidecar startup classifies ancestor and capability failures without values', async () => {
+    const rows = [{pid:1,ppid:0,command:'/a/Antigravity.app/Contents/MacOS/Antigravity --user-data-dir=/profile',startedAt:'epoch'}];
+    await expect(runAntigravitySidecar({stateDir:'/state',manifestPath:'/manifest',sidecarPid:9,readRows:()=>rows,dispatch:async()=>{}})).rejects.toMatchObject({code:'AGY_ANCESTOR_UNAVAILABLE'});
+    await expect(runAntigravitySidecar({stateDir:'/state',manifestPath:'/manifest',sidecarPid:1,readRows:()=>rows,environment:{},dispatch:async()=>{}})).rejects.toMatchObject({code:'AGY_CAPABILITY_UNAVAILABLE'});
+});
