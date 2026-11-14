@@ -12,10 +12,11 @@
  * free to drift.
  *
  * The observation is deliberately REDACTED to the fleet-disclosure class: the holder identity, the
- * most recent observational `lastPollAt` across that identity's active subscriptions, and its
- * message pull route when it holds one, with that route's own stamp — timestamps and a transport
- * fact only, never the client-held watermark, never endpoint/filter/key-adjacent row properties.
- * Owner-only material stays behind the caller-owner `list` action.
+ * most recent observational `lastPollAt` across that identity's active subscriptions, its
+ * message pull route when it holds one, with that route's own stamp, and the rotation decision on
+ * its newest sunset receipt (state, reason, the receipt and Memory Core session ids, and stamps) —
+ * never the client-held watermark, never endpoint/filter/key-adjacent row properties, never message
+ * content. Owner-only material stays behind the caller-owner `list` action.
  *
  * The graph service loads lazily per call: the fleet server pays the memory-core import cost only
  * when a roster read actually needs wake truth, and a fresh scan per snapshot means no long-lived
