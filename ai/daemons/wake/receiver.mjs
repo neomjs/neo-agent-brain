@@ -13,21 +13,24 @@ import fs      from 'node:fs/promises';
 import http    from 'node:http';
 import net     from 'node:net';
 import path    from 'node:path';
-import {watch} from 'node:fs';
+import {readFileSync, watch} from 'node:fs';
 
 import {WakeReceiverState}                       from './receiverState.mjs';
 import {createReceiverLiveness}                  from './receiverLiveness.mjs';
 import {evaluateContextGate, isIdleOnlyEnvelope} from './contextGatePolicy.mjs';
 import {dispatchLocalWake, probeSessionContext}  from './localWakeAdapters.mjs';
 import {
+    ROTATION_EXPIRED,
     ROTATION_MAX_AGE_MS,
     ROTATION_RETRY_MS,
+    ROTATION_SUPERSEDED,
     SESSION_ROTATE_EVENT_TYPE,
     WAKE_DIGEST_EVENT_TYPE,
     hasReceiptIdentity,
     isRotationExpired,
     isSessionRotation,
-    routeAdmits
+    routeAdmits,
+    seatHolderKey
 } from './sessionRotation.mjs';
 import {isEntryModule}                                                        from '../../services/shared/isEntryModule.mjs';
 import {hasPrimaryWakeRecipient, primaryWakeSeatForAddress, stagePrimaryWake} from './primaryWakeSpool.mjs';
@@ -272,6 +275,8 @@ export function verifyWakeSignature(rawBody, signingKey, signature) {
  * @param {Number} [options.watchdogIntervalMs=STEP_WATCHDOG_INTERVAL_MS]
  * @param {Number} [options.rotationRetryMs=ROTATION_RETRY_MS] How soon a deferred rotation is asked again.
  * @param {Function} [options.clock=Date.now] The clock a rotation's age is read against.
+ * @param {String|null} [options.listenerStateDir] Where the Claude wake listener records each seat's holder
+ *   (`<identity>.json`); defaults to `listeners` beside the manifest, the layout `wakeListenerHook.mjs` writes.
  * @returns {{server:http.Server,drain:Function,setManifest:Function,track:Function}}
  */
 export function createWakeReceiver({
@@ -289,7 +294,8 @@ export function createWakeReceiver({
     stepBoundsMs       = STEP_BOUNDS_MS,
     watchdogIntervalMs = STEP_WATCHDOG_INTERVAL_MS,
     rotationRetryMs    = ROTATION_RETRY_MS,
-    clock              = Date.now
+    clock              = Date.now,
+    listenerStateDir   = manifestPath ? path.join(path.dirname(manifestPath), 'listeners') : null
 } = {}) {
     if (!manifest?.routes || !(state instanceof WakeReceiverState)) {
         throw new Error('createWakeReceiver requires a loaded manifest and WakeReceiverState');
@@ -312,6 +318,18 @@ export function createWakeReceiver({
         if (rotationRetry) return;
         rotationRetry = setTimeout(() => { rotationRetry = null; void drain() }, rotationRetryMs);
         rotationRetry.unref?.()
+    };
+
+    // The session that holds a Claude seat ({@link seatHolderKey}), read synchronously so the adapter can
+    // ask again right before its fresh-session keystroke; `null` when the record is missing or unreadable.
+    const readSeatHolder = identity => {
+        if (!listenerStateDir || typeof identity !== 'string') return null;
+
+        try {
+            return seatHolderKey(JSON.parse(readFileSync(path.join(listenerStateDir, `${identity.replace(/^@/, '')}.json`), 'utf8')))
+        } catch {
+            return null
+        }
     };
 
     /**
@@ -401,7 +419,7 @@ export function createWakeReceiver({
                 // late session would be a second live session of it.
                 if (isSessionRotation(dispatching.envelope) && isRotationExpired(dispatching.acceptedAt, clock())) {
                     await watched.transition(record.recordKey, 'dispatching', 'failed', {
-                        outcomeReason     : 'session-rotate-expired',
+                        outcomeReason     : ROTATION_EXPIRED,
                         dispatchFinishedAt: new Date(clock()).toISOString()
                     });
                     logger.error?.(
@@ -409,6 +427,32 @@ export function createWakeReceiver({
                         `${ROTATION_MAX_AGE_MS} ms of its accept; failed without a keystroke`
                     );
                     continue;
+                }
+
+                // The holder fence: a rotation's first attempt records which session holds the seat, and an
+                // attempt that finds another holder (a session someone opened since) fails without a keystroke.
+                // The adapter asks again right before Cmd+N. No readable holder at the first attempt, no fence.
+                let rotationGuard;
+
+                if (isSessionRotation(dispatching.envelope)) {
+                    const identity = dispatching.envelope.agentIdentity,
+                          holder   = readSeatHolder(identity),
+                          baseline = dispatching.seatHolder === undefined ? holder : dispatching.seatHolder;
+
+                    if (typeof baseline === 'string' && holder !== baseline) {
+                        await watched.transition(record.recordKey, 'dispatching', 'failed', {
+                            outcomeReason     : ROTATION_SUPERSEDED,
+                            dispatchFinishedAt: new Date(clock()).toISOString()
+                        });
+                        logger.error?.(
+                            `[Wake Receiver] rotation SUPERSEDED ${record.subscriptionId}: another session holds ` +
+                            `${identity} since the first attempt; failed without a keystroke`
+                        );
+                        continue;
+                    }
+
+                    dispatching.seatHolder = baseline ?? null;
+                    rotationGuard          = () => typeof baseline === 'string' && readSeatHolder(identity) !== baseline ? ROTATION_SUPERSEDED : null;
                 }
 
                 // The context gate: after the non-idempotency marker, before the adapter runs.
@@ -548,7 +592,7 @@ export function createWakeReceiver({
                             }
                         }
                     }
-                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath}) : dispatch(dispatching),
+                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath}) : dispatch(dispatching, rotationGuard ? {rotationGuard} : undefined),
                         (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch, record.subscriptionId);
 
                     outcome = typeof result === 'string' ? result : native ? result?.status : result?.outcome;
@@ -613,7 +657,8 @@ export function createWakeReceiver({
                         await watched.transition(record.recordKey, 'dispatching', 'pending', {
                             deferCount,
                             deferredAt : new Date().toISOString(),
-                            deferReason: outcomeReason || 'interactive-dialog-pending'
+                            deferReason: outcomeReason || 'interactive-dialog-pending',
+                            ...(rotation ? {seatHolder: dispatching.seatHolder ?? null} : {})
                         });
                         logger.warn?.(rotation
                             ? `[Wake Receiver] rotation DEFERRED ${record.subscriptionId} (${outcomeReason}); ` +

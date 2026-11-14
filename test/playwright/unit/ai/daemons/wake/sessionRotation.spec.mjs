@@ -9,7 +9,9 @@ import {
     HUMAN_INPUT_QUIET_MS,
     HUMAN_INPUT_UNKNOWN,
     ROTATION_ACTIVATION_LOST,
+    ROTATION_EXPIRED,
     ROTATION_MAX_AGE_MS,
+    ROTATION_SUPERSEDED,
     SESSION_ROTATE_EVENT_TYPE,
     admittedEventType,
     evaluateHumanInput,
@@ -53,8 +55,9 @@ const rotationEnvelope = (overrides = {}) => ({
     ...overrides
 });
 
-const rotationRecord = ({meta = {}, envelope = {}} = {}) => ({
+const rotationRecord = ({meta = {}, envelope = {}, acceptedAt = new Date().toISOString(), adapterConfig = {attemptTimeoutMs: 10_000}} = {}) => ({
     subscriptionId: 'WAKE_SUB:rotate',
+    acceptedAt,
     envelope      : rotationEnvelope(envelope),
     route         : {
         agentIdentity        : '@neo-opus-ada',
@@ -66,7 +69,7 @@ const rotationRecord = ({meta = {}, envelope = {}} = {}) => ({
             instanceAddress: '/seats/neo-opus-ada/claude-desktop',
             ...meta
         },
-        adapterConfig: {attemptTimeoutMs: 10_000}
+        adapterConfig
     }
 });
 
@@ -205,6 +208,54 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
             .toEqual({outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST});
         expect(await run('execution error: Target app lost frontmost status before wake paste (-2700)'))
             .toMatchObject({outcome: 'failed'})
+    });
+
+    test('Emmy\'s control: a deadline crossed while the idle clock is read opens no session', async () => {
+        const calls  = [];
+        const result = await dispatchLocalWake(
+            rotationRecord({acceptedAt: new Date(Date.now() - (ROTATION_MAX_AGE_MS - 10)).toISOString()}),
+            quietEffects({
+                readHumanIdleMs: async () => { await new Promise(resolve => setTimeout(resolve, 30)); return HUMAN_INPUT_QUIET_MS },
+                spawnAsync     : async (command, args) => { calls.push({command, args}); return '' }
+            })
+        );
+
+        expect(result).toEqual({outcome: 'failed', outcomeReason: ROTATION_EXPIRED});
+        expect(typedPaste(calls)).toHaveLength(0)
+    });
+
+    test('Emmy\'s control: an attempt that outlives its adapter timeout opens no session when it settles', async () => {
+        const calls  = [];
+        const result = await dispatchLocalWake(
+            rotationRecord({adapterConfig: {attemptTimeoutMs: 10}}),
+            quietEffects({
+                readHumanIdleMs: async () => { await new Promise(resolve => setTimeout(resolve, 50)); return HUMAN_INPUT_QUIET_MS },
+                spawnAsync     : async (command, args) => { calls.push({command, args}); return '' }
+            })
+        );
+
+        expect(result).toBe('unknown');
+        await new Promise(resolve => setTimeout(resolve, 150));
+        expect(typedPaste(calls)).toHaveLength(0)
+    });
+
+    test('a seat another session claimed since the first attempt vetoes the keystroke', async () => {
+        const calls  = [];
+        const result = await dispatchLocalWake(rotationRecord(), quietEffects({
+            rotationGuard: () => ROTATION_SUPERSEDED,
+            spawnAsync   : async (command, args) => { calls.push({command, args}); return '' }
+        }));
+
+        expect(result).toEqual({outcome: 'failed', outcomeReason: ROTATION_SUPERSEDED});
+        expect(typedPaste(calls)).toHaveLength(0)
+    });
+
+    test('the script refuses the fresh-session keystroke once the rotation\'s seconds run out', () => {
+        const lines = buildOsascriptArgs({appName: 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7}).map(String),
+              fresh = lines.indexOf('      keystroke "n" using command down');
+
+        expect(lines).toContain('  set rotationDeadline to (current date) + 7');
+        expect(lines[fresh - 2]).toBe('      if (current date) > rotationDeadline then error "Rotation deadline passed before the fresh session"')
     });
 
     test('the idle clock is read last: after the pid lookup and the dialog probe, before the first keystroke', async () => {
@@ -444,6 +495,28 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
 
         expect(dispatched).toEqual([]);
         expect(await state.read(rotationKey)).toMatchObject({state: 'failed', outcomeReason: 'session-rotate-expired'})
+    });
+
+    test('Emmy\'s control: a session opened by hand during a defer supersedes the rotation, with no second dispatch', async () => {
+        const listenerStateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-rotation-listeners-')),
+              holder           = sessionId => fs.writeFile(path.join(listenerStateDir, 'neo-opus-ada.json'), JSON.stringify({owner: {sessionId, session: {pid: 7}}})),
+              quick            = rotationReceiver([{outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE}], {rotationRetryMs: 200, listenerStateDir});
+
+        try {
+            await holder('old-session');
+            await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+            await quick.drain();
+
+            expect(await state.read(rotationKey)).toMatchObject({state: 'pending', seatHolder: 'old-session#7'});
+
+            await holder('opened-by-hand');
+
+            await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
+            expect((await state.read(rotationKey)).outcomeReason).toBe(ROTATION_SUPERSEDED);
+            expect(dispatched).toHaveLength(1)
+        } finally {
+            await fs.rm(listenerStateDir, {recursive: true, force: true})
+        }
     });
 
     test('a lost activation is asked again inside the age, like a person at the keyboard', async () => {

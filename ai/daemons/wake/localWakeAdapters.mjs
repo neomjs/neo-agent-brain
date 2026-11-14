@@ -20,10 +20,14 @@ import {
 } from './instanceResolver.mjs';
 import {withOutboxLock}      from './outboxLock.mjs';
 import {
+    ROTATION_ABORTED,
     ROTATION_ACTIVATION_LOST,
+    ROTATION_EXPIRED,
     evaluateHumanInput,
     isPreKeystrokeFailure,
+    isRotationExpired,
     isSessionRotation,
+    rotationDeadline,
     rotationPrompt
 } from './sessionRotation.mjs';
 import {selectWakeDirective} from './wakeLaneDirective.mjs';
@@ -229,6 +233,7 @@ async function performDispatch({adapter, adapterConfig, digest, meta, record, si
         getDefaultTarget: getDefaultInstanceTarget,
         homedir         : os.homedir,
         log             : console,
+        now             : Date.now,
         platform        : process.platform,
         readHumanIdleMs,
         resolveGuiInstancePid,
@@ -298,7 +303,7 @@ async function performDispatch({adapter, adapterConfig, digest, meta, record, si
         return 'delivered';
     }
     if (adapter === 'osascript') {
-        return deliverOsascript({adapterConfig, digest, effects, meta, record});
+        return deliverOsascript({adapterConfig, digest, effects, meta, record, signal});
     }
 
     return 'skipped';
@@ -676,7 +681,7 @@ function buildDialogGateArgs({appName, instancePid}) {
  *
  * @private
  */
-async function deliverOsascript({adapterConfig, digest, effects, meta, record}) {
+async function deliverOsascript({adapterConfig, digest, effects, meta, record, signal}) {
     if (effects.platform !== 'darwin') return 'skipped';
 
     const resolvedMeta = applyHarnessMetadataDefaults(meta);
@@ -746,6 +751,15 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record}) 
         if (humanInput.action === 'defer') {
             return {outcome: 'deferred', outcomeReason: humanInput.reason}
         }
+
+        // The fence at the effect, after the last await: an attempt the receiver stopped waiting for, a
+        // deadline crossed while the pid, dialog or idle reads ran, or a seat another session claimed since
+        // (the receiver's `rotationGuard`) opens no session. The script re-checks the deadline before Cmd+N.
+        const veto = signal?.aborted ? ROTATION_ABORTED
+            : isRotationExpired(record.acceptedAt, effects.now()) ? ROTATION_EXPIRED
+            : effects.rotationGuard?.() || null;
+
+        if (veto) return {outcome: 'failed', outcomeReason: veto}
     }
 
     const args = buildOsascriptArgs({
@@ -754,6 +768,9 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record}) 
         focusSeedKey        : resolvedMeta.focusSeedKey,
         focusSeedSequence   : resolvedMeta.focusSeedSequence,
         freshSessionShortcut: rotation ? resolvedMeta.freshSessionShortcut : null,
+        freshSessionDeadlineSeconds: rotation
+            ? Math.max(0, Math.floor((rotationDeadline(record.acceptedAt) - effects.now()) / 1000))
+            : null,
         instancePid,
         tabShortcut         : resolvedMeta.tabShortcut
     });
@@ -839,11 +856,14 @@ export function processAutomationIdLines(indent = '  ') {
  * @param {String} [options.focusSeedKey] Key typed to seat focus in the composer.
  * @param {String} [options.focusSeedSequence] Named focus-seed sequence (`r-undo`).
  * @param {String|null} [options.freshSessionShortcut] Command-key shortcut that opens a fresh session.
+ * @param {Number|null} [options.freshSessionDeadlineSeconds] Seconds the rotation has left: the script
+ *   refuses the fresh-session keystroke once they pass, so a slow activation cannot open a late session.
  * @param {Number|null} [options.instancePid] Resolved Unix PID when instance-addressed.
  * @param {String} [options.tabShortcut] Command-key shortcut for the harness tab.
  * @returns {String[]} `osascript` argv fragments ending with the digest.
  */
-export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, instancePid, tabShortcut}) {
+export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, freshSessionDeadlineSeconds = null, instancePid, tabShortcut}) {
+    const fencedFreshSession = Boolean(freshSessionShortcut) && Number.isFinite(freshSessionDeadlineSeconds);
     const escapedAppName   = escapeAppleScript(appName);
     const targetPid        = instancePid ? String(instancePid) : '';
     const addressedProcess = Boolean(instancePid);
@@ -872,6 +892,7 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
         '-e', '  end tell',
         '-e', 'end assertTargetFrontmost',
         '-e', 'on run argv',
+        ...(fencedFreshSession ? ['-e', `  set rotationDeadline to (current date) + ${Math.floor(freshSessionDeadlineSeconds)}`] : []),
         '-e', '  set wakePayload to (item 1 of argv)',
         '-e', `  set targetAppName to "${escapedAppName}"`,
         '-e', '  set targetBundleId to ""',
@@ -912,6 +933,9 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
         args.push('-e', '      delay 0.5');
     }
     if (freshSessionShortcut) {
+        if (fencedFreshSession) {
+            args.push('-e', '      if (current date) > rotationDeadline then error "Rotation deadline passed before the fresh session"');
+        }
         args.push('-e', `      keystroke "${escapeAppleScript(freshSessionShortcut)}" using command down`);
         // The new session's composer renders before it takes input.
         args.push('-e', '      delay 1.5');

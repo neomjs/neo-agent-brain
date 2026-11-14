@@ -74,6 +74,27 @@ export const ROTATION_RETRY_MS = 1000;
 export const ROTATION_ACTIVATION_LOST = 'activation-lost';
 
 /**
+ * Failure reason: the rotation reached its fresh-session keystroke after {@link ROTATION_MAX_AGE_MS}.
+ * It opens no session, because the seat may have been restarted by hand since.
+ * @type {String}
+ */
+export const ROTATION_EXPIRED = 'session-rotate-expired';
+
+/**
+ * Failure reason: the receiver stopped waiting for this attempt (its timeout fired), so work that
+ * settles later opens no session.
+ * @type {String}
+ */
+export const ROTATION_ABORTED = 'session-rotate-aborted';
+
+/**
+ * Failure reason: another session claimed the seat ({@link seatHolderKey}) after the rotation's first
+ * attempt, so a fresh session would be a second live session of the seat.
+ * @type {String}
+ */
+export const ROTATION_SUPERSEDED = 'session-rotate-superseded';
+
+/**
  * Defer reason: a person used the keyboard or pointer within {@link HUMAN_INPUT_QUIET_MS}.
  * @type {String}
  */
@@ -177,9 +198,29 @@ export function isHumanInputDefer(reason) {
  * @returns {Boolean}
  */
 export function isRotationExpired(acceptedAt, now) {
-    const age = now - Date.parse(acceptedAt);
+    return !(now < rotationDeadline(acceptedAt))
+}
 
-    return !(age < ROTATION_MAX_AGE_MS)
+/**
+ * @summary The last moment a rotation the receiver accepted at `acceptedAt` may open its session.
+ * @param {String} acceptedAt The receiver record's accept time.
+ * @returns {Number} Epoch ms, `NaN` for an unreadable accept time (never on time).
+ */
+export function rotationDeadline(acceptedAt) {
+    return Date.parse(acceptedAt) + ROTATION_MAX_AGE_MS
+}
+
+/**
+ * @summary The session that holds a Claude seat, from the wake listener's record: the session the seat's
+ * last prompt claimed it for. A session someone opens claims the seat on its first prompt, so a holder
+ * that changed since a rotation's first attempt names a successor the rotation must not duplicate.
+ * @param {Object|null} record The listener record (`wakeListenerHook.mjs`).
+ * @returns {String|null} `<sessionId>#<pid>`, or `null` without a readable holder.
+ */
+export function seatHolderKey(record) {
+    const owner = record?.owner;
+
+    return typeof owner?.sessionId === 'string' && owner.sessionId ? `${owner.sessionId}#${owner.session?.pid ?? ''}` : null
 }
 
 /**

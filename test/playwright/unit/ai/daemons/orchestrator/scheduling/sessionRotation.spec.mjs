@@ -568,7 +568,7 @@ test.describe('session-rotation lane (#1383)', () => {
     });
 });
 
-test.describe('session-rotation lane: the receipt turn ends at its close (#1722)', () => {
+test.describe('session-rotation lane: the receipt turn ends at its writer\'s close (#1722)', () => {
     const SEC = 1 / 60; // `at` counts minutes
 
     // The stored interval shape: every event rewrites `lastProgressAt`, and only a close sets `terminal`.
@@ -587,10 +587,14 @@ test.describe('session-rotation lane: the receipt turn ends at its close (#1722)
         db.prepare('UPDATE Nodes SET data = ? WHERE id = ?').run(JSON.stringify(node), id)
     }
 
+    // An add_memory of one Memory Core session: the writer's own closes its turn within milliseconds.
+    const save = (db, id, ago, sessionId) => insertMemory(db, id, ago, sessionId);
+
     test('Mnemosyne\'s 22:04:52Z sunset: an interval its own turn opened 280 ms after the receipt is no prompt; the turn waits until its close, then rotates', async () => {
         const db = createGraph();
 
         insertRoute(db);
+        save(db, 'mem-before', 10 + 343.060 * SEC, 'writer');            // her previous diary, 21:59:09Z
         insertSelfMessage(db, 'MESSAGE:receipt', 10);
         // Times relative to the receipt, read from the live rows.
         insertInterval(db, 'prompt-start',  {startedAgo: 10 + 318.654 * SEC, expiresIn: 45});                                // UserPromptSubmit, never closed
@@ -603,6 +607,7 @@ test.describe('session-rotation lane: the receipt turn ends at its close (#1722)
         expect(open.outcome).toMatchObject({requested: 0, refused: 0, waiting: 1});
 
         closeInterval(db, 'receipt-tail', 10 - 82.453 * SEC); // its add_memory, 82 s after the receipt
+        save(db, 'mem-close', 10 - 82.451 * SEC, 'writer');   // that add_memory's own row, 2 ms earlier
 
         const closed = await runLane(db, {now: NOW + MIN});
 
@@ -610,55 +615,102 @@ test.describe('session-rotation lane: the receipt turn ends at its close (#1722)
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'requested'})
     });
 
-    test('activity that starts after the receipt turn\'s close refuses the request; an interval between the receipt and the close does not', async () => {
+    test('activity after the writer\'s close refuses the request, and so does an interval its close did not close', async () => {
         const restarted = createGraph();
 
         insertRoute(restarted);
+        save(restarted, 'mem-before', 14, 'writer');
         insertSelfMessage(restarted, 'MESSAGE:receipt', 10);
         insertInterval(restarted, 'sunset-turn', {startedAgo: 12, progressAgo: 9.7, closed: true});
+        save(restarted, 'mem-close', 9.7, 'writer');
         insertInterval(restarted, 'fresh-by-hand', {startedAgo: 5}); // a person restarted the seat after the sunset
 
         expect((await runLane(restarted)).sent).toEqual([]);
         expect(rotationOf(restarted, 'MESSAGE:receipt')).toMatchObject({state: 'refused', reason: 'prompted-after-receipt'});
 
-        const tail = createGraph();
+        // Opened after the receipt and left open by the writer's close: the writer's or another session's, so no request.
+        const ambiguous = createGraph();
 
-        insertRoute(tail);
-        insertSelfMessage(tail, 'MESSAGE:receipt', 10);
-        insertInterval(tail, 'sunset-turn', {startedAgo: 12, progressAgo: 9.7, closed: true});
-        insertInterval(tail, 'receipt-tail', {startedAgo: 9.9, expiresIn: 55}); // opened by the turn after its receipt, never closed
+        insertRoute(ambiguous);
+        save(ambiguous, 'mem-before', 14, 'writer');
+        insertSelfMessage(ambiguous, 'MESSAGE:receipt', 10);
+        insertInterval(ambiguous, 'sunset-turn', {startedAgo: 12, progressAgo: 9.7, closed: true});
+        save(ambiguous, 'mem-close', 9.7, 'writer');
+        insertInterval(ambiguous, 'opened-after-receipt', {startedAgo: 9.9, expiresIn: 55});
 
-        expect((await runLane(tail)).sent).toHaveLength(1)
+        expect((await runLane(ambiguous)).sent).toEqual([])
     });
 
-    test('older intervals that never closed hold nothing once the receipt turn closed (the 18:49Z receipt)', async () => {
+    test('older intervals that never closed hold nothing once the writer closed (the 18:49Z receipt)', async () => {
         const db = createGraph();
 
         insertRoute(db);
+        save(db, 'mem-before', 19, 'writer');
         insertSelfMessage(db, 'MESSAGE:receipt', 10);
         insertInterval(db, 'task-notification-turn', {startedAgo: 17.7, progressAgo: 16.9, expiresIn: 53});
         insertInterval(db, 'stop-hook-turn',         {startedAgo: 14.4, progressAgo: 13.7, expiresIn: 56});
         insertInterval(db, 'sunset-turn',            {startedAgo: 12.1, progressAgo: 9.8, closed: true});
+        save(db, 'mem-close', 9.8, 'writer');
 
         expect(readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)}).liveTurnUntil).toBeNull();
         expect((await runLane(db)).sent).toHaveLength(1)
     });
 
-    test('the wake hold stays on through the receipt turn\'s own tail and ends with activity after its close', () => {
+    test('the wake hold stays on through the writer\'s own tail and ends with activity after its close', () => {
         const db    = createGraph(),
               holds = () => holdsWakes({read: readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)}), hasRotationRoute: true, now: NOW, windowMs: WINDOW_MS});
 
+        save(db, 'mem-before', 14, 'writer');
         insertSelfMessage(db, 'MESSAGE:receipt', 10);
         insertInterval(db, 'receipt-tail', {startedAgo: 10 - 0.28 * SEC});
 
         expect(holds()).toBe(true);
 
         closeInterval(db, 'receipt-tail', 9);
+        save(db, 'mem-close', 9, 'writer');
 
         expect(holds()).toBe(true);
 
         insertInterval(db, 'fresh-by-hand', {startedAgo: 4});
 
         expect(holds()).toBe(false)
+    });
+
+    test('Emmy\'s control: another session of the seat closing a turn while the writer is still active authorizes nothing', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        save(db, 'mem-a', 20, 'session-a');
+        insertSelfMessage(db, 'MESSAGE:receipt', 10);
+        insertInterval(db, 'a-turn', {startedAgo: 12, progressAgo: 10, expiresIn: 50}); // A wrote the receipt, still active
+        insertInterval(db, 'b-turn', {startedAgo: 14, progressAgo: 5, closed: true});   // B closes at t=15, no memory of A's
+
+        expect((await runLane(db)).outcome).toMatchObject({requested: 0, refused: 0, waiting: 1});
+
+        // B's memories show a session that was already writing before A's last save: another live session.
+        save(db, 'mem-b-before', 25, 'session-b');
+        save(db, 'mem-b-close', 5, 'session-b');
+
+        expect((await runLane(db, {now: NOW + MIN})).sent).toEqual([]);
+        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'refused', reason: 'prompted-after-receipt'})
+    });
+
+    test('Emmy\'s control: a session opened by hand between the receipt and an unrelated close never gets a fresh session beside it', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        save(db, 'mem-a', 20, 'session-a');
+        insertSelfMessage(db, 'MESSAGE:receipt', 10);
+        insertInterval(db, 'a-turn',  {startedAgo: 12, progressAgo: 10, expiresIn: 50});
+        insertInterval(db, 'by-hand', {startedAgo: 7, expiresIn: 53});                  // t=13
+        insertInterval(db, 'b-turn',  {startedAgo: 14, progressAgo: 5, closed: true});  // t=15, unrelated
+
+        expect((await runLane(db)).sent).toEqual([]);
+
+        closeInterval(db, 'a-turn', 2); // the writer closes later, with its own memory
+        save(db, 'mem-a-close', 2, 'session-a');
+
+        expect((await runLane(db, {now: NOW + MIN})).sent).toEqual([]);
+        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'refused', reason: 'prompted-after-receipt'})
     });
 });
