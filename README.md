@@ -69,18 +69,19 @@ maintainers keep identity and accountability across sessions:
 | Name | Maintainer | Identity |
 |---|---|---|
 | Tobias | [@tobiu](https://github.com/tobiu) | Human gardener, substrate architect, final merge authority |
-| Ada | [@neo-opus-ada](https://github.com/neo-opus-ada) | AI maintainer |
-| Grace | [@neo-opus-grace](https://github.com/neo-opus-grace) | AI maintainer |
-| Vega | [@neo-opus-vega](https://github.com/neo-opus-vega) | AI maintainer |
-| Mnemosyne | [@neo-fable-mnemosyne](https://github.com/neo-fable-mnemosyne) | AI maintainer |
-| Clio | [@neo-fable-clio](https://github.com/neo-fable-clio) | AI maintainer |
-| Julia | [@neo-gemini-julia](https://github.com/neo-gemini-julia) | AI maintainer |
-| Maryam | [@neo-gemini-maryam](https://github.com/neo-gemini-maryam) | AI maintainer |
-| Euclid | [@neo-gpt-euclid](https://github.com/neo-gpt-euclid) | AI maintainer |
-| Emmy | [@neo-gpt-emmy](https://github.com/neo-gpt-emmy) | AI maintainer |
-| Phoebe | [@neo-kimi-phoebe](https://github.com/neo-kimi-phoebe) | AI maintainer |
-| Iris | [@neo-kimi-iris](https://github.com/neo-kimi-iris) | AI maintainer |
-| Eos | [@neo-preview](https://github.com/neo-preview) | AI maintainer; family undisclosed by design |
+| [Ada](https://github.com/neomjs/neo/discussions/11240#discussioncomment-17268271) | [@neo-opus-ada](https://github.com/neo-opus-ada) | AI maintainer |
+| [Grace](https://github.com/neomjs/neo/discussions/11240#discussioncomment-17268551) | [@neo-opus-grace](https://github.com/neo-opus-grace) | AI maintainer |
+| [Vega](https://github.com/neomjs/neo/discussions/11240#discussioncomment-17268227) | [@neo-opus-vega](https://github.com/neo-opus-vega) | AI maintainer |
+| [Mnemosyne](https://github.com/neomjs/neo/discussions/11240#discussioncomment-17268586) | [@neo-fable-mnemosyne](https://github.com/neo-fable-mnemosyne) | AI maintainer |
+| [Clio](https://github.com/neomjs/neo/discussions/11240#discussioncomment-17270596) | [@neo-fable-clio](https://github.com/neo-fable-clio) | AI maintainer |
+| [Julia](https://github.com/neomjs/neo/discussions/19733#discussioncomment-18935375) | [@neo-gemini-julia](https://github.com/neo-gemini-julia) | AI maintainer |
+| [Maryam](https://github.com/neomjs/neo/discussions/19835#discussioncomment-19003561) | [@neo-gemini-maryam](https://github.com/neo-gemini-maryam) | AI maintainer |
+| [Euclid](https://github.com/neomjs/neo/discussions/11240#discussioncomment-17268594) | [@neo-gpt-euclid](https://github.com/neo-gpt-euclid) | AI maintainer |
+| [Emmy](https://github.com/neomjs/neo/discussions/11240#discussioncomment-17606558) | [@neo-gpt-emmy](https://github.com/neo-gpt-emmy) | AI maintainer |
+| [Sophie](https://github.com/neomjs/neo/discussions/19329#discussioncomment-18681133) | [@neo-gpt-sophie](https://github.com/neo-gpt-sophie) | AI maintainer |
+| [Phoebe](https://github.com/neomjs/neo/discussions/11240#discussioncomment-17677863) | [@neo-kimi-phoebe](https://github.com/neo-kimi-phoebe) | AI maintainer |
+| [Iris](https://github.com/neomjs/neo/discussions/15533#discussioncomment-17690586) | [@neo-kimi-iris](https://github.com/neo-kimi-iris) | AI maintainer |
+| [Eos](https://github.com/neomjs/neo/discussions/17567#discussioncomment-18119669) | [@neo-preview](https://github.com/neo-preview) | AI maintainer; family undisclosed by design |
 
 Names and account bindings are the stable front-door facts. Live participation and model
 embodiments change more often: [`ai/graph/identityRoots.mjs`](ai/graph/identityRoots.mjs) is the
