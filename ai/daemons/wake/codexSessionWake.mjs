@@ -230,23 +230,43 @@ export async function readCodexWakeTarget({home, threadId}) {
  */
 export async function readCodexWakeActivity({home, threadId}) {
     const target = await readCodexWakeTarget({home, threadId}), {handle, size} = await openRollout(home, target.rolloutPath, threadId);
-    let data, offset = Math.max(0, size - MAX_TAIL);
     try {
-        const buffer = Buffer.alloc(size - offset), {bytesRead} = await handle.read(buffer, 0, buffer.length, offset);
-        data = buffer.subarray(0, bytesRead).toString('utf8')
+        if (!size) return {state: 'unknown'};
+        const initial = await handle.stat();
+        const stable  = async state => {
+            const after = await handle.stat();
+            return initial.size === size && after.size === size && after.mtimeMs === initial.mtimeMs ? {state} : {state: 'unknown'}
+        };
+        const last = Buffer.alloc(1);
+        if ((await handle.read(last, 0, 1, size - 1)).bytesRead !== 1 || last[0] !== 10) return {state: 'unknown'};
+        const lower    = Math.max(0, size - 32 * 1024 * 1024), chunkSize = 64 * 1024;
+        let   position = size - 1, pieces = [], lineBytes = 0;
+        while (position > lower) {
+            const length = Math.min(chunkSize, position - lower), start = position - length, chunk = Buffer.alloc(length);
+            if ((await handle.read(chunk, 0, length, start)).bytesRead !== length) return {state: 'unknown'};
+            let end = length;
+            for (let i = length - 1; i >= 0; i--) {
+                if (chunk[i] !== 10) continue;
+                const part = chunk.subarray(i + 1, end);
+                if (part.length) { pieces.unshift(part); lineBytes += part.length }
+                if (lineBytes > 8 * 1024 * 1024) return {state: 'unknown'};
+                if (lineBytes) {
+                    let record;
+                    try { record = JSON.parse(Buffer.concat(pieces, lineBytes).toString('utf8')) } catch { return {state: 'unknown'} }
+                    const p = record.payload;
+                    if (record.type === 'event_msg' && p?.turn_id && p.turn_id === p.root_turn_id) {
+                        if (p.type === 'task_started' && p.turn_attribution?.parent_turn_id === null) return await stable('busy');
+                        if (['task_complete', 'turn_aborted'].includes(p.type)) return await stable('idle')
+                    }
+                }
+                pieces = []; lineBytes = 0; end = i
+            }
+            if (end) { pieces.unshift(chunk.subarray(0, end)); lineBytes += end }
+            if (lineBytes > 8 * 1024 * 1024) return {state: 'unknown'};
+            position = start
+        }
+        return {state: 'unknown'}
     } finally { await handle.close() }
-    if (offset) data = data.slice(data.indexOf('\n') + 1);
-    let active = null;
-    for (const line of data.split('\n')) {
-        if (!line) continue;
-        let record;
-        try { record = JSON.parse(line) } catch { continue }
-        const p = record.payload;
-        if (record.type !== 'event_msg') continue;
-        if (p?.type === 'task_started' && p.turn_id && p.turn_id === p.root_turn_id) active = p.turn_id;
-        if (['task_complete', 'turn_aborted'].includes(p?.type) && active && p.turn_id === active) active = false
-    }
-    return {state: active === false ? 'idle' : active ? 'busy' : 'unknown'}
 }
 
 export async function sendCodexSessionWake({binary, home, threadId, text, execute = run, verifyAdmission}) {

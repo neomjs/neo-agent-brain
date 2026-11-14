@@ -27,7 +27,7 @@ test.describe('Codex session wake', () => {
         const dir = path.join(home, 'sessions', '2026', '11', '14');
         await fs.mkdir(dir, {recursive: true});
         file = path.join(dir, `rollout-2026-11-14-${id}.jsonl`);
-        await fs.writeFile(file, line(meta()) + line(start()) + line({type: 'event_msg', payload: {type: 'task_complete', turn_id: turn}}))
+        await fs.writeFile(file, line(meta()) + line(start()) + line({type: 'event_msg', payload: {type: 'task_complete', turn_id: turn, root_turn_id: turn}}))
         const db = new Database(path.join(home, 'state_5.sqlite'));
         db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, created_at_ms INTEGER, archived INTEGER, source TEXT, thread_source TEXT, originator TEXT, attached_thread_parent_id TEXT)');
         db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, 0, ?, ?, ?, NULL)').run(id, file, home, 1, 'vscode', 'user', 'Codex Desktop');
@@ -90,6 +90,19 @@ test.describe('Codex session wake', () => {
         await fs.writeFile(file, line(meta()));
         expect(await readCodexWakeActivity({home, threadId: id})).toEqual({state: 'unknown'});
         await expect(sendCodexSessionWake({binary: '/bin/codex', home, threadId: id, text: `[NEO_WAKE_V1:${queueId}] [WAKE]`, execute: async () => ({})})).rejects.toThrow('unknown')
+    });
+
+    test('reverse lifecycle scan handles long rows and refuses an incomplete tail', async () => {
+        await fs.writeFile(file, line(meta()) + line(start()) + line({type: 'padding', payload: 'x'.repeat(5 * 1024 * 1024)}));
+        expect(await readCodexWakeActivity({home, threadId: id})).toEqual({state: 'busy'});
+        await fs.appendFile(file, line({type: 'event_msg', payload: {type: 'task_complete', turn_id: turn, root_turn_id: turn}}));
+        expect(await readCodexWakeActivity({home, threadId: id})).toEqual({state: 'idle'});
+        await fs.appendFile(file, line({type: 'event_msg', payload: {type: 'task_started', turn_id: 'child', root_turn_id: turn}}));
+        expect(await readCodexWakeActivity({home, threadId: id})).toEqual({state: 'idle'});
+        await fs.appendFile(file, '{"type":');
+        expect(await readCodexWakeActivity({home, threadId: id})).toEqual({state: 'unknown'});
+        await fs.writeFile(file, line(meta()) + line({type: 'event_msg', payload: {type: 'task_complete', turn_id: turn, root_turn_id: turn}}));
+        expect(await readCodexWakeActivity({home, threadId: id})).toEqual({state: 'idle'})
     });
 
     test('receipt requires the exact text and a matching queued root turn, not a substring or another turn', async () => {
