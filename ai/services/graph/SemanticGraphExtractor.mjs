@@ -14,8 +14,9 @@ import {
     clearActiveRemCallState,
     writeActiveRemCallState
 } from '../../services/memory-core/helpers/remRunStateStore.mjs';
-import Json   from 'neo.mjs/src/util/Json.mjs';
-import logger from '../../mcp/server/memory-core/logger.mjs';
+import {resolveSessionTimestamp} from '../memory-core/helpers/resolveRowTimestamp.mjs';
+import Json                      from 'neo.mjs/src/util/Json.mjs';
+import logger                    from '../../mcp/server/memory-core/logger.mjs';
 import {
     canonicalizeSemanticGraphNodeId,
     canonicalizeTaggedConceptIds
@@ -35,35 +36,6 @@ const TRI_VECTOR_RELATIONSHIPS = Object.freeze([
     'IMPLEMENTS', 'EXTENDS', 'DEPENDS_ON', 'BLOCKS', 'BLOCKED_BY', 'RELATES_TO', 'RESOLVES',
     'CAUSES_ISSUE', 'MENTIONED_IN', 'DISCUSSED_IN', 'REFERENCED_BY'
 ]);
-
-/**
- * @summary Normalizes an anchor assertion timestamp to an ISO string when parseable.
- * @param {String|Number|null|undefined} value
- * @returns {String|null}
- */
-function normalizeAssertionIso(value) {
-    if (typeof value === 'string') {
-        return Number.isFinite(Date.parse(value)) ? value : null;
-    }
-    if (typeof value === 'number' && Number.isFinite(value)) {
-        return new Date(value).toISOString();
-    }
-    return null;
-}
-
-/**
- * @summary Returns the newer of two parseable ISO assertion timestamps.
- * @param {String|null|undefined} a
- * @param {String|null|undefined} b
- * @returns {String|null}
- */
-function latestAssertionIso(a, b) {
-    const isoA = normalizeAssertionIso(a),
-          isoB = normalizeAssertionIso(b);
-    if (!isoA) return isoB;
-    if (!isoB) return isoA;
-    return Date.parse(isoB) >= Date.parse(isoA) ? isoB : isoA;
-}
 
 /**
  * @class Neo.ai.daemons.services.SemanticGraphExtractor
@@ -420,8 +392,7 @@ class SemanticGraphExtractor extends Base {
      * Deterministically reduces chunk-level Tri-Vector payloads into one session payload.
      *
      * @summary Anchor & Echo: Chunks reduce in monotonic order by `(type, name)`; `gravity_well`
-     * stamps `gravity_well_asserted_at` only when a chunk asserts the node as a strategic anchor,
-     * so unasserted passes never keep or refresh anchor liveness unconditionally.
+     * ORs across chunks within one session while leaving assertion timestamping to `commitTriVectorPayload`.
      *
      * @param {Object[]} payloads Chunk-level Tri-Vector payloads
      * @param {Object} chunkPlan Chunk plan emitted by `sessionChunker`
@@ -433,8 +404,7 @@ class SemanticGraphExtractor extends Base {
               nodeIdRemap  = new Map(),
               edgeByTuple  = new Map(),
               summaries    = [],
-              roadmapItems = [],
-              assertedAt   = new Date().toISOString();
+              roadmapItems = [];
 
         let featureNamespace = null;
 
@@ -465,11 +435,7 @@ class SemanticGraphExtractor extends Base {
                         tags        : Array.isArray(node.tags) ? [...new Set(node.tags)] : []
                     };
                     delete storedNode.confidence;
-                    if (storedNode.gravity_well) {
-                        storedNode.gravity_well_asserted_at = normalizeAssertionIso(node.gravity_well_asserted_at) ?? assertedAt;
-                    } else {
-                        delete storedNode.gravity_well_asserted_at;
-                    }
+                    delete storedNode.gravity_well_asserted_at;
                     nodeByTuple.set(key, storedNode);
                     if (node.id) {
                         nodeIdRemap.set(node.id, storedNode.id);
@@ -485,11 +451,7 @@ class SemanticGraphExtractor extends Base {
                     storedNode.description = node.description;
                 }
                 if (node.gravity_well === true) {
-                    storedNode.gravity_well             = true;
-                    storedNode.gravity_well_asserted_at = latestAssertionIso(
-                        storedNode.gravity_well_asserted_at,
-                        normalizeAssertionIso(node.gravity_well_asserted_at) ?? assertedAt
-                    );
+                    storedNode.gravity_well = true;
                 }
                 if (typeof node.strategic_weight === 'number') {
                     storedNode.strategic_weight = Math.max(
@@ -854,8 +816,9 @@ class SemanticGraphExtractor extends Base {
      * Commits a reduced Tri-Vector payload to the Native Edge Graph.
      *
      * @summary Anchor & Echo: Commits only after every chunk succeeds; stamps `gravity_well_asserted_at`
-     * when `gravity_well` is asserted so anchor liveness is bounded by `strategicAnchorWindowMs` and
-     * open work-item state, without refreshing or wiping an existing window on non-asserting mentions.
+     * from the session's own timestamp (`resolveSessionTimestamp(session?.meta)`) when `gravity_well` is
+     * asserted and omits anchor fields otherwise, so anchor liveness is bounded by `strategicAnchorWindowMs`
+     * on the session's clock while `GraphService#upsertNode` owns stored anchor lifetime.
      *
      * @param {Object} payload Session-level Tri-Vector payload
      * @param {Object} session Wrapped session object
@@ -865,10 +828,11 @@ class SemanticGraphExtractor extends Base {
      * @protected
      */
     async commitTriVectorPayload(payload, session, {excludedNodeTypes = []} = {}) {
-        const artifact      = payload.session_artifact;
-        const excluded      = new Set(excludedNodeTypes.map(type => String(type).toUpperCase()));
-        const excludedNodes = new Set();
-        const assertedAt    = new Date().toISOString();
+        const artifact           = payload.session_artifact;
+        const excluded           = new Set(excludedNodeTypes.map(type => String(type).toUpperCase()));
+        const excludedNodes      = new Set();
+        const sessionTimestampMs = resolveSessionTimestamp(session?.meta);
+        const assertedAt         = sessionTimestampMs > 0 ? new Date(sessionTimestampMs).toISOString() : null;
 
         // Was a hand-written `frontier` spec upserted through plain upsertNode, which carried
         // two defects: the local description had drifted from the boot manifest, making the
@@ -896,17 +860,9 @@ class SemanticGraphExtractor extends Base {
             nodeId = this.normalizeMemorySessionGraphNodeId(nodeId);
             nodeId = canonicalizeSemanticGraphNodeId({id: nodeId, type: nodeType, name: node.name});
 
-            GraphService.db?.getAdjacentNodes?.(nodeId, 'both');
-            const existingNode  = GraphService.db?.nodes?.get(nodeId),
-                  existingProps = (existingNode?.isRecord ? existingNode.get('properties') : existingNode?.properties) || null,
-                  anchorProps   = node.gravity_well === true
-                      ? {
-                          gravity_well            : true,
-                          gravity_well_asserted_at: normalizeAssertionIso(node.gravity_well_asserted_at) ?? assertedAt
-                      }
-                      : existingProps?.gravity_well === true
-                          ? {}
-                          : {gravity_well: false};
+            const anchorProps = node.gravity_well === true
+                ? (assertedAt ? {gravity_well: true, gravity_well_asserted_at: assertedAt} : {gravity_well: true})
+                : {};
 
             GraphService.upsertNode({
                 id              : nodeId,

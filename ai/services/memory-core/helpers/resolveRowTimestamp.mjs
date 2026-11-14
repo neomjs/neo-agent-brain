@@ -38,3 +38,28 @@ export function resolveRowTimestamp(metadata) {
 
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
+
+/**
+ * @summary Resolves a session summary's timestamp metadata to epoch milliseconds, or `0` when absent/unparseable.
+ * @param {Object} [meta={}] Session metadata row (`timestamp`, `lastActivity`, `updatedAt`, `createdAt`).
+ * @returns {Number} Epoch milliseconds, or `0` when absent or unparseable.
+ */
+export function resolveSessionTimestamp(meta = {}) {
+    const value = meta?.timestamp ?? meta?.lastActivity ?? meta?.updatedAt ?? meta?.createdAt;
+
+    if (value === undefined || value === null || value === '') {
+        return 0;
+    }
+
+    if (Number.isFinite(value)) {
+        return value;
+    }
+
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+        return numeric;
+    }
+
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+}

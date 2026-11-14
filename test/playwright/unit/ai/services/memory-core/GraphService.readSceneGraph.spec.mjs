@@ -55,6 +55,7 @@ test.describe('GraphService.readSceneGraph — the whole graph one viewer may se
 
     test.beforeAll(async () => {
         GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        await GraphService.ready();
         dbPath       = path.resolve(process.cwd(), 'tmp', `graph-scene-${globalThis.crypto.randomUUID()}.sqlite`);
         storage      = Neo.create(SQLite, {dbPath});
 
@@ -149,6 +150,11 @@ test.describe('GraphService.readSceneGraph — the whole graph one viewer may se
 });
 
 test.describe('GraphService.readSceneGraph — paged across a large graph', () => {
+    test.beforeAll(async () => {
+        const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        await GraphService.ready();
+    });
+
     test('the Fleet wire preserves two-origin attribution, unknown lists and RLS through projection', async () => {
         const
             GraphService                  = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default,
@@ -451,6 +457,32 @@ test.describe('GraphService.readSceneGraph — paged across a large graph', () =
             expect(wellIn(before, 'session:v13_3_1_release')).toBe(0);
             expect(wellIn(before, 'fresh-concept')).toBe(1);
 
+            // An old undigested session drained now stamps the session's own timestamp, so an expired session stays 0
+            const oldSessionAt = new Date(nowMs - fallbackWindowMs - 30 * 24 * 60 * 60 * 1000).toISOString();
+            await SemanticGraphExtractor.commitTriVectorPayload({
+                session_artifact: {
+                    graph: {
+                        nodes: [{
+                            id                      : 'CONCEPT:BacklogOldSessionAnchor',
+                            type                    : 'CONCEPT',
+                            name                    : 'BacklogOldSessionAnchor',
+                            description             : 'Asserted in a 60-day-old session drained today.',
+                            gravity_well            : true,
+                            gravity_well_asserted_at: freshAt,
+                            strategic_weight        : 0.9
+                        }],
+                        edges: []
+                    }
+                }
+            }, {
+                id  : 'old-session-vector',
+                meta: {sessionId: 'old-session-60d', timestamp: oldSessionAt}
+            });
+
+            db.getAdjacentNodes('backlog-old-session-anchor', 'both');
+            expect(wellIn(await GraphService.readSceneGraph(), 'backlog-old-session-anchor')).toBe(0);
+            expect(db.nodes.get('backlog-old-session-anchor').properties.gravity_well_asserted_at).toBe(oldSessionAt);
+
             await SemanticGraphExtractor.commitTriVectorPayload({
                 session_artifact: {
                     graph: {
@@ -467,14 +499,37 @@ test.describe('GraphService.readSceneGraph — paged across a large graph', () =
                 }
             }, {
                 id  : 'reassert-vector',
-                meta: {sessionId: 'reassert-session'}
+                meta: {sessionId: 'reassert-session', timestamp: freshAt}
             });
 
             const afterReassert = await GraphService.readSceneGraph();
             expect(wellIn(afterReassert, 'expired-concept')).toBe(1);
 
             const stampedAt = db.nodes.get('expired-concept').properties.gravity_well_asserted_at;
-            expect(Number.isFinite(Date.parse(stampedAt))).toBe(true);
+            expect(stampedAt).toBe(freshAt);
+
+            // Interleaved older session drained after a newer one never moves the stored assertion stamp backwards
+            await SemanticGraphExtractor.commitTriVectorPayload({
+                session_artifact: {
+                    graph: {
+                        nodes: [{
+                            id              : 'CONCEPT:ExpiredConcept',
+                            type            : 'CONCEPT',
+                            name            : 'ExpiredConcept',
+                            description     : 'Older interleaved session.',
+                            gravity_well    : true,
+                            strategic_weight: 0.95
+                        }],
+                        edges: []
+                    }
+                }
+            }, {
+                id  : 'older-interleaved-vector',
+                meta: {sessionId: 'older-interleaved-session', timestamp: oldSessionAt}
+            });
+
+            expect(db.nodes.get('expired-concept').properties.gravity_well_asserted_at).toBe(freshAt);
+            expect(wellIn(await GraphService.readSceneGraph(), 'expired-concept')).toBe(1);
 
             // A later pass mentioning the same concept without gravity_well neither wipes nor refreshes its active window
             await SemanticGraphExtractor.commitTriVectorPayload({
@@ -493,10 +548,10 @@ test.describe('GraphService.readSceneGraph — paged across a large graph', () =
                 }
             }, {
                 id  : 'passing-mention-vector',
-                meta: {sessionId: 'passing-mention-session'}
+                meta: {sessionId: 'passing-mention-session', timestamp: new Date(nowMs).toISOString()}
             });
 
-            expect(db.nodes.get('expired-concept').properties.gravity_well_asserted_at).toBe(stampedAt);
+            expect(db.nodes.get('expired-concept').properties.gravity_well_asserted_at).toBe(freshAt);
             expect(wellIn(await GraphService.readSceneGraph(), 'expired-concept')).toBe(1);
         } finally {
             GraphService.db = originalDb;

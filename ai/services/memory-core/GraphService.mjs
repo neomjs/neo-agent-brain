@@ -30,6 +30,52 @@ function isTerminalWorkItemState(state) {
 }
 
 /**
+ * @summary Returns the later of two parseable ISO-8601 assertion timestamps so interleaved session digestion never moves an anchor's clock backwards.
+ * @param {String|null|undefined} storedIso
+ * @param {String|null|undefined} incomingIso
+ * @returns {String|null}
+ */
+function laterAssertionTimestamp(storedIso, incomingIso) {
+    const storedMs    = typeof storedIso   === 'string' ? Date.parse(storedIso)   : NaN,
+          incomingMs  = typeof incomingIso === 'string' ? Date.parse(incomingIso) : NaN,
+          hasStored   = Number.isFinite(storedMs),
+          hasIncoming = Number.isFinite(incomingMs);
+
+    if (hasStored && hasIncoming) {
+        return incomingMs >= storedMs ? incomingIso : storedIso;
+    }
+    if (hasIncoming) return incomingIso;
+    if (hasStored)   return storedIso;
+    return null;
+}
+
+/**
+ * @summary Single write-seam owner of stored strategic-anchor lifetime (`gravity_well` and `gravity_well_asserted_at`).
+ * @param {Object} p Mutable node properties target.
+ * @param {String} label Resolved node label.
+ * @param {String|null|undefined} previousAssertedAt Prior stored assertion timestamp.
+ * @param {String|null|undefined} incomingAssertedAt Incoming assertion timestamp.
+ */
+function reconcileStoredAnchorLifetime(p, label, previousAssertedAt, incomingAssertedAt) {
+    if (WORK_ITEM_LABELS.has(label) && isTerminalWorkItemState(p.state)) {
+        p.gravity_well = false;
+        delete p.gravity_well_asserted_at;
+        return;
+    }
+
+    if (p.gravity_well === true) {
+        const mergedAt = laterAssertionTimestamp(previousAssertedAt, incomingAssertedAt);
+        if (mergedAt) {
+            p.gravity_well_asserted_at = mergedAt;
+        } else {
+            delete p.gravity_well_asserted_at;
+        }
+    } else {
+        delete p.gravity_well_asserted_at;
+    }
+}
+
+/**
  * @summary Applies canonical row visibility to a node or edge snapshot.
  * Row-level-security visibility predicate for an in-memory graph **node or edge**, mirroring
  * the SQL RLS clause that `SQLite.loadNodeVicinitySync` / `searchNodes` apply to BOTH the
@@ -386,7 +432,9 @@ class GraphService extends Base {
      * so echoing an existing node's `adrAuthority` on a non-`ADR` write never relabels or overwrites it.
      * An undeclared competing canonical ADR claim refuses mutation and retains the last admitted state.
      * Closed or merged work items (`ISSUE`, `PULL_REQUEST`, `DISCUSSION`) clear `gravity_well` while
-     * preserving historical `strategic_weight`, because an anchor is only live while its item is open.
+     * preserving historical `strategic_weight`, and active `gravity_well: true` writes keep the later
+     * of the stored and incoming `gravity_well_asserted_at` so out-of-order digestion never moves an
+     * anchor's assertion clock backwards.
      *
      * @important The `type` string is mapped directly to `node.label` to comply with strict Graph Database taxonomy (Node Labels).
      * @param {Object} nodeData
@@ -474,10 +522,12 @@ class GraphService extends Base {
                 p.semanticVectorId = currentAuth.semanticVectorId;
             }
 
-            if (WORK_ITEM_LABELS.has(updatedLabel) && isTerminalWorkItemState(p.state)) {
-                p.gravity_well = false;
-                delete p.gravity_well_asserted_at;
-            }
+            reconcileStoredAnchorLifetime(
+                p,
+                updatedLabel,
+                currentProperties.gravity_well_asserted_at,
+                properties?.gravity_well_asserted_at
+            );
 
             if (currentUserId !== undefined && p.userId === undefined) {
                 p.userId = currentUserId;
@@ -507,10 +557,7 @@ class GraphService extends Base {
                 ...(properties || {})
             };
 
-            if (WORK_ITEM_LABELS.has(initialLabel) && isTerminalWorkItemState(p.state)) {
-                p.gravity_well = false;
-                delete p.gravity_well_asserted_at;
-            }
+            reconcileStoredAnchorLifetime(p, initialLabel, undefined, properties?.gravity_well_asserted_at);
 
             if (currentUserId !== undefined && p.userId === undefined) {
                 p.userId = currentUserId;

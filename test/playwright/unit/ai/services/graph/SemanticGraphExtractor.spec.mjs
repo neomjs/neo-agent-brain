@@ -1310,9 +1310,11 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
         )).toBe(false)
     });
 
-    test('reduceTriVectorPayloads and commitTriVectorPayload record gravity_well_asserted_at only when asserted (#1685)', async () => {
-        const chunkPlan = {chunked: true, totalEstimatedTokens: 4, chunks: []};
-        const priorIso  = '2026-05-01T00:00:00.000Z';
+    test('reduceTriVectorPayloads ORs gravity_well without stamping, and commitTriVectorPayload stamps from session.meta while upsertNode keeps the later stamp (#1685)', async () => {
+        const chunkPlan  = {chunked: true, totalEstimatedTokens: 4, chunks: []};
+        const priorIso   = '2026-05-01T00:00:00.000Z';
+        const sessionIso = '2026-11-10T12:00:00.000Z';
+        const olderIso   = '2026-09-15T12:00:00.000Z';
 
         const reducedFromLaterChunk = SemanticGraphExtractor.reduceTriVectorPayloads([
             {
@@ -1346,9 +1348,9 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
         const byName = new Map(reducedFromLaterChunk.session_artifact.graph.nodes.map(n => [n.name, n]));
 
         expect(byName.get('AnchorLater').gravity_well).toBe(true);
-        expect(Number.isFinite(Date.parse(byName.get('AnchorLater').gravity_well_asserted_at))).toBe(true);
+        expect(byName.get('AnchorLater')).not.toHaveProperty('gravity_well_asserted_at');
         expect(byName.get('PriorAnchor').gravity_well).toBe(true);
-        expect(byName.get('PriorAnchor').gravity_well_asserted_at, 'unasserted later chunk does not refresh timestamp').toBe(priorIso);
+        expect(byName.get('PriorAnchor')).not.toHaveProperty('gravity_well_asserted_at');
         expect(byName.get('NonAnchor').gravity_well).toBe(false);
         expect(byName.get('NonAnchor')).not.toHaveProperty('gravity_well_asserted_at');
 
@@ -1364,7 +1366,7 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
             session_artifact: {
                 graph: {
                     nodes: [
-                        {id: 'CLASS:CommittedAnchor', type: 'CLASS', name: 'CommittedAnchor', description: 'asserted', gravity_well: true, strategic_weight: 0.95},
+                        {id: 'CLASS:CommittedAnchor', type: 'CLASS', name: 'CommittedAnchor', description: 'asserted', gravity_well: true, gravity_well_asserted_at: priorIso, strategic_weight: 0.95},
                         {id: 'issue-13624',           type: 'ISSUE', name: 'Closed epic',     description: 'already closed', gravity_well: true, strategic_weight: 0.95}
                     ],
                     edges: []
@@ -1372,12 +1374,28 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
             }
         }, {
             id  : 'anchor-assertion-vector',
-            meta: {sessionId: 'anchor-assertion-session'}
+            meta: {sessionId: 'anchor-assertion-session', timestamp: sessionIso}
         });
 
         const committedClass = GraphService.db.nodes.items.find(n => n.label === 'CLASS' && n.properties?.name === 'CommittedAnchor');
         expect(committedClass?.properties.gravity_well).toBe(true);
-        expect(Number.isFinite(Date.parse(committedClass?.properties.gravity_well_asserted_at))).toBe(true);
+        expect(committedClass?.properties.gravity_well_asserted_at, 'session timestamp wins over payload').toBe(sessionIso);
         expect(GraphService.db.nodes.get('issue-13624').properties.gravity_well, 'closed issue never retains gravity_well').toBe(false);
+
+        await SemanticGraphExtractor.commitTriVectorPayload({
+            session_artifact: {
+                graph: {
+                    nodes: [
+                        {id: 'CLASS:CommittedAnchor', type: 'CLASS', name: 'CommittedAnchor', description: 'older session', gravity_well: true, strategic_weight: 0.9}
+                    ],
+                    edges: []
+                }
+            }
+        }, {
+            id  : 'older-session-vector',
+            meta: {sessionId: 'older-session', timestamp: olderIso}
+        });
+
+        expect(GraphService.db.nodes.get(committedClass.id).properties.gravity_well_asserted_at, 'later stamp kept on out-of-order digestion').toBe(sessionIso);
     });
 });

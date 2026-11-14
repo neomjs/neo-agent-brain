@@ -11,7 +11,8 @@ import {
     createRemPhaseState,
     createRemRunStateEntry
 } from '../../ai/services/memory-core/helpers/remRunStateStore.mjs';
-import {bytesToTokens} from '../../ai/services/memory-core/helpers/consumerFrictionHelper.mjs';
+import {bytesToTokens}           from '../../ai/services/memory-core/helpers/consumerFrictionHelper.mjs';
+import {resolveSessionTimestamp} from '../../ai/services/memory-core/helpers/resolveRowTimestamp.mjs';
 import {
     canonicalizeSessionTurnInput,
     computeSessionTurnInputRevision,
@@ -185,22 +186,6 @@ function getLastFailedPhase(perPhaseStates) {
         }
     }
     return 'processUndigestedSessions';
-}
-
-function resolveSessionTimestamp(meta = {}) {
-    const value = meta.timestamp ?? meta.lastActivity ?? meta.updatedAt ?? meta.createdAt;
-
-    if (Number.isFinite(value)) {
-        return value;
-    }
-
-    const numeric = Number(value);
-    if (Number.isFinite(numeric)) {
-        return numeric;
-    }
-
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function compareSessionRows(direction) {
