@@ -73,6 +73,11 @@ export const GET_CONVERSATION = `
  * NOT carried onto the snapshot — the snapshot is drift-compared, so raw comment text would make any
  * peer's unrelated comment invalidate the observation.
  *
+ * `authorAssociation`, the body and every commit's message name an outside author's model family: an
+ * outside pull request needs an approval from a family it does not name. A trailer may sit on any
+ * commit, so up to 100 are read, with whether more exist. Only the derived families reach the
+ * snapshot, for the same drift reason as the comments.
+ *
  * Variables required:
  * - $owner: String! - Repository owner
  * - $repo: String! - Repository name
@@ -90,8 +95,19 @@ export const GET_MERGE_READINESS = `
         mergeStateStatus
         reviewDecision
         body
+        authorAssociation
         author {
           login
+        }
+        commitMessages: commits(first: 100) {
+          pageInfo {
+            hasNextPage
+          }
+          nodes {
+            commit {
+              message
+            }
+          }
         }
         reviewRequests(first: 100) {
           pageInfo {

@@ -8,7 +8,9 @@ import os                                                                       
 import path                                                                               from 'path';
 import Neo                                                                                from 'neo.mjs/src/Neo.mjs';
 import * as core                                                                          from 'neo.mjs/src/core/_export.mjs';
+import {createHash}                                                                       from 'node:crypto';
 import {createOpenWorkWakeRound, failedChecksOf, undeliverableOf, wireFleetOpenWorkWakes} from '../../../../../../ai/services/fleet/wireFleetOpenWorkWakes.mjs';
+import {familiesOf}                                                                       from '../../../../../../ai/services/fleet/wireFleetOpenWorkSource.mjs';
 
 const START  = Date.parse('2026-10-13T12:00:00.000Z'), HEAD = 'a'.repeat(40), SEAT = '@neo-opus-ada',
     at       = minute => START + minute * 60000,
@@ -173,6 +175,33 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         expect(sends.map(observation => observation.kind)).toEqual(['repair-ci']);
         expect(store.read().activation).toEqual({version: 1, at: iso(0)});
         expect(gateCalls).toBe(1)
+    });
+
+    test('the route read carries the seats\' families, so the second pass never hands a named outside PR to its own lab', async () => {
+        const
+            CLAUDE = SEAT, GPT = '@neo-gpt',
+            // the roster order makes the plain hash pick land on the Claude seat, so only the families can move it
+            offset = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % 2,
+            roster = offset === 0 ? [CLAUDE, GPT] : [GPT, CLAUDE],
+            named  = (minute, ci) => {
+                const value = state(minute, ci);
+                Object.assign(value.snapshot.rows['acme/app#7'], {owner: {kind: 'outside', seat: null, login: 'contributor'}, disclosedFamilies: ['claude']});
+                return value
+            },
+            triage = async readFamilies => {
+                let minute = 0;
+                const sends = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute),
+                    rotationSeats: roster, readFamilies, admitWake: async value => sends.push(value)});
+                await round(named(0, 'pending')); minute = 1;
+                await round(named(1, 'green'));
+                return sends.map(({to, kind}) => ({to, kind}))
+            };
+
+        expect(await triage(async () => null)).toEqual([{to: CLAUDE, kind: 'triage-outside'}]);
+        expect(await triage(async () => ({[CLAUDE]: 'claude', [GPT]: 'gpt'}))).toEqual([{to: GPT, kind: 'triage-outside'}]);
+        // a row without a family is left out, so its seat stays eligible and verifies nothing
+        expect(familiesOf({agents: [{identity: CLAUDE, family: 'claude'}, {identity: GPT, family: null}, {family: 'gpt'}]})).toEqual({[CLAUDE]: 'claude'});
+        expect(familiesOf({})).toBeNull()
     });
 
     test('activation survives restart and history rollover without losing pending merges', async () => {

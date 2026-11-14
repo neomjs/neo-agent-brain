@@ -19,6 +19,7 @@
  * would have read carry, and a row first seen after that miss is no `opened`.
  */
 
+import {disclosedFamiliesOf}                           from '../graph/disclosedModelFamilies.mjs';
 import {normalizeReviewRecords, retainReviewWitnesses} from './openWorkReviewRecords.mjs';
 
 /**
@@ -121,21 +122,26 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
  * @param {Object} [source] Acquisition identity; absent for legacy inputs.
  * @param {String} [source.apiBase] Provider API identity from the existing reader.
- * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner, requested,
- *     reviews, opinions, reviewRecords, turns, requestsComplete, opinionsComplete, partial}`. `title` is the forge's
- *     prose with whitespace collapsed, or `null`; it names the PR and is never a transition. Optional original
- *     review records keep their own history coverage, and `turns` holds only the conversation's latest page; neither
- *     changes current-work completeness.
+ * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner,
+ *     disclosedFamilies, requested, reviews, opinions, reviewRecords, turns, requestsComplete, opinionsComplete,
+ *     partial}`. `title` is the forge's prose with whitespace collapsed, or `null`; it names the PR and is never a
+ *     transition. `disclosedFamilies` are the model families an outside PR names in its body or in any commit's
+ *     trailer, and empty for every other PR; an outside PR with commits past the read is `partial`, since an unread
+ *     commit may name another family. Optional original review records keep their own history coverage, and `turns`
+ *     holds only the conversation's latest page; neither changes current-work completeness.
  */
 export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
     const
         repo      = node.repository?.nameWithOwner ?? null,
+        owner     = ownerOf(node, identities),
         commit    = node.commits?.nodes?.[0]?.commit,
         head      = node.headRefOid ?? commit?.oid ?? null,
         requests  = connectionOf(node.reviewRequests),
         reviews   = connectionOf(node.latestReviews),
         opinions  = connectionOf(node.latestOpinionatedReviews),
         suites    = commit?.checkSuites === undefined ? {nodes: [], complete: true} : connectionOf(commit.checkSuites, 'hasPreviousPage'),
+        messages  = node.commitMessages === undefined ? {nodes: [], complete: true} : connectionOf(node.commitMessages),
+        outside   = owner.kind === 'outside',
         requested = requests.nodes.map(item => reviewerOf(item?.requestedReviewer, identities)),
         // whether each review judged the current head, and whether a bot wrote it
         judged    = item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head,
@@ -168,15 +174,19 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         authorAssociation: node.authorAssociation ?? null,
         bot              : node.author?.__typename === 'Bot',
         runApproval,
-        owner            : ownerOf(node, identities),
-        requested        : requested.filter(Boolean).sort(),
-        reviews          : reviewed.filter(review => review.reviewer),
-        opinions         : opined.filter(opinion => opinion.reviewer),
-        reviewRecords    : normalizeReviewRecords(node, apiBase),
+        owner,
+        disclosedFamilies: outside ? disclosedFamiliesOf({
+            body          : node.body ?? '',
+            commitMessages: messages.nodes.map(item => item?.commit?.message)
+        }) : [],
+        requested    : requested.filter(Boolean).sort(),
+        reviews      : reviewed.filter(review => review.reviewer),
+        opinions     : opined.filter(opinion => opinion.reviewer),
+        reviewRecords: normalizeReviewRecords(node, apiBase),
         turns,
         requestsComplete,
         opinionsComplete,
-        partial          : !requestsComplete || !reviewsComplete || !opinionsComplete || !suites.complete
+        partial      : !requestsComplete || !reviewsComplete || !opinionsComplete || !suites.complete || outside && !messages.complete
     }
 }
 

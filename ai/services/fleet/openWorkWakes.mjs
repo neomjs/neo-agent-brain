@@ -26,6 +26,10 @@
  * wake does. Its episode is the owed turn's time, so the slot starts over when a member answers and a later outside
  * turn is owed. An untouched outside PR's triage covers every turn before it; a later turn goes to the seat that
  * triaged it.
+ *
+ * An outside PR that names a model is never handed by the rotation to a seat of a lab it names (operator ruling,
+ * 2026-11-14); a seat whose family is unknown stays eligible. When no other seat answers, the whole roster picks, so
+ * the PR is never left unrouted; that seat's arrival check sees the lab and hands the approval on.
  */
 import {createHash}                                            from 'node:crypto';
 import {openWorkFreshness}                                     from './openWorkFreshness.mjs';
@@ -73,6 +77,17 @@ function hasIdentity(row) {
 }
 
 /**
+ * @summary The model families an outside row names, or null.
+ * @param {Object} row
+ * @returns {String[]|null}
+ * @private
+ */
+function labsOf(row) {
+    return row?.owner?.kind === 'outside' && Array.isArray(row.disclosedFamilies) && row.disclosedFamilies.length
+        ? row.disclosedFamilies : null
+}
+
+/**
  * @summary One stable task identity and its action-specific payload.
  * @param {Object} row
  * @param {String} seat
@@ -107,9 +122,11 @@ function wakeOf(row, seat, role, kind, episode, holder = null) {
  * @param {Object<String, {state: String, at: String|null}>|null} [options.deliveries=null] Delivery verdicts of admitted
  *     holder wakes, by the message id their slot recorded (`projectMessageDelivery`). Only `delivered` can make a holder
  *     silent; any other verdict, or none, escalates nothing.
+ * @param {Object<String,String>|null} [options.seatFamilies=null] Native seat to its model family, read with the route
+ *     map. Without it no approval of a named outside PR counts, so a round that plans one reads it and plans again.
  * @returns {{wakes: Object[], ledger: Object|null}} Inputs are never mutated.
  */
-export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', rotationSeats, exhaustedUntil = null, quiet = false, deliveries = null}) {
+export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', rotationSeats, exhaustedUntil = null, quiet = false, deliveries = null, seatFamilies = null}) {
     const
         wakes   = [],
         holding = Object.fromEntries(Object.entries(ledger?.holding ?? {}).map(([key, entry]) =>
@@ -154,6 +171,11 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             slot    = rotationSlot(row, kind, holder),
             prior   = holding[slot],
             episode = prior?.wake?.episode ?? state.observedAt,
+            labs    = labsOf(row),
+            // A seat of a lab the PR names never picks it while another seat answers
+            sameLab = labs && seatFamilies ? roster.filter(seat => labs.includes(seatFamilies[seat])) : [],
+            route   = quiet ? () => 'unknown' : rotationRoute,
+            keep    = holder ? [holder] : [],
             // A re-pick keeps the slot's failed submissions counted, so a failing escalation stays bounded
             hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder), status,
                 ...(prior?.attempts ? {attempts: prior.attempts} : {})};
@@ -161,7 +183,9 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         current.add(slot);
         if (prior?.status === 'admitted') return;
 
-        const seat = pickRotationSeat(row, kind, roster, quiet ? () => 'unknown' : rotationRoute, holder ? [holder] : []);
+        // Nobody of another lab answers: the whole roster picks, so the PR is never left unrouted
+        const seat = pickRotationSeat(row, kind, roster, route, [...keep, ...sameLab]) ??
+            (sameLab.length ? pickRotationSeat(row, kind, roster, route, keep) : null);
 
         if (seat && !quiet) {
             wakes.push(hold(seat, 'admitted').wake)
@@ -243,7 +267,7 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             continue
         }
 
-        const holder = holderOf(row);
+        const holder = holderOf(row, {seatFamilies});
 
         if (holder.role === 'unknown') {
             if (baseline) baselines[row.key] = row.head;

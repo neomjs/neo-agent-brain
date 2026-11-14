@@ -48,6 +48,21 @@ export function seatIdentities(listDefinitions, identityRows = () => []) {
 }
 
 /**
+ * @summary Each seat's model family, from the verbose presence answer whose rows carry the plane's identity facts.
+ * A row without a family is left out, so its seat stays eligible for a pick and verifies no approval. The open-work
+ * projection and the wake round both decide with it, so they agree on whose turn a pull request is.
+ * @param {Object} presence The verbose `who_is_online` answer.
+ * @returns {Object<String,String>|null} Seat to family; `null` when the answer holds no rows.
+ */
+export function familiesOf(presence) {
+    if (!Array.isArray(presence?.agents)) return null;
+
+    return Object.fromEntries(presence.agents
+        .filter(row => typeof row?.identity === 'string' && typeof row.family === 'string' && row.family.length > 0)
+        .map(row => [row.identity, row.family]))
+}
+
+/**
  * @summary The GitHub repositories the seats work on: each working repository and other repository
  * without a non-GitHub `forge`.
  * @param {Object[]} definitions
@@ -326,7 +341,8 @@ export function wireFleetOpenWorkSource({registry, pulseMs = PULSE_MS, bridge = 
         timer           = setInterval(pulse, pulseMs);
 
     timer.unref?.();
-    bridge.openWorkSource = createFleetOpenWorkSource({producer});
+    // the pulse's last presence rows give the projection the families the wake round decides with
+    bridge.openWorkSource = createFleetOpenWorkSource({producer, seatFamilies: () => identityRows.length ? familiesOf({agents: identityRows}) : null});
     pulse();
 
     return {

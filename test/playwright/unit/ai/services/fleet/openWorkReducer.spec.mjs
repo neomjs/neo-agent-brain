@@ -69,6 +69,30 @@ test.describe('openWorkReducer — a row names its pull request by title', () =>
 
         expect(run([[node({title: 'first words'})], [node({title: 'second words'})]]).transitions[1]).toEqual([])
     });
+});
+
+test.describe('openWorkReducer — an outside row carries the model families its PR names', () => {
+    test('the body and any commit\'s trailer name them; a seat\'s PR carries none, and the snapshot reads every commit', () => {
+        const
+            outside  = overrides => ({...node({login: 'contributor', body: 'Resolves #1', ...overrides})}),
+            messages = (hasNextPage, ...texts) => ({commitMessages: {pageInfo: {hasNextPage}, nodes: texts.map(message => ({commit: {message}}))}}),
+            interior = messages(false, 'chore: set up', 'feat: x\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>', 'chore: tidy');
+
+        expect(normalizePullRequest(outside({body: '🤖 Generated with [Claude Code](https://claude.com/claude-code)'}), identities).disclosedFamilies).toEqual(['claude']);
+        expect(normalizePullRequest({...outside(), ...interior}, identities)).toMatchObject({disclosedFamilies: ['claude'], partial: false});
+        expect(normalizePullRequest(outside(), identities).disclosedFamilies).toEqual([]);
+        // a seat's own PR is never read for a model: its family is its seat's
+        expect(normalizePullRequest({...node({body: 'Authored by Ada (Claude Opus 5, Claude Code).'}), ...interior}, identities).disclosedFamilies).toEqual([]);
+        expect(OPEN_WORK_SNAPSHOT).toMatch(/commitMessages: commits\(first: 100\) \{\s*pageInfo \{\s*hasNextPage\s*\}\s*nodes \{\s*commit \{\s*message/)
+    });
+
+    test('an outside PR with commits past the read is partial, since an unread one may name another family', () => {
+        const unread = {commitMessages: {pageInfo: {hasNextPage: true}, nodes: [{commit: {message: 'chore: set up'}}]}};
+
+        expect(normalizePullRequest({...node({login: 'contributor', body: 'Resolves #1'}), ...unread}, identities)).toMatchObject({disclosedFamilies: [], partial: true});
+        // a seat's own PR reads no model, so its unread commits leave it whole
+        expect(normalizePullRequest({...node(), ...unread}, identities).partial).toBe(false)
+    });
 
     test('a row carries GitHub\'s merge state, a missing one is null, and a change of it alone is no transition (#1221)', () => {
         expect(normalizePullRequest(node({mergeState: 'CLEAN'}), identities).mergeState).toBe('CLEAN');
