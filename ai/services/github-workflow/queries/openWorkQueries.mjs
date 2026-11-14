@@ -358,8 +358,8 @@ export const OPEN_WORK_FAILED_CHECKS = `
 
 /**
  * @summary Published GraphQL formula estimates for the static pulse documents, not timeout-cost bounds.
- * Snapshot has the search plus eight connections for up to 50 PRs: round((1 + 50 * 8) / 100) = 4.
- * Terminal has one connection; the published minimum is one. Unblocked reads 10 closing issues, 50
+ * Snapshot has the search plus nine connections for up to 50 PRs, the head commit's `checkSuites` among
+ * them: round((1 + 50 * 9) / 100) = 5, which a live read measured too. Terminal has one connection; the published minimum is one. Unblocked reads 10 closing issues, 50
  * blocked issues each, and two lists on each of those: round((1 + 10 + 500 + 500) / 100) = 10, which a
  * live read measured too. The gate also uses measured maxima.
  *
@@ -371,7 +371,7 @@ export const OPEN_WORK_FAILED_CHECKS = `
  * @type {Object[]}
  */
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
-    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 4}),
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
     Object.freeze({queryHash: 'da079725258d296cd7a66f184942d51a4679f55ad43883e1cf46dc68d25f5860', formulaCost: 4}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10})

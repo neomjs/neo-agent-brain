@@ -601,8 +601,8 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         const result = gate(observed);
         expect(result).toMatchObject({holds: true, certification: {version: 1, policy: 'open-work-operational-estimate-v1'}});
         const bucket = result.certification.buckets.find(item => item.resetAt === iso(420));
-        expect(bucket).toMatchObject({measured: 36, estimated: 0, unattributed: 12, unattributedCalls: 3, decision: 'operational-estimate'});
-        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 4, reservePerCall: 4}));
+        expect(bucket).toMatchObject({measured: 36, estimated: 0, unattributed: 15, unattributedCalls: 3, decision: 'operational-estimate'});
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 5, reservePerCall: 5}));
         observed.pulses.at(-1).seats[0].outcome = 'failed';
         expect(gate(observed).holds).toBe(false);
     });
@@ -674,7 +674,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         later.quota[0] = classified({...later.quota[0], remaining: 920});
         let result = gate(observed), bucket = result.certification?.buckets.find(row => row.resetAt === iso(60));
         expect(result.holds).toBe(true);
-        expect(bucket).toMatchObject({estimated: 400, decision: 'reported-user-total', userTotal: {used: 80, remaining: 920}});
+        expect(bucket).toMatchObject({estimated: 500, decision: 'reported-user-total', userTotal: {used: 80, remaining: 920}});
         // Same-millisecond failure after that successful response defeats its claimed coverage.
         later.costUnknown = true;
         later.quota.push(classified({...later.quota[0], cost: 0, calls: 1, failed: 1, unknown: true},
