@@ -41,6 +41,27 @@ test.describe('ai/services/graph/disclosedModelFamilies — what an outside pull
         expect(disclosedFamiliesOf({body: 'Resolves #20760\n\nThe tree grid now expands a row on ArrowRight.', commitMessages})).toEqual(['claude'])
     });
 
+    test('a trailer on any commit counts, not only on the first or the head', () => {
+        const commitMessages = ['chore: set up', 'feat: the change\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>', 'chore: tidy'];
+
+        expect(disclosedFamiliesOf({body: 'Resolves #1', commitMessages})).toEqual(['claude'])
+    });
+
+    test('a commit\'s subject and body name its topic, never its author: only its trailer does', () => {
+        const body = 'AI disclosure: OpenAI Codex';
+
+        expect(disclosedFamiliesOf({body, commitMessages: ['Implemented support for Claude and Gemini endpoints.']})).toEqual(['gpt']);
+        expect(disclosedFamiliesOf({body, commitMessages: ['feat: generated the Gemini client\n\nMade with the Claude API docs open.']})).toEqual(['gpt']);
+        expect(disclosedFamiliesOf({body, commitMessages: ['feat: the Gemini client\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>']})).toEqual(['claude', 'gpt'])
+    });
+
+    test('a provider\'s model id and a versioned model name name their family, and a path still does not', () => {
+        expect(disclosedFamiliesOf({body: 'AI disclosure: anthropic/claude-sonnet-4-5'})).toEqual(['claude']);
+        expect(disclosedFamiliesOf({body: 'AI disclosure: Qwen3-Coder'})).toEqual(['qwen']);
+        expect(disclosedFamiliesOf({body: 'Generated with OpenCode (`meta-llama/Llama-3.1-70B-Instruct`).'})).toEqual(['llama']);
+        expect(disclosedFamiliesOf({body: 'AI disclosure: Claude Code; it rewrites `.gemini/concepts/model.md` and `docs/gemini/setup.md`.'})).toEqual(['claude'])
+    });
+
     test('a path or a topic sentence is not a disclosure', () => {
         expect(disclosedFamiliesOf({body: '## Changes\n\n1. **Deleted `.gemini/concepts/worktree-bootstrap.md`** — it was the only tracked file under `.gemini/`.'})).toEqual([]);
         expect(disclosedFamiliesOf({body: 'Claude Code doesn\'t read `autoMode` from project settings, so this block in `.claude/settings.template.json` was never applied.'})).toEqual([]);
