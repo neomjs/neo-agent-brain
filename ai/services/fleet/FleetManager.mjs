@@ -21,11 +21,15 @@ import {
     proveSeatForgeAccount,
     resolveSeatGitIdentity
 }                                                                                    from './seatGitIdentity.mjs';
-import {readSeatModelCatalog}           from './seatModelCatalog.mjs';
-import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
-import {readInstalledRuntimeGeneration} from './runtimeGeneration.mjs';
-import {REPLACE_SEAT_CREDENTIAL_SCOPES} from '../../../src/fleet/contract/wire.mjs';
-import path                             from 'node:path';
+import {readSeatModelCatalog}              from './seatModelCatalog.mjs';
+import {startAgentProvisioned}             from './startAgentProvisioned.mjs';
+import {readInstalledRuntimeGeneration}    from './runtimeGeneration.mjs';
+import {REPLACE_SEAT_CREDENTIAL_SCOPES}    from '../../../src/fleet/contract/wire.mjs';
+import path                                from 'node:path';
+import fs                                  from 'node:fs/promises';
+import {fileURLToPath}                     from 'node:url';
+import {readNativeWakeOptIn}               from '../../daemons/wake/fleetPrimarySessionWake.mjs';
+import {proveRegisteredAntigravityProject} from './antigravityProjectRegistry.mjs';
 
 export {REPLACE_SEAT_CREDENTIAL_SCOPES};
 
@@ -656,13 +660,46 @@ class FleetManager extends Base {
             agent     = registry.getDefinition?.(agentId) ?? registry.getAgent(agentId),
             options   = this.wakeStateOptions || {};
 
-        let wakeRoute, rotationRoute = null, tenantService = null;
+        let wakeRoute, rotationRoute = null, tenantService = null, primarySession = null;
 
         try {
             tenantService = agent?.mcpTarget?.kind === 'tenant' || this.planeBase
                 ? await this.getTenantService() : null;
 
             startSignal?.throwIfAborted();
+            if (['codex-desktop', 'antigravity'].includes(agent?.harnessType) && options.wakeReceiverManifestPath) {
+                const optIn = await (options.readNativeWakeOptIn || readNativeWakeOptIn)({manifestPath: options.wakeReceiverManifestPath, agentId, family: agent.harnessType});
+                if (optIn) {
+                    const live       = lifecycle.status(agentId), record = lifecycle.processes.get(agentId),
+                          generation = lifecycle.harnessGenerationsOf(agent.harnessType).find(row => row.id === live.harnessGeneration?.generationId);
+                    if (!live.running || live.pid !== status?.pid || live.startedAt !== status?.startedAt ||
+                        live.instanceHome !== status?.instanceHome || !generation || generation.binaryPath !== live.launchCommand ||
+                        !record?.cwd || !path.isAbsolute(record.cwd)) throw new Error('native wake launch generation or workspace is unproven');
+                    primarySession = {instanceHome: live.instanceHome, appBundle: generation.appBundle, agentId, family: agent.harnessType};
+                    if (agent.harnessType === 'codex-desktop') {
+                        const hookNodePath   = process.execPath,
+                              hookModulePath = fileURLToPath(new URL('../../daemons/wake/codexWakeHook.mjs', import.meta.url));
+                        if (!(await fs.stat(hookModulePath)).isFile()) throw new Error('native wake hook module is unavailable');
+                        primarySession = {...primarySession, hookNodePath, hookModulePath};
+                    }
+                    if (agent.harnessType === 'antigravity') {
+                        const receiptFile = path.join(live.instanceHome, '.neo-fleet-project-binding.json'),
+                              stat        = await fs.lstat(receiptFile);
+                        if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077)) throw new Error('native wake project receipt is not private');
+                        const receipt = JSON.parse(await fs.readFile(receiptFile, 'utf8')),
+                              home    = lifecycle.snapshotAmbientProcessEnvironment().HOME;
+                        if (receipt.version !== 1 || receipt.projectName !== agentId || receipt.projectRoot !== record.cwd || !path.isAbsolute(home || '')) {
+                            throw new Error('native wake project receipt mismatches the active workspace');
+                        }
+                        await proveRegisteredAntigravityProject({profileDirectory: live.instanceHome, projectId: receipt.projectId,
+                            projectName: agentId, projectRoot: record.cwd, registryDirectory: path.join(home, '.gemini/config/projects')});
+                        primarySession = {...primarySession, projectId: receipt.projectId, projectRoot: record.cwd};
+                    }
+                    const recheck = lifecycle.status(agentId);
+                    if (!recheck.running || recheck.pid !== live.pid || recheck.startedAt !== live.startedAt ||
+                        recheck.harnessGeneration?.generationId !== live.harnessGeneration.generationId) throw new Error('native wake launch changed during admission');
+                }
+            }
             wakeRoute = await this.getWakeArmFn()({
                 agent,
                 startSignal,
@@ -670,6 +707,7 @@ class FleetManager extends Base {
                 planeBase   : this.planeBase,
                 receiverBase: options.wakeReceiverBase,
                 manifestPath: options.wakeReceiverManifestPath,
+                primarySession,
                 tenantService
             })
         } catch (error) {

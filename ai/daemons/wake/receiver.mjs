@@ -28,9 +28,22 @@ import {
     isSessionRotation,
     routeAdmits
 } from './sessionRotation.mjs';
-import {isEntryModule}                           from '../../services/shared/isEntryModule.mjs';
+import {isEntryModule}       from '../../services/shared/isEntryModule.mjs';
+import {stagePrimaryWake}    from './primaryWakeSpool.mjs';
+import {readNativeWakeOptIn} from './nativeWakeEnrollment.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+
+function isSeatId(value) {
+    return typeof value === 'string' && /^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/.test(value)
+}
+
+function hasNativeRecipient(result, record) {
+    const recipient = result?.recipient, uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return recipient?.seat === record.route.agentIdentity && recipient.recordKey === record.recordKey &&
+        typeof recipient.generation === 'string' && recipient.generation.length > 0 &&
+        uuid.test(recipient.threadId || '') && uuid.test(recipient.nonce || '')
+}
 
 /**
  * Dialog-gate bound: how many times a wake deferred for a pending interactive prompt may
@@ -77,7 +90,8 @@ const PRODUCTION_ADAPTERS     = new Set([
     'codex-app-server',
     'opencode-server',
     'kimi-server',
-    'kimi-pull-bridge'
+    'kimi-pull-bridge',
+    'primary-session'
 ]);
 /**
  * How long one receiver step may stay unsettled before the process counts as stuck. A promise that
@@ -163,6 +177,28 @@ export async function loadWakeReceiverManifest(manifestPath) {
         )) {
             throw new Error(`Wake receiver route '${subscriptionId}' requires Codex app metadata and adapterConfig.codexBinary`);
         }
+        if (adapter === 'primary-session') {
+            const config   = route.adapterConfig?.primarySession,
+                  fields   = ['instanceHome', 'appBundle', 'agentId', 'family', 'projectId', 'projectRoot', 'hookNodePath', 'hookModulePath'],
+                  absolute = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root,
+                  address  = absolute(config?.instanceHome) && {addressType:'userDataDir',instanceAddress:
+                      config.family === 'codex-desktop' ? path.join(config.instanceHome,'electron-profile') : config.instanceHome};
+
+            if (!config || typeof config !== 'object' || Array.isArray(config) ||
+                Object.keys(config).some(key => !fields.includes(key)) ||
+                !['codex-desktop', 'antigravity'].includes(config.family) ||
+                !absolute(config.instanceHome) || !absolute(config.appBundle) ||
+                (config.family === 'codex-desktop' && (!absolute(config.hookNodePath) || !absolute(config.hookModulePath))) ||
+                (config.family === 'antigravity' && (config.hookNodePath !== undefined || config.hookModulePath !== undefined)) ||
+                !isSeatId(config.agentId) ||
+                !/^@[a-z0-9][a-z0-9-]*$/.test(route.agentIdentity) ||
+                (config.projectRoot !== undefined && !absolute(config.projectRoot)) ||
+                (config.projectId !== undefined && (typeof config.projectId !== 'string' || !config.projectId)) ||
+                metadata.addressType !== address?.addressType || metadata.instanceAddress !== address?.instanceAddress ||
+                route.admits !== WAKE_DIGEST_EVENT_TYPE) {
+                throw new Error(`Wake receiver route '${subscriptionId}' has invalid primary-session admission`);
+            }
+        }
         if (adapter === 'tmux' && metadata.addressType !== 'webhookUrl') {
             const tmuxSession = metadata.addressType === 'tmuxSession'
                 ? metadata.instanceAddress
@@ -247,6 +283,9 @@ export function createWakeReceiver({
     manifest,
     state,
     dispatch           = dispatchLocalWake,
+    dispatchPrimary    = stagePrimaryWake,
+    readNativeOptIn    = readNativeWakeOptIn,
+    manifestPath       = null,
     contextProbe       = probeSessionContext,
     logger             = console,
     maxBodyBytes       = DEFAULT_MAX_BODY_BYTES,
@@ -331,8 +370,24 @@ export function createWakeReceiver({
             const pending = await watched.list('pending');
 
             for (const record of pending) {
+                // Only a presently admitted route may send a native wake. A legacy pending snapshot may
+                // adopt the native route, but a native snapshot is never downgraded back to GUI typing.
+                const current   = activeManifest.routes[record.subscriptionId],
+                      oldNative = record.route?.harnessTargetMetadata?.adapter === 'primary-session',
+                      newNative = current?.harnessTargetMetadata?.adapter === 'primary-session';
+                if (oldNative || newNative) {
+                    if (!current || current.agentIdentity !== record.route?.agentIdentity ||
+                        current.agentIdentity !== record.envelope?.agentIdentity ||
+                        record.envelope?.subscriptionId !== record.subscriptionId ||
+                        record.envelope?.eventType !== WAKE_DIGEST_EVENT_TYPE || !newNative) {
+                        await watched.transition(record.recordKey, 'pending', 'pending', {deferReason: 'primary-session-route-unavailable'});
+                        continue;
+                    }
+                }
                 const dispatching = await watched.transition(record.recordKey, 'pending', 'dispatching', {
-                    dispatchStartedAt: new Date().toISOString()
+                    dispatchStartedAt: new Date().toISOString(),
+                    ...(newNative ? {route: {agentIdentity: current.agentIdentity, harnessTargetMetadata: current.harnessTargetMetadata,
+                        adapterConfig: current.adapterConfig}} : {})
                 });
                 if (!dispatching) continue;
 
@@ -423,16 +478,81 @@ export function createWakeReceiver({
 
                 let outcome = 'failed';
                 let outcomeReason;
+                let expectedRecipient;
+
+                // A manifest can change while context probing awaited. Do not let a captured GUI
+                // snapshot type after that route has been cut over to native delivery.
+                if (activeManifest.routes[record.subscriptionId] !== current) {
+                    await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'route-changed-before-dispatch'});
+                    continue;
+                }
 
                 try {
                     // An adapter returns either a bare outcome string or `{outcome, outcomeReason}`.
                     // The reason channel lets a terminal failure name its cause without throwing —
                     // throwing would change the retry semantics, and the cause belongs on the record
                     // regardless of how the adapter chose to end.
-                    const result = await track('dispatch', dispatch(dispatching),
+                    const native   = dispatching.route?.harnessTargetMetadata?.adapter === 'primary-session';
+                    const metadata = dispatching.route?.harnessTargetMetadata;
+                    if (native) {
+                        const config = dispatching.route?.adapterConfig?.primarySession;
+                        let enrollment;
+                        try { enrollment = manifestPath && await readNativeOptIn({manifestPath, agentId: config?.agentId, family: config?.family}) }
+                        catch { /* unavailable enrollment must hold, never fall back */ }
+                        if (!enrollment || enrollment.stateDir !== state.stateDir) {
+                            await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-enrollment-unproven'});
+                            continue;
+                        }
+                    }
+                    if (!native && !isSessionRotation(dispatching.envelope) && manifestPath && metadata?.adapter === 'osascript' &&
+                        ['Codex', 'Antigravity'].includes(metadata.appName) && metadata.addressType === 'userDataDir') {
+                        const family = metadata.appName === 'Codex' ? 'codex-desktop' : 'antigravity',
+                              home   = family === 'codex-desktop' ? path.dirname(metadata.instanceAddress || '') : metadata.instanceAddress,
+                              parent = path.dirname(home || ''), agentId = path.basename(path.dirname(parent));
+                        if (path.isAbsolute(home || '') && path.basename(parent) === 'harness' && path.basename(home) === family && isSeatId(agentId)) {
+                            let optIn;
+                            try {
+                                const optPath = path.join(path.dirname(manifestPath), 'primary-session-seats', `${agentId}.json`);
+                                const exists  = await fs.lstat(optPath).then(() => true, error => {
+                                    if (error.code === 'ENOENT') return false;
+                                    throw error
+                                });
+                                optIn = exists ? await readNativeOptIn({manifestPath, agentId, family}) : null;
+                            }
+                            catch {
+                                await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-opt-in-unreadable'});
+                                continue;
+                            }
+                            if (optIn) {
+                                await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-cutover-pending'});
+                                continue;
+                            }
+                        }
+                    }
+                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath}) : dispatch(dispatching),
                         (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch, record.subscriptionId);
 
-                    outcome = typeof result === 'string' ? result : result?.outcome;
+                    outcome = typeof result === 'string' ? result : native ? result?.status : result?.outcome;
+
+                    if (native && result?.recipient && typeof result.recipient === 'object') {
+                        expectedRecipient = Object.fromEntries(['seat', 'generation', 'threadId', 'recordKey', 'nonce']
+                            .filter(key => typeof result.recipient[key] === 'string')
+                            .map(key => [key, result.recipient[key]]));
+                    }
+
+                    if (native && ['pending', 'unknown'].includes(outcome)) {
+                        await watched.transition(record.recordKey, 'dispatching', 'pending', {
+                            deferReason : String(result?.reason || 'primary-session-unresolved'),
+                            nativeStatus: outcome,
+                            ...(expectedRecipient ? {expectedRecipient} : {})
+                        });
+                        continue;
+                    }
+
+                    if (native && (outcome !== 'delivered' || !hasNativeRecipient(result, dispatching))) {
+                        await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-invalid-outcome'});
+                        continue;
+                    }
 
                     if (result && typeof result === 'object' && result.outcomeReason) {
                         outcomeReason = String(result.outcomeReason);
@@ -492,12 +612,13 @@ export function createWakeReceiver({
                     }
                 } catch (error) {
                     outcomeReason = error?.code || error?.name || 'adapter-error';
-                    outcome       = 'failed';
+                    outcome       = dispatching.route?.harnessTargetMetadata?.adapter === 'primary-session' ? 'pending' : 'failed';
                     logger.error?.(`[Wake Receiver] adapter failed for ${record.subscriptionId}: ${outcomeReason}`);
                 }
 
                 await watched.transition(record.recordKey, 'dispatching', outcome, {
                     ...(outcomeReason ? {outcomeReason} : {}),
+                    ...(expectedRecipient ? {expectedRecipient} : {}),
                     dispatchFinishedAt: new Date().toISOString()
                 });
             }
@@ -639,6 +760,7 @@ export async function startWakeReceiver({
 
     const {server, drain, setManifest, track} = createWakeReceiver({
         manifest,
+        manifestPath,
         state,
         logger,
         stepBoundsMs,

@@ -30,7 +30,7 @@ test.describe('ai/daemons/wake/receiver', () => {
         }
     };
 
-    let accepts, baseUrl, dispatchCalls, dispatchResult, receiver, server, state, stateDir;
+    let accepts, baseUrl, dispatchCalls, dispatchResult, nativeCalls, nativeResult, optIn, probe, receiver, server, state, stateDir;
 
     test.beforeEach(async () => {
         stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-wake-receiver-'));
@@ -38,6 +38,10 @@ test.describe('ai/daemons/wake/receiver', () => {
         await state.init();
         accepts        = 0;
         dispatchCalls  = [];
+        nativeCalls    = [];
+        nativeResult   = {status: 'unknown', reason: 'awaiting-receipt'};
+        optIn          = null;
+        probe          = async () => null;
         // Adapters may end with a bare outcome string or `{outcome, outcomeReason}`; tests select
         // the shape under test rather than each building a receiver of their own.
         dispatchResult = 'delivered';
@@ -48,8 +52,12 @@ test.describe('ai/daemons/wake/receiver', () => {
                 dispatchCalls.push(record);
                 return dispatchResult;
             },
-            logger    : {error() {}, warn() {}, log() {}},
-            onAccepted: () => accepts++
+            dispatchPrimary: async (record, options) => { nativeCalls.push({record, options}); return nativeResult },
+            contextProbe   : record => probe(record),
+            manifestPath   : path.join(stateDir, 'routes.json'),
+            readNativeOptIn: async () => optIn,
+            logger         : {error() {}, warn() {}, log() {}},
+            onAccepted     : () => accepts++
         });
         server = receiver.server;
         await new Promise((resolve, reject) => {
@@ -115,6 +123,119 @@ test.describe('ai/daemons/wake/receiver', () => {
         expect(verifyWakeSignature(body, signingKey, signature)).toBe(true);
         expect(verifyWakeSignature(Buffer.from('{"eventId":"two"}'), signingKey, signature)).toBe(false);
         expect(verifyWakeSignature(body, signingKey, 'not-hex')).toBe(false);
+    });
+
+    function nativeManifest() {
+        const result = structuredClone(manifest), route = result.routes[subscriptionId];
+        optIn = {agentId: 'fleet-seat', family: 'codex-desktop', stateDir};
+        route.admits = 'wake/digest';
+        route.harnessTargetMetadata = {adapter: 'primary-session', addressType: 'userDataDir', instanceAddress: '/seat/electron-profile'};
+        route.adapterConfig = {...route.adapterConfig, primarySession: {instanceHome: '/seat', appBundle: '/Applications/Codex.app', agentId: 'fleet-seat', family: 'codex-desktop', hookNodePath:'/bin/node', hookModulePath:'/brain/hook.mjs'}};
+        return result
+    }
+
+    test('native manifest is host-admitted and validates its derived profile and trigger', async () => {
+        const file = path.join(stateDir, 'native.json'), good = nativeManifest();
+        await fs.writeFile(file, JSON.stringify(good), {mode: 0o600});
+        expect(await loadWakeReceiverManifest(file)).toEqual(good);
+        for (const change of [route => { route.admits = 'session/rotate' },
+            route => { route.harnessTargetMetadata.instanceAddress = '/other' },
+            route => { route.adapterConfig = {...route.adapterConfig, primarySession: {...route.adapterConfig.primarySession, instanceHome: '/seat/../other'}} },
+            route => { route.adapterConfig = {...route.adapterConfig, primarySession: {...route.adapterConfig.primarySession, untrusted: 'x'}} }]) {
+            const invalid = structuredClone(good); change(invalid.routes[subscriptionId]);
+            await fs.writeFile(file, JSON.stringify(invalid));
+            await expect(loadWakeReceiverManifest(file)).rejects.toThrow();
+        }
+    });
+
+    test('native unresolved delivery remains pending and is reconciled without GUI fallback', async () => {
+        receiver.setManifest(nativeManifest());
+        expect((await postWake()).status).toBe(202);
+        await receiver.drain();
+        let [record] = await state.list('pending');
+        expect(record.nativeStatus).toBe('unknown');
+        expect(record.deferReason).toBe('awaiting-receipt');
+        const previousCalls = nativeCalls.length;
+        expect(previousCalls).toBeGreaterThan(0);
+        expect(dispatchCalls).toHaveLength(0);
+        nativeResult = {status: 'delivered', recipient: {seat: agentIdentity, generation: 'generation', recordKey: record.recordKey,
+            threadId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', nonce: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', secret: 'never-store'}};
+        await receiver.drain();
+        [record] = await state.list('delivered');
+        expect(record.expectedRecipient).toEqual({seat: agentIdentity, generation: 'generation', recordKey: record.recordKey,
+            threadId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', nonce: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'});
+        expect(nativeCalls.length).toBe(previousCalls + 1);
+    });
+
+    test('a native delivered claim without a correlated recipient stays pending', async () => {
+        receiver.setManifest(nativeManifest()); nativeResult = {status: 'delivered'};
+        expect((await postWake()).status).toBe(202);
+        await receiver.drain();
+        expect(await state.list('delivered')).toHaveLength(0);
+        expect((await state.list('pending'))[0].deferReason).toBe('primary-session-invalid-outcome');
+    });
+
+    test('pending legacy snapshot upgrades to native, native snapshot never falls back to GUI', async () => {
+        const envelope = buildEnvelope();
+        await state.accept({subscriptionId, eventId: envelope.eventId, sourceEventIds: envelope.payload.sourceEventIds,
+            envelope, route: {agentIdentity, harnessTargetMetadata: {adapter: 'osascript'}, adapterConfig: {attemptTimeoutMs: 100}}});
+        receiver.setManifest(nativeManifest());
+        await receiver.drain();
+        expect(nativeCalls).toHaveLength(1);
+        expect(dispatchCalls).toHaveLength(0);
+        receiver.setManifest(manifest);
+        await receiver.drain();
+        expect(nativeCalls).toHaveLength(1);
+        expect(dispatchCalls).toHaveLength(0);
+        expect((await state.list('pending'))[0].deferReason).toBe('primary-session-route-unavailable');
+    });
+
+    test('native pending work refuses a current manifest bound to another identity', async () => {
+        receiver.setManifest(nativeManifest());
+        expect((await postWake()).status).toBe(202);
+        await receiver.drain();
+        const previousCalls = nativeCalls.length;
+        const wrong         = nativeManifest(); wrong.routes[subscriptionId].agentIdentity = '@other';
+        receiver.setManifest(wrong);
+        await receiver.drain();
+        expect(nativeCalls.length).toBe(previousCalls);
+        expect((await state.list('pending'))[0].deferReason).toBe('primary-session-route-unavailable');
+    });
+
+    test('cutover during an awaiting GUI context probe cannot type through its captured route', async () => {
+        const envelope = buildEnvelope(), old = structuredClone(manifest), route = old.routes[subscriptionId];
+        route.harnessTargetMetadata = {adapter: 'osascript'};
+        route.adapterConfig = {...route.adapterConfig, contextGate: {maxContextTokens: 100, warnContextTokens: 50}};
+        receiver.setManifest(old);
+        await state.accept({subscriptionId, eventId: envelope.eventId, sourceEventIds: envelope.payload.sourceEventIds,
+            envelope, route: {agentIdentity, harnessTargetMetadata: route.harnessTargetMetadata, adapterConfig: route.adapterConfig}});
+        let release, entered;
+        const gate = new Promise(resolve => { release = resolve }), ready = new Promise(resolve => { entered = resolve });
+        probe = async () => { entered(); await gate; return null };
+        const draining = receiver.drain();
+        await ready;
+        receiver.setManifest(nativeManifest());
+        release();
+        await draining;
+        expect(dispatchCalls).toHaveLength(0);
+        expect((await state.list('pending'))[0].deferReason).toBe('route-changed-before-dispatch');
+        await receiver.drain();
+        expect(nativeCalls).toHaveLength(1);
+    });
+
+    test('host opt-in fences an existing GUI route while other seats remain unchanged', async () => {
+        const old       = structuredClone(manifest), route = old.routes[subscriptionId],
+              directory = path.join(stateDir, 'primary-session-seats');
+        route.harnessTargetMetadata = {adapter: 'osascript', appName: 'Codex', addressType: 'userDataDir',
+            instanceAddress: '/agents/seat-a/harness/codex-desktop/electron-profile'};
+        receiver.setManifest(old);
+        await fs.mkdir(directory);
+        await fs.writeFile(path.join(directory, 'seat-a.json'), '{}');
+        optIn = {agentId: 'seat-a', family: 'codex-desktop', stateDir};
+        expect((await postWake()).status).toBe(202);
+        await receiver.drain();
+        expect(dispatchCalls).toHaveLength(0);
+        expect((await state.list('pending'))[0].deferReason).toBe('primary-session-cutover-pending');
     });
 
     test('a completed accept is reported to the liveness hook, and a refused request is not (#841)', async () => {

@@ -195,7 +195,7 @@ export class WakeReceiverState {
     }
 
     /**
-     * @summary Converts crash-interrupted `dispatching` records into terminal `unknown`.
+     * @summary Restores interrupted native records for receipt reconciliation; legacy effects remain unknown.
      *
      * @returns {Promise<Number>} Number of records terminalized.
      */
@@ -204,8 +204,9 @@ export class WakeReceiverState {
         let   recovered   = 0;
 
         for (const record of interrupted) {
-            const updated = await this.transition(record.recordKey, 'dispatching', 'unknown', {
-                outcomeReason: 'receiver-restarted-during-non-idempotent-dispatch'
+            const native  = record.route?.harnessTargetMetadata?.adapter === 'primary-session';
+            const updated = await this.transition(record.recordKey, 'dispatching', native ? 'pending' : 'unknown', {
+                outcomeReason: native ? 'receiver-restarted-native-reconciliation' : 'receiver-restarted-during-non-idempotent-dispatch'
             });
             if (updated) recovered++;
         }

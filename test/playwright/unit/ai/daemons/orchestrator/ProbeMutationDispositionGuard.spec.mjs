@@ -26,11 +26,11 @@ const
      * Complete production census of every module under `ai/` that constructs `new AbortController()`
      * or arms `AbortSignal.timeout()`.
      *
-     * Keying on one spelling misses the other. Every module in this 26-module population is
+     * Keying on one spelling misses the other. Every module in this 27-module population is
      * accounted for here and partitioned into:
      * - `probeSurface: true` (13 modules): modules carrying probe / canary / liveness / readiness
      *   entry points that must declare `@probeDisposition` in `PROBE_POPULATION_CENSUS`.
-     * - `probeSurface: false` (13 modules): workload request transports, OAuth/PAT verification,
+     * - `probeSurface: false` (14 modules): workload request transports, OAuth/PAT verification,
      *   daemon lifecycle shutdown signals, or outbound delivery clients that are not probes.
      */
     ABORT_DEADLINE_MODULE_CENSUS = Object.freeze({
@@ -53,6 +53,11 @@ const
             probeSurface     : true,
             deadlineSpellings: ['new AbortController()'],
             role             : 'Chroma HTTP heartbeat health probe (`probeChromaHttpHealth`) + TCP port observation (`probeTcpPort`).'
+        },
+        'daemons/wake/antigravityWakeSidecar.mjs': {
+            probeSurface     : false,
+            deadlineSpellings: ['new AbortController()'],
+            role             : 'Sidecar lifecycle shutdown cancels the interval on SIGTERM or SIGINT.'
         },
         'daemons/wake/daemon.mjs': {
             probeSurface     : false,
@@ -1169,7 +1174,7 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
         } = await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
     });
 
-    test('AC-1 TOTALITY: all 26 abort-deadline modules and residency hook seams under ai/ are enumerated', () => {
+    test('AC-1 TOTALITY: all abort-deadline modules and residency hook seams under ai/ are enumerated', () => {
         const guardResult   = evaluateProbePopulationGuard({allowedEffects: PROBE_INTERVENTION_EFFECTS}),
               liveScan      = guardResult.liveScan,
               liveModules   = liveScan.map(item => item.module),
@@ -1179,7 +1184,7 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
             .toBe(true);
         expect(liveModules, 'a module under ai/ added or removed new AbortController() / AbortSignal.timeout() without updating ABORT_DEADLINE_MODULE_CENSUS')
             .toEqual(censusModules);
-        expect(liveModules.length).toBe(26);
+        expect(liveModules.length).toBe(27);
 
         for (const item of liveScan) {
             const censusEntry = ABORT_DEADLINE_MODULE_CENSUS[item.module];

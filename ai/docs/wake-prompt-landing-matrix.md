@@ -6,6 +6,24 @@ The wake substrate requires strict validation to ensure that "wake delivered" ac
 
 This matrix establishes the definitive criteria that MUST be proven before wake delivery can be considered successful for any harness. A2A storage success and wake-daemon adapter success are necessary but **NOT sufficient** proof of prompt delivery.
 
+## Existing main-session delivery
+
+Each peer has one Fleet harness instance. A wake belongs to its latest genuinely started main conversation, including while that conversation is idle. Resuming an older chat, inspecting history or starting a helper does not transfer ownership. The ordinary wake transports never start a new conversation. Session rotation after sunset is a separate signed operation.
+
+The native receiver uses a host-owned enrollment for one registry agent and family. On opted-in seats an unresolved binding keeps the signed event pending. The queue or sidecar receives an opaque marker. A recipient hook checks the current launch, main session and outstanding event before placing the digest in model context. Private recipient evidence settles the event. Inspect the pending reason when evidence is missing. Sending the same event again by hand can duplicate work.
+
+### Verifying a native wake
+
+For a real-peer check, have the peer identify its current main conversation and match it to the running Fleet instance. Capture the foreground application, draft state where observable, and starting transcript position. Use one benign event with a unique marker. A test receiver can instead use its own manifest, state and disposable profile.
+
+**Native transport.** A Codex queue row can wait while a goal turn runs. Leave the row alone and record the queue-triggered root turn in the same thread when the previous turn ends. Antigravity sidecar messages appear as addressed native system messages. Record the target conversation, exact marker and subsequent model acknowledgment. These checks can use the existing Desktop session before Fleet enrollment.
+
+**Fleet route.** For an enrolled canary, inspect the installed receiver and Fleet versions, vendor hook definitions and native trust. Codex requires an observed invocation of the exact trusted hook in the current process lifetime. Antigravity begins with a census of existing roots. A genuine subsequent main-session start and pre-model hook establish the recipient. Normal Fleet arming reads the host configuration. The peer's next planned session handoff is an opportunity to verify this path without interrupting ongoing work.
+
+Run `node ai/scripts/fleet/primarySessionWake.mjs status --agent <id> --family <family> --manifest <file>` to read the host enrollment. The explicit `enroll` command additionally takes `--state <receiver-state-directory>`. Enrollment selects the routing policy; the signed-event receipt establishes delivery.
+
+Record the private recipient proof for the signed event, the conversation that consumed it, and whether the draft and foreground survived. Exercise busy, duplicate, handoff, helper and restart controls on the candidate. A superseded root can receive an opaque marker attempt that the hook refuses; no mailbox content accompanies that marker. Record that separately from a delivered digest.
+
 ## Wake Backlog / Subscription Isolation Preflight (MANDATORY)
 
 Before running *any* controlled wake-delivery validation test, you MUST perform this preflight to prevent un-isolated backlog dumps from polluting the validation matrix:

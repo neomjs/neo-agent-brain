@@ -5,7 +5,7 @@ import {FLEET_BOOT_PHASES, formatFleetBootPhaseLine} from '../../../../../../ai/
 const source = fs.readFileSync(new URL('../../../../../../ai/services/fleet/devFleetServer.mjs', import.meta.url), 'utf8');
 
 /** @summary Execute the actual post-admission boot statements with isolated transport/observer seams. */
-function bootSlice({enabled = true, plane = true, start}) {
+function bootSlice({enabled = true, plane = true, start, manifestPath = null}) {
     const begin = source.indexOf('        // Claim the transport before starting an observer'),
         end     = source.indexOf('        // AWAITED plane teardown', begin);
     if (begin < 0 || end < 0) throw new Error('Fleet boot statement anchors changed');
@@ -17,7 +17,8 @@ function bootSlice({enabled = true, plane = true, start}) {
             superviseFleetBridge       : () => ({stop() {}}),
             FLEET_BRIDGE_STATES        : {READY: 'ready'},
             neuralLinkConfig           : {port: 1},
-            FleetManager               : {},
+            FleetManager               : {wakeStateOptions:{wakeReceiverManifestPath:manifestPath}},
+            startFleetPrimaryWakePump  : ({manifestPath}) => { events.push(['native-pump',manifestPath]); return {stop() {}} },
             AiConfig                   : {fleet: {openWorkWakes: enabled, bearerHandshake: false, harnessGenerations: {checkIntervalHours: 6}}},
             planeClient                : plane ? {addMessage() { events.push('send') }} : null,
             lifecycle                  : {harnessAcquisitionContext: family => ({family, optedIn: false})},
@@ -34,7 +35,7 @@ function bootSlice({enabled = true, plane = true, start}) {
             assertFleetViewerMcAuthorizationClass: () => null,
             console                              : {log() {}, warn() {}}, port: 1, bearerToken: 'fixture', viewer: {}, origins: []
         },
-        run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork, harnessAcquisition; ${source.slice(begin, end)} })()`);
+        run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork, harnessAcquisition, nativeWakePump; ${source.slice(begin, end)} })()`);
     return {events, pulses, config: seams.AiConfig, wakeOptions: () => wakeOptions, pulse: state => onPulse(state), run: () => run(...Object.values(seams))}
 }
 
@@ -58,7 +59,7 @@ test.describe('Fleet open-work boot custody (#761)', () => {
     test('an occupied transport rejects before any observer or wake path starts', async () => {
         let release;
         const pending = new Promise((resolve, reject) => { release = () => reject(Object.assign(new Error('occupied'), {code: 'EADDRINUSE'})) }),
-            h         = bootSlice({start: () => pending}), running = h.run();
+            h         = bootSlice({start: () => pending, manifestPath:'/fixture/receiver/routes.json'}), running = h.run();
         expect(h.events).toEqual(['listen']);
         release();
         await expect(running).rejects.toMatchObject({code: 'EADDRINUSE'});
@@ -67,11 +68,12 @@ test.describe('Fleet open-work boot custody (#761)', () => {
 
     test('only an enabled plane-mode owner connects the one observer to a wake round; any plane session publishes the copy', async () => {
         for (const [enabled, plane, wakes] of [[false, true, false], [true, false, false], [true, true, true]]) {
-            const h = bootSlice({enabled, plane}), state = {observedAt: 'pulse'};
+            const manifestPath = plane ? '/fixture/receiver/routes.json' : null;
+            const h            = bootSlice({enabled, plane, manifestPath}), state = {observedAt: 'pulse'};
             await h.run();
             // the harness acquisition is wired after the observer in every mode, reading the lifecycle's context
             const acquire = ['acquire', {family: 'codex-desktop', optedIn: false}, 6 * 3_600_000];
-            expect(h.events).toEqual(['listen', ...wakes ? ['wake'] : [], ...plane ? ['copy'] : [], 'observe', acquire]);
+            expect(h.events).toEqual(['listen', ...manifestPath ? [['native-pump',manifestPath]] : [], ...wakes ? ['wake'] : [], ...plane ? ['copy'] : [], 'observe', acquire]);
             // one pulse reaches the wake round when it is wired and the copy whenever a plane session exists
             await h.pulse(state);
             expect(h.pulses).toEqual([...wakes ? [['wake', state]] : [], ...plane ? [['copy', state]] : []]);
@@ -95,11 +97,12 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                 openWork               : {stop: () => { events.push('observer'); return active }},
                 wakeRound              : {stop: async () => { events.push('wake'); throw new Error('stop failure') }},
                 harnessAcquisition     : {stop() { events.push('acquisition') }},
+                nativeWakePump         : {stop() { events.push('native-pump') }},
                 planeClient            : {close: async () => { events.push('plane') }}
             }),
             running = stop();
         await Promise.resolve();
-        expect(events).toEqual(['stream', 'observer', 'wake', 'acquisition']);
+        expect(events).toEqual(['stream', 'observer', 'wake', 'acquisition', 'native-pump']);
         release();
         await expect(running).rejects.toThrow('stop failure');
         expect(events.at(-1)).toBe('plane');
@@ -275,7 +278,7 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                   superviseFleetBridge                 : () => ({stop() {}}),
                   FLEET_BRIDGE_STATES                  : {READY: 'ready'},
                   neuralLinkConfig                     : {port: 1},
-                  FleetManager                         : {getTenantService: async () => ({})},
+                  FleetManager                         : {wakeStateOptions:{wakeReceiverManifestPath:null},getTenantService: async () => ({})},
                   AiConfig                             : {fleet: {openWorkWakes: false, bearerHandshake: false, bearer: 'supplied', harnessGenerations: {checkIntervalHours: 6}}},
                   wireFleetHarnessAcquisition          : () => ({stop() {}}),
                   planeClient                          : null,
@@ -296,7 +299,7 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                   viewer                               : {agentIdentityNodeId: 'AGENT:tobiu'},
                   origins                              : []
               },
-              run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork, harnessAcquisition; ${source.slice(preBegin, preEnd)}\n${source.slice(postBegin, postEnd)} })()`);
+              run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork, harnessAcquisition, nativeWakePump; ${source.slice(preBegin, preEnd)}\n${source.slice(postBegin, postEnd)} })()`);
 
         const running = run(...Object.values(seams));
         await Promise.resolve();
@@ -344,5 +347,3 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         expect(logs.some(line => line.includes('[fleet] boot phase recovery: 0 ms (skipped: runtime verification failed)'))).toBe(true);
     });
 });
-
-

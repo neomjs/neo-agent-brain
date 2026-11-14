@@ -1524,6 +1524,35 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatModelCatalog (wha
     });
 });
 
+test.describe('FleetManager native wake canary', () => {
+    test.afterEach(() => {
+        FleetManager.lifecycleService = null; FleetManager.wakeStateOptions = null;
+        FleetManager.wakeArmFn = null; FleetManager.rotationArmFn = null; FleetManager.planeBase = null;
+    });
+
+    test('opted-in running Codex seat arms only its exact admitted generation', async () => {
+        const agent  = {id: 'seat-a', harnessType: 'codex-desktop'},
+              status = {id: 'seat-a', running: true, pid: 42, startedAt: 'start', instanceHome: '/agents/seat-a/harness/codex-desktop',
+                  launchCommand: '/generation/Codex.app/Contents/MacOS/ChatGPT', harnessGeneration: {generationId: 'gen'}},
+              lifecycle = {getRegistry: () => ({getDefinition: () => agent}), status: () => status,
+                  processes           : new Map([['seat-a', {cwd: '/work'}]]),
+                  harnessGenerationsOf: () => [{id: 'gen', binaryPath: status.launchCommand, appBundle: '/generation/Codex.app'}]},
+              calls = [];
+        FleetManager.lifecycleService = lifecycle;
+        FleetManager.wakeStateOptions = {wakeReceiverManifestPath: '/receiver/routes.json',
+            readNativeWakeOptIn: async () => ({agentId: 'seat-a', family: 'codex-desktop', stateDir: '/receiver/state'})};
+        FleetManager.wakeArmFn = async input => { calls.push(input); return {state: 'ready'} };
+        FleetManager.rotationArmFn = async () => null;
+        await FleetManager.armSeatWake('seat-a', status);
+        expect(calls[0].primarySession).toEqual({instanceHome: status.instanceHome, appBundle: '/generation/Codex.app',
+            agentId: 'seat-a', family: 'codex-desktop', hookNodePath:process.execPath,
+            hookModulePath:expect.stringContaining('/ai/daemons/wake/codexWakeHook.mjs')});
+        status.harnessGeneration.generationId = 'wrong';
+        expect((await FleetManager.armSeatWake('seat-a', status)).wakeRoute.state).toBe('unarmed');
+        expect(calls).toHaveLength(1);
+    });
+});
+
 test.describe('Neo.ai.services.fleet.FleetManager — pending Start cancellation across the seat-home queue', () => {
     const SEATS = {
         ada  : {id: 'ada',  harnessType: 'codex'},
