@@ -19,7 +19,7 @@ import {createHash} from 'node:crypto';
 
 /**
  * The open half: per PR, what a holder change is computed from, and the title the cockpit names it by.
- * The body and the first and head commits' messages carry the model an outside PR names.
+ * The body and every commit's message (up to 100, with whether more exist) carry the model an outside PR names.
  * @type {String}
  */
 export const OPEN_WORK_SNAPSHOT = `
@@ -55,7 +55,10 @@ export const OPEN_WORK_SNAPSHOT = `
           repository {
             nameWithOwner
           }
-          firstCommit: commits(first: 1) {
+          commitMessages: commits(first: 100) {
+            pageInfo {
+              hasNextPage
+            }
             nodes {
               commit {
                 message
@@ -191,7 +194,6 @@ export const OPEN_WORK_SNAPSHOT = `
             nodes {
               commit {
                 oid
-                message
                 statusCheckRollup {
                   state
                 }

@@ -73,10 +73,10 @@ export const GET_CONVERSATION = `
  * NOT carried onto the snapshot — the snapshot is drift-compared, so raw comment text would make any
  * peer's unrelated comment invalidate the observation.
  *
- * `authorAssociation`, the body and the first and head commits' messages name an outside author's model
- * family: an outside pull request needs an approval from a family it does not name. A trailer usually
- * sits on the first commit, a later fixup carries none, so both ends are read. Only the derived families
- * reach the snapshot, for the same drift reason as the comments.
+ * `authorAssociation`, the body and every commit's message name an outside author's model family: an
+ * outside pull request needs an approval from a family it does not name. A trailer may sit on any
+ * commit, so up to 100 are read, with whether more exist. Only the derived families reach the
+ * snapshot, for the same drift reason as the comments.
  *
  * Variables required:
  * - $owner: String! - Repository owner
@@ -99,7 +99,10 @@ export const GET_MERGE_READINESS = `
         author {
           login
         }
-        firstCommit: commits(first: 1) {
+        commitMessages: commits(first: 100) {
+          pageInfo {
+            hasNextPage
+          }
           nodes {
             commit {
               message
@@ -158,7 +161,6 @@ export const GET_MERGE_READINESS = `
           nodes {
             commit {
               oid
-              message
               statusCheckRollup {
                 contexts(first: 100) {
                   totalCount

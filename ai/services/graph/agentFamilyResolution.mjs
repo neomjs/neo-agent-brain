@@ -540,7 +540,8 @@ export function hasCrossFamilyReview(pr, agentFamilies = getCoreSwarmAgentFamili
  * GitHub's `authorAssociation` (not an owner, member or collaborator), so it is read only when the
  * caller passes that fact. The named families come from `pr.disclosedFamilies` when the caller derived
  * them, otherwise from the body and `pr.commitMessages` ({@link disclosedFamiliesOf}). A pull request
- * may name several families; an approval counts when its family is none of them.
+ * may name several families; an approval counts when its family is none of them. When the caller read
+ * only some of the commits (`pr.disclosureTruncated`), the families it found may be only some of them.
  *
  * **3. No author family to compare reports `null`, not a verdict.** That is an outside pull request
  * that names no model (`outside: true`, `authorFamilies: []`), or an author who is neither rostered
@@ -551,12 +552,13 @@ export function hasCrossFamilyReview(pr, agentFamilies = getCoreSwarmAgentFamili
  * approved and what family they belong to sends the reader back to the API to find out.
  *
  * @param {Object} pr GitHub PR payload (`author`, `body`, `reviews`; `authorAssociation`,
- *     `disclosedFamilies` and `commitMessages` when the caller has them).
+ *     `disclosedFamilies`, `disclosureTruncated` and `commitMessages` when the caller has them).
  * @param {Object} [agentFamilies=getCoreSwarmAgentFamilies()] Login-to-family map.
  * @param {Object} [options]
  * @param {Function} [options.warn=console.warn] Runtime-owner warning sink.
  * @returns {{crossFamily: (Boolean|null), authorFamily: (String|null), authorFamilies: String[], outside: Boolean,
- *     approvingFamilies: String[], unclassifiedApprovers: String[], approvalsTruncated: Boolean}}
+ *     disclosureTruncated: Boolean, approvingFamilies: String[], unclassifiedApprovers: String[],
+ *     approvalsTruncated: Boolean}}
  */
 export function resolveCrossFamilyVerdict(pr, agentFamilies = getCoreSwarmAgentFamilies(), options = {}) {
     const
@@ -565,6 +567,7 @@ export function resolveCrossFamilyVerdict(pr, agentFamilies = getCoreSwarmAgentF
         rostered       = (pr?.authorFamily ?? resolveAuthorFamily(pr, agentFamilies, options)) ?? null,
         outside        = !rostered && typeof pr?.authorAssociation === 'string' && !MEMBER_ASSOCIATIONS.has(pr.authorAssociation),
         authorFamilies = rostered ? [rostered] : outside ? pr.disclosedFamilies ?? disclosedFamiliesOf(pr) : [],
+        unreadCommits  = outside && Boolean(pr?.disclosureTruncated),
         reviews        = Array.isArray(pr?.reviews) ? pr.reviews : [],
         approvals      = reviews.filter(review => review?.state === 'APPROVED'),
         resolved       = approvals.map(review => resolveReviewerFamily(review, agentFamilies)),
@@ -581,12 +584,13 @@ export function resolveCrossFamilyVerdict(pr, agentFamilies = getCoreSwarmAgentF
         : approvingFamilies.some(family => !authorFamilies.includes(family));
 
     return {
-        authorFamily: authorFamilies.join(', ') || null,
+        authorFamily       : authorFamilies.join(', ') || null,
         authorFamilies,
         outside,
+        disclosureTruncated: unreadCommits,
         approvingFamilies,
         unclassifiedApprovers,
-        approvalsTruncated: Boolean(pr?.approvalsTruncated),
+        approvalsTruncated : Boolean(pr?.approvalsTruncated),
         // A POSITIVE witness is decisive; a NEGATIVE over a truncated window is not a negative.
         //
         // The approvals connection is bounded (`reviews(last: 100)`), so a qualifying older approval
@@ -598,7 +602,11 @@ export function resolveCrossFamilyVerdict(pr, agentFamilies = getCoreSwarmAgentF
         // So truncation degrades a negative to `null`, which the consumer already fails closed on
         // with its own message. No author family short-circuits before any of it: comparing against
         // nothing would make every classified approver look cross-family.
-        crossFamily: authorFamilies.length === 0 || (crossFamily === false && Boolean(pr?.approvalsTruncated))
+        //
+        // Unread commits mirror it: one of them may name an approver's family, so they degrade a
+        // positive. A negative stands, since more named families only exclude more approvers.
+        crossFamily: authorFamilies.length === 0 || (crossFamily === false && Boolean(pr?.approvalsTruncated)) ||
+            (crossFamily === true && unreadCommits)
             ? null
             : crossFamily
     }

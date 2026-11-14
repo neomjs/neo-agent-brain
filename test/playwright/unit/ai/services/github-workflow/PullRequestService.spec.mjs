@@ -462,8 +462,8 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         authorLogin = 'neo-opus-vega',
         // A member by default: only an outside author's family comes from what the PR names.
         authorAssociation = 'MEMBER',
-        firstCommitMessage = 'feat: the change',
-        headCommitMessage = 'feat: the change',
+        commitMessages = ['feat: the change'],
+        commitsHasNextPage = false,
         // Default body carries a self-id matching the opener, so arms about other things are not
         // silently exercising author drift.
         body = 'Authored by Vega (Claude Opus 5, Claude Code).',
@@ -486,7 +486,10 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         author        : authorLogin === null ? null : {login: authorLogin},
         authorAssociation,
         body,
-        firstCommit   : {nodes: [{commit: {message: firstCommitMessage}}]},
+        commitMessages: {
+            pageInfo: {hasNextPage: commitsHasNextPage},
+            nodes   : commitMessages.map(message => ({commit: {message}}))
+        },
         reviewRequests: {
             pageInfo: {hasNextPage: reviewHasNextPage, endCursor: null},
             nodes   : reviewers.map(login => ({
@@ -505,7 +508,6 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
             nodes: [{
                 commit: {
                     oid              : checkCommit,
-                    message          : headCommitMessage,
                     statusCheckRollup: checkRollupAvailable ? {
                         contexts: {
                             totalCount: checkTotalCount ?? contexts.length,
@@ -769,7 +771,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
             reviews          : [{state: 'APPROVED', submittedAt: '2026-07-29T07:00:00.000Z', commit: {oid: HEAD}, author: {login: approver}}],
             ...overrides
         });
-        const run = async overrides => project(dependencies({snapshots: [outside(overrides), outside(overrides)]}));
+        const run         = async overrides => project(dependencies({snapshots: [outside(overrides), outside(overrides)]}));
         const crossFamily = result => result.predicate.blockers.filter(entry => entry.includes('cross-family'));
 
         test('a Claude-named pull request blocks on a Claude-only approval and passes on a GPT one', async () => {
@@ -783,14 +785,28 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
             expect(across.predicate.strictMergeReady).toBe(true)
         });
 
-        test('a model named only in the first commit\'s trailer counts the same', async () => {
+        test('a model named only in an interior commit\'s trailer counts the same', async () => {
             const result = await run({
-                body              : 'Resolves #1\n\nThe row now expands on ArrowRight.',
-                firstCommitMessage: 'feat: expand\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>',
-                approver          : 'neo-opus-vega'
+                body          : 'Resolves #1\n\nThe row now expands on ArrowRight.',
+                commitMessages: ['chore: set up', 'feat: expand\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>', 'chore: tidy'],
+                approver      : 'neo-opus-vega'
             });
 
             expect(crossFamily(result).some(entry => entry.includes('mandate unsatisfied'))).toBe(true)
+        });
+
+        test('commits past the read never make "names no model", and degrade only a cross-family pass', async () => {
+            const unread = {commitMessages: ['chore: set up'], commitsHasNextPage: true},
+                  plain  = await run({...unread, body: 'Resolves #1\n\nA plain description.', approver: 'neo-opus-vega'}),
+                  across = await run({...unread, body: 'Resolves #1\n\nMade with Claude Code.', approver: 'neo-gpt-emmy'}),
+                  same   = await run({...unread, body: 'Resolves #1\n\nMade with Claude Code.', approver: 'neo-opus-vega'});
+
+            expect(crossFamily(plain).some(entry => entry.includes('more commits than one read covers'))).toBe(true);
+            expect(plain.predicate.advisories.some(entry => entry.includes('names no model'))).toBe(false);
+            // an unread commit may name GPT too, so a GPT approval proves nothing yet
+            expect(crossFamily(across).some(entry => entry.includes('more commits than one read covers'))).toBe(true);
+            // more named families only exclude more approvers, so a same-family miss stands
+            expect(crossFamily(same).some(entry => entry.includes('mandate unsatisfied'))).toBe(true)
         });
 
         test('a pull request that names no model only advises: any family may approve it', async () => {
@@ -891,10 +907,9 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         }
     });
 
-    test('the query reads what an outside author\'s family comes from: association, first and head commit messages', () => {
+    test('the query reads what an outside author\'s family comes from: association and every commit message', () => {
         expect(GET_MERGE_READINESS).toContain('authorAssociation');
-        expect(GET_MERGE_READINESS).toMatch(/firstCommit: commits\(first: 1\) \{\s*nodes \{\s*commit \{\s*message/);
-        expect(GET_MERGE_READINESS).toMatch(/commits\(last: 1\) \{\s*nodes \{\s*commit \{\s*oid\s*message/)
+        expect(GET_MERGE_READINESS).toMatch(/commitMessages: commits\(first: 100\) \{\s*pageInfo \{\s*hasNextPage\s*\}\s*nodes \{\s*commit \{\s*message/)
     });
 
     test('#17373: certification availability stays named but cannot change artifact merge eligibility', async () => {

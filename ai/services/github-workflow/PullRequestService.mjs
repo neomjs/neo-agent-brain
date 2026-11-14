@@ -594,11 +594,13 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
         authorSelfIdLogin: parseSelfIdLogin(pullRequest.body ?? '') ?? null,
         // An outside author's family is the one the pull request names, so the snapshot keeps
         // GitHub's association and the DERIVED families, never the body or the commit messages.
+        // Commits past the read may name more families, so a read that did not reach the end says so.
         authorAssociation      : pullRequest.authorAssociation ?? null,
         authorDisclosedFamilies: disclosedFamiliesOf({
             body          : pullRequest.body ?? '',
-            commitMessages: [pullRequest.firstCommit?.nodes?.[0]?.commit?.message, commit?.message]
+            commitMessages: (pullRequest.commitMessages?.nodes || []).map(node => node?.commit?.message)
         }),
+        authorDisclosureTruncated: pullRequest.commitMessages?.pageInfo?.hasNextPage !== false,
         // DERIVED hold facts, never raw comment bodies. Same reasoning as `authorSelfIdLogin`: this
         // snapshot is compared by `stableStringify` across two reads, so carrying comment text would
         // make any peer's unrelated comment invalidate the observation. Only comments bearing a
@@ -996,14 +998,15 @@ async function buildMergeReadinessProjection({
     const crossFamilyVerdict = snapshot.approvals.available
         ? {
             ...resolveCrossFamilyVerdict({
-                authorFamily      : resolveAuthorFamilyFromLogins({
+                authorFamily       : resolveAuthorFamilyFromLogins({
                     selfIdLogin: snapshot.authorSelfIdLogin,
                     openerLogin: snapshot.authorLogin
                 }, undefined, {warn: logger.warn}) ?? null,
-                authorAssociation : snapshot.authorAssociation,
-                disclosedFamilies : snapshot.authorDisclosedFamilies,
-                approvalsTruncated: snapshot.approvals.hasPreviousPage,
-                reviews           : snapshot.approvals.nodes.map(node => ({state: 'APPROVED', author: {login: node.login}}))
+                authorAssociation  : snapshot.authorAssociation,
+                disclosedFamilies  : snapshot.authorDisclosedFamilies,
+                disclosureTruncated: snapshot.authorDisclosureTruncated,
+                approvalsTruncated : snapshot.approvals.hasPreviousPage,
+                reviews            : snapshot.approvals.nodes.map(node => ({state: 'APPROVED', author: {login: node.login}}))
             }),
             authorLogin: snapshot.authorSelfIdLogin || snapshot.authorLogin
         }

@@ -371,6 +371,16 @@ test.describe('validateMergeReady — the cross-family mandate', () => {
         expect(cut.strictMergeReady).toBe(false);
         expect(cut.blockers.some(entry => entry.includes('could not be evaluated'))).toBe(true);
         expect(cut.advisories.some(entry => entry.includes('names no model'))).toBe(false);
+    });
+
+    test('an outside pull request whose commits were not all read never advises "names no model"', () => {
+        const result = validateMergeReady(green({
+            crossFamilyVerdict: {crossFamily: null, authorFamily: null, authorFamilies: [], outside: true, disclosureTruncated: true, approvingFamilies: ['claude'], authorLogin: 'outside-dev'}
+        }));
+
+        expect(result.strictMergeReady).toBe(false);
+        expect(result.blockers.some(entry => entry.includes('more commits than one read covers') && entry.includes('outside-dev'))).toBe(true);
+        expect(result.advisories.some(entry => entry.includes('names no model'))).toBe(false);
     })
 });
 

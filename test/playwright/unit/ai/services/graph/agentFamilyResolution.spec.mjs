@@ -383,9 +383,9 @@ test.describe('ai/services/graph/agentFamilyResolution — own-entry authority',
  * roster here is explicit so each arm reads as the family table it relies on.
  */
 test.describe('ai/services/graph/agentFamilyResolution — outside authors', () => {
-    const families = {'seat-claude': 'claude', 'seat-gpt': 'gpt'};
+    const families   = {'seat-claude': 'claude', 'seat-gpt': 'gpt'};
     const approvedBy = (...logins) => logins.map(login => ({state: 'APPROVED', author: {login}}));
-    const outsidePr = overrides => ({
+    const outsidePr  = overrides => ({
         author           : {login: 'outside-dev'},
         authorAssociation: 'CONTRIBUTOR',
         body             : 'Resolves #1\n\nAuthored by Jo, assisted by Claude Opus 5.5 (Claude Code).',
@@ -418,6 +418,17 @@ test.describe('ai/services/graph/agentFamilyResolution — outside authors', () 
         const pr = outsidePr({body: 'Resolves #1\n\nA plain description.', reviews: approvedBy('seat-claude')});
 
         expect(resolveCrossFamilyVerdict(pr, families)).toMatchObject({authorFamily: null, authorFamilies: [], outside: true, crossFamily: null})
+    });
+
+    test('unread commits degrade a cross-family pass to no verdict and leave a same-family miss standing', () => {
+        const unread = {disclosedFamilies: ['claude'], disclosureTruncated: true};
+
+        expect(resolveCrossFamilyVerdict(outsidePr({...unread, reviews: approvedBy('seat-gpt')}), families))
+            .toMatchObject({authorFamilies: ['claude'], disclosureTruncated: true, crossFamily: null});
+        expect(resolveCrossFamilyVerdict(outsidePr({...unread, reviews: approvedBy('seat-claude')}), families).crossFamily).toBe(false);
+        // a member's family is its seat's, so its commits are never read for one
+        expect(resolveCrossFamilyVerdict(outsidePr({...unread, authorAssociation: 'MEMBER', reviews: approvedBy('seat-gpt')}), families))
+            .toMatchObject({outside: false, disclosureTruncated: false})
     });
 
     test('a member, or a caller that passes no association, never reads the body for a family', () => {
