@@ -20,7 +20,10 @@ import {
  * The collection is the cursor: an id it already holds is skipped, so an interrupted run resumes
  * where it stopped, and a graph restore is followed by a re-run. Retracted and incompletely routed
  * messages are skipped and counted. A message retracted while its batch was being written is
- * deleted again afterwards, as the drain compensates a mid-embed retraction.
+ * deleted again afterwards, as the drain compensates a mid-embed retraction. A retracted message
+ * the collection still holds, from a write that landed after its answer was lost or a retraction
+ * whose own delete failed, is deleted by the next run and counted as `compensated`. A failed
+ * delete counts as `failed`, and the next run retries it.
  *
  * Run it inside the Memory Core container against the serving graph, which it opens read-only.
  * Dry-run by default: the receipt then counts what `--apply` would embed and projects its vector
@@ -108,30 +111,51 @@ function readRetracted(db, ids) {
  * @param {Boolean}  [options.apply=false]      Write; otherwise count and project only.
  * @param {Number}   [options.embedBatchSize=32] Messages per embedding request.
  * @param {Function} [options.log]              `(level, message)` sink.
- * @returns {Promise<Object>} The receipt.
+ * @returns {Promise<Object>} The receipt. `compensated` counts the retracted messages the collection
+ * held: deleted with `apply`, only counted in a dry run.
  */
 export async function backfillMessageEmbeddings({db, collection, apply = false, embedBatchSize = 32, log = () => {}}) {
-    const ids     = db.prepare(`SELECT id FROM Nodes WHERE id LIKE 'MESSAGE:%'
+    const ids = db.prepare(`SELECT id FROM Nodes WHERE id LIKE 'MESSAGE:%'
                         ORDER BY json_extract(data, '$.properties.sentAt'), id`).all().map(row => row.id),
-          receipt = {mode: apply ? 'apply' : 'dry-run', messages: ids.length, embedded: 0, pending: 0,
-                     skipped: {present: 0, retracted: 0, incomplete: 0}, failed: 0};
+          receipt = {mode: apply ? 'apply' : 'dry-run', messages: ids.length, embedded: 0, pending: 0, compensated: 0,
+                     skipped: {present: 0, retracted: 0, incomplete: 0}, failed: 0},
+          remove  = async retractedIds => {
+              try {
+                  await collection.delete({ids: retractedIds});
+                  return true
+              } catch (error) {
+                  receipt.failed += retractedIds.length;
+                  log('ERROR', `deleting ${retractedIds.length} retracted messages failed: ${error.message || error}`);
+                  return false
+              }
+          };
 
     for (let start = 0; start < ids.length; start += SQLITE_IN_CLAUSE_BATCH_SIZE) {
         const page    = readMessagePage(db, ids.slice(start, start + SQLITE_IN_CLAUSE_BATCH_SIZE)),
-              live    = page.filter(({node}) => !node.properties.retracted),
-              present = new Set(live.length > 0 ? (await collection.get({ids: live.map(({node}) => node.id), include: []})).ids : []),
+              present = new Set(page.length > 0 ? (await collection.get({ids: page.map(({node}) => node.id), include: []})).ids : []),
+              held    = [],
               records = [];
 
-        receipt.skipped.retracted += page.length - live.length;
-        receipt.skipped.present   += present.size;
+        for (const {node, edges} of page) {
+            if (node.properties.retracted) {
+                if (present.has(node.id)) held.push(node.id);
+                else receipt.skipped.retracted++;
+                continue
+            }
 
-        for (const {node, edges} of live) {
-            if (present.has(node.id)) continue;
+            if (present.has(node.id)) {
+                receipt.skipped.present++;
+                continue
+            }
 
             const record = toGraphMessageEmbedRecord(node, edges);
 
             if (record) records.push(record);
             else receipt.skipped.incomplete++
+        }
+
+        if (held.length > 0 && (!apply || await remove(held))) {
+            receipt.compensated += held.length
         }
 
         receipt.pending += records.length;
@@ -152,9 +176,11 @@ export async function backfillMessageEmbeddings({db, collection, apply = false, 
             const retracted = readRetracted(db, batchIds);
 
             if (retracted.length > 0) {
-                await collection.delete({ids: retracted});
-                receipt.embedded         -= retracted.length;
-                receipt.skipped.retracted += retracted.length;
+                receipt.embedded -= retracted.length;
+
+                if (await remove(retracted)) {
+                    receipt.skipped.retracted += retracted.length
+                }
             }
         }
     }

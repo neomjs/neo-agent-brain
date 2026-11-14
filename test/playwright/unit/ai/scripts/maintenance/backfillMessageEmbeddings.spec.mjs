@@ -61,13 +61,24 @@ function seedGraph(messages) {
 }
 
 /**
+ * @summary Marks a message's graph node retracted, as `MailboxService` does.
+ * @param {Object} db
+ * @param {String} id
+ */
+function retract(db, id) {
+    db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.retracted', json('true')) WHERE id = ?`).run(id)
+}
+
+/**
  * @summary A message collection double: holds rows by id and records its writes.
  * @param {Object}   [options]
  * @param {String[]} [options.held=[]]      Ids it already holds.
- * @param {Function} [options.onUpsert]     Called with each upsert's arguments; may throw.
+ * @param {Function} [options.onUpsert]     Called with each upsert's arguments before it writes; may throw.
+ * @param {Function} [options.afterUpsert]  Called after an upsert wrote its rows; a throw is a lost answer.
+ * @param {Function} [options.onDelete]     Called with each delete's arguments before it deletes; may throw.
  * @returns {Object}
  */
-function fakeCollection({held = [], onUpsert = () => {}} = {}) {
+function fakeCollection({held = [], onUpsert = () => {}, afterUpsert = () => {}, onDelete = () => {}} = {}) {
     const rows = new Map(held.map(id => [id, {}]));
 
     return {
@@ -82,10 +93,12 @@ function fakeCollection({held = [], onUpsert = () => {}} = {}) {
         async upsert(args) {
             this.upserts.push(args);
             onUpsert(args);
-            args.ids.forEach((id, i) => rows.set(id, {metadata: args.metadatas[i], document: args.documents[i]}))
+            args.ids.forEach((id, i) => rows.set(id, {metadata: args.metadatas[i], document: args.documents[i]}));
+            afterUpsert(args)
         },
         async delete({ids}) {
             this.deletes.push(ids);
+            onDelete({ids});
             ids.forEach(id => rows.delete(id))
         }
     }
@@ -117,8 +130,8 @@ test.describe('backfillMessageEmbeddings maintenance script', () => {
         const dryRun = await backfillMessageEmbeddings({db, collection});
 
         expect(dryRun).toEqual({
-            mode: 'dry-run', messages: 7, embedded: 0, pending: 4, failed: 0,
-            skipped: {present: 1, retracted: 1, incomplete: 1},
+            mode          : 'dry-run', messages: 7, embedded: 0, pending: 4, compensated: 0, failed: 0,
+            skipped       : {present: 1, retracted: 1, incomplete: 1},
             projectedBytes: 4 * 8 * 4
         });
         expect(collection.upserts).toHaveLength(0);
@@ -134,8 +147,8 @@ test.describe('backfillMessageEmbeddings maintenance script', () => {
     });
 
     test('a failed batch is counted and the run moves on; the next run retries it', async () => {
-        let calls = 0;
-        const db         = seedGraph(corpus),
+        let   calls = 0;
+        const db    = seedGraph(corpus),
               collection = fakeCollection({onUpsert: () => {
                   if (calls++ === 0) throw new Error('embedder unavailable')
               }});
@@ -147,9 +160,7 @@ test.describe('backfillMessageEmbeddings maintenance script', () => {
     test('a message retracted while its batch is written is deleted again', async () => {
         const db         = seedGraph(corpus),
               collection = fakeCollection({onUpsert: ({ids}) => {
-                  if (ids.includes('MESSAGE:known')) {
-                      db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.retracted', json('true')) WHERE id = ?`).run('MESSAGE:known')
-                  }
+                  if (ids.includes('MESSAGE:known')) retract(db, 'MESSAGE:known')
               }});
 
         const receipt = await backfillMessageEmbeddings({db, collection, apply: true});
@@ -157,5 +168,59 @@ test.describe('backfillMessageEmbeddings maintenance script', () => {
         expect(collection.deletes).toEqual([['MESSAGE:known']]);
         expect(collection.rows.has('MESSAGE:known')).toBe(false);
         expect(receipt).toMatchObject({embedded: 4, skipped: {retracted: 1}});
+    });
+
+    test('a write that lands after its answer is lost, for a message retracted meanwhile, is deleted by the next run', async () => {
+        let   lost = false;
+        const db   = seedGraph(corpus),
+              collection = fakeCollection({afterUpsert: ({ids}) => {
+                  if (!lost && ids.includes('MESSAGE:known')) {
+                      lost = true;
+                      retract(db, 'MESSAGE:known');
+                      throw new Error('socket hang up')
+                  }
+              }});
+
+        expect(await backfillMessageEmbeddings({db, collection, apply: true})).toMatchObject({embedded: 0, failed: 5, compensated: 0});
+        expect(collection.rows.has('MESSAGE:known')).toBe(true);
+
+        expect(await backfillMessageEmbeddings({db, collection, apply: true}))
+            .toMatchObject({embedded: 0, pending: 0, compensated: 1, failed: 0, skipped: {present: 4, retracted: 0}});
+        expect(collection.deletes).toEqual([['MESSAGE:known']]);
+        expect(collection.rows.has('MESSAGE:known')).toBe(false);
+    });
+
+    test('a dry run counts a retracted message the collection holds and deletes nothing', async () => {
+        const retracted  = message('MESSAGE:retracted', {to: '@bob'}, [['SENT_BY', '@alice'], ['SENT_TO', '@bob']], {retracted: true}),
+              db         = seedGraph([...corpus, retracted]),
+              collection = fakeCollection({held: ['MESSAGE:direct', 'MESSAGE:retracted']});
+
+        expect(await backfillMessageEmbeddings({db, collection}))
+            .toMatchObject({mode: 'dry-run', pending: 4, compensated: 1, skipped: {present: 1, retracted: 0}});
+        expect(collection.deletes).toEqual([]);
+        expect(collection.rows.has('MESSAGE:retracted')).toBe(true);
+    });
+
+    test('a failed delete is counted, the run finishes, and the next run deletes the message', async () => {
+        let   refuse = true;
+        const db     = seedGraph(corpus),
+              collection = fakeCollection({
+                  onUpsert: ({ids}) => {
+                      if (ids.includes('MESSAGE:known')) retract(db, 'MESSAGE:known')
+                  },
+                  onDelete: () => {
+                      if (refuse) {
+                          refuse = false;
+                          throw new Error('collection unavailable')
+                      }
+                  }
+              });
+
+        expect(await backfillMessageEmbeddings({db, collection, apply: true}))
+            .toMatchObject({embedded: 4, failed: 1, compensated: 0, skipped: {retracted: 0}});
+        expect(collection.rows.has('MESSAGE:known')).toBe(true);
+
+        expect(await backfillMessageEmbeddings({db, collection, apply: true})).toMatchObject({compensated: 1, failed: 0});
+        expect(collection.rows.has('MESSAGE:known')).toBe(false);
     });
 });
