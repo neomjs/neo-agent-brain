@@ -15,8 +15,7 @@ import {
     PUBLISH_LOCK_TIMEZONE,
     computePublishRevisionDigest,
     matchesRequestedPublishText,
-    parsePublishSchedule,
-    zonedWallTimeToUtcMs
+    parsePublishSchedule
 } from './helpers/publishDigest.mjs';
 import {resolveSharingPolicy}                             from './helpers/resolveSharingPolicy.mjs';
 import {
@@ -172,8 +171,7 @@ export {
     PUBLISH_LOCK_TIMEZONE,
     computePublishRevisionDigest,
     matchesRequestedPublishText,
-    parsePublishSchedule,
-    zonedWallTimeToUtcMs
+    parsePublishSchedule
 };
 
 /**
@@ -5974,7 +5972,6 @@ class MailboxService extends Base {
             me,
             messageNode,
             storedState,
-            originator,
             isOriginator,
             isAssignee
         } = this._loadPublishRequestContext(targetId, 'editPublishRequest');
@@ -6012,10 +6009,8 @@ class MailboxService extends Base {
             ...currentPayload,
             ...rawUpdates
         };
-        // A revision edit never inherits a prior attestation unless explicitly re-supplied and verified.
-        if (!Object.hasOwn(rawUpdates, 'attestation')) {
-            delete mergedCandidate.attestation;
-        }
+        // An Edit creates a new unattested revision; post-edit attestations bind via attestPublishRevision.
+        delete mergedCandidate.attestation;
 
         const validated            = validateAndNormalizeRequestPublishPayload(mergedCandidate, {requireHypothesis: true});
         const nowMs                = this._now();
@@ -6037,19 +6032,7 @@ class MailboxService extends Base {
         const existingRevisions  = Array.isArray(storedState.revisions) ? storedState.revisions : (storedState.revision ? [storedState.revision] : []);
         const nextRevisionNumber = (storedState.revision?.revisionNumber || existingRevisions.length || 1) + 1;
 
-        const {revisionDigest, attestation: rawAttestation, ...publishFields} = validated;
-
-        let verifiedAttestation = null;
-        if (rawAttestation !== null && rawAttestation !== undefined) {
-            verifiedAttestation = resolveAndVerifyPublishAttestation({
-                db,
-                attestation           : rawAttestation,
-                expectedRevisionDigest: revisionDigest,
-                revisionNumber        : nextRevisionNumber,
-                authorIdentity        : originator || me,
-                timestamp
-            });
-        }
+        const {revisionDigest, attestation: _rawAttestation, ...publishFields} = validated;
 
         const nextRevision = {
             revisionNumber: nextRevisionNumber,
@@ -6058,7 +6041,7 @@ class MailboxService extends Base {
             createdBy     : me,
             payload       : {...publishFields},
             approval      : null,
-            attestation   : verifiedAttestation
+            attestation   : null
         };
 
         const nextRevisions   = [...existingRevisions, nextRevision];
@@ -6082,7 +6065,7 @@ class MailboxService extends Base {
                 revisionNumber: nextRevision.revisionNumber,
                 revisionDigest: nextRevision.revisionDigest,
                 approval      : null,
-                attestation   : verifiedAttestation
+                attestation   : null
             },
             publication   : nextPublication
         };

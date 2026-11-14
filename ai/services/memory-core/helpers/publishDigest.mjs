@@ -109,7 +109,7 @@ function getTimeZoneOffsetMs(utcMs, timeZone) {
  * @param {String} [timeZone=PUBLISH_LOCK_TIMEZONE]
  * @returns {Number}
  */
-export function zonedWallTimeToUtcMs({
+function zonedWallTimeToUtcMs({
     year,
     month,
     day,

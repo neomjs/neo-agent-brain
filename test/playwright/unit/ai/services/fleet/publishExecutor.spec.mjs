@@ -2436,7 +2436,7 @@ test.describe('publishExecutor (#979)', () => {
         }
     });
 
-    test('Dated publication schedule (#1695): holds pre-approved scheduledFor requests in queued before earliestReleaseMs (refused: schedule-not-reached), releases at/after earliestReleaseMs, and refuses unapproved late-locked revisions (refused: content-lock-window)', async () => {
+    test('Dated publication schedule (#1695) 1: holds pre-approved scheduledFor requests in queued before earliestReleaseMs (refused: schedule-not-reached) and releases on day D', async () => {
         expect(PUBLISH_LOCK_TIMEZONE).toBe('Europe/Berlin');
         expect(REFUSAL_CODES.scheduledFor).toBe('refused: scheduledFor');
         expect(REFUSAL_CODES.contentLockWindow).toBe('refused: content-lock-window');
@@ -2447,8 +2447,6 @@ test.describe('publishExecutor (#979)', () => {
             earliestReleaseIso: '2026-11-17T23:00:00.000Z'
         });
 
-        // 1. Pre-approved dated request (D = 2026-11-18) called on D-1 evening (20:00 CET = 19:00Z)
-        // stays in 'queued' (`refused: schedule-not-reached`) with zero platform calls, then releases on day D.
         const reqScheduled = seedApprovedRequest({
             requestId: 'MESSAGE:97900000-0000-4000-8000-000000169501',
             payload  : buildPayload({scheduledFor: '2026-11-18'})
@@ -2501,8 +2499,9 @@ test.describe('publishExecutor (#979)', () => {
             providerId: 'tweet-scheduled-release-1'
         });
         expect(platformCallsA).toBe(1);
+    });
 
-        // 2a. Unapproved `auto-approve` request whose `createdAt` missed `D-1 18:00 Europe/Berlin` is refused (`refused: content-lock-window`)
+    test('Dated publication schedule (#1695) 2: refuses unapproved auto-approve or late-attested current revisions that missed D-1 18:00 Europe/Berlin (refused: content-lock-window)', async () => {
         const reqLateCreated = seedApprovedRequest({
             requestId: 'MESSAGE:97900000-0000-4000-8000-000000169502',
             approved : false,
@@ -2535,7 +2534,6 @@ test.describe('publishExecutor (#979)', () => {
         expect(platformCallsB1).toBe(0);
         expect((await mailboxLateCreated.getMessage({messageId: reqLateCreated.requestId})).publication.state).toBe(PUBLICATION_STATES.refused);
 
-        // 2b. Unapproved `auto-approve after attestation` request whose `attestedAt` missed `D-1 18:00 Europe/Berlin` is refused (`refused: content-lock-window`)
         const reviewIdLateAtt = 'MESSAGE:97900000-0000-4000-8000-000000169599';
         const payloadLateAtt  = buildPayload({scheduledFor: '2026-11-18'});
         const digestLateAtt   = computePublishRevisionDigest(payloadLateAtt);
@@ -2576,8 +2574,9 @@ test.describe('publishExecutor (#979)', () => {
             state  : PUBLICATION_STATES.refused,
             refused: REFUSAL_CODES.contentLockWindow
         });
+    });
 
-        // 2c. Explicitly human-approved revision created after D-1 18:00 (operator urgent edit/override) dispatches once release window opens
+    test('Dated publication schedule (#1695) 3: dispatches human-approved post-cutoff overrides on day D and refuses malformed stored scheduledFor', async () => {
         const reqOperatorOverride = seedApprovedRequest({
             requestId: 'MESSAGE:97900000-0000-4000-8000-000000169504',
             approved : true,
@@ -2603,7 +2602,6 @@ test.describe('publishExecutor (#979)', () => {
             providerId: 'tweet-operator-override-ok'
         });
 
-        // 3. Malformed stored scheduledFor transitions to 'refused' (`refused: scheduledFor`)
         const reqMalformed = seedApprovedRequest({
             requestId: 'MESSAGE:97900000-0000-4000-8000-000000169505',
             approved : true,

@@ -30,8 +30,7 @@ import {
     PUBLISH_LOCK_TIMEZONE,
     computePublishRevisionDigest,
     matchesRequestedPublishText,
-    parsePublishSchedule,
-    zonedWallTimeToUtcMs
+    parsePublishSchedule
 } from '../memory-core/helpers/publishDigest.mjs';
 import {
     PUBLISH_CHANNELS,
@@ -54,7 +53,6 @@ export {
     computePublishRevisionDigest,
     matchesRequestedPublishText,
     parsePublishSchedule,
-    zonedWallTimeToUtcMs,
     PUBLISH_CHANNELS,
     SWITCH_STATES,
     SWITCH_STATE_RANK,
@@ -1241,7 +1239,7 @@ export function createPublishExecutor(config = {}) {
             // released without an explicit human operator approval on the current revision.
             if (schedule && !currentRevision.approval) {
                 const createdAtMs    = currentRevision.createdAt ? Date.parse(String(currentRevision.createdAt)) : NaN,
-                      attestationObj = currentRevision.attestation ?? payload.attestation ?? null,
+                      attestationObj = currentRevision.attestation ?? null,
                       attestedAtRaw  = attestationObj?.attestedAt ?? attestationObj?.timestamp ?? null,
                       attestedAtMs   = attestedAtRaw ? Date.parse(String(attestedAtRaw)) : NaN,
                       lateRevision   = Number.isFinite(createdAtMs) && createdAtMs > schedule.lockCutoffMs,

@@ -9282,15 +9282,17 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
             }
         });
 
-        test('AC-6 (#1695): scheduledFor parses Europe/Berlin CET/CEST/DST schedules without altering revisionDigest, enforces server-time D-1 18:00 Europe/Berlin lock on agent admission/edit/attestation, prevents post-lock clearing or backdating, and preserves human operator authority', async () => {
+        test('AC-6a (#1695): parsePublishSchedule resolves Europe/Berlin CET, CEST, and DST boundaries, rejects malformed schedules, and leaves 6-field revisionDigest unchanged', async () => {
             const {
                 PUBLISH_LOCK_TIMEZONE,
                 parsePublishSchedule,
                 computePublishRevisionDigest
             } = await import('../../../../../../ai/services/memory-core/MailboxService.mjs');
+            const publishDigestExports = await import('../../../../../../ai/services/memory-core/helpers/publishDigest.mjs');
 
             expect(PUBLISH_LOCK_TIMEZONE).toBe('Europe/Berlin');
             expect(MailboxService.constructor.PUBLISH_LOCK_TIMEZONE).toBe('Europe/Berlin');
+            expect(Object.hasOwn(publishDigestExports, 'zonedWallTimeToUtcMs')).toBe(false);
             expect(parsePublishSchedule(undefined)).toBeNull();
             expect(parsePublishSchedule(null)).toBeNull();
 
@@ -9368,13 +9370,17 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
             const undatedPayload = buildValidPublishPayload();
             const datedPayload   = buildValidPublishPayload({scheduledFor: '2026-11-18'});
             expect(computePublishRevisionDigest(datedPayload)).toBe(computePublishRevisionDigest(undatedPayload));
+        });
 
-            const originalNow = MailboxService._now;
-            let   fakeNowMs   = Date.parse('2026-11-17T17:00:00.000Z'); // Exact D-1 18:00:00.000 CET for 2026-11-18
-            MailboxService._now = () => fakeNowMs;
+        test('AC-6b (#1695): addMessage enforces server-time D-1 18:00 Europe/Berlin lock across CET and CEST and rejects malformed or backdated fields', async () => {
+            const {computePublishRevisionDigest} = await import('../../../../../../ai/services/memory-core/MailboxService.mjs');
+            const undatedPayload                 = buildValidPublishPayload();
+            const datedPayload                   = buildValidPublishPayload({scheduledFor: '2026-11-18'});
+            const originalNow                    = MailboxService._now;
+            let   fakeNowMs                      = Date.parse('2026-11-17T17:00:00.000Z'); // Exact D-1 18:00:00.000 CET for 2026-11-18
+            MailboxService._now  = () => fakeNowMs;
 
             try {
-                // 1. On-time admission at exact D-1 18:00:00.000 Europe/Berlin succeeds
                 const onTimeCreated = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
                     MailboxService.addMessage({
                         to            : '@tobiu',
@@ -9388,7 +9394,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                 expect(onTimeCreated.revision.payload.scheduledFor).toBe('2026-11-18');
                 expect(onTimeCreated.revisionDigest).toBe(computePublishRevisionDigest(undatedPayload));
 
-                // 2. 1ms late in winter CET (17:00:00.001Z) is refused with `refused: content-lock-window`
+                // 1ms late in winter CET (17:00:00.001Z) is refused with `refused: content-lock-window`
                 fakeNowMs = Date.parse('2026-11-17T17:00:00.001Z');
                 await expect(
                     RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
@@ -9402,7 +9408,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                     )
                 ).rejects.toMatchObject({code: 'refused: content-lock-window'});
 
-                // 3. Summer CEST boundary: 16:00:00.000Z succeeds, 16:00:00.001Z refuses (`refused: content-lock-window`)
+                // Summer CEST boundary: 16:00:00.000Z succeeds, 16:00:00.001Z refuses (`refused: content-lock-window`)
                 const summerPayload = buildValidPublishPayload({scheduledFor: '2026-07-15'});
                 fakeNowMs = Date.parse('2026-07-14T16:00:00.000Z');
                 const summerCreated = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
@@ -9429,7 +9435,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                     )
                 ).rejects.toMatchObject({code: 'refused: content-lock-window'});
 
-                // 4. Malformed / naive scheduledFor and caller-backdating fields are refused at admission
+                // Malformed / naive scheduledFor and caller-backdating fields are refused at admission
                 fakeNowMs = Date.parse('2026-11-16T12:00:00.000Z');
                 for (const invalidVal of ['2026-02-30', '2026-11-18T09:00:00']) {
                     await expect(
@@ -9461,8 +9467,28 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                         )
                     ).rejects.toMatchObject({code: 'refused: unknown-field'});
                 }
+            } finally {
+                MailboxService._now = originalNow;
+            }
+        });
 
-                // 5. Post-lock agent edit, post-lock `scheduledFor: null` stripping, and post-lock attestation are refused
+        test('AC-6c (#1695): editPublishRequest and attestPublishRevision refuse late agent mutations and scheduledFor: null clearing, reset inline attestation to null on edit, and allow forward re-dating', async () => {
+            const datedPayload = buildValidPublishPayload({scheduledFor: '2026-11-18'});
+            const originalNow  = MailboxService._now;
+            let   fakeNowMs    = Date.parse('2026-11-17T16:00:00.000Z');
+            MailboxService._now = () => fakeNowMs;
+
+            try {
+                const onTimeCreated = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : '[requestPublish] dated post for edit/attest lock checks',
+                        body          : datedPayload.text,
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: datedPayload
+                    })
+                );
+
                 const reviewMsg = await RequestContextService.run({agentIdentityNodeId: '@neo-opus-ada'}, () =>
                     MailboxService.addMessage({
                         to     : '@tobiu',
@@ -9501,11 +9527,17 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                     )
                 ).rejects.toMatchObject({code: 'refused: content-lock-window'});
 
-                // 6. Agent re-dating forward to 2026-11-19 (cutoff 2026-11-18T17:00:00.000Z) succeeds and allows on-time attestation
+                // Forward re-dating to 2026-11-19 (cutoff 2026-11-18T17:00:00.000Z) succeeds, ignores any inline attestation on edit, and allows attestPublishRevision
                 const redated = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
                     MailboxService.editPublishRequest({
                         taskId: onTimeCreated.messageId,
-                        patch : {scheduledFor: '2026-11-19'}
+                        patch : {
+                            scheduledFor: '2026-11-19',
+                            attestation : {
+                                reviewerMessageId: reviewMsg.messageId,
+                                revisionDigest   : onTimeCreated.revisionDigest
+                            }
+                        }
                     })
                 );
                 expect(redated.revisionNumber).toBe(2);
@@ -9525,29 +9557,50 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                     reviewerMessageId: reviewMsg.messageId,
                     revisionDigest   : redated.revisionDigest
                 });
+            } finally {
+                MailboxService._now = originalNow;
+            }
+        });
 
-                // 7. Human operator (@tobiu) retains full edit and approval authority even after the D-1 18:00 cutoff
-                fakeNowMs = Date.parse('2026-11-18T19:00:00.000Z'); // Past 2026-11-19's D-1 18:00 CET cutoff
+        test('AC-6d (#1695): human operator (@tobiu) retains edit and approval authority after the D-1 18:00 Europe/Berlin lock cutoff', async () => {
+            const datedPayload = buildValidPublishPayload({scheduledFor: '2026-11-19'});
+            const originalNow  = MailboxService._now;
+            let   fakeNowMs    = Date.parse('2026-11-18T15:00:00.000Z');
+            MailboxService._now = () => fakeNowMs;
+
+            try {
+                const created = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : '[requestPublish] operator override check',
+                        body          : datedPayload.text,
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: datedPayload
+                    })
+                );
+
+                fakeNowMs = Date.parse('2026-11-18T19:00:00.000Z'); // Past 2026-11-19's D-1 18:00 CET cutoff (17:00Z)
                 const operatorEdited = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
                     MailboxService.editPublishRequest({
-                        taskId: onTimeCreated.messageId,
+                        taskId: created.messageId,
                         patch : {text: 'Operator urgent precision edit on D-1 evening.'}
                     })
                 );
-                expect(operatorEdited.revisionNumber).toBe(3);
+                expect(operatorEdited.revisionNumber).toBe(2);
                 expect(operatorEdited.revision.createdBy).toBe('@tobiu');
                 expect(operatorEdited.revision.payload.scheduledFor).toBe('2026-11-19');
+                expect(operatorEdited.revision.attestation).toBeNull();
 
                 const operatorApproved = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
                     MailboxService.approvePublishRevision({
-                        taskId        : onTimeCreated.messageId,
+                        taskId        : created.messageId,
                         revisionDigest: operatorEdited.revisionDigest
                     })
                 );
                 expect(operatorApproved.approval).toMatchObject({
                     approvedBy    : '@tobiu',
                     approvedAt    : '2026-11-18T19:00:00.000Z',
-                    revisionNumber: 3,
+                    revisionNumber: 2,
                     revisionDigest: operatorEdited.revisionDigest
                 });
             } finally {
