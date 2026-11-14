@@ -534,6 +534,24 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
         expect(read()).toMatchObject({receipt: {id: 'MESSAGE:sunset-receipt'}, liveTurnUntil: null});
     });
 
+    test('a diary-less turn before the sunset turn holds nothing once add_memory closes the sunset turn (#1722)', async () => {
+        const {readSunsetReceipt} = await import('../../../../../../ai/daemons/wake/sunsetReceipt.mjs'),
+              read                = () => readSunsetReceipt(GraphService.db.storage.db, '@agent-turn', {sinceIso: new Date(Date.now() - 5 * 60_000).toISOString()});
+
+        // A turn that ended without add_memory: started a minute earlier and never closed, so still inside its TTL.
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'diary-less-turn', source: 'spec', now: new Date(Date.now() - 60_000).toISOString()}));
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'sunset-turn', source: 'spec'}));
+        GraphService.upsertNode({id: 'MESSAGE:sunset-receipt', type: 'MESSAGE', name: 'sunset', properties: {
+            from: '@agent-turn', to: '@agent-turn', sentAt: new Date().toISOString(), taggedConcepts: ['sunset-protocol-handover']
+        }});
+
+        await asAgent(() => MemoryService.addMemory({prompt: 'p', decisionContext: 'd', response: 'r'}));
+
+        expect(getNode('diary-less-turn').properties.status).toBe('active');
+        expect(getNode('sunset-turn').properties.status).toBe('terminal');
+        expect(read()).toMatchObject({receipt: {id: 'MESSAGE:sunset-receipt'}, liveTurnUntil: null});
+    });
+
     test('a named progress past expiresAt still joins its own turn: a long tool call is still the turn', async () => {
         await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'long-turn', now: '2026-06-19T00:00:00.000Z'}));
 

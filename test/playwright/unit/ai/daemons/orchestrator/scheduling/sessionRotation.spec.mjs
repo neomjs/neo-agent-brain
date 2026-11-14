@@ -181,6 +181,32 @@ test.describe('session-rotation lane (#1383)', () => {
         expect((await runLane(db, {now: NOW + 21 * MIN})).sent).toHaveLength(1)
     });
 
+    test('#1722 AC-1: an older turn left open holds nothing once the turn that wrote the receipt closed; that turn still live waits', async () => {
+        const turn = (db, turnId, minutesAgo, status, expiresInMinutes) => insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:${turnId}`, 'AGENT_TURN_PRESENCE', {
+            agentIdentity: SEAT, turnId, startedAt: at(minutesAgo), status, expiresAt: at(-expiresInMinutes)
+        });
+
+        const closed = createGraph();
+
+        insertRoute(closed);
+        turn(closed, 'diary-less-turn', 9, 'active', 51);   // the 18:41Z shape: never closed, live for its full TTL
+        turn(closed, 'sunset-turn', 4, 'terminal', 56);     // add_memory closed the turn that wrote the receipt
+        insertSelfMessage(closed, 'MESSAGE:receipt', 2);
+
+        expect(readSunsetReceipt(closed, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)}).liveTurnUntil).toBeNull();
+        expect((await runLane(closed)).sent).toHaveLength(1);
+
+        const live = createGraph();
+
+        insertRoute(live);
+        turn(live, 'diary-less-turn', 9, 'active', 51);
+        turn(live, 'sunset-turn', 4, 'active', 20);
+        insertSelfMessage(live, 'MESSAGE:receipt', 2);
+
+        expect(readSunsetReceipt(live, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)}).liveTurnUntil).toBe(at(-20));
+        expect((await runLane(live)).outcome).toMatchObject({requested: 0, waiting: 1})
+    });
+
     test('AC-9: the newest self-message decides, so a note after the handover turns the rotation off', async () => {
         const db = createGraph();
 
