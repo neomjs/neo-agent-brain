@@ -6878,6 +6878,52 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         });
     });
 
+    test('transitionTask explains that taskId must be the message id', async () => {
+        const openApiDoc = yaml.load(await fsPromises.readFile(
+            new URL('../../../../../../ai/mcp/server/memory-core/openapi.yaml', import.meta.url), 'utf8'
+        ));
+        const taskIdDescription = openApiDoc.paths['/mailbox/tasks/transition'].post.requestBody
+            .content['application/json'].schema.properties.taskId.description;
+
+        expect(taskIdDescription).toContain('MESSAGE:<uuid>');
+        expect(taskIdDescription).toContain("not the envelope's `task.id`");
+        expect(taskIdDescription.length).toBeLessThanOrEqual(1024);
+
+        await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+            await expect(MailboxService.transitionTask({
+                taskId: 'open-work:["neomjs/neo-agent-brain",1605]', newState: 'Completed'
+            })).rejects.toThrow(/Task not found: open-work:.*Use the message id \(`MESSAGE:<uuid>`\).*not the envelope task\.id/);
+        });
+    });
+
+    test('transitionTask keeps cross-tenant message ids indistinguishable from missing ids', async () => {
+        let msgId;
+
+        await RequestContextService.run({agentIdentityNodeId: '@alice', userId: 'alice'}, async () => {
+            msgId = (await MailboxService.addMessage({
+                to: '@bob', subject: 'tenant isolation', body: 'body', task: {state: 'Submitted'}
+            })).messageId;
+        });
+
+        // Model a tenant-owned row while leaving the node cached, so the service's tenant guard
+        // must run before any message-specific diagnostic is constructed.
+        GraphService.db.storage.db.prepare(`
+            UPDATE Nodes
+            SET user_id = ?, data = json_set(data, '$.properties.sharedEntity', json('false'))
+            WHERE id = ?
+        `).run('alice', msgId);
+
+        await RequestContextService.run({agentIdentityNodeId: '@charlie', userId: 'charlie'}, async () => {
+            let error;
+            try {
+                await MailboxService.transitionTask({taskId: msgId, newState: 'Working'});
+            } catch (caught) {
+                error = caught;
+            }
+            expect(error?.message).toBe(`Task not found: ${msgId}`);
+        });
+    });
+
     test('successful transitions append one immutable typed event while mismatch paths append none (#15114)', async () => {
         let msgId;
 
@@ -7424,8 +7470,10 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
 
         // Bob (Assignee) cannot transition Submitted -> Canceled
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
+            await expect(MailboxService.transitionTask({ taskId: msgId, newState: 'Completed' }))
+                .rejects.toThrow(/cannot transition `Submitted → Completed`; allowed next state for assignee: Working/);
             await expect(MailboxService.transitionTask({ taskId: msgId, newState: 'Canceled' }))
-                .rejects.toThrow(/Unauthorized: @bob as assignee cannot transition/);
+                .rejects.toThrow(/Unauthorized: @bob as assignee cannot transition.*allowed next state for assignee: Working/);
         });
 
         // Charlie (Unrelated) cannot transition anything
@@ -8899,6 +8947,50 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                     })
                 )
             ).rejects.toMatchObject({code: 'refused: digest-mismatch'});
+        });
+
+        test('transitionTask refusal hint never advertises Completed for an unpublished requestPublish Task', async () => {
+            const payload = buildValidPublishPayload();
+            const created = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () => MailboxService.addMessage({
+                to            : '@tobiu',
+                subject       : '[requestPublish] refusal hint test',
+                body          : payload.text,
+                taggedConcepts: ['requestPublish'],
+                requestPublish: payload
+            }));
+
+            await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                MailboxService.transitionTask({taskId: created.messageId, newState: 'Working'})
+            );
+
+            let error;
+            try {
+                await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionTask({taskId: created.messageId, newState: 'Completed'})
+                );
+            } catch (caught) {
+                error = caught;
+            }
+
+            expect(error?.code).toBe('refused: not-published');
+            expect(error?.message).toBe('Unauthorized: @tobiu as assignee cannot transition `Working → Completed`; allowed next states for assignee: InputRequired, Failed, Rejected');
+        });
+
+        test('transitionTask refusal hint lists both roles when the caller is originator and assignee', async () => {
+            const created = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () => MailboxService.addMessage({
+                to: '@tobiu', subject: 'self-addressed task', body: 'body', task: {state: 'Submitted'}
+            }));
+
+            let error;
+            try {
+                await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionTask({taskId: created.messageId, newState: 'Completed'})
+                );
+            } catch (caught) {
+                error = caught;
+            }
+
+            expect(error?.message).toBe('Unauthorized: @tobiu as originator and assignee cannot transition `Submitted → Completed`; allowed next states for originator and assignee: Canceled, Working');
         });
 
         test('AC-3: publication state (queued → publishing → published | refused | unresolved) admits only legal moves, stores textAsRequested and textAsPublished, and refuses Task Completed while publication state is not published', async () => {

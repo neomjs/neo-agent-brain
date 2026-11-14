@@ -175,6 +175,43 @@ export {
 };
 
 /**
+ * @summary Returns the A2A Task states the caller may move a Task to from `currentState`.
+ * The transition guard admits only these states, and the refusal hint prints the same set, so the rules live in one place.
+ * @param {Object} args
+ * @param {String} args.currentState The Task's current state
+ * @param {Boolean} args.isOriginator Whether the caller sent the Task
+ * @param {Boolean} args.isAssignee Whether the caller is the Task's assignee
+ * @param {Boolean} args.isHumanAssignee Whether the assignee is a human account
+ * @param {Boolean} args.isRequestPublish Whether the Task carries a requestPublish payload
+ * @param {Boolean} args.isPublished Whether the requestPublish publication is confirmed published
+ * @returns {Set<String>} Allowed next states for the caller's roles
+ * @private
+ */
+function allowedTaskNextStates({currentState, isOriginator, isAssignee, isHumanAssignee, isRequestPublish, isPublished}) {
+    const allowed = new Set();
+
+    if (isOriginator) {
+        if (currentState === 'Submitted') allowed.add('Canceled');
+        if (currentState === 'InputRequired') allowed.add('Working');
+    }
+
+    if (isAssignee) {
+        if (currentState === 'Submitted') allowed.add('Working');
+        if (currentState === 'Working') ['InputRequired', 'Completed', 'Failed'].forEach(state => allowed.add(state));
+        // A human assignee is the one asked, so it answers in place; an agent assignee still
+        // waits for its originator to resume
+        if (isHumanAssignee && currentState === 'InputRequired') ['Working', 'Completed'].forEach(state => allowed.add(state));
+        if (isRequestPublish && ['Submitted', 'Working', 'InputRequired'].includes(currentState)) allowed.add('Rejected');
+        if (isRequestPublish && currentState === 'Submitted' && isPublished) allowed.add('Completed');
+    }
+
+    // A requestPublish Task completes only once its publication is confirmed published
+    if (isRequestPublish && !isPublished) allowed.delete('Completed');
+
+    return allowed;
+}
+
+/**
  * @summary Builds a structured refusal Error for `requestPublish` validation and state guards.
  * @param {String} code Named refusal code (e.g. `'refused: channel'`).
  * @param {String} detail Human-readable refusal explanation.
@@ -6618,7 +6655,10 @@ class MailboxService extends Base {
         }
 
         if (!messageNode || getRecordField(messageNode, 'label') !== 'MESSAGE') {
-            throw new Error(`Task not found: ${taskId}`);
+            const expectedIdHint = String(taskId).startsWith('MESSAGE:')
+                ? ''
+                : '. Use the message id (`MESSAGE:<uuid>`) that carries the task, not the envelope task.id.';
+            throw new Error(`Task not found: ${taskId}${expectedIdHint}`);
         }
 
         if (!storedState.task?.state) {
@@ -6705,30 +6745,16 @@ class MailboxService extends Base {
                 && Boolean(storedState.publication?.providerId)
                 && matchesRequestedPublishText(storedState.publication?.textAsPublished, storedState.publication?.textAsRequested);
 
-        let authorized = false;
+        const allowedStates = allowedTaskNextStates({
+            currentState, isOriginator, isAssignee, isHumanAssignee, isRequestPublish, isPublished
+        });
 
-        if (isOriginator) {
-            if (currentState === 'Submitted' && newState === 'Canceled') authorized = true;
-            if (currentState === 'InputRequired' && newState === 'Working') authorized = true;
-        }
-
-        if (isAssignee) {
-            if (currentState === 'Submitted' && newState === 'Working') authorized = true;
-            if (currentState === 'Working' && ['InputRequired', 'Completed', 'Failed'].includes(newState)) authorized = true;
-            // A human assignee is the one asked, so it answers in place; an agent assignee still
-            // waits for its originator to resume
-            if (isHumanAssignee && currentState === 'InputRequired' && ['Working', 'Completed'].includes(newState)) authorized = true;
-            if (isRequestPublish && ['Submitted', 'Working', 'InputRequired'].includes(currentState) && newState === 'Rejected') authorized = true;
-            if (isRequestPublish && currentState === 'Submitted' && newState === 'Completed' && isPublished) authorized = true;
-        }
-
-        if (isRequestPublish && newState === 'Completed' && !isPublished) {
-            authorized = false;
-        }
-
-        if (!authorized) {
-            const role  = isOriginator ? 'originator' : 'assignee';
-            const error = new Error(`Unauthorized: ${me} as ${role} cannot transition \`${currentState} → ${newState}\``);
+        if (!allowedStates.has(newState)) {
+            const role = [isOriginator && 'originator', isAssignee && 'assignee'].filter(Boolean).join(' and '),
+                  allowedHint = allowedStates.size
+                      ? `; allowed next state${allowedStates.size === 1 ? '' : 's'} for ${role}: ${[...allowedStates].join(', ')}`
+                      : '';
+            const error = new Error(`Unauthorized: ${me} as ${role} cannot transition \`${currentState} → ${newState}\`${allowedHint}`);
             if (isRequestPublish && newState === 'Completed' && !isPublished) {
                 error.code             = 'refused: not-published';
                 error.reason           = `Cannot transition requestPublish Task to Completed while publication state is '${publicationState || 'queued'}' (requires 'published').`;
