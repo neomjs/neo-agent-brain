@@ -81,7 +81,8 @@ class TurnPresenceService extends Base {
      *
      * A `progress` or `terminal` event with no open interval is a **no-op, not an error**: the turn it
      * would refresh has already expired or closed, and refusing the call would turn an ordinary race
-     * into a failed write.
+     * into a failed write. A named turn that closed stays closed, so the tool calls after `add_memory`
+     * never re-open it; past its TTL its own progress still joins it, since a long tool call is the turn.
      *
      * @param {Object} options
      * @param {'start'|'progress'|'terminal'} [options.action='start'] Event kind.
@@ -147,12 +148,15 @@ class TurnPresenceService extends Base {
             this._writeCapacity(agentIdentity, this._normalizeCapacity(capacity, nowDate), nowDate);
         }
 
-        // `start` mints an interval; everything else joins the newest open one. A null result here is the
-        // no-op path below, not a failure — see the contract note on this method.
+        // `start` mints an interval; everything else joins an open one, the named turn or the newest. No
+        // turn, or a named one that closed, is the no-op path below, not a failure — see the contract note.
         const targetTurnId = turnId || (action === 'start'
-            ? crypto.randomUUID()
-            : this._findNewestActiveTurn(agentIdentity, nowDate)?.turnId);
-        if (!targetTurnId) {
+                  ? crypto.randomUUID()
+                  : this._findNewestActiveTurn(agentIdentity, nowDate)?.turnId),
+              nodeId       = targetTurnId && this._buildTurnPresenceId(agentIdentity, targetTurnId),
+              current      = (nodeId && this._getTurnPresenceProperties(nodeId)) || {};
+
+        if (!targetTurnId || (action !== 'start' && current.status === 'terminal')) {
             return {
                 status: 'noop',
                 reason: 'no-active-turn',
@@ -161,9 +165,7 @@ class TurnPresenceService extends Base {
             };
         }
 
-        const nodeId     = this._buildTurnPresenceId(agentIdentity, targetTurnId),
-              current    = this._getTurnPresenceProperties(nodeId) || {},
-              startedAt  = current.startedAt || nowIso,
+        const startedAt  = current.startedAt || nowIso,
               properties = {
                   ...current,
                   agentIdentity,

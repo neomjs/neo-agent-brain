@@ -13,14 +13,14 @@ setup({
     }
 });
 
-import {test, expect}         from '@playwright/test';
-import Neo                    from 'neo.mjs/src/Neo.mjs';
-import * as core              from 'neo.mjs/src/core/_export.mjs';
-import RequestContextService  from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
-import fs                     from 'fs';
-import path                   from 'path';
-import * as yaml              from 'js-yaml';
-import {fileURLToPath}        from 'url';
+import {test, expect}                         from '@playwright/test';
+import Neo                                    from 'neo.mjs/src/Neo.mjs';
+import * as core                              from 'neo.mjs/src/core/_export.mjs';
+import RequestContextService                  from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import fs                                     from 'fs';
+import path                                   from 'path';
+import * as yaml                              from 'js-yaml';
+import {fileURLToPath}                        from 'url';
 import {buildOutputZodSchema, buildZodSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 
 // Stub Neo.get to keep data-record boot behavior from masking turn-presence coverage.
@@ -500,6 +500,47 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
         expect(node.properties.status).toBe('terminal');
         expect(node.properties.terminalState).toBe('completed');
         expect(node.properties.source).toBe('add_memory');
+    });
+
+    test('a named event after add_memory closed its turn is a no-op: the turn stays closed (#1713)', async () => {
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'closed-turn', source: 'spec'}));
+        await asAgent(() => MemoryService.addMemory({prompt: 'p', decisionContext: 'd', response: 'r'}));
+
+        const closed = {...getNode('closed-turn').properties};
+
+        // The Claude PostToolUse hook names the turn its `start` stored, for add_memory's own call and every later one.
+        const progress = await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'progress', turnId: 'closed-turn', source: 'claude-post-tool-use'})),
+              terminal = await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'terminal', turnId: 'closed-turn', terminalState: 'aborted'}));
+
+        expect(progress).toEqual({status: 'noop', reason: 'no-active-turn', action: 'progress', agentIdentity: '@agent-turn'});
+        expect(terminal).toEqual({status: 'noop', reason: 'no-active-turn', action: 'terminal', agentIdentity: '@agent-turn'});
+        expect(getNode('closed-turn').properties).toEqual(closed);
+    });
+
+    test('the rotation reads a sunset turn add_memory closed as closed, after a later named progress too (#1713)', async () => {
+        const {readSunsetReceipt} = await import('../../../../../../ai/daemons/wake/sunsetReceipt.mjs'),
+              read                = () => readSunsetReceipt(GraphService.db.storage.db, '@agent-turn', {sinceIso: new Date(Date.now() - 60_000).toISOString()});
+
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'sunset-turn', source: 'spec'}));
+        GraphService.upsertNode({id: 'MESSAGE:sunset-receipt', type: 'MESSAGE', name: 'sunset', properties: {
+            from: '@agent-turn', to: '@agent-turn', sentAt: new Date().toISOString(), taggedConcepts: ['sunset-protocol-handover']
+        }});
+
+        expect(read().liveTurnUntil).not.toBeNull();   // the turn that wrote the receipt is live until add_memory
+
+        await asAgent(() => MemoryService.addMemory({prompt: 'p', decisionContext: 'd', response: 'r'}));
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'progress', turnId: 'sunset-turn', source: 'claude-post-tool-use'}));
+
+        expect(read()).toMatchObject({receipt: {id: 'MESSAGE:sunset-receipt'}, liveTurnUntil: null});
+    });
+
+    test('a named progress past expiresAt still joins its own turn: a long tool call is still the turn', async () => {
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'long-turn', now: '2026-06-19T00:00:00.000Z'}));
+
+        const result = await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'progress', turnId: 'long-turn', now: '2026-06-19T01:10:00.000Z'}));
+
+        expect(result.status).toBe('recorded');
+        expect(getNode('long-turn').properties).toMatchObject({status: 'active', startedAt: '2026-06-19T00:00:00.000Z', expiresAt: '2026-06-19T02:10:00.000Z'});
     });
 
     // Schema↔handler drift guard — validates every action's REAL emitted response against the tool's
