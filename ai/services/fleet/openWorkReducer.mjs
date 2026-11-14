@@ -19,6 +19,7 @@
  * would have read carry, and a row first seen after that miss is no `opened`.
  */
 
+import {disclosedFamiliesOf}                           from '../graph/disclosedModelFamilies.mjs';
 import {normalizeReviewRecords, retainReviewWitnesses} from './openWorkReviewRecords.mjs';
 
 /**
@@ -121,15 +122,17 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
  * @param {Object} [source] Acquisition identity; absent for legacy inputs.
  * @param {String} [source.apiBase] Provider API identity from the existing reader.
- * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner, requested,
- *     reviews, opinions, reviewRecords, turns, requestsComplete, opinionsComplete, partial}`. `title` is the forge's
- *     prose with whitespace collapsed, or `null`; it names the PR and is never a transition. Optional original
- *     review records keep their own history coverage, and `turns` holds only the conversation's latest page; neither
- *     changes current-work completeness.
+ * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner,
+ *     disclosedFamilies, requested, reviews, opinions, reviewRecords, turns, requestsComplete, opinionsComplete,
+ *     partial}`. `title` is the forge's prose with whitespace collapsed, or `null`; it names the PR and is never a
+ *     transition. `disclosedFamilies` are the model families an outside PR names in its body or its first and head
+ *     commits, and empty for every other PR. Optional original review records keep their own history coverage, and
+ *     `turns` holds only the conversation's latest page; neither changes current-work completeness.
  */
 export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
     const
         repo      = node.repository?.nameWithOwner ?? null,
+        owner     = ownerOf(node, identities),
         commit    = node.commits?.nodes?.[0]?.commit,
         head      = node.headRefOid ?? commit?.oid ?? null,
         requests  = connectionOf(node.reviewRequests),
@@ -168,7 +171,11 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         authorAssociation: node.authorAssociation ?? null,
         bot              : node.author?.__typename === 'Bot',
         runApproval,
-        owner            : ownerOf(node, identities),
+        owner,
+        disclosedFamilies: owner.kind === 'outside' ? disclosedFamiliesOf({
+            body          : node.body ?? '',
+            commitMessages: [node.firstCommit?.nodes?.[0]?.commit?.message, commit?.message]
+        }) : [],
         requested        : requested.filter(Boolean).sort(),
         reviews          : reviewed.filter(review => review.reviewer),
         opinions         : opined.filter(opinion => opinion.reviewer),

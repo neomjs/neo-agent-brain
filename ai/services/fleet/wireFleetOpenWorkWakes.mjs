@@ -284,6 +284,8 @@ function freshWake(wake, state, now) {
  *     An unreadable or absent whole map means unknown.
  * @param {Function} [options.readExhausted] Seat to the epoch milliseconds its plan resets, read with the route map
  *     and cached with it. The rotation passes those seats over until then; an unreadable map passes nobody over.
+ * @param {Function} [options.readFamilies] Seat to its model family, read and cached with the route map. A named
+ *     outside PR's approval counts only from a seat of another known family; an unreadable map verifies none.
  * @param {Function} [options.now] Epoch milliseconds.
  * @param {Number} [options.routesTtlMs] Short cache duration for the existing route read.
  * @param {Function} [options.gateOf] Test seam; production uses wakeGateOf's measured observation gate.
@@ -299,8 +301,8 @@ function freshWake(wake, state, now) {
  * @returns {Function} Post-pulse callback with an async stop() method; persistence errors reject.
  */
 export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = async () => null, readExhausted = async () => null,
-    now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true, rotationSeats, readFailedChecks = null,
-    readDelivery = null, log = console}) {
+    readFamilies = async () => null, now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true,
+    rotationSeats, readFailedChecks = null, readDelivery = null, log = console}) {
     let running = null, queued = null, stopped = false, routes = null;
 
     /** @summary A failed names read is names-unknown, never a lost wake. */
@@ -335,15 +337,16 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
         return verdicts
     };
 
-    /** @summary Read the route projection and the plan resets only when a plan has eligible work. */
+    /** @summary Read the route projection, the plan resets and the seats' families only when a plan has eligible work. */
     async function routeMap() {
         const time = now();
         if (!routes || time < routes.at || time - routes.at >= routesTtlMs) {
-            const settled        = read => Promise.resolve().then(read).catch(() => null),
-                [map, exhausted] = await Promise.all([settled(readUndeliverable), settled(readExhausted)]),
-                plain            = (value, valid) => value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(valid) ? value : null;
+            const settled                  = read => Promise.resolve().then(read).catch(() => null),
+                [map, exhausted, families] = await Promise.all([settled(readUndeliverable), settled(readExhausted), settled(readFamilies)]),
+                plain                      = (value, valid) => value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(valid) ? value : null;
 
-            routes = {at: time, map: plain(map, reason => reason === null || typeof reason === 'string'), exhausted: plain(exhausted, Number.isFinite)}
+            routes = {at: time, map: plain(map, reason => reason === null || typeof reason === 'string'), exhausted: plain(exhausted, Number.isFinite),
+                families: plain(families, family => typeof family === 'string' && family.length > 0)}
         }
         return routes
     }
@@ -408,12 +411,12 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
 
         if (plan.wakes.length) {
             if (isEnabled() !== true) return {admitted: 0, disabled: true};
-            const {map, exhausted} = await routeMap(), preparedAt = now();
+            const {map, exhausted, families} = await routeMap(), preparedAt = now();
             if (isEnabled() !== true) return {admitted: 0, disabled: true};
             expired = plan.wakes.filter(wake => !freshWake(wake, state, preparedAt)).length;
             if (!freshObservation(state, preparedAt)) return {admitted: 0, expired};
-            plan = planOpenWorkWakes({...args, now: preparedAt, quiet: !activation, exhaustedUntil: exhausted, routeOf: seat =>
-                map && Object.hasOwn(map, seat) ? 'unreachable' : 'unknown'})
+            plan = planOpenWorkWakes({...args, now: preparedAt, quiet: !activation, exhaustedUntil: exhausted, seatFamilies: families,
+                routeOf: seat => map && Object.hasOwn(map, seat) ? 'unreachable' : 'unknown'})
         }
 
         if (!plan.ledger) return {admitted: 0, expired};
@@ -540,13 +543,27 @@ export function undeliverableOf(presence) {
 }
 
 /**
+ * @summary Each seat's model family, from the verbose presence answer whose rows carry the plane's identity facts.
+ * A row without a family is left out, so its seat stays eligible for a pick and verifies no approval.
+ * @param {Object} presence The verbose `who_is_online` answer.
+ * @returns {Object<String,String>|null} Seat to family; `null` when the answer holds no rows.
+ */
+export function familiesOf(presence) {
+    if (!Array.isArray(presence?.agents)) return null;
+
+    return Object.fromEntries(presence.agents
+        .filter(row => typeof row?.identity === 'string' && typeof row.family === 'string' && row.family.length > 0)
+        .map(row => [row.identity, row.family]))
+}
+
+/**
  * @summary Bind the existing producer callback to a ledger beside its state file; never start a poller.
  * @param {Object} options
  * @param {{getDataDir: Function, listAgents: Function, resolveCredential: Function}} options.registry Fleet-owned
  *     durable root, and the seats whose PATs read a `repair-ci` wake's failing checks.
  * @param {Function} options.admitWake The already verified plane's open-work intake.
  * @param {Function} [options.readPresence] The Fleet's shared verbose presence read; one answer per route refresh
- *     gives the route map and the plan resets.
+ *     gives the route map, the plan resets and the seats' families.
  * @param {Function} [options.readDelivery] The same verified plane's delivery read of admitted wakes, by message id.
  * @param {Function} [options.now]
  * @param {Function} [options.gateOf] Test seam only.
@@ -559,7 +576,7 @@ export function undeliverableOf(presence) {
 export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, readDelivery, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
     if (typeof registry?.getDataDir !== 'function' || typeof admitWake !== 'function') return null;
     let presence = null;
-    // The refresh asks both readers at once, so one answer serves both; the next refresh reads fresh
+    // The refresh asks every reader at once, so one answer serves them all; the next refresh reads fresh
     const answer = () => presence ??= Promise.resolve().then(readPresence).finally(() => setTimeout(() => { presence = null }, 0));
     return createOpenWorkWakeRound({
         store           : fileStore(path.join(registry.getDataDir(), 'open-work-wakes.json')),
@@ -570,7 +587,8 @@ export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, readD
         }),
         ...(typeof readPresence === 'function' ? {
             readUndeliverable: async () => undeliverableOf(await answer()),
-            readExhausted    : async () => exhaustedUntilOf(await answer(), (now ?? Date.now)())
+            readExhausted    : async () => exhaustedUntilOf(await answer(), (now ?? Date.now)()),
+            readFamilies     : async () => familiesOf(await answer())
         } : {}),
         admitWake, readDelivery, now, gateOf, isEnabled, rotationSeats, log
     })

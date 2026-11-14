@@ -418,6 +418,45 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
             .toEqual([{to: ADA, role: 'author', kind: 'repair-ci'}])
     });
 
+    test('the rotation never hands an outside PR to a seat of a lab it names while another seat answers', () => {
+        const
+            VEGA     = '@neo-opus-vega',
+            families = {[ADA]: 'claude', [VEGA]: 'claude', [GPT]: 'gpt'},
+            outside  = {kind: 'outside', seat: null, login: 'contributor'},
+            named    = {owner: outside, disclosedFamilies: ['claude']},
+            offset   = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % 3,
+            // the plain hash pick lands on a Claude seat and the next one is Claude too, so only the exclusion reaches GPT
+            roster   = Object.assign([], {[offset]: ADA, [(offset + 1) % 3]: VEGA, [(offset + 2) % 3]: GPT}),
+            triage   = (options, row = named) => {
+                const run = journey();
+                run.step(0, [{...row, ci: 'pending'}], {}, {rotationSeats: roster});
+                return run.step(1, [{...row, ci: 'green'}], {}, {rotationSeats: roster, ...options}).wakes.map(wake => wake.to)
+            };
+
+        // The pick passes both Claude seats for the one of another lab, and a seat of unknown family stays eligible
+        expect(triage({seatFamilies: families})).toEqual([GPT]);
+        expect(triage({seatFamilies: {[ADA]: 'claude', [VEGA]: 'claude'}})).toEqual([GPT]);
+        // That seat unreachable: the whole roster picks, so the PR is never left unrouted
+        expect(triage({seatFamilies: families, routeOf: seat => seat === GPT ? 'unreachable' : 'reachable'})).toEqual([ADA]);
+        // A PR that names nothing keeps the hashed pick
+        expect(triage({seatFamilies: families}, {owner: outside})).toEqual([ADA])
+    });
+
+    test('an approval the first pass cannot verify still plans, so the round reads the families and decides again', () => {
+        const
+            outside  = {kind: 'outside', seat: null, login: 'contributor'},
+            approval = {reviewer: GPT, state: 'APPROVED', onHead: true},
+            row      = {owner: outside, disclosedFamilies: ['claude'], ci: 'green', reviews: [approval], opinions: [approval]},
+            plan     = seatFamilies => {
+                const run = journey();
+                run.step(0, [{...row, ci: 'pending'}], {}, {rotationSeats: [ADA, GPT]});
+                return run.step(1, [row], {}, {rotationSeats: [ADA, GPT], seatFamilies}).wakes
+            };
+
+        expect(plan(null).map(({role, kind}) => ({role, kind}))).toEqual([{role: 'rotation', kind: 'review'}]);
+        expect(plan({[ADA]: 'claude', [GPT]: 'gpt'})).toEqual([])
+    });
+
     test('a rotation action seen on the producer\'s first pulse wakes one seat once, while a seat-held action stays its baseline (#1629)', () => {
         const
             roster   = [ADA, GPT],
@@ -591,7 +630,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
             previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash].includes(entry.queryHash)),
             observed = history(), item = observed.pulses[100], base = item.quota[0];
 
-        expect(previous).toEqual({queryHash: expect.stringMatching(/^[a-f\d]{64}$/), formulaCost: 3});
+        expect(previous).toEqual({queryHash: expect.stringMatching(/^[a-f\d]{64}$/), formulaCost: 4});
         item.quota = [
             classified(base),
             classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: previous.queryHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})

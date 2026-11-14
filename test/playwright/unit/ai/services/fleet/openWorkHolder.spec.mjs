@@ -228,6 +228,44 @@ test.describe('openWorkHolder — an outside PR pushed past a seat\'s review is 
     });
 });
 
+test.describe('openWorkHolder — an outside PR that names a model needs an approval from another lab', () => {
+    const
+        CLAUDE   = '@neo-opus-vega',
+        GPT      = '@neo-gpt',
+        families = {[CLAUDE]: 'claude', [GPT]: 'gpt'},
+        approved = reviewer => ({reviews: [{reviewer, state: 'APPROVED', onHead: true}], opinions: [{reviewer, state: 'APPROVED', onHead: true}]}),
+        named    = overrides => row({owner: outside, disclosedFamilies: ['claude'], ...overrides}),
+        merge    = {role: 'operator', kind: 'merge', ids: []},
+        review   = {role: 'rotation', kind: 'review', ids: []};
+
+    test('a same-lab head approval leaves the review to a rotation seat; another lab\'s approval ends it', () => {
+        expect(holderOf(named(approved(CLAUDE)), {seatFamilies: families})).toEqual(review);
+        expect(holderOf(named(approved(GPT)), {seatFamilies: families})).toEqual(merge)
+    });
+
+    test('without the seats\' families, or from a seat of unknown family, no approval is verified', () => {
+        // the wake round's first pass has no family map: an approval it cannot verify still plans, so the round reads
+        // the families and decides again instead of settling on an approved head
+        expect(holderOf(named(approved(GPT)))).toEqual(review);
+        expect(holderOf(named(approved('@neo-new-seat')), {seatFamilies: families})).toEqual(review)
+    });
+
+    test('an outside PR that names nothing, and a member\'s PR, keep their routes', () => {
+        expect(holderOf(named({disclosedFamilies: [], ...approved(CLAUDE)}), {seatFamilies: families})).toEqual(merge);
+        expect(holderOf(named({authorAssociation: 'MEMBER', ...approved(CLAUDE)}), {seatFamilies: families})).toEqual(merge);
+        expect(holderOf(row({disclosedFamilies: ['claude'], ...approved(CLAUDE)}), {seatFamilies: families})).toEqual(merge)
+    });
+
+    test('a same-lab approval past a seat\'s change request leaves that seat its Round 2', () => {
+        const pr = named({
+            reviews : [{reviewer: GPT, state: 'CHANGES_REQUESTED', onHead: false}, {reviewer: CLAUDE, state: 'APPROVED', onHead: true}],
+            opinions: [{reviewer: GPT, state: 'CHANGES_REQUESTED', onHead: false}, {reviewer: CLAUDE, state: 'APPROVED', onHead: true}]
+        });
+
+        expect(holderOf(pr, {seatFamilies: families})).toEqual({role: 'reviewer', kind: 'review', ids: [GPT]})
+    })
+});
+
 test.describe('openWorkHolder — an outside comment owes a reply, beside the holder (#1630)', () => {
     const
         turn  = (minute, by, member = false, bot = false) => ({at: `2026-11-11T10:${String(minute).padStart(2, '0')}:00Z`, by, member, ...(bot ? {bot: true} : {})}),

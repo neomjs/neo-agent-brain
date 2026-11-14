@@ -69,6 +69,22 @@ test.describe('openWorkReducer — a row names its pull request by title', () =>
 
         expect(run([[node({title: 'first words'})], [node({title: 'second words'})]]).transitions[1]).toEqual([])
     });
+});
+
+test.describe('openWorkReducer — an outside row carries the model families its PR names', () => {
+    test('the body and the first commit name them; a seat\'s PR carries none, and the snapshot reads both commits', () => {
+        const
+            outside = overrides => ({...node({login: 'contributor', body: 'Resolves #1', ...overrides})}),
+            trailer = {firstCommit: {nodes: [{commit: {message: 'feat: x\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>'}}]}};
+
+        expect(normalizePullRequest(outside({body: '🤖 Generated with [Claude Code](https://claude.com/claude-code)'}), identities).disclosedFamilies).toEqual(['claude']);
+        expect(normalizePullRequest({...outside(), ...trailer}, identities).disclosedFamilies).toEqual(['claude']);
+        expect(normalizePullRequest(outside(), identities).disclosedFamilies).toEqual([]);
+        // a seat's own PR is never read for a model: its family is its seat's
+        expect(normalizePullRequest({...node({body: 'Authored by Ada (Claude Opus 5, Claude Code).'}), ...trailer}, identities).disclosedFamilies).toEqual([]);
+        expect(OPEN_WORK_SNAPSHOT).toMatch(/firstCommit: commits\(first: 1\) \{\s*nodes \{\s*commit \{\s*message/);
+        expect(OPEN_WORK_SNAPSHOT).toMatch(/commits\(last: 1\) \{\s*nodes \{\s*commit \{\s*oid\s*message/)
+    });
 
     test('a row carries GitHub\'s merge state, a missing one is null, and a change of it alone is no transition (#1221)', () => {
         expect(normalizePullRequest(node({mergeState: 'CLEAN'}), identities).mergeState).toBe('CLEAN');
