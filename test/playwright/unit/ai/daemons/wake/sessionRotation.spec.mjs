@@ -6,14 +6,19 @@ import path           from 'node:path';
 
 import {
     HUMAN_INPUT_ACTIVE,
-    HUMAN_INPUT_DEFER_BOUND,
     HUMAN_INPUT_QUIET_MS,
     HUMAN_INPUT_UNKNOWN,
+    ROTATION_ACTIVATION_LOST,
+    ROTATION_EXPIRED,
+    ROTATION_MAX_AGE_MS,
+    ROTATION_SUPERSEDED,
     SESSION_ROTATE_EVENT_TYPE,
     admittedEventType,
     evaluateHumanInput,
     hasReceiptIdentity,
     isHumanInputDefer,
+    isPreKeystrokeFailure,
+    isRotationExpired,
     isSessionRotation,
     rotationEventId,
     rotationPrompt,
@@ -50,8 +55,9 @@ const rotationEnvelope = (overrides = {}) => ({
     ...overrides
 });
 
-const rotationRecord = ({meta = {}, envelope = {}} = {}) => ({
+const rotationRecord = ({meta = {}, envelope = {}, acceptedAt = new Date().toISOString(), adapterConfig = {attemptTimeoutMs: 10_000}} = {}) => ({
     subscriptionId: 'WAKE_SUB:rotate',
+    acceptedAt,
     envelope      : rotationEnvelope(envelope),
     route         : {
         agentIdentity        : '@neo-opus-ada',
@@ -63,7 +69,7 @@ const rotationRecord = ({meta = {}, envelope = {}} = {}) => ({
             instanceAddress: '/seats/neo-opus-ada/claude-desktop',
             ...meta
         },
-        adapterConfig: {attemptTimeoutMs: 10_000}
+        adapterConfig
     }
 });
 
@@ -99,13 +105,30 @@ test.describe('ai/daemons/wake/sessionRotation — the contract', () => {
         expect(rotationPrompt(rotationEnvelope({payload: {}}))).toBeNull()
     });
 
-    test('a rotation types only after a quiet minute, and an unreadable clock defers', () => {
-        expect(evaluateHumanInput(HUMAN_INPUT_QUIET_MS)).toEqual({action: 'type'});
-        expect(evaluateHumanInput(HUMAN_INPUT_QUIET_MS - 1)).toEqual({action: 'defer', reason: HUMAN_INPUT_ACTIVE});
+    test('a rotation types at a 3 s pause, not a quiet minute, and an unreadable clock defers', () => {
+        expect(evaluateHumanInput(3_000)).toEqual({action: 'type'});
+        expect(evaluateHumanInput(2_999)).toEqual({action: 'defer', reason: HUMAN_INPUT_ACTIVE});
         expect(evaluateHumanInput(null)).toEqual({action: 'defer', reason: HUMAN_INPUT_UNKNOWN});
         expect(isHumanInputDefer(HUMAN_INPUT_ACTIVE)).toBe(true);
         expect(isHumanInputDefer(HUMAN_INPUT_UNKNOWN)).toBe(true);
         expect(isHumanInputDefer('interactive-dialog-pending')).toBe(false)
+    });
+
+    test('a rotation is on time for a minute after its accept, and an unreadable accept time is late', () => {
+        const accepted = Date.parse('2026-11-14T21:54:52.831Z');
+
+        expect(isRotationExpired('2026-11-14T21:54:52.831Z', accepted + ROTATION_MAX_AGE_MS - 1)).toBe(false);
+        expect(isRotationExpired('2026-11-14T21:54:52.831Z', accepted + ROTATION_MAX_AGE_MS)).toBe(true);
+        // The 21:54Z receipt was typed 9 min after its accept, into a seat restarted by hand.
+        expect(isRotationExpired('2026-11-14T21:54:52.831Z', Date.parse('2026-11-14T22:03:55.277Z'))).toBe(true);
+        expect(isRotationExpired(undefined, accepted)).toBe(true)
+    });
+
+    test('only a failure in the activation phase typed nothing', () => {
+        // Grace's 21:04Z rotation, verbatim from the receiver's record.
+        expect(isPreKeystrokeFailure('4154:4160: execution error: Target app lost frontmost status after activation (-2700)')).toBe(true);
+        expect(isPreKeystrokeFailure('execution error: Target app lost frontmost status before prompt clear (-2700)')).toBe(false);
+        expect(isPreKeystrokeFailure(undefined)).toBe(false)
     });
 
     test('the idle clock is read from IOHIDSystem without a grant', () => {
@@ -165,12 +188,125 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
     test('a person at the keyboard defers the rotation without a single keystroke', async () => {
         const calls  = [];
         const result = await dispatchLocalWake(rotationRecord(), quietEffects({
-            readHumanIdleMs: () => 5_000,
+            readHumanIdleMs: () => 1_000,
             spawnAsync     : async (command, args) => { calls.push({command, args}); return '' }
         }));
 
         expect(result).toEqual({outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE});
         expect(typedPaste(calls)).toHaveLength(0)
+    });
+
+    test('a window that loses the front before the first keystroke defers the rotation; a later loss fails it', async () => {
+        const run = message => dispatchLocalWake(rotationRecord(), quietEffects({
+            spawnAsync: async (command, args) => {
+                if (args.some(arg => String(arg).includes('keystroke "v"'))) throw new Error(message);
+                return ''
+            }
+        }));
+
+        expect(await run('4154:4160: execution error: Target app lost frontmost status after activation (-2700)'))
+            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST});
+        expect(await run('execution error: Target app lost frontmost status before wake paste (-2700)'))
+            .toMatchObject({outcome: 'failed'})
+    });
+
+    test('Emmy\'s control: a deadline crossed while the idle clock is read opens no session', async () => {
+        const calls  = [];
+        const result = await dispatchLocalWake(
+            rotationRecord({acceptedAt: new Date(Date.now() - (ROTATION_MAX_AGE_MS - 10)).toISOString()}),
+            quietEffects({
+                readHumanIdleMs: async () => { await new Promise(resolve => setTimeout(resolve, 30)); return HUMAN_INPUT_QUIET_MS },
+                spawnAsync     : async (command, args) => { calls.push({command, args}); return '' }
+            })
+        );
+
+        expect(result).toEqual({outcome: 'failed', outcomeReason: ROTATION_EXPIRED});
+        expect(typedPaste(calls)).toHaveLength(0)
+    });
+
+    test('Emmy\'s control: an attempt that outlives its adapter timeout opens no session when it settles', async () => {
+        const calls  = [];
+        const result = await dispatchLocalWake(
+            rotationRecord({adapterConfig: {attemptTimeoutMs: 10}}),
+            quietEffects({
+                readHumanIdleMs: async () => { await new Promise(resolve => setTimeout(resolve, 50)); return HUMAN_INPUT_QUIET_MS },
+                spawnAsync     : async (command, args) => { calls.push({command, args}); return '' }
+            })
+        );
+
+        expect(result).toBe('unknown');
+        await new Promise(resolve => setTimeout(resolve, 150));
+        expect(typedPaste(calls)).toHaveLength(0)
+    });
+
+    test('a seat another session claimed since the first attempt vetoes the keystroke', async () => {
+        const calls  = [];
+        const result = await dispatchLocalWake(rotationRecord(), quietEffects({
+            rotationGuard: () => ROTATION_SUPERSEDED,
+            spawnAsync   : async (command, args) => { calls.push({command, args}); return '' }
+        }));
+
+        expect(result).toEqual({outcome: 'failed', outcomeReason: ROTATION_SUPERSEDED});
+        expect(typedPaste(calls)).toHaveLength(0)
+    });
+
+    test('the script refuses the fresh-session keystroke once the rotation\'s seconds run out', () => {
+        const lines = buildOsascriptArgs({appName: 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7}).map(String),
+              fresh = lines.indexOf('      keystroke "n" using command down');
+
+        expect(lines).toContain('  set rotationDeadline to (current date) + 7');
+        expect(lines[fresh - 2]).toBe('      if (current date) > rotationDeadline then error "Rotation deadline passed before the fresh session"')
+    });
+
+    test('Emmy\'s Round-2 control: the script re-reads the seat holder right before the fresh-session keystroke', () => {
+        const lines = buildOsascriptArgs({
+                  appName: 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7,
+                  freshSessionHolder: {path: '/seats/ada/listeners/neo-opus-ada.json', sessionId: 'old-session'}
+              }).map(String),
+              fresh = lines.indexOf('      keystroke "n" using command down');
+
+        // Exactly the owner, never `delivered.sessionId`, which can still name the old session.
+        expect(lines[fresh - 4]).toBe('      tell current application to set rotationHolderNow to (do shell script "/usr/bin/plutil -extract owner.sessionId raw -o - " & quoted form of "/seats/ada/listeners/neo-opus-ada.json")');
+        expect(lines[fresh - 2]).toBe('      if rotationHolderNow is not "old-session" then error "Seat holder changed before the fresh session"')
+    });
+
+    test('Emmy\'s Round-2 control: with no holder at the first attempt, the script requires the record still absent before Cmd+N', () => {
+        const lines = buildOsascriptArgs({
+                  appName: 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7,
+                  freshSessionHolder: {path: '/seats/ada/listeners/neo-opus-ada.json', sessionId: null}
+              }).map(String),
+              fresh = lines.indexOf('      keystroke "n" using command down');
+
+        expect(lines[fresh - 4]).toBe('      tell current application to set rotationHolderNow to (do shell script "test -e " & quoted form of "/seats/ada/listeners/neo-opus-ada.json" & " && echo present || true")');
+        expect(lines[fresh - 2]).toBe('      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"')
+    });
+
+    test('the receiver hands the adapter the expected absence when the first attempt found no holder', async () => {
+        const stateDir         = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-rotation-absent-')),
+              listenerStateDir = path.join(stateDir, 'listeners'),
+              state            = new WakeReceiverState({stateDir}),
+              seen             = [];
+
+        try {
+            await state.init();
+            const receiver = createWakeReceiver({
+                manifest: {schemaVersion: 1, routes: {'WAKE_SUB:rotate': {
+                    signingKey: 'e'.repeat(64), agentIdentity: '@neo-opus-ada', admits: SESSION_ROTATE_EVENT_TYPE,
+                    harnessTargetMetadata: {adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir', instanceAddress: '/seats/ada'},
+                    adapterConfig: {attemptTimeoutMs: 100}
+                }}},
+                state, listenerStateDir, logger: {error() {}, warn() {}, log() {}},
+                dispatch: async (record, deps) => { seen.push(deps); return 'delivered' }
+            });
+
+            await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+            await receiver.drain();
+
+            expect(seen[0].rotationHolder).toEqual({path: path.join(listenerStateDir, 'neo-opus-ada.json'), sessionId: null});
+            await new Promise(resolve => receiver.server.close(() => resolve()));
+        } finally {
+            await fs.rm(stateDir, {recursive: true, force: true})
+        }
     });
 
     test('the idle clock is read last: after the pid lookup and the dialog probe, before the first keystroke', async () => {
@@ -379,27 +515,89 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
         expect(probes, 'a wake on a gated route is still probed').toBe(1)
     });
 
-    test('a person at the keyboard parks the rotation past the dialog bound, then surfaces it as failed', async () => {
-        dispatchResult = {outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE};
-        // Accepted directly, as the dialog-gate arms do: an HTTP accept starts a drain of its own,
-        // which would shift the count by one.
+    // A receiver of its own over the same state: these arms set the retry interval and the clock.
+    const rotationReceiver = (results, options) => createWakeReceiver({
+        manifest,
+        state,
+        dispatch: async record => { dispatched.push(record); return results.shift() ?? 'delivered' },
+        logger  : {error() {}, warn() {}, log() {}},
+        ...options
+    });
+    const rotationKey = getWakeRecordKey({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1'});
+
+    test('a person at the keyboard defers the rotation, and it is asked again within a second, not at the next re-drain', async () => {
+        const quick = rotationReceiver([{outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE}], {rotationRetryMs: 20});
+
+        // Accepted directly, as the dialog-gate arms do: an HTTP accept starts a drain of its own.
         await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await quick.drain();
 
-        const key = getWakeRecordKey({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1'});
-        let   record;
+        expect(await state.read(rotationKey)).toMatchObject({state: 'pending', deferCount: 1, deferReason: HUMAN_INPUT_ACTIVE});
 
-        for (let i = 0; i < HUMAN_INPUT_DEFER_BOUND; i++) {
-            await receiver.drain();
+        await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('delivered');
+        expect(dispatched).toHaveLength(2)
+    });
+
+    test('a rotation past its age fails without a keystroke, however long it was deferred', async () => {
+        const late = rotationReceiver([], {clock: () => Date.now() + ROTATION_MAX_AGE_MS});
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await late.drain();
+
+        expect(dispatched).toEqual([]);
+        expect(await state.read(rotationKey)).toMatchObject({state: 'failed', outcomeReason: 'session-rotate-expired'})
+    });
+
+    test('Emmy\'s control: a session opened by hand during a defer supersedes the rotation, with no second dispatch', async () => {
+        const listenerStateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-rotation-listeners-')),
+              holder           = sessionId => fs.writeFile(path.join(listenerStateDir, 'neo-opus-ada.json'), JSON.stringify({owner: {sessionId, session: {pid: 7}}})),
+              quick            = rotationReceiver([{outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE}], {rotationRetryMs: 200, listenerStateDir});
+
+        try {
+            await holder('old-session');
+            await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+            await quick.drain();
+
+            expect(await state.read(rotationKey)).toMatchObject({state: 'pending', seatHolder: 'old-session#7'});
+
+            await holder('opened-by-hand');
+
+            await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
+            expect((await state.read(rotationKey)).outcomeReason).toBe(ROTATION_SUPERSEDED);
+            expect(dispatched).toHaveLength(1)
+        } finally {
+            await fs.rm(listenerStateDir, {recursive: true, force: true})
         }
-        record = await state.read(key);
-        expect(record.state).toBe('pending');
-        expect(record.deferCount).toBe(HUMAN_INPUT_DEFER_BOUND);
-        expect(record.deferReason).toBe(HUMAN_INPUT_ACTIVE);
+    });
 
-        await receiver.drain();
-        record = await state.read(key);
-        expect(record.state).toBe('failed');
-        expect(record.outcomeReason).toBe(`human-input-defer-bound-exhausted:${HUMAN_INPUT_ACTIVE}`)
+    test('Emmy\'s Round-2 control: a holder that appears after an unreadable first read supersedes the rotation', async () => {
+        const listenerStateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-rotation-listeners-')),
+              quick            = rotationReceiver([{outcome: 'deferred', outcomeReason: HUMAN_INPUT_ACTIVE}], {rotationRetryMs: 200, listenerStateDir});
+
+        try {
+            await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+            await quick.drain();
+
+            expect(await state.read(rotationKey)).toMatchObject({state: 'pending', seatHolder: null});
+
+            await fs.writeFile(path.join(listenerStateDir, 'neo-opus-ada.json'), JSON.stringify({owner: {sessionId: 'opened-by-hand', session: {pid: 9}}}));
+
+            await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
+            expect((await state.read(rotationKey)).outcomeReason).toBe(ROTATION_SUPERSEDED);
+            expect(dispatched).toHaveLength(1)
+        } finally {
+            await fs.rm(listenerStateDir, {recursive: true, force: true})
+        }
+    });
+
+    test('a lost activation is asked again inside the age, like a person at the keyboard', async () => {
+        const quick = rotationReceiver([{outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST}], {rotationRetryMs: 20});
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await quick.drain();
+
+        await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('delivered');
+        expect(dispatched).toHaveLength(2)
     });
 });
 
