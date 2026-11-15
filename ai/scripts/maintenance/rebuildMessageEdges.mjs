@@ -1,5 +1,5 @@
 import {resolveTicketReference}                 from '../../services/graph/ticketReferences.mjs';
-import {Command}                                from 'commander';
+import {Command, InvalidArgumentError}          from 'commander';
 import Database                                 from 'better-sqlite3';
 import path                                     from 'node:path';
 import {isEntryModule}                          from '../../services/shared/isEntryModule.mjs';
@@ -28,6 +28,10 @@ import {normalizeMailboxIdentityForComparison} from '../../services/memory-core/
  * route carries `broadcastCohort: 'legacy-unknown'`, the projection's stamp for a broadcast without a
  * recipient snapshot. That snapshot is not on the node, so `DELIVERED_TO` is not rebuilt.
  *
+ * A restored `SENT_TO` ends the months its message was unreachable, so the message is not new mail:
+ * the same write stamps its read receipt where it has none, or the mailbox would list it as unread and
+ * a wake would announce it. `--stamp-restored-routes` replays the stamp for a run made before it existed.
+ *
  * Identity is decided inside the insert (`INSERT … WHERE NOT EXISTS`), and the counts are the rows it
  * changed. `--types` names the edge types to link (all six by default): the tag edges are tens of
  * thousands and feed concept scoring, so they can be applied on their own decision. The message ids
@@ -54,6 +58,39 @@ export const MESSAGE_EDGE_FIELDS = Object.freeze([
 const WRITE_BATCH_SIZE = 1000;
 
 /**
+ * The `readAtSource` a restored route's receipt carries, so the stamp stays auditable and reversible.
+ * @type {String}
+ */
+export const READ_AT_SOURCE = 'rebuildMessageEdges';
+
+/**
+ * A message its recipient reads as unread on the node: no `readAt`, and no `DELIVERED_TO` edge to keep
+ * receipts per recipient. Its `sentAt` is what the stamp copies, so a message without one is skipped.
+ * The predicate sits inside the write, so a read that lands first wins.
+ */
+const UNREAD_ON_NODE = `json_extract(data, '$.label') = 'MESSAGE'
+    AND json_extract(data, '$.properties.readAt') IS NULL
+    AND json_extract(data, '$.properties.sentAt') IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM Edges WHERE Edges.source = Nodes.id AND Edges.type = 'DELIVERED_TO')`;
+
+/**
+ * @summary The receipt statements of one connection: `stampable` asks whether a message would be
+ * stamped, `stamp` (only when applying) sets `readAt` to its `sentAt` and reports the change.
+ * @param {Object}  db
+ * @param {Boolean} apply
+ * @returns {{stampable: Object, stamp: Object|false}}
+ */
+function receiptStatements(db, apply) {
+    return {
+        stampable: db.prepare(`SELECT 1 FROM Nodes WHERE id = ? AND ${UNREAD_ON_NODE}`).pluck(),
+        stamp    : apply && db.prepare(`
+            UPDATE Nodes
+            SET    data = json_set(data, '$.properties.readAt', json_extract(data, '$.properties.sentAt'), '$.properties.readAtSource', ?)
+            WHERE  id = ? AND ${UNREAD_ON_NODE}`)
+    }
+}
+
+/**
  * @summary The targets one node field names: a string is one target, an array its string entries.
  * @param {*} value The field's value.
  * @returns {String[]}
@@ -71,7 +108,8 @@ export function targetsOf(value) {
  * @param {Boolean}  [options.apply=false] Write; otherwise count only.
  * @param {String[]} [options.types]       Edge types to link; every other field is skipped. Default: all six.
  * @param {Number}   [options.batchSize=1000] Writes per transaction.
- * @returns {{messages: Number, types: Object}} Per type: `{fields, linked, present, missingTarget, conceptsCreated}`;
+ * @returns {{messages: Number, readStamped: Number, types: Object}} `readStamped`: the receipts the
+ * restored `SENT_TO` routes stamped. Per type: `{fields, linked, present, missingTarget, conceptsCreated}`;
  * ticket references also report `unresolved` counts by refusal class, and carriers `invalid`.
  */
 export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIELDS.map(entry => entry.type), batchSize = WRITE_BATCH_SIZE}) {
@@ -92,7 +130,8 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
             SELECT ?, ?, ?, ?, ?, ?
             WHERE NOT EXISTS (SELECT 1 FROM Edges WHERE source = ? AND type = ?)`),
         insertNode = apply && db.prepare('INSERT OR IGNORE INTO Nodes (id, user_id, data) VALUES (?, NULL, ?)'),
-        result     = {messages: 0, types: {}},
+        {stampable, stamp} = receiptStatements(db, apply),
+        result     = {messages: 0, readStamped: 0, types: {}},
         row        = (type, carrier) => result.types[type] ??= {fields: 0, linked: 0, present: 0, missingTarget: 0, conceptsCreated: 0, ...(carrier ? {invalid: 0} : {})},
         edgeData   = (id, source, target, type, props, extra) => ({id, source, target, type, properties: {weight: 1, timestamp: props.sentAt ?? null, userId: props.userId ?? null, sharedEntity: true, ...extra}}),
         seenConcepts = new Set();
@@ -144,8 +183,12 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
                         if (insertRoute.run(edge.id, edge.properties.userId, messageId, target, type, JSON.stringify(edge), messageId, type).changes === 0) {
                             counts.linked--;
                             counts.present++;
+                        } else if (type === 'SENT_TO') {
+                            result.readStamped += stamp.run(READ_AT_SOURCE, messageId).changes;
                         }
                     });
+                } else if (type === 'SENT_TO' && stampable.get(messageId)) {
+                    result.readStamped++;
                 }
                 continue;
             }
@@ -202,31 +245,89 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
 }
 
 /**
- * @summary Opens the named graph (read-only unless `apply`), rebuilds, and logs the counts per type.
+ * @summary Stamps the read receipt of the messages whose `SENT_TO` rowid lies in `[first, last]`, the
+ * routes a run restored before this script stamped receipts itself.
+ *
+ * The range is closed because a route inserted after that run belongs to new mail.
+ * @param {Object}  options
+ * @param {Object}  options.db            Open better-sqlite3 handle; read-only unless `apply`.
+ * @param {Boolean} [options.apply=false] Write; otherwise count only.
+ * @param {Number}  options.first         First rowid of the run's routes.
+ * @param {Number}  options.last          Last rowid of the run's routes.
+ * @returns {{routes: Number, readStamped: Number}} `routes` counts the `SENT_TO` edges in the range,
+ * the control that must equal that run's `SENT_TO` `linked`.
+ */
+export function stampRestoredRoutes({db, apply = false, first, last}) {
+    const
+        messageIds         = db.prepare("SELECT source FROM Edges WHERE type = 'SENT_TO' AND rowid BETWEEN ? AND ?").pluck().all(first, last),
+        {stampable, stamp} = receiptStatements(db, apply),
+        result             = {routes: messageIds.length, readStamped: 0};
+
+    for (let i = 0; i < messageIds.length; i += WRITE_BATCH_SIZE) {
+        const batch = messageIds.slice(i, i + WRITE_BATCH_SIZE);
+
+        if (apply) {
+            db.transaction(() => { batch.forEach(id => { result.readStamped += stamp.run(READ_AT_SOURCE, id).changes; }); })();
+        } else {
+            result.readStamped += batch.filter(id => stampable.get(id)).length;
+        }
+    }
+
+    return result;
+}
+
+/**
+ * @summary Opens the named graph (read-only unless `apply`), rebuilds or replays the receipt stamp,
+ * and logs the counts.
  * @param {Object}  options
  * @param {String}  options.dbPath Explicit live graph SQLite path; must exist.
  * @param {Boolean} [options.apply=false]
  * @param {String[]} [options.types] Forwarded to {@link rebuildMessageEdges}.
+ * @param {{first: Number, last: Number}} [options.restoredRoutes] Replay {@link stampRestoredRoutes} instead of rebuilding.
  * @param {Object}  [options.logger=console]
- * @returns {Object} The `rebuildMessageEdges` result.
+ * @returns {Object} The `rebuildMessageEdges` or `stampRestoredRoutes` result.
  */
-export function runRebuildMessageEdges({dbPath, apply = false, types, logger = console}) {
+export function runRebuildMessageEdges({dbPath, apply = false, types, restoredRoutes, logger = console}) {
     if (typeof dbPath !== 'string' || !dbPath.trim()) {
         throw new Error('dbPath must be an explicit non-empty path.');
     }
 
-    const db = new Database(path.resolve(dbPath), {fileMustExist: true, readonly: !apply, timeout: 10000});
+    const db   = new Database(path.resolve(dbPath), {fileMustExist: true, readonly: !apply, timeout: 10000}),
+          mode = apply ? 'APPLIED' : 'DRY RUN';
 
     try {
+        if (restoredRoutes) {
+            const result = stampRestoredRoutes({db, apply, ...restoredRoutes});
+
+            logger.log(`[rebuildMessageEdges] ${mode} — ${result.routes} SENT_TO routes in rowids ${restoredRoutes.first}-${restoredRoutes.last}, ${result.readStamped} read receipts stamped`);
+
+            return result;
+        }
+
         const result = rebuildMessageEdges({db, apply, ...(types ? {types} : {})});
 
-        logger.log(`[rebuildMessageEdges] ${apply ? 'APPLIED' : 'DRY RUN'} — ${result.messages} messages`);
+        logger.log(`[rebuildMessageEdges] ${mode} — ${result.messages} messages, ${result.readStamped} read receipts stamped`);
         Object.entries(result.types).forEach(([type, counts]) => logger.log(`[rebuildMessageEdges]   ${type}: ${JSON.stringify(counts)}`));
 
         return result;
     } finally {
         db.close();
     }
+}
+
+/**
+ * @summary Parses `<first>-<last>`, two rowids with `first <= last`.
+ * @param {String} value
+ * @returns {{first: Number, last: Number}}
+ */
+export function parseRowidRange(value) {
+    const [, first, last] = /^(\d+)-(\d+)$/.exec(value) || [];
+
+    if (first === undefined || Number(first) > Number(last)) {
+        throw new InvalidArgumentError('expected <first>-<last>, two rowids with first <= last');
+    }
+
+    return {first: Number(first), last: Number(last)}
 }
 
 /**
@@ -238,7 +339,8 @@ export function createCommand() {
         .description("Link the routing, reply, thread, ticket and tag edges a MESSAGE node's fields name where the live graph lacks them. Dry-run unless --apply.")
         .requiredOption('--db-path <path>', 'live graph SQLite file (explicit, must exist)')
         .option('--apply', 'write instead of counting', false)
-        .option('--types <types>', 'comma-separated edge types to link (default: all six)', value => value.split(',').map(s => s.trim()).filter(Boolean));
+        .option('--types <types>', 'comma-separated edge types to link (default: all six)', value => value.split(',').map(s => s.trim()).filter(Boolean))
+        .option('--stamp-restored-routes <first-last>', 'instead of rebuilding, stamp the read receipts of the messages whose SENT_TO rowid lies in this range (a run made before receipts were stamped)', parseRowidRange);
 }
 
 /**
@@ -249,7 +351,7 @@ export function createCommand() {
 export function runCli(argv = process.argv) {
     const options = createCommand().parse(argv).opts();
 
-    return runRebuildMessageEdges({dbPath: options.dbPath, apply: options.apply, types: options.types});
+    return runRebuildMessageEdges({dbPath: options.dbPath, apply: options.apply, types: options.types, restoredRoutes: options.stampRestoredRoutes});
 }
 
 if (isEntryModule(import.meta.url)) {
