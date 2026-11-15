@@ -45,6 +45,7 @@ import DeploymentStateBridgeService                                             
 import RecoveryActuatorService                                                    from './services/RecoveryActuatorService.mjs';
 import ContainerHealthControllerService                                           from './services/ContainerHealthControllerService.mjs';
 import ContainerHealthDiagnosisService                                            from './services/ContainerHealthDiagnosisService.mjs';
+import DiskPressureDefectService                                                  from './services/DiskPressureDefectService.mjs';
 import {buildBootIdentitySource}                                                  from './services/buildBootIdentitySource.mjs';
 import {recordBootIdentityFact}                                                   from './services/recordBootIdentityFact.mjs';
 import DataIntegrityDiagnosisService                                              from './services/DataIntegrityDiagnosisService.mjs';
@@ -117,7 +118,6 @@ import {resolveCloudOnlyDefault} from './services/deploymentDurabilityPosture.mj
  * @type {String}
  */
 const PROVIDER_RESIDENCY_TASK_NAME = 'provider-residency-repair';
-
 
 /**
  * Deadline for the boot-time configured-tenant-repo coverage prewarm. An internal liveness bound
@@ -256,6 +256,7 @@ export class Orchestrator extends Base {
         recoveryActuatorService_         : null,
         containerHealthDiagnosisService_ : null,
         containerHealthControllerService_: null,
+        diskPressureDefectService_       : null,
         dataRecoveryActuatorService_     : null,
         dataIntegrityDiagnosisService_   : null,
         maintenanceBackpressureService_  : MaintenanceBackpressureService,
@@ -391,16 +392,25 @@ export class Orchestrator extends Base {
     }
 
     /**
-     * @summary Publishes a handover defect through the mailbox; rejection keeps the receipt retryable.
-     * @param {{subject: String, body: String}} note Counts and source-message identity, never the private handover body.
+     * @summary Publishes an observation or handover defect note through the mailbox; rejection keeps the receipt retryable.
+     * @param {{subject: String, body: String, taggedConcepts?: String[]}} note Defect-note payload (`taggedConcepts` forwarded when provided).
      * @returns {Promise<Object>} The accepted mailbox write receipt.
      */
-    async publishFocusItemsDefect(note) {
+    async publishDefectNote(note) {
         const identity = this.swarmHeartbeatIdentity;
 
         return RequestContextService.run({
             agentIdentityNodeId: identity ? normalizeAgentIdentityNodeId(identity) : '@system'
         }, () => MailboxService.addMessage({...note, to: 'AGENT:*', priority: 'normal', wakeSuppressed: true}, {deferProjection: true}));
+    }
+
+    /**
+     * @summary Publishes a handover defect through the mailbox; rejection keeps the receipt retryable.
+     * @param {{subject: String, body: String}} note Counts and source-message identity, never the private handover body.
+     * @returns {Promise<Object>} The accepted mailbox write receipt.
+     */
+    async publishFocusItemsDefect(note) {
+        return (this?.publishDefectNote || Orchestrator.prototype.publishDefectNote).call(this, note);
     }
 
     /**
@@ -632,9 +642,8 @@ export class Orchestrator extends Base {
                 restartChurnWindowMs        : restartChurn.windowMs,
                 storeMemorySaturationPercent: memorySaturation.storePercent
             },
-            // Preserve AiConfig as the source of truth while keeping this service free of a
-            // non-entrypoint config import. A reader rather than a snapshot keeps a reactive
-            // endpoint override visible at the diagnosis use site.
+            // A reader rather than a snapshot keeps a reactive endpoint override visible at the
+            // diagnosis use site without threading ollamaHost through diagnosisConfig.
             ollamaHostReader: () => AiConfig.ollama.host
         });
     }
@@ -674,6 +683,27 @@ export class Orchestrator extends Base {
             healLedgerDir      : path.join(this.dataDir, HEAL_LEDGER_DIR_NAME),
             healLedgerRetention: validateHealLedgerRetention(healLedger.maxEvents, healLedger.pruneTriggerBytes),
             writeLog           : this.containerHealthControllerWriteLog
+        });
+    }
+
+    /**
+     * @summary Evaluates whether this orchestrator currently holds live observation-write authority.
+     * @returns {Boolean}
+     */
+    hasObservationWriteAuthority() {
+        return !this.authorityLeaseLost && this.pulseAuthorityLease() === 'held';
+    }
+
+    /**
+     * @summary Builds the episode-scoped defect-note reconciler paired with the container-health controller.
+     * @param {Neo.ai.daemons.orchestrator.services.DiskPressureDefectService|Object|null} value
+     * @returns {Neo.ai.daemons.orchestrator.services.DiskPressureDefectService}
+     */
+    beforeSetDiskPressureDefectService(value) {
+        return ClassSystemUtil.beforeSetInstance(value, DiskPressureDefectService, {
+            stateDir                    : this.dataDir,
+            hasObservationWriteAuthority: () => this.hasObservationWriteAuthority(),
+            publishDefectNote           : note => this.publishDefectNote(note)
         });
     }
 
@@ -1210,13 +1240,31 @@ export class Orchestrator extends Base {
             return [];
         }
 
+        let outcomes;
+
         try {
-            return await this.containerHealthControllerService.consumeSnapshot({snapshot: result.snapshot});
+            outcomes = await this.containerHealthControllerService.consumeSnapshot({snapshot: result.snapshot});
         } catch (error) {
             this.writeLog('ERROR', `[Orchestrator] Container-health control cycle failed: ${error.message}`);
 
             return [];
         }
+
+        if (result.snapshot?.engineDisk && this.diskPressureDefectService && this.hasObservationWriteAuthority()) {
+            try {
+                await this.diskPressureDefectService.reconcile({
+                    engineDisk                  : result.snapshot.engineDisk,
+                    outcomes,
+                    stateDir                    : this.dataDir,
+                    hasObservationWriteAuthority: () => this.hasObservationWriteAuthority(),
+                    publishDefectNote           : note => this.publishDefectNote(note)
+                });
+            } catch (error) {
+                this.writeLog('WARN', `[Orchestrator] Disk-pressure defect episode reconciliation failed: ${error.message}`);
+            }
+        }
+
+        return outcomes;
     }
 
     /**
@@ -1349,6 +1397,9 @@ export class Orchestrator extends Base {
         // Same reasoning, third writer: the controller appends the lifecycle heal-events the bridge folds.
         if (this.containerHealthControllerService) {
             this.containerHealthControllerService.healLedgerDir = path.join(value, HEAL_LEDGER_DIR_NAME);
+        }
+        if (this.diskPressureDefectService) {
+            this.diskPressureDefectService.stateDir = value;
         }
     }
     afterSetTaskDefinitions(value, oldValue) {
@@ -1800,6 +1851,7 @@ export class Orchestrator extends Base {
         // AFTER the actuator on purpose: the controller takes it as a construction dependency, and
         // `afterSetRecoveryActuatorService` only back-links a controller that already exists.
         this.containerHealthControllerService = {};
+        this.diskPressureDefectService = {};
         this.dataRecoveryActuatorService = {};
         this.dataIntegrityDiagnosisService = {};
         this.processSupervisorService.recoverTasks();

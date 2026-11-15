@@ -1,4 +1,5 @@
-import Base from 'neo.mjs/src/core/Base.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
+import AiConfig from '../../../config.mjs';
 
 import {CONTAINER_HEALTH_ACTION_CLASSES, CONTAINER_HEALTH_FACT_TYPES} from './containerHealthFactTypes.mjs';
 
@@ -594,9 +595,11 @@ export class ContainerHealthDiagnosisService extends Base {
      *
      * Evaluated over a sustained window of `{statfs, df}` samples so a brief burst cannot trigger a
      * prune. When `statfs.usedPercent >= diskPressurePercent` holds across the measured window:
-     * - Reclaimable build cache at or above `minReclaimableBuildCacheBytes` emits `prune-build-cache`.
-     * - Pressure without reclaimable build cache emits `record` naming `images` and `volumes`
-     *   without acting on them — images and volumes are never pruned or deleted automatically.
+     * - Reclaimable build cache exceeding `buildCacheWarmFloorBytes` by at least
+     *   `minReclaimableBuildCacheBytes` emits `prune-build-cache`.
+     * - Pressure whose reclaimable build cache the warm floor keeps (or within the dead band above it)
+     *   emits `record` naming `images` and `volumes` without acting on them — images and volumes are
+     *   never pruned or deleted automatically.
      *
      * @param {Object} [options]
      * @param {String} [options.targetId='docker-engine'] Engine target identity id.
@@ -658,6 +661,13 @@ export class ContainerHealthDiagnosisService extends Base {
             });
         }
 
+        const buildCacheWarmFloorBytes = AiConfig.orchestrator.diskPressure.buildCacheWarmFloorBytes;
+        if (!Number.isFinite(buildCacheWarmFloorBytes) || buildCacheWarmFloorBytes < 0) {
+            throw new TypeError(
+                `ContainerHealthDiagnosisService: buildCacheWarmFloorBytes must be a finite non-negative number, received ${JSON.stringify(buildCacheWarmFloorBytes)}`
+            );
+        }
+
         const
             statfs = latestSample?.statfs && typeof latestSample.statfs === 'object' ? latestSample.statfs : null,
             df     = latestSample?.df && typeof latestSample.df === 'object' ? latestSample.df : null,
@@ -673,8 +683,9 @@ export class ContainerHealthDiagnosisService extends Base {
             reclaimableBuildCacheBytes = Number.isFinite(Number(buildCache.reclaimableBytes))
                 ? Math.max(0, Math.trunc(Number(buildCache.reclaimableBytes)))
                 : 0,
-            reclaimableBuildCacheAboveFloor = reclaimableBuildCacheBytes >= config.minReclaimableBuildCacheBytes,
-            actionClass = reclaimableBuildCacheAboveFloor
+            reclaimableAboveWarmFloorBytes  = Math.max(0, reclaimableBuildCacheBytes - buildCacheWarmFloorBytes),
+            reclaimableBuildCacheAboveFloor = reclaimableAboveWarmFloorBytes >= config.minReclaimableBuildCacheBytes,
+            actionClass                     = reclaimableBuildCacheAboveFloor
                 ? CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache
                 : CONTAINER_HEALTH_ACTION_CLASSES.record,
             classificationReason = reclaimableBuildCacheAboveFloor
@@ -697,6 +708,8 @@ export class ContainerHealthDiagnosisService extends Base {
                     maxPercent                   : diskWindow.max,
                     meanPercent                  : diskWindow.mean,
                     reclaimableBuildCacheBytes,
+                    buildCacheWarmFloorBytes,
+                    reclaimableAboveWarmFloorBytes,
                     minReclaimableBuildCacheBytes: config.minReclaimableBuildCacheBytes,
                     reclaimableBuildCacheAboveFloor,
                     statfs,
@@ -723,8 +736,10 @@ export class ContainerHealthDiagnosisService extends Base {
                 minResourceSamples           : config.minResourceSamples,
                 factCount                    : facts.length,
                 authoritativeFactCount       : 1,
+                buildCacheWarmFloorBytes,
                 minReclaimableBuildCacheBytes: config.minReclaimableBuildCacheBytes,
                 reclaimableBuildCacheBytes,
+                reclaimableAboveWarmFloorBytes,
                 statfs,
                 images,
                 volumes,

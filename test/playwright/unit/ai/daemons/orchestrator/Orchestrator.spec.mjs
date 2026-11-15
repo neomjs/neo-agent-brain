@@ -38,6 +38,10 @@ import {
     beginProviderActivity,
     ensureProviderActivitySchema
 } from '../../../../../../ai/services/shared/providerActivityLedger.mjs';
+import {
+    DISK_PRESSURE_DEFECT_TAGGED_CONCEPTS,
+    DISK_PRESSURE_EPISODE_STATE_FILE
+} from '../../../../../../ai/daemons/orchestrator/services/DiskPressureDefectService.mjs';
 
 let   testOrchestratorSeq            = 0;
 const TEST_NEURAL_LINK_BRIDGE_PORT   = 18081;
@@ -3183,6 +3187,192 @@ test.describe('#1333 — Focus (v1) host-edge projection refresh is gated to hos
             hostOrchestrator.destroy();
         } finally {
             fs.removeSync(tmpDir);
+        }
+    });
+});
+
+test.describe('#1756 — Orchestrator defect-note publisher and DiskPressureDefectService wiring', () => {
+    const GIB         = 1024 ** 3,
+          OBSERVED_AT = Date.parse('2026-11-15T07:00:00.000Z');
+
+    test('publishDefectNote forwards note.taggedConcepts through the quiet mailbox writer and diagnosisConfig omits buildCacheWarmFloorBytes', async () => {
+        const original = MailboxService.addMessage,
+              calls    = [],
+              note     = {
+                  subject       : 'defect-note: docker-engine disk-pressure broke /app/.neo-ai-data: the build-cache prune cannot relieve it',
+                  body          : 'Unrelieved Docker / data-mount disk pressure (record).',
+                  taggedConcepts: [...DISK_PRESSURE_DEFECT_TAGGED_CONCEPTS]
+              };
+
+        try {
+            MailboxService.addMessage = async (value, options) => {
+                calls.push({value, options, identity: RequestContextService.getAgentIdentityNodeId()});
+                return {messageId: 'MESSAGE:disk-accepted'};
+            };
+
+            expect(await Orchestrator.prototype.publishDefectNote.call({}, note)).toEqual({messageId: 'MESSAGE:disk-accepted'});
+            expect(await Orchestrator.prototype.publishDefectNote.call({swarmHeartbeatIdentity: '@neo-gpt-emmy'}, note))
+                .toEqual({messageId: 'MESSAGE:disk-accepted'});
+
+            expect(calls).toEqual([
+                {
+                    identity: '@system',
+                    options : {deferProjection: true},
+                    value   : {
+                        ...note,
+                        to            : 'AGENT:*',
+                        priority      : 'normal',
+                        wakeSuppressed: true
+                    }
+                },
+                {
+                    identity: '@neo-gpt-emmy',
+                    options : {deferProjection: true},
+                    value   : {
+                        ...note,
+                        to            : 'AGENT:*',
+                        priority      : 'normal',
+                        wakeSuppressed: true
+                    }
+                }
+            ]);
+
+            MailboxService.addMessage = async () => { throw new Error('mailbox unavailable'); };
+            await expect(Orchestrator.prototype.publishDefectNote.call({}, note)).rejects.toThrow('mailbox unavailable');
+        } finally {
+            MailboxService.addMessage = original;
+        }
+
+        const orchestrator = createTestOrchestrator({kbSyncEnabled: false});
+        try {
+            orchestrator.containerHealthDiagnosisService = {};
+            expect(orchestrator.containerHealthDiagnosisService.diagnosisConfig)
+                .not.toHaveProperty('buildCacheWarmFloorBytes');
+        } finally {
+            orchestrator.destroy();
+        }
+    });
+
+    test('consumeContainerHealthDecisions delegates engineDisk and outcomes to diskPressureDefectService, syncs dataDir, and logs WARN on failure', async () => {
+        const tmpDir    = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-disk-wiring-')),
+              relocated = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-disk-relocated-')),
+              published = [],
+              logs      = [];
+
+        const orchestrator = Neo.create(Orchestrator, {
+            dataDir      : tmpDir,
+            healthService: {recordTaskOutcome() {}}
+        });
+
+        try {
+            orchestrator.deploymentRuntimeAccessService = {};
+            orchestrator.deploymentRuntimeAccessService.runtimeAccessConfig = {
+                enabled        : true,
+                allowedServices: ['chroma', 'kb-server', 'mc-server', 'local-model']
+            };
+            orchestrator.recoveryActuatorService = {};
+            orchestrator.recoveryActuatorService.recoveryOverrideDir = path.join(tmpDir, 'deployment-state');
+            orchestrator.recoveryActuatorService.actuatorConfig      = {
+                enabled                    : true,
+                blockedSupervisedTasks     : [],
+                blockedComposeServices     : [],
+                blockedDeployTargets       : [],
+                healAttemptsPath           : path.join(tmpDir, 'heal-attempts.json'),
+                recoveryRunStateDir        : path.join(tmpDir, 'recovery-runs'),
+                recoveryRunRetentionLimit  : 100,
+                baseBackoffMs              : 0,
+                maxBackoffMs               : 0,
+                maxAttemptsPerWindow       : 5,
+                maxAttemptsWindowMs        : 60_000,
+                verifyCooldownMs           : 0,
+                healthyObservationThreshold: 1,
+                futility                   : {
+                    maxIdenticalVerdicts: 50,
+                    windowMs            : 3_600_000,
+                    baseThawQuietMs     : 1_800_000,
+                    tierMultiplier      : 2,
+                    maxThawQuietMs      : 86_400_000
+                }
+            };
+            orchestrator.containerHealthDiagnosisService = {};
+            orchestrator.containerHealthControllerService = {};
+            orchestrator.diskPressureDefectService = {};
+            orchestrator.pulseAuthorityLease = () => 'held';
+            orchestrator.writeLog            = (level, message) => logs.push({level, message});
+            orchestrator.publishDefectNote   = async note => {
+                published.push(note);
+                return {messageId: `MESSAGE:${published.length}`};
+            };
+
+            expect(orchestrator.diskPressureDefectService.stateDir).toBe(tmpDir);
+            orchestrator.dataDir = relocated;
+            expect(orchestrator.diskPressureDefectService.stateDir).toBe(relocated);
+
+            const statfs = {
+                      path          : '/app/.neo-ai-data',
+                      totalBytes    : 64 * GIB,
+                      usedBytes     : Math.round(0.9736 * 64 * GIB),
+                      freeBytes     : 0,
+                      availableBytes: 0,
+                      usedPercent   : 97.36
+                  },
+                  df = {
+                      images    : {totalSizeBytes: 40 * GIB, reclaimableBytes: 38_547_329_024, totalCount: 8, activeCount: 2},
+                      volumes   : {totalSizeBytes: 32 * GIB, reclaimableBytes: 34_252_361_728, totalCount: 6, activeCount: 1},
+                      buildCache: {totalSizeBytes: 2 * GIB, reclaimableBytes: 1_589_137_899, totalCount: 10, inUseCount: 2}
+                  },
+                  samples = [
+                      {statfs, df, observedAtMs: OBSERVED_AT - 60_000},
+                      {statfs, df, observedAtMs: OBSERVED_AT}
+                  ],
+                  diagnosis = orchestrator.containerHealthDiagnosisService.diagnoseEngineDisk({
+                      targetId   : 'docker-engine',
+                      diskSample : samples.at(-1),
+                      diskSamples: samples,
+                      observedAt : OBSERVED_AT
+                  }),
+                  engineDisk = {
+                      schemaVersion : 1,
+                      recordType    : 'deployment-engine-disk-state',
+                      targetIdentity: {kind: 'engine', id: 'docker-engine'},
+                      observedAt    : OBSERVED_AT,
+                      status        : 'available',
+                      statfs,
+                      df,
+                      diagnosis,
+                      errors        : []
+                  };
+
+            const outcomes = await orchestrator.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk}
+            });
+
+            expect(outcomes).toHaveLength(1);
+            expect(outcomes[0]).toMatchObject({
+                serviceKey : 'docker-engine',
+                actionClass: CONTAINER_HEALTH_ACTION_CLASSES.record,
+                status     : 'recorded'
+            });
+            expect(published).toHaveLength(1);
+            expect(published[0].subject).toBe('defect-note: docker-engine disk-pressure broke /app/.neo-ai-data: the build-cache prune cannot relieve it');
+            expect(published[0].taggedConcepts).toEqual([...DISK_PRESSURE_DEFECT_TAGGED_CONCEPTS]);
+            expect(fs.existsSync(path.join(relocated, DISK_PRESSURE_EPISODE_STATE_FILE))).toBe(true);
+
+            // Reconciler errors degrade cleanly with a WARN log without breaking outcome return.
+            orchestrator.diskPressureDefectService.reconcile = async () => {
+                throw new Error('simulated reconciler failure');
+            };
+            const secondOutcomes = await orchestrator.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk}
+            });
+            expect(secondOutcomes).toHaveLength(1);
+            expect(logs.some(entry => entry.level === 'WARN' && entry.message.includes('simulated reconciler failure'))).toBe(true);
+        } finally {
+            orchestrator.destroy();
+            fs.removeSync(tmpDir);
+            fs.removeSync(relocated);
         }
     });
 });

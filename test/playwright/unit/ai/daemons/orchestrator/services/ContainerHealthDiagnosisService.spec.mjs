@@ -2546,6 +2546,87 @@ test.describe('ContainerHealthDiagnosisService — plane disk pressure (#1430)',
         expect(decision.facts[0].authoritative).toBe(true);
     });
 
+    test('routes warm-floor dead-band build cache [0, 3 GiB) to record and >= 3 GiB to prune-build-cache from the AiConfig leaf (#1756)', () => {
+        const service    = createService(),
+              diagnoseAt = reclaimableBytes => {
+                  const samples = [
+                      diskSample({usedPercent: 97.36, reclaimableBuildCacheBytes: reclaimableBytes, observedAtMs: OBSERVED_AT - 60_000}),
+                      diskSample({usedPercent: 97.36, reclaimableBuildCacheBytes: reclaimableBytes, observedAtMs: OBSERVED_AT})
+                  ];
+
+                  return service.diagnoseEngineDisk({
+                      targetId   : 'docker-engine',
+                      diskSample : samples.at(-1),
+                      diskSamples: samples,
+                      observedAt : OBSERVED_AT
+                  });
+              },
+              belowWarm      = Math.round(1.48 * GIB),
+              inDeadBand     = Math.round(2.5 * GIB),
+              belowPruneEdge = 3 * GIB - 1,
+              atPruneFloor   = 3 * GIB;
+
+        expect(service.configValues).not.toHaveProperty('buildCacheWarmFloorBytes');
+
+        const lowDecision = diagnoseAt(belowWarm);
+        expect(lowDecision.status).toBe('diagnosed');
+        expect(lowDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+        expect(lowDecision.diagnosis.details).toMatchObject({
+            classificationReason          : 'engine-disk-pressure-no-reclaimable-build-cache',
+            buildCacheWarmFloorBytes      : 2 * GIB,
+            minReclaimableBuildCacheBytes : 1 * GIB,
+            reclaimableBuildCacheBytes    : belowWarm,
+            reclaimableAboveWarmFloorBytes: 0
+        });
+        expect(lowDecision.diagnosis.details).not.toHaveProperty('keepStorageBytes');
+        expect(lowDecision.facts[0].details).toMatchObject({
+            buildCacheWarmFloorBytes       : 2 * GIB,
+            reclaimableAboveWarmFloorBytes : 0,
+            reclaimableBuildCacheAboveFloor: false
+        });
+
+        const midDecision = diagnoseAt(inDeadBand);
+        expect(midDecision.status).toBe('diagnosed');
+        expect(midDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+        expect(midDecision.diagnosis.details).toMatchObject({
+            classificationReason          : 'engine-disk-pressure-no-reclaimable-build-cache',
+            buildCacheWarmFloorBytes      : 2 * GIB,
+            minReclaimableBuildCacheBytes : 1 * GIB,
+            reclaimableBuildCacheBytes    : inDeadBand,
+            reclaimableAboveWarmFloorBytes: inDeadBand - 2 * GIB
+        });
+        expect(midDecision.diagnosis.details).not.toHaveProperty('keepStorageBytes');
+
+        const edgeDecision = diagnoseAt(belowPruneEdge);
+        expect(edgeDecision.status).toBe('diagnosed');
+        expect(edgeDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+        expect(edgeDecision.diagnosis.details).toMatchObject({
+            classificationReason          : 'engine-disk-pressure-no-reclaimable-build-cache',
+            buildCacheWarmFloorBytes      : 2 * GIB,
+            minReclaimableBuildCacheBytes : 1 * GIB,
+            reclaimableBuildCacheBytes    : belowPruneEdge,
+            reclaimableAboveWarmFloorBytes: 1 * GIB - 1
+        });
+        expect(edgeDecision.facts[0].details.reclaimableBuildCacheAboveFloor).toBe(false);
+
+        const pruneDecision = diagnoseAt(atPruneFloor);
+        expect(pruneDecision.status).toBe('diagnosed');
+        expect(pruneDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache);
+        expect(pruneDecision.diagnosis.details).toMatchObject({
+            classificationReason          : 'engine-disk-pressure-build-cache-reclaimable',
+            buildCacheWarmFloorBytes      : 2 * GIB,
+            minReclaimableBuildCacheBytes : 1 * GIB,
+            reclaimableBuildCacheBytes    : atPruneFloor,
+            reclaimableAboveWarmFloorBytes: 1 * GIB
+        });
+        expect(pruneDecision.diagnosis.details).not.toHaveProperty('keepStorageBytes');
+        expect(pruneDecision.facts[0].details).toMatchObject({
+            buildCacheWarmFloorBytes       : 2 * GIB,
+            reclaimableAboveWarmFloorBytes : 1 * GIB,
+            reclaimableBuildCacheAboveFloor: true
+        });
+    });
+
     test('transient or sub-threshold disk usage remains healthy', () => {
         const service = createService();
 
