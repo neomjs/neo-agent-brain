@@ -20,6 +20,7 @@ import {createHash} from 'node:crypto';
 /**
  * The open half: per PR, what a holder change is computed from, and the title the cockpit names it by.
  * The body and every commit's message (up to 100, with whether more exist) carry the model an outside PR names.
+ * Each issue it closes carries GitHub's count of its open blockers, which holds an approved head off the merge.
  * @type {String}
  */
 export const OPEN_WORK_SNAPSHOT = `
@@ -54,6 +55,20 @@ export const OPEN_WORK_SNAPSHOT = `
           }
           repository {
             nameWithOwner
+          }
+          closingIssuesReferences(first: 10) {
+            pageInfo {
+              hasNextPage
+            }
+            nodes {
+              number
+              repository {
+                nameWithOwner
+              }
+              issueDependenciesSummary {
+                blockedBy
+              }
+            }
           }
           commitMessages: commits(first: 100) {
             pageInfo {
@@ -358,8 +373,8 @@ export const OPEN_WORK_FAILED_CHECKS = `
 
 /**
  * @summary Published GraphQL formula estimates for the static pulse documents, not timeout-cost bounds.
- * Snapshot has the search plus nine connections for up to 50 PRs, the head commit's `checkSuites` among
- * them: round((1 + 50 * 9) / 100) = 5, which a live read measured too. Terminal has one connection; the published minimum is one. Unblocked reads 10 closing issues, 50
+ * Snapshot has the search plus ten connections for up to 50 PRs, the head commit's `checkSuites` and the
+ * closing issues among them: round((1 + 50 * 10) / 100) = 5, which a live read measured too. Terminal has one connection; the published minimum is one. Unblocked reads 10 closing issues, 50
  * blocked issues each, and two lists on each of those: round((1 + 10 + 500 + 500) / 100) = 10, which a
  * live read measured too. The gate also uses measured maxima.
  *
@@ -373,7 +388,7 @@ export const OPEN_WORK_FAILED_CHECKS = `
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
-    Object.freeze({queryHash: 'da079725258d296cd7a66f184942d51a4679f55ad43883e1cf46dc68d25f5860', formulaCost: 4}),
+    Object.freeze({queryHash: '0654027aa1541607ef385264e256240c5eed24d0f3233da40d7ce2f89b367989', formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10})
 ]);
 

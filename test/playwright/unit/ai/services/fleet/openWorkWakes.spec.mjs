@@ -322,7 +322,9 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
             [{ci: 'pending', ...judged('CHANGES_REQUESTED')}, 'address-changes', 'changes are requested on your head'],
             [{ci: 'green', ...judged('APPROVED'), mergeable: 'CONFLICTING'}, 'rebase', 'your approved head has conflicts to rebase'],
             [{ci: 'green', requested: [GPT]}, 'review', 'your review is due on the current head'],
-            [{ci: 'green'}, 'route-review', 'CI is green; request a reviewer for your head']
+            [{ci: 'green'}, 'route-review', 'CI is green; request a reviewer for your head'],
+            [{ci: 'green', ...judged('APPROVED'), blockedTargets: ['acme/app#9']}, 'await-prerequisite',
+                'your approved head closes an issue that is still blocked, so it waits off the merge']
         ];
 
         for (const [row, kind, reason] of cases) {
@@ -630,7 +632,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
             previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash].includes(entry.queryHash)),
             observed = history(), item = observed.pulses[100], base = item.quota[0];
 
-        expect(previous).toEqual({queryHash: expect.stringMatching(/^[a-f\d]{64}$/), formulaCost: 4});
+        expect(previous).toEqual({queryHash: expect.stringMatching(/^[a-f\d]{64}$/), formulaCost: 5});
         item.quota = [
             classified(base),
             classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: previous.queryHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})

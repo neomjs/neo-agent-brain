@@ -266,6 +266,35 @@ test.describe('openWorkHolder — an outside PR that names a model needs an appr
     })
 });
 
+test.describe('openWorkHolder — a close target still blocked holds the merge for its author (#1768)', () => {
+    const
+        approved = overrides => row({...judged('APPROVED'), ...overrides}),
+        blocked  = {blockedTargets: ['neomjs/neo-pro#275']},
+        held     = {role: 'author', kind: 'await-prerequisite', ids: ['@neo-opus-ada'], targets: ['neomjs/neo-pro#275']};
+
+    test('an approved, green head whose close target has an open blocker is its author\'s, never the operator\'s merge (AC-1)', () => {
+        expect(holderOf(approved(blocked))).toEqual(held);
+        expect(holderOf(approved({ci: null, mergeState: 'CLEAN', ...blocked}))).toEqual(held);
+        // an outside author holds no seat, so the hold names nobody
+        expect(holderOf(approved({owner: outside, ...blocked}))).toEqual({...held, ids: []})
+    });
+
+    test('once the blocker closes, the next read hands the head to the merge (AC-2)', () => {
+        expect(holderOf(approved({blockedTargets: [], targetsComplete: true}))).toEqual({role: 'operator', kind: 'merge', ids: []})
+    });
+
+    test('a target list the read did not finish never certifies the merge, though a blocked target it read still holds it (AC-4)', () => {
+        expect(holderOf(approved({targetsComplete: false}))).toEqual({role: 'unknown', kind: null, ids: []});
+        expect(holderOf(approved({...blocked, targetsComplete: false}))).toEqual(held)
+    });
+
+    test('the hold replaces only the merge: a red head, a conflict and a draft keep their holders', () => {
+        expect(holderOf(approved({...blocked, ci: 'red'}))).toEqual({role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']});
+        expect(holderOf(approved({...blocked, mergeable: 'CONFLICTING'}))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
+        expect(holderOf(approved({...blocked, draft: true}))).toEqual({role: 'none', kind: null, ids: []})
+    })
+});
+
 test.describe('openWorkHolder — an outside comment owes a reply, beside the holder (#1630)', () => {
     const
         turn  = (minute, by, member = false, bot = false) => ({at: `2026-11-11T10:${String(minute).padStart(2, '0')}:00Z`, by, member, ...(bot ? {bot: true} : {})}),

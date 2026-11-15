@@ -26,6 +26,9 @@
  * A head that reports no CI (`ci: null`) never turns green, so its merge chip reads GitHub's `CLEAN`
  * instead, still beside the approval on the head: a repository that requires no review is CLEAN without one.
  *
+ * A merge waits for the issues the PR closes: while one has an open blocker (a native `blocked_by`, often another
+ * PR's ticket), the approved head is its author's to see through, never the operator's merge.
+ *
  * An outside comment owes a reply ({@link responderOf}) beside whatever holds the PR, never in its place: a
  * contributor's question is no less owed while the head is red or a merge waits.
  *
@@ -50,9 +53,10 @@ const isSeat = id => typeof id === 'string' && id.startsWith('@') && id.length >
  * @param {Object<String,String>|null} [options.seatFamilies=null] Native seat to its model family, from the
  *     plane's identity reads; `null` when not read.
  * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown',
- *     kind: 'approve-runs'|'triage-outside'|'repair-ci'|'address-changes'|'rebase'|'review'|'route-review'|'merge'|null, ids: String[]}}
+ *     kind: 'approve-runs'|'triage-outside'|'repair-ci'|'address-changes'|'rebase'|'review'|'route-review'|'await-prerequisite'|'merge'|null,
+ *     ids: String[], targets?: String[]}} `targets` names the still-blocked issues an `await-prerequisite` PR closes.
  */
-export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions, disclosedFamilies = []}, {seatFamilies = null} = {}) {
+export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions, disclosedFamilies = [], blockedTargets = [], targetsComplete = true}, {seatFamilies = null} = {}) {
     const
         incomplete   = partial || !Array.isArray(opinions),
         onHead       = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
@@ -71,7 +75,10 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         named        = eligible && Array.isArray(disclosedFamilies) && disclosedFamilies.length > 0,
         // On a named outside PR an approval counts only from a seat of a known family the PR does not name
         counts       = reviewer => !named || typeof seatFamilies?.[reviewer] === 'string' && !disclosedFamilies.includes(seatFamilies[reviewer]),
-        approved     = (opinions ?? []).some(opinion => opinion.onHead && opinion.state === 'APPROVED' && counts(opinion.reviewer));
+        approved     = (opinions ?? []).some(opinion => opinion.onHead && opinion.state === 'APPROVED' && counts(opinion.reviewer)),
+        // A close target with an open blocker holds the merge for the author; an unread target cannot certify it
+        merge        = blockedTargets.length ? {role: 'author', kind: 'await-prerequisite', ids: owner?.seat ? [owner.seat] : [], targets: [...blockedTargets]}
+            : targetsComplete ? {role: 'operator', kind: 'merge', ids: []} : {role: 'unknown', kind: null, ids: []};
 
     // "untouched" and run-approval completeness require a complete read before handing an outside PR to the rotation
     if (eligible && !incomplete && (runApproval === 'action_required' || finished && untouched)) {
@@ -118,11 +125,11 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
     }
 
     if (ci === 'green' && approved && mergeable === 'MERGEABLE' && !draft) {
-        return {role: 'operator', kind: 'merge', ids: []}
+        return merge
     }
 
     if (ci === null && mergeState === 'CLEAN' && approved && !requested.length && mergeable === 'MERGEABLE' && !draft) {
-        return {role: 'operator', kind: 'merge', ids: []}
+        return merge
     }
 
     return {role: 'none', kind: null, ids: []}

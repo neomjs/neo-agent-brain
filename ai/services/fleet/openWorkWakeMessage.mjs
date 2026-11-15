@@ -20,6 +20,7 @@ export const OPEN_WORK_WAKE_REASONS = Object.freeze({
     rebase              : 'your approved head has conflicts to rebase',
     review              : 'your review is due on the current head',
     'route-review'      : 'CI is green; request a reviewer for your head',
+    'await-prerequisite': 'your approved head closes an issue that is still blocked, so it waits off the merge',
     'triage-outside'    : 'an untouched outside contributor pull request has finished CI',
     'approve-runs'      : 'an outside contributor pull request has workflow runs awaiting approval',
     'respond-comment'   : 'an outside comment on the pull request awaits a reply',
