@@ -30,7 +30,39 @@ import {
  *   wake hold kept; `newSessionId` stays `null`, because the marker names no sender session),
  *   `refused`, `incomplete` (the window passed). Each one is a log line, and the record stays on the
  *   handover node's `sessionRotation`.
+ * - **The hold reaches the receiver:** the envelope carries `holdUntil`, the receipt's `sentAt` plus the
+ *   window, so a receiver waiting on a locked screen never types after the plane stopped holding the
+ *   seat's wakes.
+ * - **`incomplete` is told:** the plane cannot read the receiver's records, so a rotation that failed on the
+ *   host surfaces only here, and an ERROR line alone reaches nobody. One `defect-note:` per receipt carries
+ *   the seat, the handover and the prompt that starts the seat by hand.
  */
+
+/**
+ * @summary Composes the defect note for a receipt the plane recorded `incomplete`.
+ * @param {Object} options
+ * @param {String} options.identity The seat.
+ * @param {Object} options.receipt The handover: `{id, sentAt}`.
+ * @param {Object} [options.rotation] Its `sessionRotation` record, absent when nothing was requested.
+ * @param {String} options.reason The verdict's reason.
+ * @param {Number} options.windowMs
+ * @param {String} options.prompt The first prompt a fresh session takes.
+ * @returns {{subject: String, body: String, taggedConcepts: String[]}}
+ */
+export function composeIncompleteRotationNote({identity, receipt, rotation, reason, windowMs, prompt}) {
+    return {
+        subject: `defect-note: session rotation broke ${identity}: no fresh session within ${Math.round(windowMs / 60000)} min of its sunset handover ${receipt.id}`,
+        body   : [
+            `The plane recorded the rotation incomplete (${reason}).`,
+            `- handover: ${receipt.id}, sent ${receipt.sentAt}`,
+            `- rotation: requested ${rotation?.requestedAt ?? 'never'}, delivered ${rotation?.deliveredAt ?? 'never'}`,
+            '',
+            'Start the seat by hand: a new session in its window, with this first prompt:',
+            prompt
+        ].join('\n'),
+        taggedConcepts: ['defect-note', 'session-rotation']
+    }
+}
 
 /**
  * @summary Runs one pass over every seat with an active rotation route.
@@ -41,10 +73,12 @@ import {
  * @param {Number} options.windowMs How long a receipt may wait for its fresh session.
  * @param {Number} options.minIntervalMs Minimum time between two requests of one seat.
  * @param {Function} options.writeLog `(level, message)`.
+ * @param {Function} [options.publishDefectNote] `(note) => Promise`, the mailbox publisher an `incomplete`
+ *   record's note goes through.
  * @param {Number} [options.now=Date.now()]
  * @returns {Promise<{requested: Number, completed: Number, refused: Number, incomplete: Number, waiting: Number}>}
  */
-export async function runSessionRotation({db, deliver, operatorPresence, windowMs, minIntervalMs, writeLog, now = Date.now()}) {
+export async function runSessionRotation({db, deliver, operatorPresence, windowMs, minIntervalMs, writeLog, publishDefectNote, now = Date.now()}) {
     const nowIso   = new Date(now).toISOString(),
           sinceIso = new Date(now - 2 * windowMs - minIntervalMs).toISOString(),
           outcome  = {requested: 0, completed: 0, refused: 0, incomplete: 0, waiting: 0},
@@ -88,6 +122,17 @@ export async function runSessionRotation({db, deliver, operatorPresence, windowM
             writeSessionRotation(db, receipt.id, {...rotation, state: 'incomplete', reason: verdict.reason, incompleteAt: nowIso});
             writeLog('ERROR', `[Orchestrator] session-rotation: incomplete for ${identity} (${verdict.reason}), receipt ${receipt.id}`);
             outcome.incomplete++;
+
+            // `incomplete` is terminal, so this branch runs once per receipt and so does its note.
+            try {
+                await publishDefectNote?.(composeIncompleteRotationNote({
+                    identity, receipt, rotation, windowMs,
+                    reason: verdict.reason,
+                    prompt: buildRotationPrompt({agentIdentity: identity, receiptMessageId: receipt.id, operatorPresence})
+                }));
+            } catch (error) {
+                writeLog('WARN', `[Orchestrator] session-rotation: the incomplete note for ${identity} failed (${error.message}), receipt ${receipt.id}`);
+            }
             continue
         }
 
@@ -118,7 +163,8 @@ export async function runSessionRotation({db, deliver, operatorPresence, windowM
             receiptMessageId: receipt.id,
             oldSessionId    : record.oldSessionId,
             prompt          : buildRotationPrompt({agentIdentity: identity, receiptMessageId: receipt.id, operatorPresence}),
-            emittedAt       : nowIso
+            emittedAt       : nowIso,
+            holdUntil       : new Date(Date.parse(receipt.sentAt) + windowMs).toISOString()
         }));
 
         writeSessionRotation(db, receipt.id, delivery === 'delivered'

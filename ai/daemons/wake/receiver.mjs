@@ -18,17 +18,23 @@ import {readFileSync, watch} from 'node:fs';
 import {WakeReceiverState}                       from './receiverState.mjs';
 import {createReceiverLiveness}                  from './receiverLiveness.mjs';
 import {evaluateContextGate, isIdleOnlyEnvelope} from './contextGatePolicy.mjs';
-import {dispatchLocalWake, probeSessionContext}  from './localWakeAdapters.mjs';
+import {
+    dispatchLocalWake,
+    probeSessionContext,
+    readScreenLocked as readHostScreenLocked
+} from './localWakeAdapters.mjs';
 import {
     ROTATION_EXPIRED,
     ROTATION_MAX_AGE_MS,
     ROTATION_RETRY_MS,
+    ROTATION_SCREEN_LOCKED,
     ROTATION_SUPERSEDED,
     SESSION_ROTATE_EVENT_TYPE,
     WAKE_DIGEST_EVENT_TYPE,
     hasReceiptIdentity,
     isRotationExpired,
     isSessionRotation,
+    rotationLockPatch,
     routeAdmits,
     seatHolderKey
 } from './sessionRotation.mjs';
@@ -322,6 +328,8 @@ export function verifyWakeSignature(rawBody, signingKey, signature) {
  * @param {Number} [options.watchdogIntervalMs=STEP_WATCHDOG_INTERVAL_MS]
  * @param {Number} [options.rotationRetryMs=ROTATION_RETRY_MS] How soon a deferred rotation is asked again.
  * @param {Function} [options.clock=Date.now] The clock a rotation's age is read against.
+ * @param {Function} [options.readScreenLocked] `() => Boolean|null`, the host's lock state; a locked screen
+ *   pauses a rotation's age (`sessionRotation.mjs`).
  * @param {String|null} [options.listenerStateDir] Where the Claude wake listener records each seat's holder
  *   (`<identity>.json`); defaults to `listeners` beside the manifest, the layout `wakeListenerHook.mjs` writes.
  * @returns {{server:http.Server,drain:Function,setManifest:Function,track:Function}}
@@ -342,6 +350,7 @@ export function createWakeReceiver({
     watchdogIntervalMs = STEP_WATCHDOG_INTERVAL_MS,
     rotationRetryMs    = ROTATION_RETRY_MS,
     clock              = Date.now,
+    readScreenLocked   = readHostScreenLocked,
     listenerStateDir   = manifestPath ? path.join(path.dirname(manifestPath), 'listeners') : null
 } = {}) {
     if (!manifest?.routes || !(state instanceof WakeReceiverState)) {
@@ -459,6 +468,15 @@ export function createWakeReceiver({
                         continue;
                     }
                 }
+                // A rotation waiting on a locked screen stays as it is while the lock holds: no claim, no
+                // write, no log. Its first locked pass recorded the lock and the seat's holder, and the first
+                // pass after the unlock runs every fence again.
+                if (isSessionRotation(record.envelope) && record.deferReason === ROTATION_SCREEN_LOCKED &&
+                    !isRotationExpired(record, clock()) && readScreenLocked() === true) {
+                    scheduleRotationRetry();
+                    continue;
+                }
+
                 const dispatching = await watched.transition(record.recordKey, 'pending', 'dispatching', {
                     dispatchStartedAt: new Date().toISOString(),
                     ...(newNative ? {route: {agentIdentity: current.agentIdentity, harnessTargetMetadata: current.harnessTargetMetadata,
@@ -466,16 +484,32 @@ export function createWakeReceiver({
                 });
                 if (!dispatching) continue;
 
+                // A locked screen pauses a rotation's age: the lock opens an interval, and the first read
+                // without one closes it.
+                let screenLocked = null;
+
+                if (isSessionRotation(dispatching.envelope)) {
+                    screenLocked = readScreenLocked();
+
+                    const lockPatch = rotationLockPatch(dispatching, screenLocked, clock());
+
+                    if (lockPatch) {
+                        await watched.transition(record.recordKey, 'dispatching', 'dispatching', lockPatch);
+                        Object.assign(dispatching, lockPatch)
+                    }
+                }
+
                 // A rotation past its age is never typed: the seat may have been restarted since, and a
                 // late session would be a second live session of it.
-                if (isSessionRotation(dispatching.envelope) && isRotationExpired(dispatching.acceptedAt, clock())) {
+                if (isSessionRotation(dispatching.envelope) && isRotationExpired(dispatching, clock())) {
                     await watched.transition(record.recordKey, 'dispatching', 'failed', {
                         outcomeReason     : ROTATION_EXPIRED,
                         dispatchFinishedAt: new Date(clock()).toISOString()
                     });
                     logger.error?.(
                         `[Wake Receiver] rotation EXPIRED ${record.subscriptionId}: not typed within ` +
-                        `${ROTATION_MAX_AGE_MS} ms of its accept; failed without a keystroke`
+                        `${ROTATION_MAX_AGE_MS} ms of unlocked time after its accept, or by its hold; ` +
+                        'failed without a keystroke'
                     );
                     continue;
                 }
@@ -510,6 +544,26 @@ export function createWakeReceiver({
                     rotationHolder         = listenerStateDir
                         ? {path: path.join(listenerStateDir, `${identity.replace(/^@/, '')}.json`), sessionId: typeof baseline === 'string' ? baseline.split('#')[0] : null}
                         : null;
+                }
+
+                // A locked screen keeps the front from every window, so the rotation waits for the unlock with
+                // its holder's baseline kept, and is asked again within about a second.
+                if (screenLocked === true) {
+                    const holdUntil = dispatching.envelope.payload?.holdUntil;
+
+                    await watched.transition(record.recordKey, 'dispatching', 'pending', {
+                        deferredAt : new Date(clock()).toISOString(),
+                        deferReason: ROTATION_SCREEN_LOCKED,
+                        seatHolder : dispatching.seatHolder
+                    });
+                    if (dispatching.deferReason !== ROTATION_SCREEN_LOCKED) {
+                        logger.warn?.(
+                            `[Wake Receiver] rotation WAITING ${record.subscriptionId}: the screen is locked, so its ` +
+                            `age is paused until the unlock${holdUntil ? `, never past ${holdUntil}` : ''}`
+                        );
+                    }
+                    scheduleRotationRetry();
+                    continue;
                 }
 
                 // The context gate: after the non-idempotency marker, before the adapter runs.

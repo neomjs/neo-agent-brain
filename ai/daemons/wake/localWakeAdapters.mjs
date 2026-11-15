@@ -756,24 +756,25 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
         // deadline crossed while the pid, dialog or idle reads ran, or a seat another session claimed since
         // (the receiver's `rotationGuard`) opens no session. The script re-checks the deadline before Cmd+N.
         const veto = signal?.aborted ? ROTATION_ABORTED
-            : isRotationExpired(record.acceptedAt, effects.now()) ? ROTATION_EXPIRED
+            : isRotationExpired(record, effects.now()) ? ROTATION_EXPIRED
             : effects.rotationGuard?.() || null;
 
         if (veto) return {outcome: 'failed', outcomeReason: veto}
     }
 
+    const now  = effects.now();
     const args = buildOsascriptArgs({
         appName,
         digest,
-        focusSeedKey        : resolvedMeta.focusSeedKey,
-        focusSeedSequence   : resolvedMeta.focusSeedSequence,
-        freshSessionShortcut: rotation ? resolvedMeta.freshSessionShortcut : null,
+        focusSeedKey               : resolvedMeta.focusSeedKey,
+        focusSeedSequence          : resolvedMeta.focusSeedSequence,
+        freshSessionShortcut       : rotation ? resolvedMeta.freshSessionShortcut : null,
         freshSessionDeadlineSeconds: rotation
-            ? Math.max(0, Math.floor((rotationDeadline(record.acceptedAt) - effects.now()) / 1000))
+            ? Math.max(0, Math.floor((rotationDeadline(record, now) - now) / 1000))
             : null,
         freshSessionHolder: rotation ? effects.rotationHolder || null : null,
         instancePid,
-        tabShortcut         : resolvedMeta.tabShortcut
+        tabShortcut       : resolvedMeta.tabShortcut
     });
     const outcome = await spawnOsascriptOnce(effects, args, record.subscriptionId);
 
@@ -869,10 +870,10 @@ export function processAutomationIdLines(indent = '  ') {
  */
 export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, freshSessionDeadlineSeconds = null, freshSessionHolder = null, instancePid, tabShortcut}) {
     const fencedFreshSession = Boolean(freshSessionShortcut) && Number.isFinite(freshSessionDeadlineSeconds);
-    const escapedAppName   = escapeAppleScript(appName);
-    const targetPid        = instancePid ? String(instancePid) : '';
-    const addressedProcess = Boolean(instancePid);
-    const appActivateLine  = addressedProcess
+    const escapedAppName     = escapeAppleScript(appName);
+    const targetPid          = instancePid ? String(instancePid) : '';
+    const addressedProcess   = Boolean(instancePid);
+    const appActivateLine    = addressedProcess
         ? '  tell application "System Events" to set frontmost of application process id targetAutomationId to true'
         : `  tell application "${escapedAppName}" to activate`;
     const args = [
@@ -1274,6 +1275,35 @@ export function readHumanIdleMs({spawnSyncFn = spawnSync, platform = process.pla
     const match = /"HIDIdleTime"\s*=\s*(\d+)/.exec(result.stdout || '');
 
     return match ? Math.floor(Number(match[1]) / 1e6) : null
+}
+
+/**
+ * @summary Reads whether the host's screen is locked.
+ *
+ * The IORegistry root's `IOConsoleUsers` carry `CGSSessionScreenIsLocked = Yes` only while the screen is
+ * locked, readable without a privacy grant. A locked screen keeps the front from every window, and the
+ * idle clock reads it as quiet, so a rotation waits for the unlock instead of spending its age on
+ * activations that cannot succeed. Anything unreadable answers `null`, which leaves the activation's own
+ * frontmost check as the guard.
+ *
+ * @param {Object} [options]
+ * @param {Function} [options.spawnSyncFn=spawnSync] Child-process seam for tests.
+ * @param {String} [options.platform=process.platform]
+ * @returns {Boolean|null} `true` while locked, `false` while unlocked, `null` when unreadable.
+ */
+export function readScreenLocked({spawnSyncFn = spawnSync, platform = process.platform} = {}) {
+    if (platform !== 'darwin') return null;
+
+    const result = spawnSyncFn('ioreg', ['-n', 'Root', '-d', '1'], {encoding: 'utf8', timeout: 2000});
+
+    if (!result || result.error || result.signal || result.status !== 0) return null;
+
+    const stdout = result.stdout || '';
+
+    // The flag's absence proves an unlock only when the read reached the console sessions.
+    if (!stdout.includes('"IOConsoleUsers"')) return null;
+
+    return /"CGSSessionScreenIsLocked"\s*=\s*Yes/.test(stdout)
 }
 
 /**

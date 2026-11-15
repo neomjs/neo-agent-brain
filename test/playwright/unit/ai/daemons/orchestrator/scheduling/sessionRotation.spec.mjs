@@ -41,6 +41,7 @@ import {
 } from '../../../../../../../ai/daemons/wake/sessionRotation.mjs';
 import {createWakeReceiver} from '../../../../../../../ai/daemons/wake/receiver.mjs';
 import {WakeReceiverState}  from '../../../../../../../ai/daemons/wake/receiverState.mjs';
+import {parseDefectNote}    from '../../../../../../../ai/services/memory-core/helpers/defectObservationFold.mjs';
 
 /**
  * @summary Unit coverage for the `session-rotation` lane: a seat's sunset handover becomes
@@ -127,22 +128,23 @@ function insertDirectMessage(db, id, minutesAgo, to = SEAT) {
 const rotationOf = (db, id) => JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data).properties.sessionRotation;
 
 /**
- * @summary One lane pass over `db` with a recording sender.
- * @returns {Promise<{outcome: Object, sent: Object[], logs: Object[]}>}
+ * @summary One lane pass over `db` with a recording sender and defect-note publisher.
+ * @returns {Promise<{outcome: Object, sent: Object[], logs: Object[], notes: Object[]}>}
  */
-async function runLane(db, {now = NOW, delivery = 'delivered', operatorPresence = {mode: 'present', until: null}} = {}) {
-    const sent    = [], logs = [];
+async function runLane(db, {now = NOW, delivery = 'delivered', operatorPresence = {mode: 'present', until: null}, publishDefectNote} = {}) {
+    const sent    = [], logs = [], notes = [];
     const outcome = await runSessionRotation({
         db,
-        deliver      : async (subscription, envelope) => { sent.push({subscription, envelope}); return delivery },
+        deliver          : async (subscription, envelope) => { sent.push({subscription, envelope}); return delivery },
         operatorPresence,
-        windowMs     : WINDOW_MS,
-        minIntervalMs: MIN_GAP_MS,
-        writeLog     : (level, message) => logs.push({level, message}),
+        windowMs         : WINDOW_MS,
+        minIntervalMs    : MIN_GAP_MS,
+        writeLog         : (level, message) => logs.push({level, message}),
+        publishDefectNote: publishDefectNote || (async note => { notes.push(note) }),
         now
     });
 
-    return {outcome, sent, logs}
+    return {outcome, sent, logs, notes}
 }
 
 test.describe('session-rotation lane (#1383)', () => {
@@ -164,8 +166,14 @@ test.describe('session-rotation lane (#1383)', () => {
             eventId       : rotationEventId('MESSAGE:receipt'),
             subscriptionId: 'WAKE_SUB:rotate',
             agentIdentity : SEAT,
-            payload       : {receiptMessageId: 'MESSAGE:receipt', oldSessionId: 'session-old', reason: 'sunset_restart'}
+            payload       : {
+                receiptMessageId: 'MESSAGE:receipt', oldSessionId: 'session-old', reason: 'sunset_restart',
+                // The plane's hold travels with the request, so a receiver behind a locked screen never
+                // types after it.
+                holdUntil       : new Date(Date.parse(at(10)) + WINDOW_MS).toISOString()
+            }
         });
+        expect(first.notes).toEqual([]);
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({
             state: 'requested', eventId: rotationEventId('MESSAGE:receipt'), oldSessionId: 'session-old', deliveredAt: at(0)
         });
@@ -304,6 +312,7 @@ test.describe('session-rotation lane (#1383)', () => {
         const refused = await runLane(tooSoon);
 
         expect(refused.sent).toEqual([]);
+        expect(refused.notes).toEqual([]);
         expect(rotationOf(tooSoon, 'MESSAGE:second')).toMatchObject({state: 'refused', reason: 'minimum-interval', nextEligibleAt: at(19 - 30)});
         expect(refused.logs.some(({message}) => message.includes('minimum-interval'))).toBe(true);
 
@@ -375,9 +384,10 @@ test.describe('session-rotation lane (#1383)', () => {
         insertMemory(db, 'mem-fresh', 5, 'session-fresh');
         insertDirectMessage(db, 'MESSAGE:after', 2);
 
-        const {outcome, sent, logs} = await runLane(db);
+        const {outcome, sent, logs, notes} = await runLane(db);
 
         expect(sent).toEqual([]);
+        expect(notes).toEqual([]);
         expect(outcome.completed).toBe(1);
         // a marker names no sender session, so no memory after it is attributed to the successor
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({
@@ -394,14 +404,39 @@ test.describe('session-rotation lane (#1383)', () => {
             state: 'requested', eventId: rotationEventId('MESSAGE:receipt'), requestedAt: at(180), deliveredAt: at(180)
         }});
 
-        const {outcome, sent, logs} = await runLane(db);
+        const {outcome, sent, logs, notes} = await runLane(db);
 
         expect(sent).toEqual([]);
         expect(outcome.incomplete).toBe(1);
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'incomplete', reason: 'no-fresh-session'});
         expect(logs.some(({level}) => level === 'ERROR')).toBe(true);
 
-        expect((await runLane(db, {now: NOW + MIN})).outcome).toEqual({requested: 0, completed: 0, refused: 0, incomplete: 0, waiting: 0})
+        // The plane cannot read the receiver's records, so this note is the failure's only voice.
+        expect(notes).toHaveLength(1);
+        expect(notes[0].subject).toBe(`defect-note: session rotation broke ${SEAT}: no fresh session within 180 min of its sunset handover MESSAGE:receipt`);
+        expect(parseDefectNote(notes[0].subject)).toMatchObject({parseable: true, surface: 'session rotation'});
+        expect(notes[0].body).toContain(buildRotationPrompt({agentIdentity: SEAT, receiptMessageId: 'MESSAGE:receipt', operatorPresence: {mode: 'present', until: null}}));
+        expect(notes[0].taggedConcepts).toEqual(['defect-note', 'session-rotation']);
+
+        const next = await runLane(db, {now: NOW + MIN});
+
+        expect(next.outcome).toEqual({requested: 0, completed: 0, refused: 0, incomplete: 0, waiting: 0});
+        expect(next.notes).toEqual([])
+    });
+
+    test('#1770: a note that fails to publish is logged, and the incomplete record still stands', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        insertSelfMessage(db, 'MESSAGE:receipt', 181, {sessionRotation: {
+            state: 'requested', eventId: rotationEventId('MESSAGE:receipt'), requestedAt: at(180), deliveredAt: at(180)
+        }});
+
+        const {outcome, logs} = await runLane(db, {publishDefectNote: async () => { throw new Error('mailbox unavailable') }});
+
+        expect(outcome.incomplete).toBe(1);
+        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'incomplete', reason: 'no-fresh-session'});
+        expect(logs.some(({level, message}) => level === 'WARN' && message.includes('mailbox unavailable'))).toBe(true)
     });
 
     test('a send the receiver never accepted goes again under the same event id, and the id was on the receipt before the first send', async () => {
@@ -533,8 +568,9 @@ test.describe('session-rotation lane (#1383)', () => {
                 adapterConfig        : {attemptTimeoutMs: 100}
             }}},
             state,
-            dispatch: async record => { dispatched.push(record); return 'delivered' },
-            logger  : {error() {}, warn() {}, log() {}}
+            dispatch        : async record => { dispatched.push(record); return 'delivered' },
+            logger          : {error() {}, warn() {}, log() {}},
+            readScreenLocked: () => false
         });
 
         await new Promise(resolve => receiver.server.listen(0, '127.0.0.1', resolve));
@@ -577,7 +613,7 @@ test.describe('session-rotation lane (#1383)', () => {
             expect(dispatched).toHaveLength(1);
             expect(dispatched[0].envelope).toMatchObject({
                 eventId: rotationEventId('MESSAGE:rotation-e2e-receipt'),
-                payload: {receiptMessageId: 'MESSAGE:rotation-e2e-receipt', reason: 'sunset_restart'}
+                payload: {receiptMessageId: 'MESSAGE:rotation-e2e-receipt', reason: 'sunset_restart', holdUntil: expect.any(String)}
             });
             expect(dispatched[0].envelope.payload.prompt).toContain(seat)
         } finally {
@@ -789,7 +825,7 @@ test.describe('session-rotation lane: an amendment is not a new receipt, and the
             insertInterval(db, 'successor-turn', {startedAgo: 15.3, progressAgo: successorProgressAgo, expiresIn: 44.7});
             insertMemory(db, 'mem-successor', 14.3, 'session-new');
             insertNode(db, 'MESSAGE:addendum', 'MESSAGE', {
-                from          : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(20 * SEC),
+                from             : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(20 * SEC),
                 focusItemsReceipt: {named: 1, placed: 1}, taggedConcepts: ['sunset-protocol-handover'], originSessionId: writer
             });
             insertInterval(db, 'old-writer-close', {startedAgo: 1, progressAgo: 10 * SEC, closed: true}); // its close, 10 s later

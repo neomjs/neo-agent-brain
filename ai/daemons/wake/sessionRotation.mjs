@@ -17,6 +17,12 @@
  * minute of waiting lets wakes reach a session that has ended and lets a person restart the seat by hand,
  * after which a late rotation is a second live session of the seat.
  *
+ * **Why a locked screen pauses that age.** A locked screen keeps the front from every window, so a rotation
+ * there cannot type, and neither reason above holds: the plane holds the seat's wakes, nobody at the host
+ * can restart the seat, and a restart from elsewhere claims it, which the holder fence reads. So the age
+ * counts unlocked time only ({@link rotationDeadline}), and the envelope's `holdUntil` ends the wait where
+ * the plane's hold on the receipt ends.
+ *
  * Pure (no fs, spawn or timers), so Memory Core, the manifest builder, the receiver and its adapters
  * share one fact set without widening any of their dependency closures. The rotation lane and the wake
  * hold read the same verdicts, so the plane never holds a seat's wakes for a receipt it will not rotate.
@@ -54,8 +60,9 @@ export const WAKE_DIGEST_EVENT_TYPE = 'wake/digest';
 export const HUMAN_INPUT_QUIET_MS = 3 * 1000;
 
 /**
- * How long after the receiver accepted a rotation it may still type it. Past it the rotation fails
- * without a keystroke (`session-rotate-expired`): a late session is a copy, not a recovery.
+ * How long after the receiver accepted a rotation it may still type it, counting unlocked time only. Past
+ * it the rotation fails without a keystroke (`session-rotate-expired`): a late session is a copy, not a
+ * recovery.
  * @type {Number}
  */
 export const ROTATION_MAX_AGE_MS = 60 * 1000;
@@ -74,8 +81,15 @@ export const ROTATION_RETRY_MS = 1000;
 export const ROTATION_ACTIVATION_LOST = 'activation-lost';
 
 /**
- * Failure reason: the rotation reached its fresh-session keystroke after {@link ROTATION_MAX_AGE_MS}.
- * It opens no session, because the seat may have been restarted by hand since.
+ * Defer reason: the screen is locked, so no window can take the front. The rotation waits with its age
+ * paused ({@link rotationLockPatch}) until the unlock, never past its envelope's `holdUntil`.
+ * @type {String}
+ */
+export const ROTATION_SCREEN_LOCKED = 'screen-locked';
+
+/**
+ * Failure reason: the rotation reached its fresh-session keystroke after its deadline
+ * ({@link rotationDeadline}). It opens no session, because the seat may have been restarted by hand since.
  * @type {String}
  */
 export const ROTATION_EXPIRED = 'session-rotate-expired';
@@ -191,23 +205,49 @@ export function isHumanInputDefer(reason) {
 }
 
 /**
- * @summary Whether a rotation the receiver accepted at `acceptedAt` is too old to type. An unreadable
- * accept time is too old: a rotation that cannot be aged cannot be shown to be on time.
- * @param {String} acceptedAt The receiver record's accept time.
+ * @summary Whether a rotation is too old to type. An unreadable accept time is too old: a rotation that
+ * cannot be aged cannot be shown to be on time.
+ * @param {Object} record The receiver record ({@link rotationDeadline}).
  * @param {Number} now
  * @returns {Boolean}
  */
-export function isRotationExpired(acceptedAt, now) {
-    return !(now < rotationDeadline(acceptedAt))
+export function isRotationExpired(record, now) {
+    return !(now < rotationDeadline(record, now))
 }
 
 /**
- * @summary The last moment a rotation the receiver accepted at `acceptedAt` may open its session.
- * @param {String} acceptedAt The receiver record's accept time.
+ * @summary The last moment a rotation may open its session: {@link ROTATION_MAX_AGE_MS} of unlocked time
+ * after its accept, and never past the envelope's `holdUntil`, where the plane stops holding the seat's
+ * wakes for it. While a lock is open the deadline moves with `now`, so only `holdUntil` can end it.
+ * @param {Object} record The receiver record.
+ * @param {String} record.acceptedAt
+ * @param {Number} [record.lockedMs=0] Locked time an unlock has closed.
+ * @param {String|null} [record.lockedSince] The start of a lock still open.
+ * @param {Object} [record.envelope] Its `payload.holdUntil`, when the plane sent one.
+ * @param {Number} now
  * @returns {Number} Epoch ms, `NaN` for an unreadable accept time (never on time).
  */
-export function rotationDeadline(acceptedAt) {
-    return Date.parse(acceptedAt) + ROTATION_MAX_AGE_MS
+export function rotationDeadline({acceptedAt, lockedMs = 0, lockedSince = null, envelope} = {}, now) {
+    const paused = lockedMs + (lockedSince ? Math.max(0, now - Date.parse(lockedSince)) : 0),
+          aged   = Date.parse(acceptedAt) + ROTATION_MAX_AGE_MS + paused,
+          hold   = Date.parse(envelope?.payload?.holdUntil);
+
+    return Number.isFinite(hold) ? Math.min(aged, hold) : aged
+}
+
+/**
+ * @summary The record fields that keep a rotation's age to its unlocked time: a lock opens a paused
+ * interval, and the first read that finds no lock closes it into `lockedMs`. Only an observed lock pauses,
+ * so an unreadable state closes an open interval as an unlock would.
+ * @param {Object} record The receiver record.
+ * @param {Boolean|null} locked The screen's lock state, `null` when unreadable.
+ * @param {Number} now
+ * @returns {Object|null} The fields to write, or `null` when nothing changes.
+ */
+export function rotationLockPatch({lockedMs = 0, lockedSince = null} = {}, locked, now) {
+    if (locked === true) return lockedSince ? null : {lockedSince: new Date(now).toISOString()};
+
+    return lockedSince ? {lockedSince: null, lockedMs: lockedMs + Math.max(0, now - Date.parse(lockedSince))} : null
 }
 
 /**
@@ -277,16 +317,18 @@ export function buildRotationPrompt({agentIdentity, receiptMessageId, operatorPr
  * @param {String|null} options.oldSessionId
  * @param {String} options.prompt
  * @param {String} options.emittedAt
+ * @param {String} [options.holdUntil] When the plane stops holding the seat's wakes for this receipt: the
+ * receiver never types the rotation later ({@link rotationDeadline}).
  * @returns {Object}
  */
-export function buildRotationEnvelope({subscription, receiptMessageId, oldSessionId, prompt, emittedAt}) {
+export function buildRotationEnvelope({subscription, receiptMessageId, oldSessionId, prompt, emittedAt, holdUntil}) {
     return {
         schemaVersion : '1.0',
         eventType     : SESSION_ROTATE_EVENT_TYPE,
         eventId       : rotationEventId(receiptMessageId),
         agentIdentity : subscription.properties.agentIdentity,
         subscriptionId: subscription.id,
-        payload       : {receiptMessageId, oldSessionId, reason: SESSION_ROTATION_REASON, prompt},
+        payload       : {receiptMessageId, oldSessionId, reason: SESSION_ROTATION_REASON, prompt, ...(holdUntil ? {holdUntil} : {})},
         emittedAt
     }
 }

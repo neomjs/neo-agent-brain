@@ -519,12 +519,13 @@ export class Orchestrator extends Base {
         await GraphService.ready();
         GraphService.requireDb('Orchestrator.rotateSunsetSessions');
         return runSessionRotation({
-            db              : GraphService.db.storage.db,
-            deliver         : (subscription, envelope) => WebhookDeliveryService.deliver(subscription, envelope),
-            operatorPresence: OperatorPresenceService.getOperatorPresence(),
-            windowMs        : AiConfig.orchestrator.sessionRotation.windowMs,
-            minIntervalMs   : AiConfig.orchestrator.sessionRotation.minIntervalMs,
-            writeLog        : this.writeLog.bind(this)
+            db               : GraphService.db.storage.db,
+            deliver          : (subscription, envelope) => WebhookDeliveryService.deliver(subscription, envelope),
+            operatorPresence : OperatorPresenceService.getOperatorPresence(),
+            windowMs         : AiConfig.orchestrator.sessionRotation.windowMs,
+            minIntervalMs    : AiConfig.orchestrator.sessionRotation.minIntervalMs,
+            writeLog         : this.writeLog.bind(this),
+            publishDefectNote: note => this.publishDefectNote(note)
         })
     }
 

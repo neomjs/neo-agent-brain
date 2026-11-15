@@ -11,23 +11,28 @@ import {
     ROTATION_ACTIVATION_LOST,
     ROTATION_EXPIRED,
     ROTATION_MAX_AGE_MS,
+    ROTATION_SCREEN_LOCKED,
     ROTATION_SUPERSEDED,
     SESSION_ROTATE_EVENT_TYPE,
     admittedEventType,
+    buildRotationEnvelope,
     evaluateHumanInput,
     hasReceiptIdentity,
     isHumanInputDefer,
     isPreKeystrokeFailure,
     isRotationExpired,
     isSessionRotation,
+    rotationDeadline,
     rotationEventId,
+    rotationLockPatch,
     rotationPrompt,
     routeAdmits
 } from '../../../../../../ai/daemons/wake/sessionRotation.mjs';
 import {
     buildOsascriptArgs,
     dispatchLocalWake,
-    readHumanIdleMs
+    readHumanIdleMs,
+    readScreenLocked
 } from '../../../../../../ai/daemons/wake/localWakeAdapters.mjs';
 import {createWakeReceiver, loadWakeReceiverManifest} from '../../../../../../ai/daemons/wake/receiver.mjs';
 import {WakeReceiverState, getWakeRecordKey}          from '../../../../../../ai/daemons/wake/receiverState.mjs';
@@ -115,13 +120,76 @@ test.describe('ai/daemons/wake/sessionRotation — the contract', () => {
     });
 
     test('a rotation is on time for a minute after its accept, and an unreadable accept time is late', () => {
-        const accepted = Date.parse('2026-11-14T21:54:52.831Z');
+        const acceptedAt = '2026-11-14T21:54:52.831Z',
+              accepted   = Date.parse(acceptedAt);
 
-        expect(isRotationExpired('2026-11-14T21:54:52.831Z', accepted + ROTATION_MAX_AGE_MS - 1)).toBe(false);
-        expect(isRotationExpired('2026-11-14T21:54:52.831Z', accepted + ROTATION_MAX_AGE_MS)).toBe(true);
+        expect(isRotationExpired({acceptedAt}, accepted + ROTATION_MAX_AGE_MS - 1)).toBe(false);
+        expect(isRotationExpired({acceptedAt}, accepted + ROTATION_MAX_AGE_MS)).toBe(true);
         // The 21:54Z receipt was typed 9 min after its accept, into a seat restarted by hand.
-        expect(isRotationExpired('2026-11-14T21:54:52.831Z', Date.parse('2026-11-14T22:03:55.277Z'))).toBe(true);
-        expect(isRotationExpired(undefined, accepted)).toBe(true)
+        expect(isRotationExpired({acceptedAt}, Date.parse('2026-11-14T22:03:55.277Z'))).toBe(true);
+        expect(isRotationExpired({}, accepted)).toBe(true)
+    });
+
+    test('#1770: locked time does not age a rotation, and the plane\'s hold ends the wait', () => {
+        // Mnemosyne's 19:43Z rotation, accepted behind a screen locked since 18:32:26Z and unlocked at
+        // 19:52:57Z. The hold is illustrative: three hours after a handover just before the accept.
+        const acceptedAt = '2026-11-15T19:43:21.836Z',
+              accepted   = Date.parse(acceptedAt),
+              unlockedAt = Date.parse('2026-11-15T19:52:57.668Z'),
+              holdUntil  = '2026-11-15T22:43:00.000Z',
+              waiting    = {acceptedAt, lockedSince: acceptedAt},
+              unlocked   = {acceptedAt, lockedMs: unlockedAt - accepted};
+
+        expect(isRotationExpired(waiting, accepted + 10 * ROTATION_MAX_AGE_MS)).toBe(false);
+        expect(isRotationExpired({...waiting, envelope: rotationEnvelope({payload: {holdUntil}})}, Date.parse(holdUntil) - 1)).toBe(false);
+        expect(isRotationExpired({...waiting, envelope: rotationEnvelope({payload: {holdUntil}})}, Date.parse(holdUntil))).toBe(true);
+        // After the unlock, the minute counts from there.
+        expect(isRotationExpired(unlocked, unlockedAt + ROTATION_MAX_AGE_MS - 1)).toBe(false);
+        expect(isRotationExpired(unlocked, unlockedAt + ROTATION_MAX_AGE_MS)).toBe(true);
+        // A hold that ends inside the minute wins.
+        expect(rotationDeadline({acceptedAt, envelope: rotationEnvelope({payload: {holdUntil: '2026-11-15T19:43:30.000Z'}})}, accepted))
+            .toBe(Date.parse('2026-11-15T19:43:30.000Z'))
+    });
+
+    test('#1770: a lock opens a paused interval, and the first read without one closes it', () => {
+        const start = Date.parse('2026-11-15T19:43:21.836Z'),
+              since = new Date(start).toISOString();
+
+        expect(rotationLockPatch({}, true, start)).toEqual({lockedSince: since});
+        expect(rotationLockPatch({lockedSince: since}, true, start + 5_000)).toBeNull();
+        expect(rotationLockPatch({lockedSince: since, lockedMs: 1_000}, false, start + 5_000)).toEqual({lockedSince: null, lockedMs: 6_000});
+        // Only an observed lock pauses: an unreadable state closes the interval as an unlock would.
+        expect(rotationLockPatch({lockedSince: since}, null, start + 5_000)).toEqual({lockedSince: null, lockedMs: 5_000});
+        expect(rotationLockPatch({}, false, start)).toBeNull();
+        expect(rotationLockPatch({}, null, start)).toBeNull()
+    });
+
+    test('#1770: the lock flag is read from the IORegistry root without a grant', () => {
+        const users = locked => '+-o Root  <class IORegistryEntry>\n    "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,' +
+                  `${locked ? '"CGSSessionScreenIsLocked"=Yes,' : ''}"kCGSSessionUserIDKey"=501})\n`,
+              calls = [],
+              ioreg = result => (command, args) => { calls.push([command, ...args]); return {status: 0, signal: null, ...result} };
+
+        expect(readScreenLocked({platform: 'darwin', spawnSyncFn: ioreg({stdout: users(true)})})).toBe(true);
+        expect(calls[0]).toEqual(['ioreg', '-n', 'Root', '-d', '1']);
+        expect(readScreenLocked({platform: 'darwin', spawnSyncFn: ioreg({stdout: users(false)})})).toBe(false);
+        // Without the console sessions, the flag's absence proves nothing.
+        expect(readScreenLocked({platform: 'darwin', spawnSyncFn: ioreg({stdout: '+-o Root\n'})})).toBeNull();
+        expect(readScreenLocked({platform: 'darwin', spawnSyncFn: ioreg({status: 1, stdout: users(true)})})).toBeNull();
+        expect(readScreenLocked({platform: 'linux', spawnSyncFn: ioreg({stdout: users(true)})})).toBeNull()
+    });
+
+    test('#1770: the envelope carries the plane\'s hold only when the plane sends one', () => {
+        const base = {
+            subscription    : {id: 'WAKE_SUB:rotate', properties: {agentIdentity: '@neo-opus-ada'}},
+            receiptMessageId: 'MESSAGE:r1',
+            oldSessionId    : 'session-old',
+            prompt          : PROMPT,
+            emittedAt       : '2026-11-15T19:43:21.851Z'
+        };
+
+        expect(buildRotationEnvelope({...base, holdUntil: '2026-11-15T22:43:00.000Z'}).payload.holdUntil).toBe('2026-11-15T22:43:00.000Z');
+        expect(buildRotationEnvelope(base).payload).not.toHaveProperty('holdUntil')
     });
 
     test('only a failure in the activation phase typed nothing', () => {
@@ -260,7 +328,7 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
 
     test('Emmy\'s Round-2 control: the script re-reads the seat holder right before the fresh-session keystroke', () => {
         const lines = buildOsascriptArgs({
-                  appName: 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7,
+                  appName           : 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7,
                   freshSessionHolder: {path: '/seats/ada/listeners/neo-opus-ada.json', sessionId: 'old-session'}
               }).map(String),
               fresh = lines.indexOf('      keystroke "n" using command down');
@@ -272,7 +340,7 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
 
     test('Emmy\'s Round-2 control: with no holder at the first attempt, the script requires the record still absent before Cmd+N', () => {
         const lines = buildOsascriptArgs({
-                  appName: 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7,
+                  appName           : 'Claude', digest: 'boot', instancePid: 4242, freshSessionShortcut: 'n', freshSessionDeadlineSeconds: 7,
                   freshSessionHolder: {path: '/seats/ada/listeners/neo-opus-ada.json', sessionId: null}
               }).map(String),
               fresh = lines.indexOf('      keystroke "n" using command down');
@@ -291,11 +359,11 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
             await state.init();
             const receiver = createWakeReceiver({
                 manifest: {schemaVersion: 1, routes: {'WAKE_SUB:rotate': {
-                    signingKey: 'e'.repeat(64), agentIdentity: '@neo-opus-ada', admits: SESSION_ROTATE_EVENT_TYPE,
+                    signingKey           : 'e'.repeat(64), agentIdentity: '@neo-opus-ada', admits: SESSION_ROTATE_EVENT_TYPE,
                     harnessTargetMetadata: {adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir', instanceAddress: '/seats/ada'},
-                    adapterConfig: {attemptTimeoutMs: 100}
+                    adapterConfig        : {attemptTimeoutMs: 100}
                 }}},
-                state, listenerStateDir, logger: {error() {}, warn() {}, log() {}},
+                state, listenerStateDir, logger: {error() {}, warn() {}, log() {}}, readScreenLocked: () => false,
                 dispatch: async (record, deps) => { seen.push(deps); return 'delivered' }
             });
 
@@ -426,7 +494,9 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
             state,
             dispatch    : async record => { dispatched.push(record); return dispatchResult },
             contextProbe: async () => { probes++; return null },
-            logger      : {error() {}, warn() {}, log() {}}
+            logger      : {error() {}, warn() {}, log() {}},
+            // The host's own lock state never reaches a spec: an arm that needs a lock says so.
+            readScreenLocked: () => false
         });
         await new Promise(resolve => receiver.server.listen(0, '127.0.0.1', resolve));
         baseUrl = `http://127.0.0.1:${receiver.server.address().port}`
@@ -519,8 +589,9 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
     const rotationReceiver = (results, options) => createWakeReceiver({
         manifest,
         state,
-        dispatch: async record => { dispatched.push(record); return results.shift() ?? 'delivered' },
-        logger  : {error() {}, warn() {}, log() {}},
+        dispatch        : async record => { dispatched.push(record); return results.shift() ?? 'delivered' },
+        logger          : {error() {}, warn() {}, log() {}},
+        readScreenLocked: () => false,
         ...options
     });
     const rotationKey = getWakeRecordKey({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1'});
@@ -598,6 +669,106 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
 
         await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('delivered');
         expect(dispatched).toHaveLength(2)
+    });
+
+    test('#1770 AC-2: a rotation accepted on a locked screen waits past its minute with no dispatch, then types after the unlock', async () => {
+        let   locked = true, offset = 0;
+        const quick  = rotationReceiver([], {rotationRetryMs: 20, clock: () => Date.now() + offset, readScreenLocked: () => locked});
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await quick.drain();
+
+        expect(await state.read(rotationKey)).toMatchObject({state: 'pending', deferReason: ROTATION_SCREEN_LOCKED, lockedSince: expect.any(String)});
+
+        // The 19:27Z and 19:43Z rotations each expired 60 s after their accept, behind this lock.
+        offset = 5 * ROTATION_MAX_AGE_MS;
+        await quick.drain();
+
+        expect((await state.read(rotationKey)).state).toBe('pending');
+        expect(dispatched).toEqual([]);
+
+        locked = false;
+
+        await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('delivered');
+        expect(dispatched).toHaveLength(1);
+        expect(await state.read(rotationKey)).toMatchObject({lockedSince: null, lockedMs: expect.any(Number)});
+        expect((await state.read(rotationKey)).lockedMs).toBeGreaterThanOrEqual(5 * ROTATION_MAX_AGE_MS)
+    });
+
+    test('#1770 AC-3: a seat claimed during the lock fails the rotation superseded after the unlock, with no dispatch', async () => {
+        const listenerStateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-rotation-listeners-')),
+              holder           = sessionId => fs.writeFile(path.join(listenerStateDir, 'neo-opus-ada.json'), JSON.stringify({owner: {sessionId, session: {pid: 7}}}));
+        let   locked = true;
+        const quick  = rotationReceiver([], {rotationRetryMs: 20, listenerStateDir, readScreenLocked: () => locked});
+
+        try {
+            await holder('old-session');
+            await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+            await quick.drain();
+
+            // The first pass recorded the holder although the lock kept the adapter from running.
+            expect(await state.read(rotationKey)).toMatchObject({state: 'pending', deferReason: ROTATION_SCREEN_LOCKED, seatHolder: 'old-session#7'});
+
+            await holder('opened-from-elsewhere');
+            locked = false;
+
+            await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
+            expect((await state.read(rotationKey)).outcomeReason).toBe(ROTATION_SUPERSEDED);
+            expect(dispatched).toEqual([])
+        } finally {
+            await fs.rm(listenerStateDir, {recursive: true, force: true})
+        }
+    });
+
+    test('#1770 AC-4: a lock that outlasts the plane\'s hold fails the rotation expired, with no dispatch', async () => {
+        let   offset    = 0;
+        const holdUntil = new Date(Date.now() + 2 * ROTATION_MAX_AGE_MS).toISOString(),
+              quick     = rotationReceiver([], {rotationRetryMs: 20, clock: () => Date.now() + offset, readScreenLocked: () => true});
+
+        await state.accept({
+            subscriptionId: 'WAKE_SUB:rotate',
+            eventId       : 'session-rotate:MESSAGE:r1',
+            envelope      : rotationEnvelope({payload: {...rotationEnvelope().payload, holdUntil}})
+        });
+        await quick.drain();
+
+        expect((await state.read(rotationKey)).deferReason).toBe(ROTATION_SCREEN_LOCKED);
+
+        offset = 3 * ROTATION_MAX_AGE_MS;
+
+        await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
+        expect((await state.read(rotationKey)).outcomeReason).toBe(ROTATION_EXPIRED);
+        expect(dispatched).toEqual([])
+    });
+
+    test('#1770: while the lock holds, a waiting rotation is neither claimed nor rewritten', async () => {
+        let   locked = true;
+        const quick  = rotationReceiver([], {rotationRetryMs: 20, readScreenLocked: () => locked});
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await quick.drain();
+
+        const waiting = await state.read(rotationKey);
+
+        // Its retries keep asking about every 20 ms: none of them may touch the record.
+        await new Promise(resolve => setTimeout(resolve, 150));
+        await quick.drain();
+
+        expect(await state.read(rotationKey)).toEqual(waiting);
+        expect(dispatched).toEqual([]);
+
+        locked = false;
+        await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('delivered')
+    });
+
+    test('#1770: an unreadable lock state keeps today\'s path', async () => {
+        const quick = rotationReceiver([], {readScreenLocked: () => null});
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await quick.drain();
+
+        expect(dispatched).toHaveLength(1);
+        expect((await state.read(rotationKey)).state).toBe('delivered')
     });
 });
 
