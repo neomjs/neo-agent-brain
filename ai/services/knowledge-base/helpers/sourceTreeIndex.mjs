@@ -1,10 +1,14 @@
-import fs                   from 'node:fs';
+import {execFileSync}             from 'node:child_process';
+import fs                         from 'node:fs';
 import path, {posix as pathPosix} from 'node:path';
-import {inspectSourceModule} from './inspectSourceModule.mjs';
+import {resolveSuperClass}        from './classHierarchyResolution.mjs';
+import {inspectSourceModule}      from './inspectSourceModule.mjs';
 
 export const CODE_INDEX_EXTRACTOR_VERSION = '1.0.0';
 
+const GIT_SHA_PATTERN     = /^[0-9a-f]{40}$/iu;
 const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules']);
+const INDEX_INTERNALS     = new WeakMap();
 
 /**
  * @summary Converts platform path separators to POSIX forward slashes.
@@ -34,208 +38,89 @@ function createIndexError(code, message, details = undefined) {
 }
 
 /**
- * @summary Infers Neo's conventional class identity from a repository/package module path.
- * @param {String} modulePath
+ * @summary Retrieves private lookup tables bound to an `indexSourceTree()` handle.
+ * @param {Object} index
+ * @returns {Object}
+ */
+function getIndexInternals(index) {
+    const internals = index && typeof index === 'object' ? INDEX_INTERNALS.get(index) : null;
+
+    if (!internals) {
+        throw createIndexError(
+            'CODE_INDEX_INVALID_HANDLE',
+            'Expected an index object returned by indexSourceTree().'
+        )
+    }
+
+    return internals
+}
+
+/**
+ * @summary Runs one `git -C <startDir>` read query and returns trimmed stdout or `null` on failure.
+ * @param {String} startDir
+ * @param {String[]} args
+ * @param {Function} [runGit=execFileSync]
  * @returns {String|null}
  */
-export function inferClassNameFromPath(modulePath) {
-    const normalized = modulePath
-        .replace(/^neo\.mjs\//u, '')
-        .replace(/\.mjs$/u, '');
+function runGitQuery(startDir, args, runGit = execFileSync) {
+    try {
+        const output = String(runGit('git', ['-C', startDir, ...args], {
+            encoding: 'utf8',
+            stdio   : ['ignore', 'pipe', 'pipe']
+        })).trim();
 
-    if (normalized === 'src/Neo') {
-        return 'Neo'
-    }
-    if (normalized.startsWith('src/')) {
-        return `Neo.${normalized.slice(4).replaceAll('/', '.')}`
-    }
-    if (normalized.startsWith('ai/')) {
-        return `Neo.ai.${normalized.slice(3).replaceAll('/', '.')}`
-    }
-    if (normalized.startsWith('apps/')) {
-        return normalized.slice(5).replaceAll('/', '.')
-    }
-
-    return null
-}
-
-/**
- * @summary Resolves one relative module specifier against the already-scoped descriptor universe.
- * @param {Object} options
- * @returns {{sourcePath: String, descriptor: Object}|null}
- */
-export function resolveRelativeModule({sourcePath, specifier, descriptorsByPath}) {
-    if (!specifier.startsWith('.')) {
+        return output || null
+    } catch {
         return null
     }
-
-    const resolved   = pathPosix.normalize(pathPosix.join(pathPosix.dirname(sourcePath), specifier));
-    const candidates = [
-        resolved,
-        resolved.endsWith('.mjs') ? null : `${resolved}.mjs`,
-        `${resolved}/index.mjs`
-    ].filter(Boolean);
-
-    for (const candidate of candidates) {
-        const descriptor = descriptorsByPath.get(candidate);
-
-        if (descriptor) {
-            return {sourcePath: candidate, descriptor}
-        }
-    }
-
-    return null
 }
 
 /**
- * @summary Resolves one canonical descriptor's superclass identity without reading outside the
- * scoped repository capability.
- * @param {Object} options
- * @returns {String|null}
- */
-export function resolveSuperClass({sourcePath, descriptor, descriptorsByPath}) {
-    const reference = descriptor.superClassReference;
-
-    if (!descriptor.declaresSuper || !reference) {
-        return null
-    }
-
-    if (reference.kind !== 'identifier') {
-        return reference.value || null
-    }
-
-    const binding = descriptor.imports.find(item => item.localName === reference.name);
-
-    if (!binding) {
-        return reference.name
-    }
-
-    const relative = resolveRelativeModule({
-        sourcePath,
-        specifier: binding.source,
-        descriptorsByPath
-    });
-
-    if (binding.kind === 'default' && relative?.descriptor.className) {
-        return relative.descriptor.className
-    }
-
-    if (binding.kind === 'named' && binding.importedName) {
-        return binding.importedName
-    }
-
-    const importPath = binding.source.startsWith('.')
-        ? pathPosix.normalize(pathPosix.join(pathPosix.dirname(sourcePath), binding.source))
-        : binding.source;
-
-    return inferClassNameFromPath(relative?.sourcePath || importPath) || reference.name
-}
-
-/**
- * @summary Resolves a git checkout's commit SHA and origin URL purely via filesystem reads.
+ * @summary Resolves a git checkout's top-level root, HEAD SHA, and `origin` URL via `git`,
+ * returning nulls outside a checkout or across a `node_modules` boundary.
  * @param {String} startDir Absolute directory inside or equal to a checkout.
+ * @param {Object} [options]
+ * @param {Function} [options.runGit=execFileSync]
  * @returns {{repoRoot: String|null, commit: String|null, origin: String|null}}
  */
-function readGitProvenance(startDir) {
-    let current = startDir;
+function readGitProvenance(startDir, {runGit = execFileSync} = {}) {
+    const topLevel = runGitQuery(startDir, ['rev-parse', '--show-toplevel'], runGit);
 
-    while (true) {
-        if (path.basename(current) === 'node_modules') {
-            return {repoRoot: null, commit: null, origin: null}
-        }
-
-        const dotGitPath = path.join(current, '.git');
-
-        if (fs.existsSync(dotGitPath)) {
-            try {
-                const stat = fs.statSync(dotGitPath);
-                let gitDir = dotGitPath;
-
-                if (stat.isFile()) {
-                    const pointer = fs.readFileSync(dotGitPath, 'utf8').trim();
-                    const match   = /^gitdir:\s*(.+)$/u.exec(pointer);
-                    if (match) {
-                        gitDir = path.resolve(current, match[1].trim());
-                    }
-                }
-
-                const commonDirFile = path.join(gitDir, 'commondir');
-                const commonDir     = fs.existsSync(commonDirFile)
-                    ? path.resolve(gitDir, fs.readFileSync(commonDirFile, 'utf8').trim())
-                    : gitDir;
-
-                let commit = null;
-                const headPath = path.join(gitDir, 'HEAD');
-
-                if (fs.existsSync(headPath)) {
-                    const headText = fs.readFileSync(headPath, 'utf8').trim();
-                    const refMatch = /^ref:\s*(.+)$/u.exec(headText);
-
-                    if (refMatch) {
-                        const refName       = refMatch[1].trim();
-                        const localRefPath  = path.join(gitDir, refName);
-                        const commonRefPath = path.join(commonDir, refName);
-
-                        if (fs.existsSync(localRefPath)) {
-                            commit = fs.readFileSync(localRefPath, 'utf8').trim() || null;
-                        } else if (fs.existsSync(commonRefPath)) {
-                            commit = fs.readFileSync(commonRefPath, 'utf8').trim() || null;
-                        } else {
-                            const packedPath = path.join(commonDir, 'packed-refs');
-                            if (fs.existsSync(packedPath)) {
-                                const packedLines = fs.readFileSync(packedPath, 'utf8').split(/\r?\n/u);
-                                for (const line of packedLines) {
-                                    if (!line || line.startsWith('#') || line.startsWith('^')) {
-                                        continue
-                                    }
-                                    const [sha, packedRef] = line.trim().split(/\s+/u);
-                                    if (packedRef === refName && sha) {
-                                        commit = sha;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    } else if (/^[0-9a-f]{40}$/iu.test(headText)) {
-                        commit = headText;
-                    }
-                }
-
-                let origin = null;
-                const configPath = path.join(commonDir, 'config');
-
-                if (fs.existsSync(configPath)) {
-                    const lines = fs.readFileSync(configPath, 'utf8').split(/\r?\n/u);
-                    let inOrigin = false;
-
-                    for (const rawLine of lines) {
-                        const line = rawLine.trim();
-                        if (line.startsWith('[') && line.endsWith(']')) {
-                            inOrigin = /^\[remote\s+"origin"\]$/iu.test(line);
-                            continue
-                        }
-                        if (inOrigin) {
-                            const urlMatch = /^url\s*=\s*(.+)$/u.exec(line);
-                            if (urlMatch) {
-                                origin = urlMatch[1].trim();
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                return {repoRoot: current, commit, origin}
-            } catch {
-                return {repoRoot: current, commit: null, origin: null}
-            }
-        }
-
-        const parent = path.dirname(current);
-        if (parent === current) {
-            return {repoRoot: null, commit: null, origin: null}
-        }
-        current = parent;
+    if (!topLevel) {
+        return {repoRoot: null, commit: null, origin: null}
     }
+
+    let physicalTop;
+    let physicalStart;
+
+    try {
+        physicalTop   = fs.realpathSync(topLevel);
+        physicalStart = fs.realpathSync(startDir);
+    } catch {
+        return {repoRoot: null, commit: null, origin: null}
+    }
+
+    const relative = path.relative(physicalTop, physicalStart);
+
+    if (
+        relative === '..'
+        || relative.startsWith(`..${path.sep}`)
+        || path.isAbsolute(relative)
+        || relative.split(path.sep).includes('node_modules')
+    ) {
+        return {repoRoot: null, commit: null, origin: null}
+    }
+
+    const repoRoot = relative === ''
+        ? startDir
+        : startDir.endsWith(`${path.sep}${relative}`)
+            ? startDir.slice(0, startDir.length - relative.length - 1)
+            : physicalTop;
+    const rawHead = runGitQuery(startDir, ['rev-parse', 'HEAD'], runGit);
+    const commit  = rawHead && GIT_SHA_PATTERN.test(rawHead) ? rawHead : null;
+    const origin  = runGitQuery(startDir, ['config', '--get', 'remote.origin.url'], runGit);
+
+    return {repoRoot, commit, origin}
 }
 
 /**
@@ -359,6 +244,22 @@ export function indexSourceTree({rootDir} = {}) {
             continue
         }
 
+        for (const item of inspected.unindexedClasses || []) {
+            unresolved.push(Object.freeze({
+                kind         : 'class',
+                sourcePath   : file.sourcePath,
+                line         : item.line,
+                className    : item.name,
+                methodName   : null,
+                receiver     : null,
+                callee       : null,
+                declaresSuper: item.declaresSuper,
+                target       : item.name || '<anonymous class>',
+                expression   : item.expression,
+                reason       : item.reason
+            }));
+        }
+
         if (!inspected.className) {
             continue
         }
@@ -386,9 +287,9 @@ export function indexSourceTree({rootDir} = {}) {
         });
     }
 
-    const classEntries = new Map();
-    let declaredSuperCount = 0;
-    let resolvedSuperCount = 0;
+    const classEntries       = new Map();
+    let   declaredSuperCount = 0;
+    let   resolvedSuperCount = 0;
 
     for (const [className, {sourcePath, inspected}] of rawClassesByName.entries()) {
         const superClass         = resolveSuperClass({sourcePath, descriptor: inspected, descriptorsByPath});
@@ -446,14 +347,14 @@ export function indexSourceTree({rootDir} = {}) {
 
         classEntries.set(className, {
             className,
-            ntype             : inspected.ntype,
+            ntype        : inspected.ntype,
             sourcePath,
-            declaresSuper     : inspected.declaresSuper,
+            declaresSuper: inspected.declaresSuper,
             superClass,
             superClassResolved,
-            mixins            : resolvedMixins,
-            ownConfigs        : inspected.configs,
-            rawMethods        : inspected.methods
+            mixins       : resolvedMixins,
+            ownConfigs   : inspected.configs,
+            rawMethods   : inspected.methods
         });
     }
 
@@ -464,9 +365,9 @@ export function indexSourceTree({rootDir} = {}) {
             return extendsSpineCache.get(className)
         }
 
-        const spine = [];
-        const seen  = new Set();
-        let current = className;
+        const spine   = [];
+        const seen    = new Set();
+        let   current = className;
 
         while (current && classEntries.has(current) && !seen.has(current)) {
             seen.add(current);
@@ -554,11 +455,15 @@ export function indexSourceTree({rootDir} = {}) {
     }
 
     const effectiveConfigsByClass = new Map();
-    const chainSetByClass         = new Map();
+    const lookupChainByClass      = new Map();
+    const superChainByClass       = new Map();
 
-    for (const className of classEntries.keys()) {
+    for (const [className, entry] of classEntries.entries()) {
         const lookupChain = getLookupChain(className);
-        chainSetByClass.set(className, new Set(lookupChain.map(item => item.className)));
+        const superChain  = getSuperLookupChain(entry);
+
+        lookupChainByClass.set(className, Object.freeze(lookupChain.map(item => item.className)));
+        superChainByClass.set(className, Object.freeze(superChain.map(item => item.className)));
 
         const configMap = new Map();
 
@@ -589,6 +494,7 @@ export function indexSourceTree({rootDir} = {}) {
     const callsByTarget    = new Map();
     const overridesByBase  = new Map();
     const allConfigWrites  = [];
+    const allMethods       = [];
     const classes          = {};
 
     const callPairs = {
@@ -608,7 +514,7 @@ export function indexSourceTree({rootDir} = {}) {
         const finalizedMethods  = [];
 
         for (const rawMethod of entry.rawMethods) {
-            const methodKey = `${entry.className}#${rawMethod.name}`;
+            const methodKey     = `${entry.className}#${rawMethod.name}`;
             const ancestorOwner = overrideChain.find(candidate => candidate.rawMethods.some(
                 candidateMethod => candidateMethod.name === rawMethod.name
                     && candidateMethod.static === rawMethod.static
@@ -784,7 +690,24 @@ export function indexSourceTree({rootDir} = {}) {
             }
 
             for (const write of rawMethod.configWrites) {
-                if (write.isStatic && write.receiver !== 'external') {
+                if (write.receiver === 'external') {
+                    unresolved.push(Object.freeze({
+                        kind      : 'write',
+                        sourcePath: entry.sourcePath,
+                        line      : write.line,
+                        className : entry.className,
+                        methodName: rawMethod.name,
+                        receiver  : 'external',
+                        callee    : null,
+                        configName: write.name,
+                        target    : write.name,
+                        expression: write.expression,
+                        reason    : 'receiver-class-unresolved'
+                    }));
+                    continue
+                }
+
+                if (write.isStatic) {
                     continue
                 }
 
@@ -803,20 +726,35 @@ export function indexSourceTree({rootDir} = {}) {
             }
 
             finalizedMethods.push(Object.freeze({
-                name     : rawMethod.name,
-                kind     : rawMethod.kind,
-                static   : rawMethod.static,
-                computed : rawMethod.computed,
-                line     : rawMethod.line,
-                endLine  : rawMethod.endLine,
+                name    : rawMethod.name,
+                kind    : rawMethod.kind,
+                static  : rawMethod.static,
+                computed: rawMethod.computed,
+                line    : rawMethod.line,
+                endLine : rawMethod.endLine,
                 overrides,
                 overridesFrom,
                 callsSuper,
-                hook     : finalizedHook
+                hook    : finalizedHook
+            }));
+
+            allMethods.push(Object.freeze({
+                className : entry.className,
+                sourcePath: entry.sourcePath,
+                name      : rawMethod.name,
+                kind      : rawMethod.kind,
+                static    : rawMethod.static,
+                computed  : rawMethod.computed,
+                line      : rawMethod.line,
+                endLine   : rawMethod.endLine,
+                overrides,
+                overridesFrom,
+                callsSuper,
+                hook      : finalizedHook
             }));
         }
 
-        const ownConfigNames  = new Set(entry.ownConfigs.map(cfg => cfg.name));
+        const ownConfigNames   = new Set(entry.ownConfigs.map(cfg => cfg.name));
         const finalizedConfigs = entry.ownConfigs.map(cfg => {
             const effective = effectiveConfigs.get(cfg.name);
             return Object.freeze({
@@ -868,7 +806,7 @@ export function indexSourceTree({rootDir} = {}) {
     }
 
     const indexDurationMs = Number((performance.now() - startedAt).toFixed(2));
-    const stats = Object.freeze({
+    const stats           = Object.freeze({
         fileCount   : files.length,
         classCount  : classEntries.size,
         superclasses: Object.freeze({
@@ -891,7 +829,7 @@ export function indexSourceTree({rootDir} = {}) {
         unresolvedCount: unresolved.length
     });
 
-    return {
+    const index = Object.freeze({
         extractorVersion: CODE_INDEX_EXTRACTOR_VERSION,
         rootDir         : absRoot,
         baseDir,
@@ -901,18 +839,23 @@ export function indexSourceTree({rootDir} = {}) {
         indexDurationMs,
         stats,
         classes         : Object.freeze(classes),
+        methods         : Object.freeze(allMethods),
         calls           : Object.freeze(calls),
         hooks           : Object.freeze(hooks),
         configWrites    : Object.freeze(allConfigWrites),
-        unresolved      : Object.freeze(unresolved),
-        _internal       : {
-            callsByTarget,
-            hooksByMethodKey,
-            overridesByBase,
-            chainSetByClass,
-            effectiveConfigsByClass
-        }
-    }
+        unresolved      : Object.freeze(unresolved)
+    });
+
+    INDEX_INTERNALS.set(index, {
+        callsByTarget,
+        hooksByMethodKey,
+        overridesByBase,
+        lookupChainByClass,
+        superChainByClass,
+        effectiveConfigsByClass
+    });
+
+    return index
 }
 
 /**
@@ -940,24 +883,98 @@ function findCandidates(query, universe, maxCandidates = 20) {
 }
 
 /**
+ * @summary Finds the nearest non-static, non-computed instance method on a lookup chain.
+ * @param {ReadonlyArray<String>} chainNames
+ * @param {String} methodName
+ * @param {Object} classes
+ * @returns {{className: String, method: Object}|null}
+ */
+function findNearestChainMethod(chainNames, methodName, classes) {
+    for (const ownerName of chainNames) {
+        const ownerClass = classes[ownerName];
+        const method     = ownerClass?.methods.find(
+            item => !item.computed && !item.static && item.kind === 'method' && item.name === methodName
+        );
+
+        if (method) {
+            return {className: ownerName, method}
+        }
+    }
+
+    return null
+}
+
+/**
+ * @summary Checks whether a bound-receiver config write on `writerClass` reaches `targetClass#methodName`
+ * directly or through `super` forwarding along intermediate hook overrides.
+ * @param {String} writerClass
+ * @param {String} targetClass
+ * @param {String} methodName
+ * @param {Object} internals
+ * @param {Object} classes
+ * @returns {Boolean}
+ */
+function canChainWriteReachHook(writerClass, targetClass, methodName, internals, classes) {
+    const writerLookup = internals.lookupChainByClass.get(writerClass);
+
+    if (!writerLookup) {
+        return false
+    }
+
+    let   current = findNearestChainMethod(writerLookup, methodName, classes);
+    const visited = new Set();
+
+    while (current) {
+        const visitKey = `${current.className}#${methodName}`;
+
+        if (visited.has(visitKey)) {
+            return false
+        }
+        visited.add(visitKey);
+
+        if (current.className === targetClass) {
+            return true
+        }
+
+        if (!current.method.callsSuper) {
+            return false
+        }
+
+        const superLookup = internals.superChainByClass.get(current.className);
+        current = superLookup ? findNearestChainMethod(superLookup, methodName, classes) : null;
+    }
+
+    return false
+}
+
+/**
  * @summary Reads one class card (`file`, `chain`, `mixins`, `configs` with hooks, `methods`, and unresolved rows).
  * @param {Object} index Output of `indexSourceTree`.
  * @param {String} className Exact class name.
  * @returns {Object}
  */
 export function readClassCard(index, className) {
+    getIndexInternals(index);
+
     const allNames = Object.keys(index.classes).sort();
     const card     = index.classes[className];
 
     if (!card) {
+        const unindexed = index.unresolved.filter(
+            row => row.kind === 'class' && row.className === className
+        );
+
         return Object.freeze({
             found     : false,
             query     : className,
+            unindexed : Object.freeze(unindexed),
             candidates: Object.freeze(findCandidates(className, allNames))
         })
     }
 
-    const classUnresolved = index.unresolved.filter(row => row.className === className);
+    const classUnresolved = index.unresolved.filter(
+        row => row.className === className || (row.kind === 'class' && row.sourcePath === card.sourcePath)
+    );
 
     return Object.freeze({
         found     : true,
@@ -973,13 +990,15 @@ export function readClassCard(index, className) {
 }
 
 /**
- * @summary Reads direct call sites of `<ClassName>#<method>` and, for bound hooks, config writes labelled as `possible dispatch`.
+ * @summary Reads direct call sites of `<ClassName>#<method>` and, for bound hooks, reachable config writes
+ * labelled strictly as `possible dispatch` while surfacing unresolved writes separately.
  * @param {Object} index Output of `indexSourceTree`.
  * @param {String} methodTarget `<ClassName>#<methodName>`
  * @returns {Object}
  */
 export function readMethodCallers(index, methodTarget) {
-    const hashIndex = String(methodTarget || '').indexOf('#');
+    const internals        = getIndexInternals(index);
+    const hashIndex        = String(methodTarget || '').indexOf('#');
     const allMethodTargets = [];
 
     for (const cls of Object.values(index.classes)) {
@@ -1026,33 +1045,28 @@ export function readMethodCallers(index, methodTarget) {
         })
     }
 
-    const targetKey = `${className}#${methodName}`;
-    const directCalls = [...(index._internal.callsByTarget.get(targetKey) || [])]
+    const targetKey   = `${className}#${methodName}`;
+    const directCalls = [...(internals.callsByTarget.get(targetKey) || [])]
         .sort((a, b) => a.sourcePath === b.sourcePath ? a.line - b.line : a.sourcePath < b.sourcePath ? -1 : 1);
-    const overrides = [...(index._internal.overridesByBase.get(targetKey) || [])]
+    const overrides = [...(internals.overridesByBase.get(targetKey) || [])]
         .sort((a, b) => a.sourcePath === b.sourcePath ? a.line - b.line : a.sourcePath < b.sourcePath ? -1 : 1);
 
-    const boundHook          = index._internal.hooksByMethodKey.get(targetKey) || null;
+    const boundHook          = internals.hooksByMethodKey.get(targetKey) || null;
     const possibleDispatches = [];
 
     if (boundHook) {
-        const hookChainSet = index._internal.chainSetByClass.get(className);
-
         for (const write of index.configWrites) {
-            if (write.configName !== boundHook.configName) {
+            if (write.receiver === 'external' || write.configName !== boundHook.configName) {
                 continue
             }
 
-            if (write.receiver !== 'external') {
-                const writerConfigs = index._internal.effectiveConfigsByClass.get(write.writerClass);
-                if (!writerConfigs?.get(boundHook.configName)?.reactive) {
-                    continue
-                }
+            const writerConfigs = internals.effectiveConfigsByClass.get(write.writerClass);
+            if (!writerConfigs?.get(boundHook.configName)?.reactive) {
+                continue
+            }
 
-                const writerChainSet = index._internal.chainSetByClass.get(write.writerClass);
-                if (!writerChainSet?.has(className) && !hookChainSet?.has(write.writerClass)) {
-                    continue
-                }
+            if (!canChainWriteReachHook(write.writerClass, className, methodName, internals, index.classes)) {
+                continue
             }
 
             possibleDispatches.push(Object.freeze({
@@ -1075,9 +1089,11 @@ export function readMethodCallers(index, methodTarget) {
         );
     }
 
-    const methodUnresolved = index.unresolved.filter(
-        row => row.kind === 'hook' && row.className === className && row.methodName === methodName
-    );
+    const hookConfigName   = method.hook?.configName || null;
+    const methodUnresolved = index.unresolved
+        .filter(row => (row.kind === 'hook' && row.className === className && row.methodName === methodName)
+            || (hookConfigName !== null && row.kind === 'write' && row.configName === hookConfigName))
+        .sort((a, b) => a.sourcePath === b.sourcePath ? a.line - b.line : a.sourcePath < b.sourcePath ? -1 : 1);
 
     return Object.freeze({
         found             : true,
@@ -1101,6 +1117,8 @@ export function readMethodCallers(index, methodTarget) {
  * @returns {Object}
  */
 export function readFolderScene(index, folderQuery) {
+    getIndexInternals(index);
+
     const cleaned = toPosixPath(String(folderQuery || '').trim())
         .replace(/^\.\//u, '')
         .replace(/\/+$/u, '');
@@ -1129,8 +1147,8 @@ export function readFolderScene(index, folderQuery) {
         }
     }
 
-    let matchedFolder  = null;
-    let scopedClasses  = [];
+    let matchedFolder = null;
+    let scopedClasses = [];
 
     for (const prefix of candidatePrefixes) {
         const matches = prefix === ''
@@ -1257,13 +1275,13 @@ export function readFolderScene(index, folderQuery) {
 
     const sceneUnresolved = index.unresolved.filter(
         row => (row.className && inScopeNames.has(row.className))
-            || (matchedFolder !== '.' && row.sourcePath.startsWith(`${matchedFolder}/`))
+            || (matchedFolder === '.' ? Boolean(row.sourcePath) : row.sourcePath.startsWith(`${matchedFolder}/`))
     );
 
     return Object.freeze({
-        found      : true,
-        folder     : matchedFolder,
-        classes    : Object.freeze(scopedClasses.map(cls => Object.freeze({
+        found  : true,
+        folder : matchedFolder,
+        classes: Object.freeze(scopedClasses.map(cls => Object.freeze({
             className  : cls.className,
             ntype      : cls.ntype,
             sourcePath : cls.sourcePath,
@@ -1293,6 +1311,8 @@ export function readFolderScene(index, folderQuery) {
  * @returns {Object}
  */
 export function summarizeSourceTreeIndex(index) {
+    getIndexInternals(index);
+
     return Object.freeze({
         origin          : index.origin,
         commit          : index.commit,

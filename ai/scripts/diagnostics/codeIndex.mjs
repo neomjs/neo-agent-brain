@@ -79,7 +79,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
  */
 function capRows(items, limit, tracker) {
     if (limit > 0 && items.length > limit) {
-        const omitted       = items.length - limit;
+        const omitted = items.length - limit;
         tracker.cut         = true;
         tracker.omittedRows += omitted;
 
@@ -98,7 +98,26 @@ function capRows(items, limit, tracker) {
 }
 
 /**
- * @summary Formats an unknown-symbol candidate list in plain text.
+ * @summary Formats one unresolved or unindexed index entry in plain text.
+ * @param {Object} row
+ * @returns {String}
+ */
+function formatUnresolvedRow(row) {
+    const detail = row.expression || row.target;
+
+    if (row.kind === 'class') {
+        return `  ${row.sourcePath}:${row.line} ${detail} (${row.reason})`
+    }
+
+    const owner = row.methodName
+        ? `${row.className}#${row.methodName}`
+        : (row.className || row.sourcePath);
+
+    return `  ${row.sourcePath}:${row.line} ${owner} -> ${detail} (${row.reason})`
+}
+
+/**
+ * @summary Formats an unknown-symbol candidate list in plain text, disclosing unindexed classes when present.
  * @param {String} label
  * @param {Object} result
  * @param {Number} limit
@@ -106,7 +125,17 @@ function capRows(items, limit, tracker) {
  * @returns {String}
  */
 function formatNotFound(label, result, limit, tracker) {
-    const lines  = [`Unknown ${label}: ${result.query}`];
+    const lines = [`Unknown ${label}: ${result.query}`];
+
+    if (result.unindexed?.length > 0) {
+        const unindexedCap = capRows(result.unindexed, limit, tracker);
+        lines.push(`Not indexed (${unindexedCap.total}):`);
+        unindexedCap.rows.forEach(row => lines.push(formatUnresolvedRow(row)));
+        if (unindexedCap.omitted > 0) {
+            lines.push(`  ... (${unindexedCap.omitted} rows omitted; ${unindexedCap.total} total)`);
+        }
+    }
+
     const capped = capRows(result.candidates || [], limit, tracker);
 
     if (capped.total === 0) {
@@ -188,8 +217,7 @@ function formatCardText(result, index, limit, tracker) {
     if (unresolvedCap.total > 0) {
         lines.push(`Unresolved (${unresolvedCap.total}):`);
         for (const row of unresolvedCap.rows) {
-            const owner = row.methodName ? `${row.className}#${row.methodName}` : row.className || row.sourcePath;
-            lines.push(`  ${row.sourcePath}:${row.line} ${owner} -> ${row.target} (${row.reason})`);
+            lines.push(formatUnresolvedRow(row));
         }
         if (unresolvedCap.omitted > 0) {
             lines.push(`  ... (${unresolvedCap.omitted} rows omitted; ${unresolvedCap.total} total)`);
@@ -204,7 +232,8 @@ function formatCardText(result, index, limit, tracker) {
 }
 
 /**
- * @summary Formats a `callers` read in plain text, labelling hook config writes strictly as `possible dispatch`.
+ * @summary Formats a `callers` read in plain text, labelling reachable hook config writes strictly as
+ * `possible dispatch` and keeping unresolved writes outside the dispatch list.
  * @param {Object} result
  * @param {Object} index
  * @param {Number} limit
@@ -275,6 +304,17 @@ function formatCallersText(result, index, limit, tracker) {
         }
         if (overridesCap.omitted > 0) {
             lines.push(`  ... (${overridesCap.omitted} rows omitted; ${overridesCap.total} total)`);
+        }
+    }
+
+    const unresolvedCap = capRows(result.unresolved || [], limit, tracker);
+    if (unresolvedCap.total > 0) {
+        lines.push(`Unresolved (${unresolvedCap.total}):`);
+        for (const row of unresolvedCap.rows) {
+            lines.push(formatUnresolvedRow(row));
+        }
+        if (unresolvedCap.omitted > 0) {
+            lines.push(`  ... (${unresolvedCap.omitted} rows omitted; ${unresolvedCap.total} total)`);
         }
     }
 
@@ -374,7 +414,7 @@ function formatSceneText(result, index, limit, tracker) {
     }
 
     const extCap = capRows(result.externalCalls, limit, tracker);
-    lines.push(`Methods called from outside folder (${extCap.total}):`);
+    lines.push(`Methods called from outside folder (only calls through this, me, and super; ${extCap.total}):`);
     if (extCap.total === 0) {
         lines.push('  (none)');
     } else {
@@ -390,6 +430,17 @@ function formatSceneText(result, index, limit, tracker) {
         }
         if (extCap.omitted > 0) {
             lines.push(`  ... (${extCap.omitted} target methods omitted; ${extCap.total} total)`);
+        }
+    }
+
+    const unresolvedCap = capRows(result.unresolved || [], limit, tracker);
+    if (unresolvedCap.total > 0) {
+        lines.push(`Unresolved (${unresolvedCap.total}):`);
+        for (const row of unresolvedCap.rows) {
+            lines.push(formatUnresolvedRow(row));
+        }
+        if (unresolvedCap.omitted > 0) {
+            lines.push(`  ... (${unresolvedCap.omitted} rows omitted; ${unresolvedCap.total} total)`);
         }
     }
 
@@ -443,10 +494,16 @@ function buildJsonPayload(readMode, rawResult, limit, tracker) {
     }
 
     if (rawResult.found === false) {
-        return {
+        const payload = {
             ...rawResult,
             candidates: capRows(rawResult.candidates || [], limit, tracker).rows
+        };
+
+        if (Array.isArray(rawResult.unindexed)) {
+            payload.unindexed = capRows(rawResult.unindexed, limit, tracker).rows;
         }
+
+        return payload
     }
 
     switch (readMode) {
@@ -462,12 +519,13 @@ function buildJsonPayload(readMode, rawResult, limit, tracker) {
                 ...rawResult,
                 calls             : capRows(rawResult.calls, limit, tracker).rows,
                 possibleDispatches: capRows(rawResult.possibleDispatches, limit, tracker).rows,
-                overrides         : capRows(rawResult.overrides, limit, tracker).rows
+                overrides         : capRows(rawResult.overrides, limit, tracker).rows,
+                unresolved        : capRows(rawResult.unresolved || [], limit, tracker).rows
             };
         case 'scene':
             return {
                 ...rawResult,
-                classes: capRows(rawResult.classes, limit, tracker).rows,
+                classes    : capRows(rawResult.classes, limit, tracker).rows,
                 inheritance: {
                     internal: capRows(rawResult.inheritance.internal, limit, tracker).rows,
                     outbound: capRows(rawResult.inheritance.outbound, limit, tracker).rows,
@@ -522,7 +580,7 @@ export function main(argv = process.argv.slice(2), {
     const rootDir = path.resolve(cwd, options.root);
     const index   = indexSourceTree({rootDir});
 
-    const readStartedAt = performance.now();
+    const readStartedAt  = performance.now();
     const effectiveLimit = options.limit !== undefined
         ? options.limit
         : (options.json ? 0 : DEFAULT_TEXT_LIMIT);
@@ -544,7 +602,7 @@ export function main(argv = process.argv.slice(2), {
             break;
     }
 
-    const unresolvedRows = rawResult.unresolved || [];
+    const unresolvedRows    = rawResult.unresolved || rawResult.unindexed || [];
     const unresolvedTargets = unresolvedRows.map(row => row.target);
 
     let output;
@@ -554,16 +612,16 @@ export function main(argv = process.argv.slice(2), {
         const envelope       = {
             ...payload,
             meta: {
-                read             : options.read,
-                argument         : options.target,
-                origin           : index.origin,
-                commit           : index.commit,
-                extractorVersion : index.extractorVersion,
-                indexDurationMs  : index.indexDurationMs,
+                read            : options.read,
+                argument        : options.target,
+                origin          : index.origin,
+                commit          : index.commit,
+                extractorVersion: index.extractorVersion,
+                indexDurationMs : index.indexDurationMs,
                 readDurationMs,
-                cut              : tracker.cut,
-                omittedRows      : tracker.omittedRows,
-                unresolvedCount  : unresolvedTargets.length
+                cut             : tracker.cut,
+                omittedRows     : tracker.omittedRows,
+                unresolvedCount : unresolvedTargets.length
             }
         };
         output = `${JSON.stringify(envelope, null, 2)}\n`;

@@ -1,21 +1,18 @@
 import SourceParser from '../parser/SourceParser.mjs';
 import {
-    inferClassNameFromPath,
-    resolveRelativeModule,
+    REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID,
+    REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION,
+    REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_ID,
+    REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_VERSION,
     resolveSuperClass
-}                   from './sourceTreeIndex.mjs';
+}                   from './classHierarchyResolution.mjs';
 
-export {inferClassNameFromPath, resolveRelativeModule, resolveSuperClass};
-
-/**
- * Resolver-owned identity. Any semantic change to class/import resolution MUST bump the version:
- * `{id, version}` is materialization input, so keeping the version while changing the algorithm
- * would let prior proof name a different hierarchy.
- */
-export const REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID      = 'repository-class-hierarchy';
-export const REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION = '1.0.0';
-export const REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_ID = 'repository-source-path-class-hierarchy';
-export const REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_VERSION = '1.0.0';
+export {
+    REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID,
+    REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION,
+    REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_ID,
+    REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_VERSION
+};
 
 /**
  * @summary Creates a stable repository-hierarchy failure.

@@ -1,7 +1,5 @@
 import * as acorn from 'acorn';
 
-export const INSPECT_SOURCE_MODULE_VERSION = '1.0.0';
-
 const HOOK_METHOD_PATTERN = /^(afterSet|beforeSet|beforeGet)([A-Z][\w$]*)$/u;
 const CONFIG_META_KEYS    = new Set(['className', 'ntype', 'mixins']);
 
@@ -501,13 +499,81 @@ function extractMethodDetails(member, content) {
 }
 
 /**
+ * @summary Collects any `ClassDeclaration` or `ClassExpression` in `rootAst` that was not chosen as
+ * the module's single primary indexed class.
+ * @param {Object} rootAst
+ * @param {Object|null} indexedClassNode
+ * @param {Set<Object>} topLevelClassNodes
+ * @param {String} content
+ * @returns {ReadonlyArray<Object>}
+ */
+function collectUnindexedClasses(rootAst, indexedClassNode, topLevelClassNodes, content) {
+    const unindexed = [];
+
+    function visit(node) {
+        if (!node || typeof node.type !== 'string') {
+            return
+        }
+
+        if (
+            (node.type === 'ClassDeclaration' || node.type === 'ClassExpression')
+            && node !== indexedClassNode
+        ) {
+            const name          = node.id?.name || null;
+            const declaresSuper = Boolean(node.superClass);
+            const superName     = node.superClass
+                ? content.slice(node.superClass.start, node.superClass.end).replace(/\s+/gu, ' ').trim()
+                : null;
+            const headerPrefix = name ? `class ${name}` : 'class <anonymous>';
+            const expression   = superName ? `${headerPrefix} extends ${superName}` : headerPrefix;
+            const reason       = node.type === 'ClassExpression'
+                ? 'class-expression'
+                : topLevelClassNodes.has(node)
+                    ? 'secondary-class-in-module'
+                    : 'nested-class-declaration';
+
+            unindexed.push(Object.freeze({
+                name,
+                line: node.loc.start.line,
+                declaresSuper,
+                superName,
+                expression,
+                reason
+            }));
+        }
+
+        for (const key of Object.keys(node)) {
+            if (key === 'type' || key === 'loc' || key === 'start' || key === 'end') {
+                continue
+            }
+
+            const value = node[key];
+
+            if (Array.isArray(value)) {
+                value.forEach(visit);
+            } else if (value && typeof value.type === 'string') {
+                visit(value);
+            }
+        }
+    }
+
+    visit(rootAst);
+    return Object.freeze(unindexed)
+}
+
+/**
  * @summary Parses one source module into the single class-description universe shared by chunking,
- * repository hierarchy derivation, and standalone source-tree indexing.
+ * repository hierarchy derivation, and source-tree indexing.
+ *
+ * A separate hierarchy scan already produced different class totals from the chunks whose ids it
+ * was meant to protect. Keeping the AST walk here makes `className`, superclass declaration, and
+ * import bindings one producer contract rather than two implementations that merely look similar.
+ *
  * @param {String} content Raw module source.
  * @param {String} filePath Repository-relative source path.
  * @param {Object} [options]
  * @param {Boolean} [options.strict=false] Throw a coded error on parse failure instead of returning a coded result.
- * @param {Boolean} [options.extractCalls=false] Extract configs, mixins, ntype, method calls, and config writes.
+ * @param {Boolean} [options.extractCalls=false] Extract configs, mixins, ntype, method calls, config writes, and unindexed classes.
  * @returns {Object}
  */
 export function inspectSourceModule(content, filePath, {strict = false, extractCalls = false} = {}) {
@@ -541,8 +607,10 @@ export function inspectSourceModule(content, filePath, {strict = false, extractC
         contextNodes       = [],
         propertyNodes      = [],
         methodNodes        = [],
-        imports            = [];
+        imports            = [],
+        topLevelClassNodes = new Set();
     let
+        activeClassNode     = null,
         activeConfigNode    = null,
         activeMethodNodes   = [],
         activeStaticMixins  = [],
@@ -586,6 +654,8 @@ export function inspectSourceModule(content, filePath, {strict = false, extractC
                 return
             }
 
+            topLevelClassNodes.add(classDecl);
+            activeClassNode     = classDecl;
             classStart          = classDecl.start;
             classDefinition     = content.substring(classDecl.start, classDecl.body.start + 1);
             className           = classDecl.id?.name || '';
@@ -671,8 +741,9 @@ export function inspectSourceModule(content, filePath, {strict = false, extractC
     const methods                  = Object.freeze(
         activeMethodNodes.map(member => extractMethodDetails(member, content))
     );
-    const calls                    = Object.freeze(methods.flatMap(method => method.calls));
-    const configWrites             = Object.freeze(methods.flatMap(method => method.configWrites));
+    const calls            = Object.freeze(methods.flatMap(method => method.calls));
+    const configWrites     = Object.freeze(methods.flatMap(method => method.configWrites));
+    const unindexedClasses = collectUnindexedClasses(ast, activeClassNode, topLevelClassNodes, content);
 
     return {
         ...baseResult,
@@ -681,7 +752,8 @@ export function inspectSourceModule(content, filePath, {strict = false, extractC
         configs,
         methods,
         calls,
-        configWrites
+        configWrites,
+        unindexedClasses
     }
 }
 

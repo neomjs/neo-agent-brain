@@ -1,13 +1,10 @@
-import * as acorn     from 'acorn';
-import {spawnSync}    from 'node:child_process';
-import fs             from 'node:fs';
-import path           from 'node:path';
-import process        from 'node:process';
-import {test, expect} from '@playwright/test';
-import {
-    INSPECT_SOURCE_MODULE_VERSION,
-    inspectSourceModule
-}                     from '../../../../../../../ai/services/knowledge-base/helpers/inspectSourceModule.mjs';
+import * as acorn            from 'acorn';
+import {spawnSync}           from 'node:child_process';
+import fs                    from 'node:fs';
+import path                  from 'node:path';
+import process               from 'node:process';
+import {test, expect}        from '@playwright/test';
+import {inspectSourceModule} from '../../../../../../../ai/services/knowledge-base/helpers/inspectSourceModule.mjs';
 
 const repoRoot   = path.resolve(import.meta.dirname, '../../../../../../..');
 const helperPath = path.join(repoRoot, 'ai/services/knowledge-base/helpers/inspectSourceModule.mjs');
@@ -23,15 +20,17 @@ test.describe('inspectSourceModule — pure acorn module inspector', () => {
         );
 
         expect(importNodes.map(node => node.source.value)).toEqual(['acorn']);
-        expect(INSPECT_SOURCE_MODULE_VERSION).toBe('1.0.0');
+        expect(source).not.toContain('INSPECT_SOURCE_MODULE_VERSION');
+        expect(source).toContain('A separate hierarchy scan already produced different class totals');
 
         const probe = spawnSync(process.execPath, [
             '--input-type=module',
             '-e',
-            `import {inspectSourceModule} from ${JSON.stringify(helperPath)};
-             const out = inspectSourceModule('export default class A {}', 'A.mjs', {extractCalls: true});
+            `import * as mod from ${JSON.stringify(helperPath)};
+             const out = mod.inspectSourceModule('export default class A {}', 'A.mjs', {extractCalls: true});
              if (globalThis.Neo !== undefined) process.exit(2);
-             if (out.className !== 'A') process.exit(3);`
+             if (out.className !== 'A') process.exit(3);
+             if ('INSPECT_SOURCE_MODULE_VERSION' in mod) process.exit(4);`
         ], {encoding: 'utf8'});
 
         expect(probe.status).toBe(0);
@@ -83,6 +82,7 @@ test.describe('inspectSourceModule — pure acorn module inspector', () => {
         expect(result.calls).toBeUndefined();
         expect(result.configWrites).toBeUndefined();
         expect(result.mixins).toBeUndefined();
+        expect(result.unindexedClasses).toBeUndefined();
     });
 
     test('extracts ntype, mixins, reactive configs, lexical this/me/super calls, and config writes when extractCalls is true', () => {
@@ -172,6 +172,66 @@ test.describe('inspectSourceModule — pure acorn module inspector', () => {
             {methodName: 'applyState', receiver: 'me', name: 'title', writeKind: 'set'},
             {methodName: 'applyState', receiver: 'me', name: 'closable', writeKind: 'set'},
             {methodName: 'applyState', receiver: 'external', name: 'collapsed', writeKind: 'set'}
+        ]);
+        expect(result.unindexedClasses).toEqual([]);
+    });
+
+    test('records secondary top-level classes, nested factory classes, and class expressions in unindexedClasses without altering primary class selection', () => {
+        const multiClassSource = [
+            'class DriveAbort extends Error {}',
+            'const InlineElement = class extends HTMLElement {};',
+            'class EventSimulator {',
+            '    static config = {',
+            "        className: 'Neo.main.addon.EventSimulator'",
+            '    }',
+            '}',
+            'export default EventSimulator;'
+        ].join('\n');
+
+        const multiResult = inspectSourceModule(multiClassSource, 'src/main/addon/EventSimulator.mjs', {
+            extractCalls: true
+        });
+        expect(multiResult.className).toBe('Neo.main.addon.EventSimulator');
+        expect(multiResult.unindexedClasses).toEqual([
+            {
+                name         : 'DriveAbort',
+                line         : 1,
+                declaresSuper: true,
+                superName    : 'Error',
+                expression   : 'class DriveAbort extends Error',
+                reason       : 'secondary-class-in-module'
+            },
+            {
+                name         : null,
+                line         : 2,
+                declaresSuper: true,
+                superName    : 'HTMLElement',
+                expression   : 'class <anonymous> extends HTMLElement',
+                reason       : 'class-expression'
+            }
+        ]);
+
+        const factorySource = [
+            "import FunctionalBase from './component/Base.mjs';",
+            'export function defineComponent(spec) {',
+            '    class FunctionalComponent extends FunctionalBase {}',
+            '    return FunctionalComponent;',
+            '}'
+        ].join('\n');
+
+        const factoryResult = inspectSourceModule(factorySource, 'src/functional/defineComponent.mjs', {
+            extractCalls: true
+        });
+        expect(factoryResult.className).toBe('');
+        expect(factoryResult.unindexedClasses).toEqual([
+            {
+                name         : 'FunctionalComponent',
+                line         : 3,
+                declaresSuper: true,
+                superName    : 'FunctionalBase',
+                expression   : 'class FunctionalComponent extends FunctionalBase',
+                reason       : 'nested-class-declaration'
+            }
         ]);
     });
 });
