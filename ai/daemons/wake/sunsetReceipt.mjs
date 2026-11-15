@@ -1,5 +1,5 @@
-import {activeWakeSubscriptionStatusSql} from '../../services/memory-core/wakeSubscriptionStatusPolicy.mjs';
-import {SUNSET_SUCCESSOR_TAG}            from './sessionRotation.mjs';
+import {activeWakeSubscriptionStatusSql}                from '../../services/memory-core/wakeSubscriptionStatusPolicy.mjs';
+import {SUNSET_SUCCESSOR_TAG, TERMINAL_ROTATION_STATES} from './sessionRotation.mjs';
 
 /**
  * @module ai/daemons/wake/sunsetReceipt
@@ -17,6 +17,13 @@ import {SUNSET_SUCCESSOR_TAG}            from './sessionRotation.mjs';
 /** @summary A message id without its `MESSAGE:` prefix, so a marker's `inReplyTo` matches in either form. */
 const bareMessageId = id => String(id ?? '').replace(/^MESSAGE:/, '');
 
+/** @summary When a rotation stopped being open: its settle stamp, or its request when a settled record has none. */
+const settledAt = rotation => rotation.completedAt || rotation.refusedAt || rotation.incompleteAt ||
+    (TERMINAL_ROTATION_STATES.includes(rotation.state) ? rotation.requestedAt : null);
+
+/** @summary Whether a rotation was open at `iso`: requested by then, and not settled before it. */
+const isOpenAt = (rotation, iso) => !!rotation?.requestedAt && rotation.requestedAt <= iso && (!settledAt(rotation) || iso <= settledAt(rotation));
+
 /**
  * How far apart the writer's `add_memory` and the interval it closes may land and still be one close. The
  * two writes are one tool call: measured 1–2 ms apart (2026-11-14), so the bound only absorbs a slow store.
@@ -30,11 +37,14 @@ export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
  * The receipt is the seat's NEWEST self-addressed message sent at or after `sinceIso`, successor markers
  * aside, and only when that message is a sunset handover: any newer self-message that is not one (a
  * rescinding note) turns the rotation off. A seat that wrote no self-message in the range has no receipt.
- * The successor is the earliest marker whose `inReplyTo` names the receipt; a marker replying to any
- * other message changes nothing.
+ * An amendment is no new receipt: a handover sent while an earlier one's rotation was open (requested,
+ * not yet settled) folds into that one, so it neither strands the rotation nor rotates the seat again.
+ * The successor is the earliest marker whose `inReplyTo` names the receipt or one of its amendments; a
+ * marker replying to any other message changes nothing.
  *
- * The session reads key on the receipt's time. The old session is the one that saved the seat's newest
- * memory at or before the receipt.
+ * The session reads key on the receipt's time. The old session is the one the receipt names
+ * (`originSessionId`, stamped at the tool boundary), else the one that saved the seat's newest memory at
+ * or before the receipt.
  *
  * **The receipt's turn ends at its writer's close.** One turn leaves several intervals whose turn ids never
  * join (the prompt's, a tool-progress beacon's, the one `add_memory` closes), and presence names no session,
@@ -75,18 +85,26 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
                 AND json_extract(data, '$.properties.to') IN (?, ?)
               ORDER BY json_extract(data, '$.properties.sentAt') DESC, id DESC
           `).all(sinceIso, identity, bare, identity, bare).map(row => ({id: row.id, properties: JSON.parse(row.data).properties || {}})),
-          isMarker = message => !!message.properties.taggedConcepts?.includes(SUNSET_SUCCESSOR_TAG),
-          newest   = messages.find(message => !isMarker(message));
+          isMarker   = message => !!message.properties.taggedConcepts?.includes(SUNSET_SUCCESSOR_TAG),
+          isHandover = message => !!message.properties.taggedConcepts?.includes('sunset-protocol-handover'),
+          notes      = messages.filter(message => !isMarker(message)),
+          newest     = notes[0];
 
-    if (!newest?.properties.taggedConcepts?.includes('sunset-protocol-handover')) return null;
+    if (!newest || !isHandover(newest)) return null;
 
-    // newest first, so the earliest reply is the last match
-    const marker = messages.filter(message => isMarker(message) && bareMessageId(message.properties.inReplyTo) === bareMessageId(newest.id)).at(-1);
+    // The newest run of handovers (another self-message ends it); the receipt is the one whose rotation was
+    // open when the newest was sent, and every handover after it in the run is its amendment.
+    const runEnd  = notes.findIndex(message => !isHandover(message)),
+          run     = runEnd === -1 ? notes : notes.slice(0, runEnd),
+          receipt = run.find(message => isOpenAt(message.properties.sessionRotation, newest.properties.sentAt)) || newest,
+          chain   = new Set(run.slice(0, run.indexOf(receipt) + 1).map(message => bareMessageId(message.id))),
+          // newest first, so the earliest reply is the last match
+          marker  = messages.filter(message => isMarker(message) && chain.has(bareMessageId(message.properties.inReplyTo))).at(-1);
 
     // The node id is `AGENT_TURN_PRESENCE:<identity>:<turnId>`, so a key range on the primary index
     // reads one seat's intervals without scanning every seat's.
     const turnRange = [`AGENT_TURN_PRESENCE:${identity}:`, `AGENT_TURN_PRESENCE:${identity};`],
-          {sentAt}  = newest.properties,
+          {sentAt}  = receipt.properties,
           memory    = db.prepare(`
               SELECT json_extract(data, '$.properties.sessionId') AS sessionId
               FROM Nodes
@@ -96,7 +114,7 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
               ORDER BY json_extract(data, '$.properties.timestamp') DESC
               LIMIT 1
           `).get(identity, sentAt),
-          oldSessionId = memory?.sessionId || null,
+          oldSessionId = receipt.properties.originSessionId || memory?.sessionId || null,
           memories     = db.prepare(`
               SELECT json_extract(data, '$.properties.timestamp') AS at, json_extract(data, '$.properties.sessionId') AS sessionId
               FROM Nodes
@@ -137,14 +155,14 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
           }),
           promptedAt   = [...prompted, ...(otherSaveAt ? [otherSaveAt] : [])].sort()[0] || null;
 
-    const requestedAts = messages.filter(message => message !== newest).map(message => message.properties.sessionRotation?.requestedAt).filter(Boolean);
+    const requestedAts = messages.filter(message => message !== receipt).map(message => message.properties.sessionRotation?.requestedAt).filter(Boolean);
 
     return {
         receipt: {
-            id               : newest.id,
+            id               : receipt.id,
             sentAt,
-            focusItemsReceipt: newest.properties.focusItemsReceipt ?? null,
-            sessionRotation  : newest.properties.sessionRotation ?? null
+            focusItemsReceipt: receipt.properties.focusItemsReceipt ?? null,
+            sessionRotation  : receipt.properties.sessionRotation ?? null
         },
         oldSessionId,
         successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt} : null,

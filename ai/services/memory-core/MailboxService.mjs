@@ -3384,9 +3384,12 @@ class MailboxService extends Base {
      *   immediate-projection default.
      * @param {String|null} [options.messageId=null] An id the caller fixed before the send, so that it
      *   can later prove from the stores whether this message was accepted. Internal callers only.
+     * @param {String|null} [options.serverSessionId=null] The request's Memory Core session, passed by the
+     *   MCP write boundary. A sunset handover to self keeps it as `originSessionId`, so the plane can tell
+     *   its writer's closing `add_memory` (saved under the same session) from another session's.
      * @returns {Promise<Object>}
      */
-    async addMessage(args = {}, {deferProjection = false, messageId: plannedMessageId = null} = {}) {
+    async addMessage(args = {}, {deferProjection = false, messageId: plannedMessageId = null, serverSessionId = null} = {}) {
         const {
             to: rawTo,
             subject,
@@ -3812,6 +3815,10 @@ class MailboxService extends Base {
             userId        : senderUserId,
             sharedEntity  : true
         };
+
+        if (serverSessionId && to === sentBy && taggedConcepts.includes('sunset-protocol-handover')) {
+            messageProperties.originSessionId = serverSessionId
+        }
 
         if (task !== undefined) {
             // `expiredAt` is the expiry sweep's stamp alone: the recent-expiry read trusts it, so a caller's is dropped.
