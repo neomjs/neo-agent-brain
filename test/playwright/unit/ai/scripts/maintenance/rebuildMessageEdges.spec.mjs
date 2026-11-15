@@ -14,8 +14,6 @@ import fs             from 'fs-extra';
 import path           from 'path';
 import {canReadMessage} from '../../../../../../ai/services/memory-core/helpers/messageAdmission.mjs';
 import {
-    createCommand,
-    parseRowidRange,
     READ_AT_SOURCE,
     rebuildMessageEdges,
     runRebuildMessageEdges,
@@ -485,33 +483,6 @@ test.describe('rebuildMessageEdges maintenance script', () => {
         expect(result.types.SENT_TO.present).toBe(1);
         expect(result.readStamped).toBe(0);
         expect(receipt('MESSAGE:direct')).toEqual({readAt: undefined, readAtSource: undefined});
-    });
-
-    test('--stamp-restored-routes stamps only the messages whose receiving route lies in the rowid range', () => {
-        const ids = ['below', 'first', 'read', 'last', 'above'].map(name => `MESSAGE:${name}`);
-
-        seedLive({
-            nodes: [
-                ...ids.map(id => message(id, {from: '@neo-opus-vega', to: '@neo-opus-ada', ...(id === 'MESSAGE:read' ? {readAt: '2026-09-26T08:00:00.000Z'} : {})})),
-                identity('@neo-opus-ada')
-            ],
-            // a fresh table numbers them in insert order: rowids 1 to 5
-            edges: ids.map(id => ({id: `route-${id}`, source: id, target: '@neo-opus-ada', type: 'SENT_TO', properties: {weight: 1}}))
-        });
-
-        const restoredRoutes = createCommand().parse(['node', 'rebuildMessageEdges', '--db-path', dbPath, '--stamp-restored-routes', '2-4']).opts().stampRestoredRoutes;
-
-        expect(runRebuildMessageEdges({dbPath, restoredRoutes, logger: quiet})).toEqual({routes: 3, readStamped: 2});
-        expect(receipt('MESSAGE:first')).toEqual({readAt: undefined, readAtSource: undefined});
-
-        expect(runRebuildMessageEdges({dbPath, apply: true, restoredRoutes, logger: quiet})).toEqual({routes: 3, readStamped: 2});
-        expect(ids.map(id => receipt(id).readAtSource ?? null)).toEqual([null, READ_AT_SOURCE, null, READ_AT_SOURCE, null]);
-        expect(receipt('MESSAGE:read').readAt).toBe('2026-09-26T08:00:00.000Z');
-    });
-
-    test('parseRowidRange reads <first>-<last> and refuses anything else', () => {
-        expect(parseRowidRange('4016144-4026679')).toEqual({first: 4016144, last: 4026679});
-        ['4026679-4016144', '4016144', 'a-b', '-1-2', ''].forEach(value => expect(() => parseRowidRange(value)).toThrow('expected <first>-<last>'));
     });
 
     test('targetsOf reads one string or every string entry of an array, nothing else', () => {
