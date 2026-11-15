@@ -20,6 +20,7 @@ import {
     hasReceiptIdentity,
     isHumanInputDefer,
     isPreKeystrokeFailure,
+    isPreSessionFailure,
     isRotationExpired,
     isSessionRotation,
     rotationDeadline,
@@ -209,6 +210,15 @@ test.describe('ai/daemons/wake/sessionRotation — the contract', () => {
         expect(buildRotationEnvelope(base).payload).not.toHaveProperty('holdUntil')
     });
 
+    test('#1770 (Emmy\'s Round 1): a lost front before Cmd+N opened nothing; the holder and cutoff refusals stay final', () => {
+        expect(isPreSessionFailure('4154:4160: execution error: Target app lost frontmost status after activation (-2700)')).toBe(true);
+        expect(isPreSessionFailure('execution error: Target app lost frontmost status before fresh session (-2700)')).toBe(true);
+        expect(isPreSessionFailure('execution error: Seat holder changed before the fresh session (-2700)')).toBe(false);
+        expect(isPreSessionFailure('execution error: Rotation deadline passed before the fresh session (-2700)')).toBe(false);
+        expect(isPreSessionFailure('execution error: Target app lost frontmost status before prompt clear (-2700)')).toBe(false);
+        expect(isPreSessionFailure(undefined)).toBe(false)
+    });
+
     test('only a failure in the activation phase typed nothing', () => {
         // Grace's 21:04Z rotation, verbatim from the receiver's record.
         expect(isPreKeystrokeFailure('4154:4160: execution error: Target app lost frontmost status after activation (-2700)')).toBe(true);
@@ -328,6 +338,27 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
             .toMatchObject({outcome: 'failed'})
     });
 
+    test('#1770 (Emmy\'s Round 1): a front lost right before Cmd+N defers the rotation, as a lock when the script ran into one', async () => {
+        let   locked = false, lockInScript = false;
+        const run    = () => dispatchLocalWake(rotationRecord(), quietEffects({
+            readScreenLocked: () => locked,
+            spawnAsync      : async (command, args) => {
+                if (args.some(arg => String(arg).includes('keystroke "v"'))) {
+                    locked = lockInScript;
+                    throw new Error('5120:5126: execution error: Target app lost frontmost status before fresh session (-2700)')
+                }
+                return ''
+            }
+        }));
+
+        // Only the tab shortcut preceded the check, and it opens no session, so asking again is safe.
+        expect(await run()).toEqual({outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST});
+
+        lockInScript = true;
+
+        expect(await run()).toEqual({outcome: 'deferred', outcomeReason: ROTATION_SCREEN_LOCKED})
+    });
+
     test('#1770 (Emmy\'s Round 1): the adapter hands the script the record\'s own deadline, not the time left', async () => {
         const acceptedAt = new Date(Date.now() - 20_000).toISOString(),
               calls      = [];
@@ -388,7 +419,9 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
               }).map(String),
               fresh = lines.indexOf('      keystroke "n" using command down');
 
-        expect(lines[fresh - 6]).toBe('      if rotationHolderNow is not "old-session" then error "Seat holder changed before the fresh session"');
+        expect(lines[fresh - 8]).toBe('      if rotationHolderNow is not "old-session" then error "Seat holder changed before the fresh session"');
+        // A lock that engaged after the activation is caught at the front, before Cmd+N.
+        expect(lines[fresh - 6]).toBe('      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before fresh session")');
         expect(lines[fresh - 4]).toBe('      tell current application to set rotationNow to ((do shell script "/bin/date +%s") as integer)');
         expect(lines[fresh - 2]).toBe('      if rotationNow >= 1763247600 then error "Rotation deadline passed before the fresh session"');
         // No duration anywhere: a timer the script starts would begin when a late child does.
@@ -402,10 +435,10 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
               }).map(String),
               fresh = lines.indexOf('      keystroke "n" using command down');
 
-        // Exactly the owner, never `delivered.sessionId`, which can still name the old session. Only the cutoff
-        // check sits between it and Cmd+N.
-        expect(lines[fresh - 8]).toBe('      tell current application to set rotationHolderNow to (do shell script "/usr/bin/plutil -extract owner.sessionId raw -o - " & quoted form of "/seats/ada/listeners/neo-opus-ada.json")');
-        expect(lines[fresh - 6]).toBe('      if rotationHolderNow is not "old-session" then error "Seat holder changed before the fresh session"')
+        // Exactly the owner, never `delivered.sessionId`, which can still name the old session. Only the front
+        // and cutoff checks sit between it and Cmd+N.
+        expect(lines[fresh - 10]).toBe('      tell current application to set rotationHolderNow to (do shell script "/usr/bin/plutil -extract owner.sessionId raw -o - " & quoted form of "/seats/ada/listeners/neo-opus-ada.json")');
+        expect(lines[fresh - 8]).toBe('      if rotationHolderNow is not "old-session" then error "Seat holder changed before the fresh session"')
     });
 
     test('Emmy\'s Round-2 control: with no holder at the first attempt, the script requires the record still absent before Cmd+N', () => {
@@ -415,8 +448,8 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
               }).map(String),
               fresh = lines.indexOf('      keystroke "n" using command down');
 
-        expect(lines[fresh - 8]).toBe('      tell current application to set rotationHolderNow to (do shell script "test -e " & quoted form of "/seats/ada/listeners/neo-opus-ada.json" & " && echo present || true")');
-        expect(lines[fresh - 6]).toBe('      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"')
+        expect(lines[fresh - 10]).toBe('      tell current application to set rotationHolderNow to (do shell script "test -e " & quoted form of "/seats/ada/listeners/neo-opus-ada.json" & " && echo present || true")');
+        expect(lines[fresh - 8]).toBe('      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"')
     });
 
     test('the receiver hands the adapter the expected absence when the first attempt found no holder', async () => {

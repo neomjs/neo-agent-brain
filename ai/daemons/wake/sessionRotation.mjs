@@ -279,6 +279,18 @@ export function isPreKeystrokeFailure(reason) {
 }
 
 /**
+ * @summary Whether a failed rotation script stopped before its fresh-session keystroke, so no session opened
+ * and asking again opens at most one. Two phases come before Cmd+N: the activation, and the front check right
+ * before it (`"before fresh session"`), which only a tab shortcut precedes, and a tab shortcut opens nothing.
+ * The holder and cutoff refusals say `"before the fresh session"` and stay final.
+ * @param {String} [reason] The adapter's `outcomeReason`: the script's error text.
+ * @returns {Boolean}
+ */
+export function isPreSessionFailure(reason) {
+    return isPreKeystrokeFailure(reason) || /before fresh session/.test(String(reason ?? ''))
+}
+
+/**
  * The reason every rotation carries: the seat ended its session by writing a sunset handover.
  * @type {String}
  */

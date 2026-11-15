@@ -25,7 +25,7 @@ import {
     ROTATION_EXPIRED,
     ROTATION_SCREEN_LOCKED,
     evaluateHumanInput,
-    isPreKeystrokeFailure,
+    isPreSessionFailure,
     isRotationExpired,
     isSessionRotation,
     rotationDeadline,
@@ -784,10 +784,10 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
     });
     const outcome = await spawnOsascriptOnce(effects, args, record.subscriptionId);
 
-    // A rotation whose window lost the front before the first keystroke typed nothing, so it may try
-    // again inside its age; past that phase Cmd+N may have opened a session, and a retry would open two.
-    // A lock that engaged during the activation took the front, and waits as a lock does.
-    if (rotation && outcome?.outcome === 'failed' && isPreKeystrokeFailure(outcome.outcomeReason)) {
+    // A rotation whose window lost the front before its fresh-session keystroke opened nothing, so it may try
+    // again inside its age; past that point Cmd+N may have opened a session, and a retry would open two.
+    // A lock that engaged during the activation or before Cmd+N took the front, and waits as a lock does.
+    if (rotation && outcome?.outcome === 'failed' && isPreSessionFailure(outcome.outcomeReason)) {
         return {outcome: 'deferred', outcomeReason: effects.readScreenLocked?.() === true ? ROTATION_SCREEN_LOCKED : ROTATION_ACTIVATION_LOST}
     }
 
@@ -959,10 +959,11 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
                 '-e', '      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"'
             );
         }
-        // The clock is read last, after the holder read, so neither the child's start nor that read can carry
-        // the keystroke past the cutoff.
+        // The front is asserted again, since a lock can engage between the activation and here; the clock is
+        // read last, so neither the child's start nor the holder read can carry the keystroke past the cutoff.
         if (fencedFreshSession) {
             args.push(
+                '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before fresh session")',
                 '-e', '      tell current application to set rotationNow to ((do shell script "/bin/date +%s") as integer)',
                 '-e', `      if rotationNow >= ${Math.floor(freshSessionCutoffSec)} then error "Rotation deadline passed before the fresh session"`
             );
