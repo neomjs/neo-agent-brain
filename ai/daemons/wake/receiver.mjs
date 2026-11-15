@@ -786,7 +786,9 @@ export function createWakeReceiver({
                             deferCount,
                             deferredAt : new Date().toISOString(),
                             deferReason: outcomeReason || 'interactive-dialog-pending',
-                            ...(rotation ? {seatHolder: dispatching.seatHolder ?? null} : {})
+                            ...(rotation ? {seatHolder: dispatching.seatHolder ?? null} : {}),
+                            // A lock the adapter saw at its last boundary opens the paused interval here.
+                            ...(rotation && outcomeReason === ROTATION_SCREEN_LOCKED ? rotationLockPatch(dispatching, true, clock()) : {})
                         });
                         logger.warn?.(rotation
                             ? `[Wake Receiver] rotation DEFERRED ${record.subscriptionId} (${outcomeReason}); ` +

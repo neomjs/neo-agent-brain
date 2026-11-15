@@ -413,11 +413,14 @@ test.describe('session-rotation lane (#1383)', () => {
 
         // The plane cannot read the receiver's records, so this note is the failure's only voice.
         expect(notes).toHaveLength(1);
-        expect(notes[0].subject).toBe(`defect-note: session rotation broke ${SEAT}: no fresh session within 180 min of its sunset handover MESSAGE:receipt`);
+        // The plane knows only that no successor marker came, so the note says that and nothing more.
+        expect(notes[0].subject).toBe(`defect-note: session rotation broke ${SEAT}: no successor marker within 180 min of its sunset handover MESSAGE:receipt`);
         expect(parseDefectNote(notes[0].subject)).toMatchObject({parseable: true, surface: 'session rotation'});
-        // A person starts the seat now, so the prompt says so instead of claiming the plane opened it.
+        // A session may have opened without its marker: the seat's window is checked before a second one starts.
+        expect(notes[0].body).toContain('Check the seat\'s window first: a fresh session there needs no second one.');
+        // A hand start says it was one, never that the plane opened the session.
         expect(notes[0].body).toContain(`/context-recovery Fresh session for ${SEAT}, started by hand after your sunset handover MESSAGE:receipt`);
-        expect(notes[0].body).not.toContain('opened by the plane');
+        expect(notes[0].body).not.toMatch(/opened by the plane|opened none/);
         expect(notes[0].taggedConcepts).toEqual(['defect-note', 'session-rotation']);
 
         const next = await runLane(db, {now: NOW + MIN});

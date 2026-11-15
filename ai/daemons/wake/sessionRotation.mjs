@@ -19,9 +19,9 @@
  *
  * **Why a locked screen pauses that age.** A locked screen keeps the front from every window, so a rotation
  * there cannot type, and neither reason above holds: the plane holds the seat's wakes, nobody at the host
- * can restart the seat, and a restart from elsewhere claims it, which the holder fence reads. So the age
- * counts unlocked time only ({@link rotationDeadline}), and the envelope's `holdUntil` ends the wait where
- * the plane's hold on the receipt ends.
+ * can restart the seat, and a restart from elsewhere claims it, which the holder fence reads. So under the
+ * plane's signed hold the age counts unlocked time only ({@link rotationDeadline}), and the envelope's
+ * `holdUntil` ends the wait where that hold ends. An envelope without a valid hold keeps the wall-clock age.
  *
  * Pure (no fs, spawn or timers), so Memory Core, the manifest builder, the receiver and its adapters
  * share one fact set without widening any of their dependency closures. The rotation lane and the wake
@@ -60,9 +60,9 @@ export const WAKE_DIGEST_EVENT_TYPE = 'wake/digest';
 export const HUMAN_INPUT_QUIET_MS = 3 * 1000;
 
 /**
- * How long after the receiver accepted a rotation it may still type it, counting unlocked time only. Past
- * it the rotation fails without a keystroke (`session-rotate-expired`): a late session is a copy, not a
- * recovery.
+ * How long after the receiver accepted a rotation it may still type it; under the plane's signed hold it
+ * counts unlocked time only ({@link rotationDeadline}). Past it the rotation fails without a keystroke
+ * (`session-rotate-expired`): a late session is a copy, not a recovery.
  * @type {Number}
  */
 export const ROTATION_MAX_AGE_MS = 60 * 1000;
@@ -216,9 +216,11 @@ export function isRotationExpired(record, now) {
 }
 
 /**
- * @summary The last moment a rotation may open its session: {@link ROTATION_MAX_AGE_MS} of unlocked time
- * after its accept, and never past the envelope's `holdUntil`, where the plane stops holding the seat's
- * wakes for it. While a lock is open the deadline moves with `now`, so only `holdUntil` can end it.
+ * @summary The last moment a rotation may open its session. Under the plane's signed hold, that is
+ * {@link ROTATION_MAX_AGE_MS} of unlocked time after its accept and never past the envelope's `holdUntil`,
+ * where the plane stops holding the seat's wakes for it; while a lock is open the deadline moves with `now`,
+ * so only `holdUntil` can end it. Without a valid hold (an older plane, or a malformed one) nothing bounds a
+ * paused wait, so the age stays {@link ROTATION_MAX_AGE_MS} of wall-clock time from the accept.
  * @param {Object} record The receiver record.
  * @param {String} record.acceptedAt
  * @param {Number} [record.lockedMs=0] Locked time an unlock has closed.
@@ -228,11 +230,14 @@ export function isRotationExpired(record, now) {
  * @returns {Number} Epoch ms, `NaN` for an unreadable accept time (never on time).
  */
 export function rotationDeadline({acceptedAt, lockedMs = 0, lockedSince = null, envelope} = {}, now) {
-    const paused = lockedMs + (lockedSince ? Math.max(0, now - Date.parse(lockedSince)) : 0),
-          aged   = Date.parse(acceptedAt) + ROTATION_MAX_AGE_MS + paused,
-          hold   = Date.parse(envelope?.payload?.holdUntil);
+    const aged = Date.parse(acceptedAt) + ROTATION_MAX_AGE_MS,
+          hold = Date.parse(envelope?.payload?.holdUntil);
 
-    return Number.isFinite(hold) ? Math.min(aged, hold) : aged
+    if (!Number.isFinite(hold)) return aged;
+
+    const paused = lockedMs + (lockedSince ? Math.max(0, now - Date.parse(lockedSince)) : 0);
+
+    return Math.min(aged + paused, hold)
 }
 
 /**

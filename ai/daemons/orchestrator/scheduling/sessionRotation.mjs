@@ -34,10 +34,10 @@ import {
  *   window, so a receiver waiting on a locked screen never types after the plane stopped holding the
  *   seat's wakes.
  * - **`incomplete` is told:** the plane cannot read the receiver's records, so a rotation that failed on the
- *   host surfaces only here, and an ERROR line alone reaches nobody. One `defect-note:` per receipt carries
- *   the seat, the handover and a first prompt for starting the seat by hand. That prompt says the session
- *   was started by hand: the plane's own prompt says the plane opened it, which a person typing it would
- *   misstate.
+ *   host surfaces only here, and an ERROR line alone reaches nobody. One `defect-note:` per receipt reports
+ *   what the plane knows, that no successor marker arrived, and asks for the seat's window to be checked
+ *   before anyone starts a session by hand: a session may have opened without sending its marker. Its
+ *   hand-start prompt says the session was started by hand, never that the plane opened it.
  */
 
 /**
@@ -52,14 +52,16 @@ import {
  */
 export function composeIncompleteRotationNote({identity, receipt, rotation, reason, windowMs}) {
     return {
-        subject: `defect-note: session rotation broke ${identity}: no fresh session within ${Math.round(windowMs / 60000)} min of its sunset handover ${receipt.id}`,
+        subject: `defect-note: session rotation broke ${identity}: no successor marker within ${Math.round(windowMs / 60000)} min of its sunset handover ${receipt.id}`,
         body   : [
-            `The plane recorded the rotation incomplete (${reason}).`,
+            `The plane recorded the rotation incomplete (${reason}): no successor marker answered the handover in time.`,
+            'The plane cannot see whether a session opened without sending one.',
             `- handover: ${receipt.id}, sent ${receipt.sentAt}`,
             `- rotation: requested ${rotation?.requestedAt ?? 'never'}, delivered ${rotation?.deliveredAt ?? 'never'}`,
             '',
-            'Start the seat by hand: a new session in its window, whose first prompt says who opened it, e.g.:',
-            `/context-recovery Fresh session for ${identity}, started by hand after your sunset handover ${receipt.id}: the plane's rotation opened none. Read the handover first.`
+            'Check the seat\'s window first: a fresh session there needs no second one.',
+            'If there is none, start one by hand, with a first prompt that says so, e.g.:',
+            `/context-recovery Fresh session for ${identity}, started by hand after your sunset handover ${receipt.id}: the plane saw no successor marker for it. Read the handover first.`
         ].join('\n'),
         taggedConcepts: ['defect-note', 'session-rotation']
     }
