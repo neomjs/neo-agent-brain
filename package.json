@@ -61,6 +61,7 @@
         "ai:analyze-nl-telemetry": "node ./ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
         "ai:audit-discussion-lifecycle": "node ./ai/scripts/diagnostics/audit-discussion-lifecycle.mjs",
         "ai:check-retired-primitives": "node ./ai/scripts/diagnostics/check-retired-primitives.mjs",
+        "ai:code-index": "node ./ai/scripts/diagnostics/codeIndex.mjs",
         "ai:kb-push-client": "node ./ai/scripts/maintenance/kbPushClient.mjs",
         "ai:community-batch-push": "node ./ai/scripts/maintenance/communityBatchPushClient.mjs",
         "ai:community-reconcile": "node ./ai/scripts/maintenance/reconcileGithubCommunity.mjs",

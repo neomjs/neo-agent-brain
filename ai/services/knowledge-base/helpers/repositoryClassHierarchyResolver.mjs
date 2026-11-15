@@ -1,16 +1,18 @@
-import {posix as pathPosix} from 'node:path';
-
 import SourceParser from '../parser/SourceParser.mjs';
+import {
+    REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID,
+    REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION,
+    REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_ID,
+    REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_VERSION,
+    resolveSuperClass
+}                   from './classHierarchyResolution.mjs';
 
-/**
- * Resolver-owned identity. Any semantic change to class/import resolution MUST bump the version:
- * `{id, version}` is materialization input, so keeping the version while changing the algorithm
- * would let prior proof name a different hierarchy.
- */
-export const REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID      = 'repository-class-hierarchy';
-export const REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION = '1.0.0';
-export const REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_ID = 'repository-source-path-class-hierarchy';
-export const REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_VERSION = '1.0.0';
+export {
+    REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID,
+    REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION,
+    REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_ID,
+    REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_VERSION
+};
 
 /**
  * @summary Creates a stable repository-hierarchy failure.
@@ -24,107 +26,6 @@ function createResolverError(code, message) {
     error.code = code;
 
     return error
-}
-
-/**
- * @summary Infers Neo's conventional class identity from a repository/package module path.
- * @param {String} modulePath
- * @returns {String|null}
- */
-function inferClassNameFromPath(modulePath) {
-    const normalized = modulePath
-        .replace(/^neo\.mjs\//u, '')
-        .replace(/\.mjs$/u, '');
-
-    if (normalized === 'src/Neo') {
-        return 'Neo'
-    }
-    if (normalized.startsWith('src/')) {
-        return `Neo.${normalized.slice(4).replaceAll('/', '.')}`
-    }
-    if (normalized.startsWith('ai/')) {
-        return `Neo.ai.${normalized.slice(3).replaceAll('/', '.')}`
-    }
-    if (normalized.startsWith('apps/')) {
-        return normalized.slice(5).replaceAll('/', '.')
-    }
-
-    return null
-}
-
-/**
- * @summary Resolves one relative module specifier against the already-scoped descriptor universe.
- * @param {Object} options
- * @returns {{sourcePath: String, descriptor: Object}|null}
- */
-function resolveRelativeModule({sourcePath, specifier, descriptorsByPath}) {
-    if (!specifier.startsWith('.')) {
-        return null
-    }
-
-    const resolved   = pathPosix.normalize(pathPosix.join(pathPosix.dirname(sourcePath), specifier));
-    const candidates = [
-        resolved,
-        resolved.endsWith('.mjs') ? null : `${resolved}.mjs`,
-        `${resolved}/index.mjs`
-    ].filter(Boolean);
-
-    for (const candidate of candidates) {
-        const descriptor = descriptorsByPath.get(candidate);
-
-        if (descriptor) {
-            return {sourcePath: candidate, descriptor}
-        }
-    }
-
-    return null
-}
-
-/**
- * @summary Resolves one canonical descriptor's superclass identity without reading outside the
- * scoped repository capability.
- * @param {Object} options
- * @returns {String|null}
- */
-function resolveSuperClass({sourcePath, descriptor, descriptorsByPath}) {
-    const reference = descriptor.superClassReference;
-
-    if (!descriptor.declaresSuper || !reference) {
-        return null
-    }
-
-    if (reference.kind !== 'identifier') {
-        return reference.value || null
-    }
-
-    const binding = descriptor.imports.find(item => item.localName === reference.name);
-
-    if (!binding) {
-        return reference.name
-    }
-
-    const relative = resolveRelativeModule({
-        sourcePath,
-        specifier: binding.source,
-        descriptorsByPath
-    });
-
-    if (binding.kind === 'default' && relative?.descriptor.className) {
-        return relative.descriptor.className
-    }
-
-    if (binding.kind === 'named' && binding.importedName) {
-        return binding.importedName
-    }
-
-    // A route's reader excludes sibling territories by construction. The imported module may
-    // still be a known Neo path (e.g. examples/... → src/container/Viewport.mjs), so infer from
-    // its normalized repository path rather than the unresolved relative specifier.
-    const importPath = binding.source.startsWith('.')
-        ? pathPosix.normalize(pathPosix.join(pathPosix.dirname(sourcePath), binding.source))
-        : binding.source;
-
-    return inferClassNameFromPath(relative?.sourcePath || importPath) || reference.name
 }
 
 /**
