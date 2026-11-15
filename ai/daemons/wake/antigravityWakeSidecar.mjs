@@ -157,10 +157,15 @@ export function inspectAntigravitySidecar({configDir, nodePath, modulePath, mani
         throw new Error('Invalid sidecar configuration');
     }
     const existing = config.sidecars?.[id];
-    if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify({enabled:true})) {
+    // projectId selects where the App would create a conversation. This sidecar only sends to
+    // a verified existing conversation, so it preserves that preference without using it.
+    if (existing !== undefined && (!actualDefinition || existing?.enabled !== true ||
+        Object.keys(existing).some(key => !['enabled', 'projectId', 'schemaVersion'].includes(key)) ||
+        (Object.hasOwn(existing, 'projectId') && (typeof existing.projectId !== 'string' || !existing.projectId.trim())) ||
+        (Object.hasOwn(existing, 'schemaVersion') && existing.schemaVersion !== 1))) {
         throw new Error('Conflicting owned sidecar configuration');
     }
-    if (replacing && JSON.stringify(existing) !== JSON.stringify({enabled:true})) throw new Error('Previous sidecar is not enabled');
+    if (replacing && existing === undefined) throw new Error('Previous sidecar is not enabled');
     return {id, sidecarDir, configPath, definitionPath, definition, previousDefinition, replacing, config, existing}
 }
 
@@ -172,9 +177,11 @@ export async function materializeAntigravitySidecar(options) {
     const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
     return withOutboxLock(initial.configPath, async () => {
         const {id, configPath, definitionPath, definition, previousDefinition, replacing, config, existing} = inspectAntigravitySidecar(options);
-        config.sidecars = {...config.sidecars, [id]:{enabled:true}};
         if (previousDefinition === null || replacing) writeFileAtomicSync(definitionPath, JSON.stringify(definition, null, 2) + '\n', {mode:0o600});
-        if (existing === undefined) writeFileAtomicSync(configPath, JSON.stringify(config, null, 2) + '\n', {mode:0o600, preserveMode:true});
+        if (existing === undefined) {
+            config.sidecars = {...config.sidecars, [id]:{enabled:true}};
+            writeFileAtomicSync(configPath, JSON.stringify(config, null, 2) + '\n', {mode:0o600, preserveMode:true});
+        }
         return {state:'configured', sidecarId:id, definitionPath};
     });
 }

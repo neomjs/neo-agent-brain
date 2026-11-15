@@ -76,6 +76,20 @@ test.describe('Fleet native wake preparation', () => {
         expect(after.map(s=>s.ino)).toEqual(before.map(s=>s.ino))
     });
 
+    test('a recorded runtime upgrades with unrelated vendor project metadata preserved byte-for-byte', async () => {
+        const args = {agent:{id:'fixture',harnessType:'antigravity'},instanceHome,workspaceRoot,configDir,manifestPath,stateDir,allowSharedConfig:true};
+        expect((await prepareFleetNativeWake({...args,nodePath:'/usr/bin/true'})).state).toBe('prepared');
+        const file = path.join(configDir,'config.json'), legacy={sidecars:{'neo-primary-session':{
+            enabled:true,projectId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',schemaVersion:1}},foreign:{keep:true}};
+        const bytes  = JSON.stringify(legacy,null,3)+'\n'; await fs.writeFile(file,bytes);await fs.chmod(file,0o640);
+        const before = await fs.stat(file);
+        expect((await prepareFleetNativeWake(args)).state).toBe('prepared');
+        expect(await fs.readFile(file,'utf8')).toBe(bytes);
+        const after = await fs.stat(file);
+        expect(after.mode).toBe(before.mode);
+        expect(after.ino).toBe(before.ino)
+    });
+
     test('a symbolic-link configuration ancestor cannot redirect preparation', async () => {
         const outside = path.join(root,'outside'); await fs.mkdir(outside);
         await fs.symlink(outside,path.join(workspaceRoot,'.agents'));

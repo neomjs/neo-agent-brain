@@ -115,6 +115,42 @@ test('sidecar materializer preserves unrelated configuration and refuses a diffe
     } finally { fs.rmSync(root,{recursive:true,force:true}) }
 });
 
+test('legacy project metadata survives repeat and authorized runtime upgrade without adopting a foreign executable', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agy-legacy-sidecar-')));
+    try {
+        const old = {configDir:root,nodePath:'/old/node',modulePath:'/old/sidecar.mjs',manifestPath:'/wake/manifest',stateDir:'/wake/state'};
+        await materializeAntigravitySidecar(old);
+        const file  = path.join(root,'config.json'), entry = {enabled:true,projectId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',schemaVersion:1};
+        const bytes = JSON.stringify({other:{keep:true},sidecars:{'neo-primary-session':entry}},null,3)+'\n';
+        fs.writeFileSync(file,bytes); fs.chmodSync(file,0o640);
+        await materializeAntigravitySidecar(old);
+        const next = {...old,nodePath:'/new/node',modulePath:'/new/sidecar.mjs',previous:{nodePath:old.nodePath,modulePath:old.modulePath}};
+        await materializeAntigravitySidecar(next);
+        expect(fs.readFileSync(file,'utf8')).toBe(bytes);
+        expect(fs.statSync(file).mode & 0o777).toBe(0o640);
+        await expect(materializeAntigravitySidecar({...next,nodePath:'/foreign/node'})).rejects.toThrow(/Conflicting/);
+        expect(fs.readFileSync(file,'utf8')).toBe(bytes)
+    } finally { fs.rmSync(root,{recursive:true,force:true}) }
+});
+
+test('legacy sidecar metadata rejects disabled, malformed, unsupported and orphaned entries', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agy-legacy-invalid-')));
+    try {
+        const args = {configDir:root,nodePath:'/old/node',modulePath:'/old/sidecar.mjs',manifestPath:'/wake/manifest',stateDir:'/wake/state'};
+        await materializeAntigravitySidecar(args);
+        const file = path.join(root,'config.json'), definition=path.join(root,'sidecars','neo-primary-session','sidecar.json');
+        for (const entry of [{enabled:false}, {enabled:true,projectId:''}, {enabled:true,projectId:42},
+            {enabled:true,schemaVersion:2}, {enabled:true,schemaVersion:'1'}, {enabled:true,unknown:true}]) {
+            const bytes = JSON.stringify({sidecars:{'neo-primary-session':entry}}); fs.writeFileSync(file,bytes);
+            await expect(materializeAntigravitySidecar(args)).rejects.toThrow(/Conflicting/);
+            expect(fs.readFileSync(file,'utf8')).toBe(bytes)
+        }
+        fs.writeFileSync(file,JSON.stringify({sidecars:{'neo-primary-session':{enabled:true,projectId:'other'}}}));
+        fs.rmSync(definition);
+        await expect(materializeAntigravitySidecar(args)).rejects.toThrow(/Conflicting/)
+    } finally { fs.rmSync(root,{recursive:true,force:true}) }
+});
+
 test('native sidecar capability requires loopback and exact bundle executable', () => {
     const resolve = x => x;
     expect(validateAntigravitySidecarCapability({appBundle:'/a/Antigravity.app',realpath:resolve,environment:{
