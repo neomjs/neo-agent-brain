@@ -70,7 +70,7 @@ export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
  * The session reads key on the receipt's time. The old session is the one that saved the seat's newest
  * memory at or before the receipt. Without a predecessor, the receipt's own stamp (`originSessionId`, set at
  * the tool boundary) names it instead, which covers a reconnect before the close. With one, the stamp may be
- * the predecessor's late writer, so it never releases a live turn (#1739).
+ * the predecessor's late writer, so it never releases a live turn.
  *
  * **The receipt's turn ends at its writer's close.** One turn leaves several intervals whose turn ids never
  * join (the prompt's, a tool-progress beacon's, the one `add_memory` closes), and presence names no session,
