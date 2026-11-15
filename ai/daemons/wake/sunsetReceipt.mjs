@@ -25,6 +25,23 @@ const settledAt = rotation => rotation.completedAt || rotation.refusedAt || rota
 const isOpenAt = (rotation, iso) => !!rotation?.requestedAt && rotation.requestedAt <= iso && (!settledAt(rotation) || iso <= settledAt(rotation));
 
 /**
+ * @summary Parses the sunset subject's focus count without accepting truncated or unsafe numbers.
+ * @param {String} subject
+ * @returns {{named: Number, placed: Number}|null}
+ */
+export function parseFocusItemsReceipt(subject) {
+    const match = typeof subject === 'string' && subject.match(/\bfocus items: (\d+), (\d+) placed\b/);
+
+    if (!match) return null;
+
+    const named = Number(match[1]), placed = Number(match[2]);
+
+    return Number.isSafeInteger(named) && Number.isSafeInteger(placed) && placed <= named
+        ? {named, placed}
+        : null;
+}
+
+/**
  * How far apart the writer's `add_memory` and the interval it closes may land and still be one close. The
  * two writes are one tool call: measured 1–2 ms apart (2026-11-14), so the bound only absorbs a slow store.
  * @type {Number}
@@ -41,6 +58,9 @@ export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
  * not yet settled) folds into that one, so it neither strands the rotation nor rotates the seat again.
  * The successor is the earliest marker whose `inReplyTo` names the receipt or one of its amendments; a
  * marker replying to any other message changes nothing.
+ *
+ * The receipt count is the summary lane's stamp, else the subject's own, else `'missing'`: a deferred
+ * summary run never holds a rotation.
  *
  * The session reads key on the receipt's time. The old session is the one the receipt names
  * (`originSessionId`, stamped at the tool boundary), else the one that saved the seat's newest memory at
@@ -161,7 +181,7 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
         receipt: {
             id               : receipt.id,
             sentAt,
-            focusItemsReceipt: receipt.properties.focusItemsReceipt ?? null,
+            focusItemsReceipt: receipt.properties.focusItemsReceipt ?? parseFocusItemsReceipt(receipt.properties.subject) ?? 'missing',
             sessionRotation  : receipt.properties.sessionRotation ?? null
         },
         oldSessionId,

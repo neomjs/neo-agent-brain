@@ -330,20 +330,32 @@ test.describe('session-rotation lane (#1383)', () => {
         expect(present).toContain('The operator is present.')
     });
 
-    test('the receipt count (#1401): an absent count waits for the summary lane, a missing one rotates anyway', async () => {
-        const pending = createGraph();
+    test('the receipt count (#1401): an unstamped receipt reads its count from its subject, so a deferred summary lane holds nothing (Vega\'s 02:23:24Z sunset)', async () => {
+        const read    = db => readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN)}),
+              counted = createGraph();
 
-        insertRoute(pending);
-        insertSelfMessage(pending, 'MESSAGE:receipt', 10, {focusItemsReceipt: 'unconsumed'});
+        insertRoute(counted);
+        insertNode(counted, 'MESSAGE:receipt', 'MESSAGE', {
+            from: SEAT, to: SEAT, subject: '[sunset · focus items: 6, 6 placed]', sentAt: at(10), taggedConcepts: ['sunset-protocol-handover']
+        });
 
-        expect((await runLane(pending)).outcome).toMatchObject({requested: 0, waiting: 1});
+        expect(read(counted).receipt.focusItemsReceipt).toEqual({named: 6, placed: 6});
+        expect((await runLane(counted)).sent).toHaveLength(1);
 
-        const missing = createGraph();
+        const uncounted = createGraph();
 
-        insertRoute(missing);
-        insertSelfMessage(missing, 'MESSAGE:receipt', 10, {focusItemsReceipt: 'missing'});
+        insertRoute(uncounted);
+        insertSelfMessage(uncounted, 'MESSAGE:receipt', 10, {focusItemsReceipt: 'unconsumed'}); // subject `[sunset]`, no stamp
 
-        expect((await runLane(missing)).sent).toHaveLength(1)
+        expect(read(uncounted).receipt.focusItemsReceipt).toBe('missing');
+        expect((await runLane(uncounted)).sent).toHaveLength(1);
+
+        const stamped = createGraph();
+
+        insertRoute(stamped);
+        insertSelfMessage(stamped, 'MESSAGE:receipt', 10, {focusItemsReceipt: {named: 2, placed: 2}}); // the lane's stamp wins
+
+        expect(read(stamped).receipt.focusItemsReceipt).toEqual({named: 2, placed: 2})
     });
 
     test('AC-11 + #1712 AC-2: the earliest marker after the request completes the rotation with the marker, the old id and the messages the hold kept', async () => {
