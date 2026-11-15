@@ -7,7 +7,9 @@ const
     review  = (state, onHead=true) => ({reviewer: '@neo-gpt', state, onHead}),
     // an approval or change request is both the reviewer's latest review and their latest opinion
     judged  = (state, onHead=true) => ({reviews: [review(state, onHead)], opinions: [review(state, onHead)]}),
-    row     = overrides => ({ci: 'green', verdict: null, mergeable: 'MERGEABLE', draft: false, owner: seat, requested: [], reviews: [], opinions: [], ...overrides});
+    // a fully read row: every issue the PR closes was read, and none is blocked
+    row     = overrides => ({ci: 'green', verdict: null, mergeable: 'MERGEABLE', draft: false, owner: seat, requested: [], reviews: [], opinions: [],
+        blockedTargets: [], targetsComplete: true, ...overrides});
 
 test.describe('openWorkHolder — the shared holder and next-action kind, first match wins (#761)', () => {
     test('an eligible outside PR routes to rotation for triage-outside when finished and untouched, or approve-runs when runs await approval (#1008)', () => {
@@ -263,6 +265,40 @@ test.describe('openWorkHolder — an outside PR that names a model needs an appr
         });
 
         expect(holderOf(pr, {seatFamilies: families})).toEqual({role: 'reviewer', kind: 'review', ids: [GPT]})
+    })
+});
+
+test.describe('openWorkHolder — a close target still blocked holds the merge for its author (#1768)', () => {
+    const
+        approved = overrides => row({...judged('APPROVED'), ...overrides}),
+        blocked  = {blockedTargets: ['neomjs/neo-pro#275']},
+        held     = {role: 'author', kind: 'await-prerequisite', ids: ['@neo-opus-ada'], targets: ['neomjs/neo-pro#275']};
+
+    test('an approved, green head whose close target has an open blocker is its author\'s, never the operator\'s merge (AC-1)', () => {
+        expect(holderOf(approved(blocked))).toEqual(held);
+        expect(holderOf(approved({ci: null, mergeState: 'CLEAN', ...blocked}))).toEqual(held);
+        // an outside author holds no seat, so the hold names nobody
+        expect(holderOf(approved({owner: outside, ...blocked}))).toEqual({...held, ids: []})
+    });
+
+    test('once the blocker closes, the next read hands the head to the merge (AC-2)', () => {
+        expect(holderOf(approved({blockedTargets: [], targetsComplete: true}))).toEqual({role: 'operator', kind: 'merge', ids: []})
+    });
+
+    test('a target list the read did not finish never certifies the merge, though a blocked target it read still holds it (AC-4)', () => {
+        // a row stored before the read existed carries neither field: its other actions stand, its merge does not
+        const {blockedTargets, targetsComplete, ...stored} = approved();
+
+        expect(holderOf(approved({targetsComplete: false}))).toEqual({role: 'unknown', kind: null, ids: []});
+        expect(holderOf(stored)).toEqual({role: 'unknown', kind: null, ids: []});
+        expect(holderOf({...stored, ci: 'red'})).toEqual({role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']});
+        expect(holderOf(approved({...blocked, targetsComplete: false}))).toEqual(held)
+    });
+
+    test('the hold replaces only the merge: a red head, a conflict and a draft keep their holders', () => {
+        expect(holderOf(approved({...blocked, ci: 'red'}))).toEqual({role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']});
+        expect(holderOf(approved({...blocked, mergeable: 'CONFLICTING'}))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
+        expect(holderOf(approved({...blocked, draft: true}))).toEqual({role: 'none', kind: null, ids: []})
     })
 });
 

@@ -8,8 +8,10 @@ const
     review   = {reviewer: '@neo-gpt', state: 'CHANGES_REQUESTED', onHead: true},
     row      = (number=7, observedAt=OBSERVED) => ({
         key  : `acme/app#${number}`, repo: 'acme/app', number, title: 'fix: the head goes green', head: 'a1', ci: 'red', verdict: 'CHANGES_REQUESTED', mergeable: 'MERGEABLE', draft: false,
-        owner: {kind: 'seat', seat: '@neo-opus-ada'}, requested: ['@neo-gpt', 'login:outsider', 'team:acme/core'], reviews: [review], observedAt
+        owner: {kind: 'seat', seat: '@neo-opus-ada'}, requested: ['@neo-gpt', 'login:outsider', 'team:acme/core'], reviews: [review], blockedTargets: [], targetsComplete: true, observedAt
     }),
+    // every issue the PR closes was read, and none is blocked
+    closing  = {closingIssuesReferences: {pageInfo: {hasNextPage: false}, nodes: []}},
     state    = (overrides={}, rows=[row()]) => ({snapshot: {rows: Object.fromEntries(rows.map(item => [item.key, item]))}, observedAt: OBSERVED, coverage: 'complete', reason: null, ...overrides}),
     at       = minutes => () => Date.parse(OBSERVED) + minutes * 60000,
     source   = (producerState, minutes=1) => createFleetOpenWorkSource({producer: {getState: () => producerState}, now: at(minutes)});
@@ -82,6 +84,25 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         expect(read(() => null)).toEqual([])
     });
 
+    test('awaitingMerge needs a complete read of the issues a PR closes: a stored pre-read row, a partial read or a blocked target stays out (#1768)', () => {
+        const
+            approval = {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},
+            approved = (number, overrides) => ({...row(number), ci: 'green', verdict: 'APPROVED', requested: [], reviews: [approval], opinions: [approval], ...overrides}),
+            // a row the producer saved before it read close targets, restored ahead of the first refresh
+            {blockedTargets, targetsComplete, ...stored} = approved(2),
+            read     = source(state({}, [
+                approved(1),
+                stored,
+                approved(3, {targetsComplete: false}),
+                approved(5, {blockedTargets: ['acme/app#40']})
+            ])).readOpenWork();
+
+        expect(read.awaitingMerge.map(({number}) => number)).toEqual([1]);
+        expect(read.seats['@neo-opus-ada'].authored.map(({number, holder}) => [number, holder.role, holder.kind])).toEqual([
+            [1, 'operator', 'merge'], [2, 'unknown', null], [3, 'unknown', null], [5, 'author', 'await-prerequisite']
+        ])
+    });
+
     test('an awaiting-merge row ages by its own observation, and an unavailable projection awaits nothing (#779)', () => {
         const
             approval = {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},
@@ -106,7 +127,8 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
                 reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []},
                 latestReviews           : {pageInfo: {hasNextPage: moreReviews}, nodes: [latest]},
                 latestOpinionatedReviews: {pageInfo: {hasNextPage: moreOpinions}, nodes: [opinion]},
-                commits                 : {nodes: [{commit: {oid: 'h9', statusCheckRollup: {state: 'SUCCESS'}}}]}
+                commits                 : {nodes: [{commit: {oid: 'h9', statusCheckRollup: {state: 'SUCCESS'}}}]},
+                ...closing
             }),
             read       = overrides => source(state({}, [{...normalizePullRequest(node(overrides), identities), observedAt: OBSERVED}])).readOpenWork(),
             awaiting   = overrides => read(overrides).awaitingMerge.map(({number, holder}) => [number, holder.role]),
@@ -135,7 +157,8 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
                 reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []},
                 latestReviews           : {pageInfo: {hasNextPage: false}, nodes: [approval]},
                 latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: [approval]},
-                commits                 : {nodes: [{commit: {oid: 'h9', statusCheckRollup: null}}]}
+                commits                 : {nodes: [{commit: {oid: 'h9', statusCheckRollup: null}}]},
+                ...closing
             }),
             awaiting   = mergeStateStatus => source(state({}, [{...normalizePullRequest(node(mergeStateStatus), identities), observedAt: OBSERVED}])).readOpenWork()
                 .awaitingMerge.map(({number, ci, holder}) => [number, ci, holder.kind]);

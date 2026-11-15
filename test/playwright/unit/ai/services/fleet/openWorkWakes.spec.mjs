@@ -22,7 +22,7 @@ const
             const row = {
                 repo     : 'acme/app', number: 7, head: HEAD, ci: 'pending', verdict: null,
                 mergeable: 'MERGEABLE', draft: false, owner: {kind: 'seat', seat: ADA},
-                requested: [], reviews: [], opinions: [], partial: false, observedAt: iso(minute), ...overrides
+                requested: [], reviews: [], opinions: [], blockedTargets: [], targetsComplete: true, partial: false, observedAt: iso(minute), ...overrides
             };
             row.key = `${row.repo}#${row.number}`;
             return [row.key, row]
@@ -322,7 +322,9 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
             [{ci: 'pending', ...judged('CHANGES_REQUESTED')}, 'address-changes', 'changes are requested on your head'],
             [{ci: 'green', ...judged('APPROVED'), mergeable: 'CONFLICTING'}, 'rebase', 'your approved head has conflicts to rebase'],
             [{ci: 'green', requested: [GPT]}, 'review', 'your review is due on the current head'],
-            [{ci: 'green'}, 'route-review', 'CI is green; request a reviewer for your head']
+            [{ci: 'green'}, 'route-review', 'CI is green; request a reviewer for your head'],
+            [{ci: 'green', ...judged('APPROVED'), blockedTargets: ['acme/app#9']}, 'await-prerequisite',
+                'your approved head closes an issue that is still blocked, so it waits off the merge']
         ];
 
         for (const [row, kind, reason] of cases) {
@@ -630,7 +632,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
             previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash].includes(entry.queryHash)),
             observed = history(), item = observed.pulses[100], base = item.quota[0];
 
-        expect(previous).toEqual({queryHash: expect.stringMatching(/^[a-f\d]{64}$/), formulaCost: 4});
+        expect(previous).toEqual({queryHash: expect.stringMatching(/^[a-f\d]{64}$/), formulaCost: 5});
         item.quota = [
             classified(base),
             classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: previous.queryHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})
@@ -1198,6 +1200,56 @@ test.describe('openWorkWakes — a holder silent after a delivered wake escalate
         expect(lone.wakes).toEqual([]);
         expect(Object.values(lone.ledger.holding).find(entry => entry.wake.kind === 'holder-silent').wake.to).not.toBe(GPT)
     });
+});
+
+test.describe('openWorkWakes — a wait on a prerequisite informs its author once and never escalates (#1768)', () => {
+    const
+        HOURS    = 60,
+        roster   = [ADA, GPT, '@neo-gpt-euclid'],
+        waiting  = {ci: 'green', ...judged('APPROVED'), blockedTargets: ['acme/app#9']},
+        conflict = {ci: 'green', ...judged('APPROVED'), mergeable: 'CONFLICTING'},
+        unowned  = {owner: {kind: 'unowned', seat: null}},
+        kinds    = result => result.wakes.map(({to, kind, holder = null}) => ({to, kind, holder}));
+
+    /** @summary A journey whose row woke its author at minute 1, with the receipt the round records on that wake. */
+    function noticed(row) {
+        const run = journey();
+
+        run.step(0, [{ci: 'pending'}], {}, {rotationSeats: roster});
+        const first = run.step(1, [row], {}, {rotationSeats: roster});
+        Object.values(run.ledger().holding).find(entry => entry.wake.to === ADA).messageId = 'MESSAGE:notice';
+
+        return {run, first}
+    }
+
+    test('a reachable author hears it once; four hours after delivery no seat is asked to take it over, as a rebase is', () => {
+        const
+            options = {rotationSeats: roster, deliveries: {'MESSAGE:notice': {state: 'delivered', at: iso(2)}}},
+            wait    = noticed(waiting),
+            rebase  = noticed(conflict);
+
+        expect(kinds(wait.first)).toEqual([{to: ADA, kind: 'await-prerequisite', holder: null}]);
+        expect(wait.run.step(2, [waiting], {}, options).wakes, 'once per head').toEqual([]);
+        expect(wait.run.step(2 + 4 * HOURS, [waiting], {}, options).wakes, 'no holder-silent').toEqual([]);
+        // the author can rebase, so the same silence escalates there
+        expect(kinds(rebase.run.step(2 + 4 * HOURS, [conflict], {}, options))).toEqual([{to: expect.any(String), kind: 'holder-silent', holder: ADA}])
+    });
+
+    test('an unreachable or unowned author raises no escalation for the wait; actionable work still escalates', () => {
+        const
+            unreachable = {rotationSeats: roster, routeOf: seat => seat === ADA ? 'unreachable' : 'reachable'},
+            first       = (row, options) => {
+                const run = journey();
+
+                run.step(0, [{ci: 'pending', ...row.owner ? {owner: row.owner} : {}}], {}, {rotationSeats: roster});
+                return kinds(run.step(1, [row], {}, options))
+            };
+
+        expect(first(waiting, unreachable)).toEqual([]);
+        expect(first(conflict, unreachable)).toEqual([{to: expect.any(String), kind: 'holder-unreachable', holder: ADA}]);
+        expect(first({...waiting, ...unowned}, {rotationSeats: roster})).toEqual([]);
+        expect(first({...conflict, ...unowned}, {rotationSeats: roster})).toEqual([{to: expect.any(String), kind: 'unowned', holder: null}])
+    })
 });
 
 test.describe('openWorkWakes — an outside PR pushed past a seat\'s review wakes that seat, never the rotation (#1642)', () => {

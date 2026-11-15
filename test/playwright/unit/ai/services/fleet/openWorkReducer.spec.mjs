@@ -71,6 +71,37 @@ test.describe('openWorkReducer — a row names its pull request by title', () =>
     });
 });
 
+test.describe('openWorkReducer — a row names the issues it closes that are still blocked (#1768)', () => {
+    const
+        target  = (number, blockedBy, nameWithOwner = 'acme/app') => ({number, repository: {nameWithOwner}, issueDependenciesSummary: {blockedBy}}),
+        closing = (hasNextPage, ...nodes) => ({closingIssuesReferences: {pageInfo: {hasNextPage}, nodes}});
+
+    test('a close target GitHub counts an open blocker for is blocked; a whole list without one holds nothing', () => {
+        expect(normalizePullRequest({...node(), ...closing(false, target(3, 0), target(275, 1, 'acme/pro'))}, identities))
+            .toMatchObject({blockedTargets: ['acme/pro#275'], targetsComplete: true});
+        expect(normalizePullRequest({...node(), ...closing(false, target(3, 0))}, identities))
+            .toMatchObject({blockedTargets: [], targetsComplete: true});
+        expect(OPEN_WORK_SNAPSHOT).toMatch(/closingIssuesReferences\(first: 10\) \{\s*pageInfo \{\s*hasNextPage\s*\}\s*nodes \{\s*number\s*repository \{\s*nameWithOwner\s*\}\s*issueDependenciesSummary \{\s*blockedBy/)
+    });
+
+    test('a list past its page, an unread count or a node without the list leaves the targets incomplete', () => {
+        expect(normalizePullRequest({...node(), ...closing(true, target(3, 0))}, identities).targetsComplete).toBe(false);
+        expect(normalizePullRequest({...node(), ...closing(false, {number: 3, repository: {nameWithOwner: 'acme/app'}})}, identities).targetsComplete).toBe(false);
+        expect(normalizePullRequest(node(), identities)).toMatchObject({blockedTargets: [], targetsComplete: false})
+    });
+
+    test('an approved row holds its author while a close target is blocked, certifies no merge unread, and merges read clear', () => {
+        const
+            reviews  = [{state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: 'a1'}}],
+            approved = node({verdict: 'APPROVED', reviewers: [], reviews}),
+            holder   = extra => holderOf(normalizePullRequest({...approved, ...extra}, identities));
+
+        expect(holder(closing(false, target(275, 1)))).toMatchObject({role: 'author', kind: 'await-prerequisite', targets: ['acme/app#275']});
+        expect(holder({})).toEqual({role: 'unknown', kind: null, ids: []});
+        expect(holder(closing(false))).toEqual({role: 'operator', kind: 'merge', ids: []})
+    })
+});
+
 test.describe('openWorkReducer — an outside row carries the model families its PR names', () => {
     test('the body and any commit\'s trailer name them; a seat\'s PR carries none, and the snapshot reads every commit', () => {
         const

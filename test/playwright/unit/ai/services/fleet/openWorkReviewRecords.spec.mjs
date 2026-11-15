@@ -33,6 +33,7 @@ function node(overrides = {}) {
         latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: [opinion()]},
         timelineItems           : {pageInfo: {hasPreviousPage: false, hasNextPage: false}, nodes: [request()]},
         commits                 : {nodes: [{commit: {oid: HEAD, statusCheckRollup: {state: 'SUCCESS'}}}]},
+        closingIssuesReferences : {pageInfo: {hasNextPage: false}, nodes: []},
         ...overrides
     }
 }

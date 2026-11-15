@@ -123,8 +123,11 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  * @param {Object} [source] Acquisition identity; absent for legacy inputs.
  * @param {String} [source.apiBase] Provider API identity from the existing reader.
  * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner,
- *     disclosedFamilies, requested, reviews, opinions, reviewRecords, turns, requestsComplete, opinionsComplete,
- *     partial}`. `title` is the forge's prose with whitespace collapsed, or `null`; it names the PR and is never a
+ *     disclosedFamilies, requested, reviews, opinions, reviewRecords, turns, blockedTargets, targetsComplete,
+ *     requestsComplete, opinionsComplete, partial}`. `blockedTargets` are the issues it closes that GitHub counts an
+ *     open blocker for; `targetsComplete` is false when that list or a count went unread, a node without the list
+ *     included, so no merge is certified.
+ *     `title` is the forge's prose with whitespace collapsed, or `null`; it names the PR and is never a
  *     transition. `disclosedFamilies` are the model families an outside PR names in its body or in any commit's
  *     trailer, and empty for every other PR; an outside PR with commits past the read is `partial`, since an unread
  *     commit may name another family. Optional original review records keep their own history coverage, and `turns`
@@ -143,6 +146,9 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         messages  = node.commitMessages === undefined ? {nodes: [], complete: true} : connectionOf(node.commitMessages),
         outside   = owner.kind === 'outside',
         requested = requests.nodes.map(item => reviewerOf(item?.requestedReviewer, identities)),
+        targets   = connectionOf(node.closingIssuesReferences),
+        targetOf  = issue => issue?.repository?.nameWithOwner && Number.isInteger(issue.number) &&
+            Number.isInteger(issue.issueDependenciesSummary?.blockedBy) ? `${issue.repository.nameWithOwner}#${issue.number}` : null,
         // whether each review judged the current head, and whether a bot wrote it
         judged    = item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head,
             ...(item?.author?.__typename === 'Bot' ? {bot: true} : {})}),
@@ -157,6 +163,8 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         requestsComplete = requests.complete && requested.every(Boolean),
         reviewsComplete  = reviews.complete && reviewed.every(review => review.reviewer),
         opinionsComplete = opinions.complete && opined.every(opinion => opinion.reviewer),
+        targetsComplete  = targets.complete && targets.nodes.every(targetOf),
+        blockedTargets   = targets.nodes.filter(issue => targetOf(issue) && issue.issueDependenciesSummary.blockedBy > 0).map(targetOf).sort(),
         runApproval      = suites.nodes.some(suite => suite?.conclusion === 'ACTION_REQUIRED' && suite.workflowRun?.event !== 'pull_request_review')
             ? 'action_required' : null;
 
@@ -184,6 +192,8 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         opinions     : opined.filter(opinion => opinion.reviewer),
         reviewRecords: normalizeReviewRecords(node, apiBase),
         turns,
+        blockedTargets,
+        targetsComplete,
         requestsComplete,
         opinionsComplete,
         partial      : !requestsComplete || !reviewsComplete || !opinionsComplete || !suites.complete || outside && !messages.complete
