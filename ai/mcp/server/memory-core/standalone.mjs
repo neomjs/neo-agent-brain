@@ -68,18 +68,23 @@ export function standalonePlacement({
 /**
  * @summary Parses standalone CLI flags without external argument-parser overhead on the launcher path.
  * @param {String[]} [argv=process.argv.slice(2)] Raw CLI arguments.
- * @returns {{configFile: (String|null), dataRoot: (String|undefined), debug: Boolean, help: Boolean, mode: ('launch'|'serve'), sessionId: (String|undefined), version: Boolean, workspace: (String|undefined)}}
+ * @returns {{configFile: (String|null), dataRoot: (String|undefined), debug: Boolean, help: Boolean, mode: ('launch'|'promote'|'serve'), owner: (String|undefined), sessionId: (String|undefined), sourceWalDir: (String|undefined), targetGraphDb: (String|undefined), targetWalDir: (String|undefined), userId: (String|undefined), version: Boolean, workspace: (String|undefined)}}
  */
 export function parseStandaloneArgs(argv = process.argv.slice(2)) {
     const parsed = {
-        configFile: null,
-        dataRoot  : undefined,
-        debug     : false,
-        help      : false,
-        mode      : 'launch',
-        sessionId : undefined,
-        version   : false,
-        workspace : undefined
+        configFile   : null,
+        dataRoot     : undefined,
+        debug        : false,
+        help         : false,
+        mode         : 'launch',
+        owner        : undefined,
+        sessionId    : undefined,
+        sourceWalDir : undefined,
+        targetGraphDb: undefined,
+        targetWalDir : undefined,
+        userId       : undefined,
+        version      : false,
+        workspace    : undefined
     };
 
     const readValue = (flag, index) => {
@@ -93,6 +98,10 @@ export function parseStandaloneArgs(argv = process.argv.slice(2)) {
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
 
+        if (arg === 'promote' && i === 0) {
+            parsed.mode = 'promote';
+            continue;
+        }
         if (arg === '--serve') {
             parsed.mode = 'serve';
             continue;
@@ -141,6 +150,49 @@ export function parseStandaloneArgs(argv = process.argv.slice(2)) {
             parsed.configFile = arg.slice('--config='.length);
             continue;
         }
+        if (arg === '--target-wal-dir') {
+            parsed.targetWalDir = readValue(arg, i++);
+            continue;
+        }
+        if (arg.startsWith('--target-wal-dir=')) {
+            parsed.targetWalDir = arg.slice('--target-wal-dir='.length);
+            continue;
+        }
+        if (arg === '--source-wal-dir') {
+            parsed.sourceWalDir = readValue(arg, i++);
+            continue;
+        }
+        if (arg.startsWith('--source-wal-dir=')) {
+            parsed.sourceWalDir = arg.slice('--source-wal-dir='.length);
+            continue;
+        }
+        if (arg === '--owner') {
+            parsed.owner = readValue(arg, i++);
+            continue;
+        }
+        if (arg.startsWith('--owner=')) {
+            parsed.owner = arg.slice('--owner='.length);
+            continue;
+        }
+        if (arg === '--target-graph-db') {
+            parsed.targetGraphDb = readValue(arg, i++);
+            continue;
+        }
+        if (arg.startsWith('--target-graph-db=')) {
+            parsed.targetGraphDb = arg.slice('--target-graph-db='.length);
+            continue;
+        }
+        if (arg === '--user-id') {
+            parsed.userId = readValue(arg, i++);
+            continue;
+        }
+        if (arg.startsWith('--user-id=')) {
+            parsed.userId = arg.slice('--user-id='.length);
+            continue;
+        }
+        if (parsed.mode === 'promote') {
+            throw new Error(`Unknown promote argument: ${arg}`);
+        }
     }
 
     return parsed;
@@ -153,10 +205,11 @@ export function parseStandaloneArgs(argv = process.argv.slice(2)) {
 export function formatStandaloneHelp() {
     return [
         'Usage: neo-memory-core [options]',
+        '       neo-memory-core promote --target-wal-dir <dir> --target-graph-db <path> --owner <agentIdentity> [options]',
         '',
         'Standalone zero-daemon Neo.mjs Memory Core MCP server (JSONL WAL + node:sqlite FTS5).',
         '',
-        'Options:',
+        'Server options:',
         '  --workspace <slug-or-path>  Explicit workspace slug or target directory',
         '  --data-root <dir>           Relocate standalone plane root (default: ~/.neo-ai/memory-core)',
         '  --session-id <id>           Default session identifier for add_memory calls',
@@ -164,7 +217,16 @@ export function formatStandaloneHelp() {
         '  --serve                     Run the stdio MCP server directly in-process with standalone placement',
         '  -d, --debug                 Mirror INFO/DEBUG logs to stderr',
         '  -V, --version               Print version and exit',
-        '  -h, --help                  Print help and exit'
+        '  -h, --help                  Print help and exit',
+        '',
+        'Promote options:',
+        '  --target-wal-dir <dir>      Target full-plane Memory Core WAL directory (required)',
+        '  --target-graph-db <path>    Target full-plane SQLite graph DB path for AgentIdentity roster validation (required)',
+        '  --owner <agentIdentity>     Rostered AgentIdentity handle to stamp onto promoted records (required)',
+        '  --source-wal-dir <dir>      Standalone source WAL directory (default: <data-root>/wal)',
+        '  --data-root <dir>           Standalone plane root used when --source-wal-dir is omitted',
+        '  --user-id <userId>          Explicit RLS userId override (default: normalized --owner)',
+        '  --workspace <slug-or-path>  Promote only records matching the resolved workspace key'
     ].join('\n');
 }
 
@@ -355,9 +417,44 @@ async function startServeMode(parsed, {env = process.env, homedir = os.homedir()
     await server.ready();
 }
 
+/**
+ * @summary Executes the `neo-memory-core promote` CLI subcommand and writes the JSON summary receipt to stdout.
+ * @param {Object} parsed Parsed CLI options from {@link parseStandaloneArgs}.
+ * @param {Object} [options={}]
+ * @param {String} [options.cwd=process.cwd()] Working directory for path-shaped `--workspace` resolution.
+ * @param {Function} [options.execGit] Injectable git runner forwarded to workspace resolution.
+ * @param {String} [options.homedir=os.homedir()] Home directory used when `--source-wal-dir` and `--data-root` are omitted.
+ * @param {Object} [options.stdout=process.stdout] Writable stdout stream.
+ * @returns {Promise<Object>} Promotion summary receipt.
+ */
+export async function runPromoteCli(parsed, {
+    cwd     = process.cwd(),
+    execGit,
+    homedir = os.homedir(),
+    stdout  = process.stdout
+} = {}) {
+    const {promoteStandaloneWal} = await import('../../../services/memory-core/helpers/promoteStandaloneWal.mjs');
+    const result                 = await promoteStandaloneWal({
+        cwd,
+        dataRoot     : parsed.dataRoot,
+        execGit,
+        homedir,
+        owner        : parsed.owner,
+        sourceWalDir : parsed.sourceWalDir,
+        targetGraphDb: parsed.targetGraphDb,
+        targetWalDir : parsed.targetWalDir,
+        userId       : parsed.userId,
+        workspace    : parsed.workspace
+    });
+
+    stdout?.write?.(`${JSON.stringify(result)}\n`);
+    return result;
+}
+
 if (isEntryModule(import.meta.url)) {
     const handleFatal = error => {
-        process.stderr.write(`[neo-memory-core] Fatal startup error: ${error?.stack || error?.message || String(error)}\n`);
+        const prefix = process.argv[2] === 'promote' ? 'Promotion error' : 'Fatal startup error';
+        process.stderr.write(`[neo-memory-core] ${prefix}: ${error?.stack || error?.message || String(error)}\n`);
         process.exit(1);
     };
 
@@ -372,7 +469,12 @@ if (isEntryModule(import.meta.url)) {
             process.stdout.write(`${readStandaloneVersion()}\n`);
             process.exit(0);
         }
-        if (parsed.mode === 'serve') {
+        if (parsed.mode === 'promote') {
+            runPromoteCli(parsed).then(
+                () => process.exit(0),
+                handleFatal
+            );
+        } else if (parsed.mode === 'serve') {
             startServeMode(parsed).catch(handleFatal);
         } else {
             superviseChild(launch());
