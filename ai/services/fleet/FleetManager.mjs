@@ -634,11 +634,11 @@ class FleetManager extends Base {
                         if (existing && stateDir && existing.stateDir !== stateDir) preparation = {state:'refused', reason:'receiver-mismatch'}
                     } catch { preparation = {state:'refused', reason:'enrollment-unavailable'} }
                 }
-                const prepareNativeWake = managed && declared && !preparation ? async input => {
+                const mayPrepare        = family !== 'antigravity' || activateNativeWake || Boolean(existing);
+                const prepareNativeWake = managed && declared && mayPrepare && !preparation ? async input => {
                     startSignal.throwIfAborted();
                     if (input?.agent?.id !== agentId || input.agent.harnessType !== family || input.instanceHome !== managed.instanceHome ||
                         input.workspaceRoot !== managed.workspaceRoot) return {state:'refused', reason:'seat-mismatch'};
-                    if (family === 'antigravity' && !activateNativeWake && !existing) return {state:'refused', reason:'shared-config-not-authorized'};
                     const result = await (options.prepareFleetNativeWake || prepareFleetNativeWake)({...input, manifestPath, stateDir,
                         allowSharedConfig: family === 'antigravity' && (activateNativeWake || Boolean(existing))});
                     startSignal.throwIfAborted();

@@ -12,7 +12,7 @@ import {inspectAntigravitySidecar, materializeAntigravitySidecar, materializeAnt
 import {readPrivateWakeJson}                                                                       from '../../daemons/wake/nativeWakeEnrollment.mjs';
 import {withOutboxLock}                                                                            from '../../daemons/wake/outboxLock.mjs';
 import {writeFileAtomic}                                                                           from '../shared/atomicFileWrite.mjs';
-import {assertUntrackedManagedWorkspaceFile}                                                       from './excludeManagedWorkspaceFiles.mjs';
+import {assertUntrackedManagedWorkspaceFile, excludeManagedNativeWakeHook}                         from './excludeManagedWorkspaceFiles.mjs';
 
 const wakeModule = name => fileURLToPath(new URL(`../../daemons/wake/${name}.mjs`, import.meta.url));
 const absolute   = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root;
@@ -58,6 +58,7 @@ async function prepareOwned({agent, instanceHome, workspaceRoot, manifestPath, s
         const sidecarPrevious = shared && {nodePath:shared.nodePath, modulePath:shared.modulePath};
         const hooksPrevious   = previous && {nodePath:previous.nodePath, hookPath:previous.hookPath};
         inspectAntigravitySidecar({configDir, nodePath, modulePath:current.modulePath, manifestPath, stateDir, previous:sidecarPrevious});
+        excludeManagedNativeWakeHook({targetRepoRoot:workspaceRoot});
         await materializeAntigravityWakeHooks({workspaceRoot, nodePath, hookPath:current.hookPath, manifestPath, stateDir, previous:hooksPrevious});
         completed.push('hooks');
         await materializeAntigravitySidecar({configDir, nodePath, modulePath:current.modulePath, manifestPath, stateDir, previous:sidecarPrevious});

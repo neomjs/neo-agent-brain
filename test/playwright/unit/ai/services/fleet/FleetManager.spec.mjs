@@ -1589,6 +1589,39 @@ test.describe('FleetManager native wake canary', () => {
         })
     }
 
+    for (const running of [false, true]) {
+        test(`ordinary Start of an unselected ${running ? 'running' : 'fresh'} Antigravity seat has no native setup failure`, async () => {
+            const agent = {
+                id      : 'fixture', harnessType: 'antigravity', launchOwner: 'fleet',
+                seatHome: '/managed/fixture', metadata: {repo: {repoSlug: 'org/repo'}}
+            };
+            const status = {id: agent.id, state: 'running', running: true};
+            const calls  = [];
+            FleetManager.managedRoot = '/managed';
+            FleetManager.lifecycleService = lifecycleWithStarts({
+                getInstanceRoot: () => '/managed',
+                getRegistry    : () => ({getAgent: () => agent}),
+                isRunning      : () => running, status: () => status
+            });
+            FleetManager.wakeStateOptions = {
+                wakeReceiverBase      : 'http://127.0.0.1:3199', wakeReceiverManifestPath: '/receiver/routes.json',
+                wakeReceiverStateDir  : '/receiver/state', readNativeWakeOptIn: async () => null,
+                prepareFleetNativeWake: async () => { throw new Error('unselected shared setup must not run') }
+            };
+            FleetManager.provisionAndStartFn = async ({prepareNativeWake}) => {
+                expect(prepareNativeWake).toBeNull();
+                return status
+            };
+            FleetManager.wakeArmFn = async ({primarySession}) => { calls.push(primarySession); return {state: 'ready'} };
+            FleetManager.rotationArmFn = async () => null;
+
+            const result = await FleetManager.startAgent(agent.id);
+            expect(result).not.toHaveProperty('nativeWakePreparation');
+            expect(result.wakeRoute).toEqual({state: 'ready'});
+            expect(calls).toEqual([null])
+        })
+    }
+
     test('a different receiver cannot prepare, enroll or replace an existing native route', async () => {
         const agent = {id:'fixture',harnessType:'codex-desktop',launchOwner:'fleet',seatHome:'/managed/fixture',metadata:{repo:{repoSlug:'org/repo'}}}, calls = [];
         FleetManager.lifecycleService = lifecycleWithStarts({getInstanceRoot:() => '/managed',getRegistry:() => ({getAgent:() => agent}), isRunning:() => true,

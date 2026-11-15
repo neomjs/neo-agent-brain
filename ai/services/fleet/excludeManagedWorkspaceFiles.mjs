@@ -30,6 +30,23 @@ export function assertUntrackedManagedWorkspaceFile({targetRepoRoot, target}) {
     }
 }
 
+/** @summary Excludes the optional native wake hook without altering other managed exclude blocks. */
+export function excludeManagedNativeWakeHook({targetRepoRoot}) {
+    const target = '.agents/hooks.json';
+    assertUntrackedManagedWorkspaceFile({targetRepoRoot, target});
+    const gitDir    = path.join(targetRepoRoot, '.git'), infoDir = path.join(gitDir, 'info'),
+        excludeFile = path.join(infoDir, 'exclude');
+    assertRealDirectory(infoDir, 'checkout .git/info directory', {allowAbsent:true});
+    assertRegularOrAbsent(excludeFile, 'checkout .git/info/exclude');
+    const written = writeLocalExclude({targetRepoRoot, resolvedGitDir:gitDir, targets:[target],
+        blockOwner:'fleetNativeWakeHooks', blockLabel:'generated native wake hook, do not edit inside this block'});
+    if (path.resolve(written) !== excludeFile) throw new Error('Unexpected native wake exclude path');
+    assertRegularOrAbsent(excludeFile, 'checkout .git/info/exclude');
+    const env = {...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+        GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:GIT_NULL_CONFIG, GIT_OPTIONAL_LOCKS:'0', GIT_TERMINAL_PROMPT:'0'};
+    runGit(targetRepoRoot, ['-c', `core.excludesFile=${GIT_NULL_CONFIG}`, 'check-ignore', '--no-index', '--quiet', '--', target], env)
+}
+
 /**
  * @summary Exclude the fixed generated Antigravity workspace file after proving a normal managed clone.
  * The target file itself is never created here: the root binding, ordinary `.git` directory and

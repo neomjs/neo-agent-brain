@@ -32,6 +32,9 @@ test.describe('Fleet native wake preparation', () => {
     });
 
     test('Antigravity requires shared consent and preserves unrelated configuration', async () => {
+        const excludeFile    = path.join(workspaceRoot,'.git','info','exclude');
+        const existingBlocks = '# BEGIN fleetManagedWorkspace — generated\n/foreign-a\n# END fleetManagedWorkspace\n# BEGIN fleetSeatHooks — generated\n/foreign-b\n# END fleetSeatHooks\n';
+        await fs.writeFile(excludeFile, existingBlocks);
         await fs.writeFile(path.join(configDir, 'config.json'), JSON.stringify({foreign:true, sidecars:{other:{enabled:true}}}));
         const args = {agent:{id:'fixture', harnessType:'antigravity'}, instanceHome, workspaceRoot, stateDir, configDir, manifestPath};
         expect((await prepareFleetNativeWake(args)).reason).toBe('shared-config-not-authorized');
@@ -43,6 +46,9 @@ test.describe('Fleet native wake preparation', () => {
         expect(config.sidecars.other).toEqual({enabled:true});
         const hooks = JSON.parse(await fs.readFile(path.join(workspaceRoot, '.agents', 'hooks.json'), 'utf8'));
         expect(Object.keys(hooks['neo-primary-session'])).toEqual(['SessionStart','PreInvocation'])
+        expect(execFileSync('git',['-C',workspaceRoot,'check-ignore','--no-index','.agents/hooks.json'],{encoding:'utf8'}).trim()).toBe('.agents/hooks.json');
+        expect(execFileSync('git',['-C',workspaceRoot,'status','--porcelain'],{encoding:'utf8'})).toBe('');
+        expect(await fs.readFile(excludeFile,'utf8')).toContain(existingBlocks.trim())
     });
 
     test('a conflicting sidecar reports partial work and a matching retry can finish', async () => {
