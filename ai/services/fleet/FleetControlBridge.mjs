@@ -1027,11 +1027,18 @@ class FleetControlBridge extends Base {
      * its harness inside that checkout. The PAT is resolved + injected Node-side; it never crosses to
      * the pane. Fail-closed on a provisioning failure (the harness is not spawned); a refusal the start
      * path words answers as data, so the operator reads its reason.
-     * @param {String} id Registry agent id.
-     * @returns {Promise<Object>} the agent's lifecycle status, or `{status: 'rejected', reason}`.
+     * @param {String|Object} request Registry id, or `{agentId, expectedStartedAt, activateNativeWake: true}` when
+     * the operator selected native wake setup for this seat.
+     * @returns {Promise<Object>} The lifecycle status and wake result, or a typed refusal.
      */
-    startAgent(id) {
-        return startOutcome(() => this.getManager().startAgent(id));
+    async startAgent(request) {
+        if (typeof request === 'string') return startOutcome(() => this.getManager().startAgent(request));
+        if (!request || Object.keys(request).sort().join(',') !== 'activateNativeWake,agentId,expectedStartedAt' ||
+            typeof request.agentId !== 'string' || !request.agentId.trim() || request.activateNativeWake !== true ||
+            typeof request.expectedStartedAt !== 'string' || !Number.isFinite(Date.parse(request.expectedStartedAt))) {
+            return {status: 'rejected', reason: 'The native wake setup request is invalid.'};
+        }
+        return startOutcome(() => this.getManager().startAgent(request.agentId, {activateNativeWake: true, expectedStartedAt: request.expectedStartedAt}));
     }
 
     /**

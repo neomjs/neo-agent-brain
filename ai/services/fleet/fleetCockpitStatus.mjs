@@ -156,6 +156,8 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 launchable   : publicAgent.launchable ?? null,
                 launchRefusal: publicAgent.launchRefusal ?? null,
                 authMode     : publicAgent.authMode ?? null,
+                ...(runtime?.nativeWakeSetup && !publicAgent.launchRefusal
+                    ? {nativeWakeSetup: {expectedStartedAt: runtime.nativeWakeSetup.expectedStartedAt}} : {}),
                 // Open assigned lanes for the resident, stamped by a Brain-side enricher when one
                 // exists — the roster DTO OWNS this field end-to-end (assembler → cockpit record →
                 // card badge). Same tri-state honesty as `launchable`: null = no enricher has

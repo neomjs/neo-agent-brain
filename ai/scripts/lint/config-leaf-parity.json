@@ -262,6 +262,7 @@
         "fleet.wakeReceiverBase",
         "fleet.wakeReceiverManifestPath",
         "fleet.wakeReceiverRecordsDir",
+        "fleet.wakeReceiverStateDir",
         "fleet.wakeSelfBase",
         "geminiApiKey",
         "geminiApiKeyFile",

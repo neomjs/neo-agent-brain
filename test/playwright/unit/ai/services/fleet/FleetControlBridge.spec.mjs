@@ -695,6 +695,19 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(calls).toEqual([['stopAgent', 'alice']]);
     });
 
+    test('native wake setup carries an explicit seat choice without accepting host coordinates', async () => {
+        managerStub.startAgent = async (id, options) => { calls.push([id, options]); return {id, state: 'running'} };
+        const expectedStartedAt = '2026-11-15T00:00:00Z',
+              request           = {agentId: 'alice', activateNativeWake: true, expectedStartedAt};
+
+        await expect(dispatchFleetRequest(createFleetWireRequest('startAgent', request), FleetControlBridge))
+            .resolves.toMatchObject({ok: true, result: {id: 'alice', state: 'running'}});
+        for (const invalid of [{agentId: 'alice'}, {...request, expectedStartedAt: ''}, {...request, instanceHome: '/other'}, {...request, activateNativeWake: 'true'}]) {
+            await expect(FleetControlBridge.startAgent(invalid)).resolves.toMatchObject({status: 'rejected'});
+        }
+        expect(calls).toEqual([['alice', {activateNativeWake: true, expectedStartedAt}]]);
+    });
+
     test('restartAgent delegates to the manager', async () => {
         await expect(FleetControlBridge.restartAgent('alice')).resolves.toEqual({id: 'alice', state: 'running'});
         expect(calls).toEqual([['restartAgent', 'alice']]);

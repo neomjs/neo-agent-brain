@@ -11,6 +11,25 @@ const
     EXCLUDE_BLOCK_LABEL = 'generated workspace files, do not edit inside this block',
     GIT_NULL_CONFIG     = process.platform === 'win32' ? 'NUL' : '/dev/null';
 
+/** @summary Proves one optional generated workspace file is untracked in the exact managed checkout. */
+export function assertUntrackedManagedWorkspaceFile({targetRepoRoot, target}) {
+    if (!path.isAbsolute(targetRepoRoot || '') || typeof target !== 'string' || path.isAbsolute(target) ||
+        target.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Invalid workspace target');
+    const root = fs.realpathSync(targetRepoRoot), gitDir = path.join(root, '.git');
+    if (root !== targetRepoRoot) throw new Error('Unsafe workspace root');
+    assertRealDirectory(root, 'checkout root');
+    assertRealDirectory(gitDir, 'checkout .git directory');
+    const env = {...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+        GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:GIT_NULL_CONFIG, GIT_OPTIONAL_LOCKS:'0', GIT_TERMINAL_PROMPT:'0'};
+    if (path.resolve(runGit(root,['rev-parse','--show-toplevel'],env)) !== root ||
+        path.resolve(runGit(root,['rev-parse','--absolute-git-dir'],env)) !== gitDir) throw new Error('Not an ordinary managed checkout');
+    if (runGit(root,['--literal-pathspecs','ls-files','--error-unmatch','--',target],env,{untrackedIsNull:true}) !== null) {
+        const error = new Error('Optional wake hook is tracked by the workspace');
+        error.code = 'FLEET_WAKE_HOOK_TRACKED';
+        throw error
+    }
+}
+
 /**
  * @summary Exclude the fixed generated Antigravity workspace file after proving a normal managed clone.
  * The target file itself is never created here: the root binding, ordinary `.git` directory and

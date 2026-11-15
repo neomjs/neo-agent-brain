@@ -307,6 +307,34 @@ function makeTenantService({
 }
 
 test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning)', () => {
+    test('prepares a native wake after workspace preparation and before the first spawn', async () => {
+        const events = [], agents = repoAgent('a');
+        agents.a.harnessType = 'codex-desktop';
+        const lifecycle = makeLifecycle({agents, events});
+        let input;
+        const result = await startAgentProvisioned({lifecycleService:lifecycle, agentId:'a', managedRoot:'/managed',
+            ensureRepo:makeEnsureRepo(), prepareWorkspace:makePrepareWorkspace(events),
+            prepareNativeWake:async value => {events.push('native'); input = value; return {state:'prepared'}}});
+        expect(input).toMatchObject({agent:agents.a, instanceHome:'/instances/a', workspaceRoot:'/managed/agent/repo'});
+        expect(events.indexOf('native')).toBeGreaterThan(events.indexOf('prepare'));
+        expect(events.indexOf('native')).toBeLessThan(events.indexOf('start'));
+        expect(result.nativeWakePreparation).toEqual({state:'prepared'})
+    });
+
+    test('a wake preparation failure does not prevent Start, but Stop during preparation does', async () => {
+        const agents    = repoAgent('a'); agents.a.harnessType = 'codex-desktop';
+        const lifecycle = makeLifecycle({agents});
+        const args      = {lifecycleService:lifecycle, agentId:'a', managedRoot:'/managed', ensureRepo:makeEnsureRepo(),
+            prepareWorkspace:makePrepareWorkspace()};
+        const result = await startAgentProvisioned({...args, prepareNativeWake:async () => {throw new Error('private')}});
+        expect(result.nativeWakePreparation).toEqual({state:'refused', reason:'preparation-failed'});
+        expect(lifecycle.calls.start).toHaveLength(1);
+        const stopped  = makeLifecycle({agents}), abort = new AbortController();
+        const canceled = await startAgentProvisioned({...args, lifecycleService:stopped, startSignal:abort.signal,
+            prepareNativeWake:async () => {abort.abort(); throw new Error('canceled')}});
+        expect(canceled).toMatchObject({canceled:true});
+        expect(stopped.calls.start).toHaveLength(0)
+    });
     test('Stop while waiting for runtime exclusion prevents later preparation and spawn', async () => {
         const lifecycle  = makeLifecycle({agents: repoAgent('a')}), prepare = makePrepareWorkspace();
         const generation = await runtimeFixture(), abort = new AbortController();
@@ -1231,7 +1259,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                 registryDirectory: '/native/config/projects'
             },
             exclusion = {repoRoot: targetRepoRoot, paths: ['.agents/mcp_config.json', 'GEMINI.md'], verified: true},
-            bindCalls = [], probeCalls = [],
+            bindCalls = [], probeCalls = [], nativeCalls = [],
             lifecycle = makeLifecycle({
                 agents,
                 events,
@@ -1254,6 +1282,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                   managedRoot          : '/managed',
                   ensureRepo,
                   prepareWorkspace,
+                  prepareNativeWake    : async input => {events.push('native'); nativeCalls.push(input); return {state:'prepared'}},
                   agentosRuntimeRoot   : '/installed/neo',
                   excludeWorkspaceFiles: input => {events.push('exclude'); expect(input).toEqual({targetRepoRoot}); return exclusion},
                   bindProject          : async args => {
@@ -1274,6 +1303,10 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(events.indexOf('antigravity-context')).toBeLessThan(events.indexOf('credential'));
         expect(events.indexOf('exclude')).toBeLessThan(events.indexOf('prepare'));
         expect(events.indexOf('prepare')).toBeLessThan(events.indexOf('start'));
+        expect(events.indexOf('native')).toBeGreaterThan(events.indexOf('prepare'));
+        expect(events.indexOf('native')).toBeLessThan(events.indexOf('start'));
+        expect(nativeCalls).toEqual([{agent:agents.seat, instanceHome:'/instances/seat', workspaceRoot:targetRepoRoot, configDir:'/native/config'}]);
+        expect(status.nativeWakePreparation).toEqual({state:'prepared'});
         expect(lifecycle.calls.profile).toEqual(['seat']);
         expect(lifecycle.calls.reserve).toHaveLength(1);
         expect(lifecycle.calls.capability).toEqual([]); // the selected Start context already proved the runtime

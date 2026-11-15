@@ -3,6 +3,17 @@ import path            from 'node:path';
 import fs              from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
+/** @summary Refuses symbolic-link ancestors before creating or opening a vendor config directory. */
+function assertDirectoryChain(directory) {
+    for (let current = directory; ; current = path.dirname(current)) {
+        try {
+            const stat = fs.lstatSync(current);
+            if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Unsafe configuration directory');
+        } catch (error) { if (error.code !== 'ENOENT') throw error }
+        if (current === path.dirname(current)) break
+    }
+}
+
 /** @module ai/daemons/wake/antigravityWakeSidecar
  * @summary App-launched per-instance pump; the host dispatcher owns lease and request authority.
  */
@@ -110,59 +121,78 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 }
 
 /**
- * @summary Installs the same send-only sidecar definition into an explicit isolated configuration root.
+ * @summary Validates the send-only sidecar definition without writing the configuration root.
  * Existing unrelated configuration is preserved. A different existing owned definition is refused.
  * The caller owns App generation selection and must not invoke this for a live, unconsented seat.
  */
-export async function materializeAntigravitySidecar({configDir, nodePath, modulePath, manifestPath, stateDir}) {
+export function inspectAntigravitySidecar({configDir, nodePath, modulePath, manifestPath, stateDir, previous}) {
     for (const value of [configDir, nodePath, modulePath, manifestPath, stateDir]) {
         if (!path.isAbsolute(value || '')) throw new TypeError('Absolute sidecar paths required');
     }
     const id         = 'neo-primary-session', sidecarDir = path.join(configDir, 'sidecars', id);
+    assertDirectoryChain(sidecarDir);
     const configPath = path.join(configDir, 'config.json'), definitionPath = path.join(sidecarDir, 'sidecar.json');
     const definition = {description:'Neo primary session wake', command:nodePath,
         args:[modulePath,'--manifest',manifestPath,'--state',stateDir],
         env:{ELECTRON_RUN_AS_NODE:'1'}, restart_policy:'on-failure'};
-    fs.mkdirSync(sidecarDir, {recursive:true, mode:0o700});
+    if (previous && (!path.isAbsolute(previous.nodePath || '') || !path.isAbsolute(previous.modulePath || ''))) throw new TypeError('Invalid previous runtime');
+    const oldDefinition = previous && {...definition, command:previous.nodePath,
+        args:[previous.modulePath,'--manifest',manifestPath,'--state',stateDir]};
+    const readRegular = file => {
+        try {
+            const stat = fs.lstatSync(file);
+            if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Unsafe configuration file');
+            return fs.readFileSync(file, 'utf8');
+        } catch (error) { if (error.code === 'ENOENT') return null; throw error }
+    };
+    const previousDefinition = readRegular(definitionPath), previousConfig = readRegular(configPath);
+    const actualDefinition   = previousDefinition === null ? null : JSON.parse(previousDefinition);
+    const replacing          = actualDefinition !== null && JSON.stringify(actualDefinition) !== JSON.stringify(definition);
+    if (replacing && (!oldDefinition || JSON.stringify(actualDefinition) !== JSON.stringify(oldDefinition))) {
+        throw new Error('Conflicting owned sidecar definition');
+    }
+    const config = previousConfig === null ? {} : JSON.parse(previousConfig);
+    if (!config || typeof config !== 'object' || Array.isArray(config) ||
+        (config.sidecars !== undefined && (!config.sidecars || typeof config.sidecars !== 'object' || Array.isArray(config.sidecars)))) {
+        throw new Error('Invalid sidecar configuration');
+    }
+    const existing = config.sidecars?.[id];
+    if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify({enabled:true})) {
+        throw new Error('Conflicting owned sidecar configuration');
+    }
+    if (replacing && JSON.stringify(existing) !== JSON.stringify({enabled:true})) throw new Error('Previous sidecar is not enabled');
+    return {id, sidecarDir, configPath, definitionPath, definition, previousDefinition, replacing, config, existing}
+}
+
+/** @summary Installs an inspected sidecar, rechecking ownership under the config lock. */
+export async function materializeAntigravitySidecar(options) {
+    const initial = inspectAntigravitySidecar(options);
+    fs.mkdirSync(initial.sidecarDir, {recursive:true, mode:0o700});
     const {withOutboxLock}      = await import('./outboxLock.mjs');
     const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
-    return withOutboxLock(configPath, async () => {
-        const readRegular = file => {
-            try {
-                const stat = fs.lstatSync(file);
-                if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Unsafe configuration file');
-                return fs.readFileSync(file, 'utf8');
-            } catch (error) { if (error.code === 'ENOENT') return null; throw error }
-        };
-        const previousDefinition = readRegular(definitionPath), previousConfig = readRegular(configPath);
-        if (previousDefinition !== null && JSON.stringify(JSON.parse(previousDefinition)) !== JSON.stringify(definition)) {
-            throw new Error('Conflicting owned sidecar definition');
-        }
-        const config = previousConfig === null ? {} : JSON.parse(previousConfig);
-        if (!config || typeof config !== 'object' || Array.isArray(config) ||
-            (config.sidecars !== undefined && (!config.sidecars || typeof config.sidecars !== 'object' || Array.isArray(config.sidecars)))) {
-            throw new Error('Invalid sidecar configuration');
-        }
-        const existing = config.sidecars?.[id];
-        if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify({enabled:true})) {
-            throw new Error('Conflicting owned sidecar configuration');
-        }
+    return withOutboxLock(initial.configPath, async () => {
+        const {id, configPath, definitionPath, definition, previousDefinition, replacing, config, existing} = inspectAntigravitySidecar(options);
         config.sidecars = {...config.sidecars, [id]:{enabled:true}};
-        if (previousDefinition === null) writeFileAtomicSync(definitionPath, JSON.stringify(definition, null, 2) + '\n', {mode:0o600});
-        writeFileAtomicSync(configPath, JSON.stringify(config, null, 2) + '\n', {mode:0o600, preserveMode:true});
+        if (previousDefinition === null || replacing) writeFileAtomicSync(definitionPath, JSON.stringify(definition, null, 2) + '\n', {mode:0o600});
+        if (existing === undefined) writeFileAtomicSync(configPath, JSON.stringify(config, null, 2) + '\n', {mode:0o600, preserveMode:true});
         return {state:'configured', sidecarId:id, definitionPath};
     });
 }
 
 /** @summary Prepares the two hook registrations in an explicit workspace, preserving other hooks. */
-export async function materializeAntigravityWakeHooks({workspaceRoot,nodePath,hookPath,manifestPath,stateDir}) {
+export async function materializeAntigravityWakeHooks({workspaceRoot,nodePath,hookPath,manifestPath,stateDir,previous}) {
     for (const value of [workspaceRoot,nodePath,hookPath,manifestPath,stateDir]) {
         if (!path.isAbsolute(value || '') || value.includes('\0')) throw new TypeError('Absolute hook paths required');
     }
     const quote    = value => "'" + value.replace(/'/g, "'\\\\''") + "'";
     const hooksDir = path.join(workspaceRoot,'.agents'), file=path.join(hooksDir,'hooks.json');
-    const command  = event => 'ELECTRON_RUN_AS_NODE=1 ' + [nodePath,hookPath,'--event',event,'--manifest',manifestPath,'--state',stateDir].map(quote).join(' ');
-    const desired  = {SessionStart:[{command:command('SessionStart')}],PreInvocation:[{command:command('PreInvocation')}]};
+    assertDirectoryChain(hooksDir);
+    if (previous && (!path.isAbsolute(previous.nodePath || '') || !path.isAbsolute(previous.hookPath || ''))) throw new TypeError('Invalid previous runtime');
+    const entries = (node, hook) => {
+        const command = event => 'ELECTRON_RUN_AS_NODE=1 ' + [node,hook,'--event',event,'--manifest',manifestPath,'--state',stateDir].map(quote).join(' ');
+        return {SessionStart:[{command:command('SessionStart')}],PreInvocation:[{command:command('PreInvocation')}]}
+    };
+    const desired = entries(nodePath,hookPath), old = previous && entries(previous.nodePath,previous.hookPath);
     fs.mkdirSync(hooksDir,{recursive:true,mode:0o700});
     const {withOutboxLock}      = await import('./outboxLock.mjs');
     const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
@@ -174,8 +204,10 @@ export async function materializeAntigravityWakeHooks({workspaceRoot,nodePath,ho
             config=JSON.parse(fs.readFileSync(file,'utf8'));
         } catch (error) { if (error.code !== 'ENOENT') throw error }
         if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Invalid hooks file');
-        if (config['neo-primary-session'] !== undefined &&
-            JSON.stringify(config['neo-primary-session']) !== JSON.stringify(desired)) throw new Error('Conflicting owned hooks');
+        const actual = config['neo-primary-session'];
+        if (actual !== undefined && JSON.stringify(actual) !== JSON.stringify(desired) &&
+            (!old || JSON.stringify(actual) !== JSON.stringify(old))) throw new Error('Conflicting owned hooks');
+        if (JSON.stringify(actual) === JSON.stringify(desired)) return {state:'configured',path:file};
         config['neo-primary-session']=desired;
         writeFileAtomicSync(file,JSON.stringify(config,null,2)+'\n',{mode:0o600,preserveMode:true});
         return {state:'configured',path:file};

@@ -101,7 +101,7 @@ test('sidecar requires a unique exact App ancestor and passes lease facts to the
 });
 
 test('sidecar materializer preserves unrelated configuration and refuses a different owned target', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-install-'));
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agy-install-')));
     try {
         fs.writeFileSync(path.join(root,'config.json'), JSON.stringify({theme:'dark',sidecars:{foreign:{enabled:true}}}));
         const args = {configDir:root,nodePath:'/pinned/helper',modulePath:'/brain/sidecar.mjs',manifestPath:'/wake/manifest',stateDir:'/wake/state'};
@@ -164,7 +164,7 @@ test('generation census and hook admission reject stale, helper, replay and unob
 });
 
 test('hook preparation preserves foreign groups and rejects a different owner', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(),'agy-hooks-'));
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'agy-hooks-')));
     try {
         fs.mkdirSync(path.join(root,'.agents'));
         fs.writeFileSync(path.join(root,'.agents','hooks.json'),JSON.stringify({foreign:{enabled:false}}));

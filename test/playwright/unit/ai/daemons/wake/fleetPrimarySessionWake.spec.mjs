@@ -7,6 +7,7 @@ import {WakeReceiverState}                                                      
 import {dispatchFleetPrimarySessionWake, drainFleetPrimaryWakeRecord, enrollNativeWake, readNativeWakeOptIn, consumeNativeWakePrompt} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
 import {stagePrimaryWake}                                                                                                             from '../../../../../../ai/daemons/wake/primaryWakeSpool.mjs';
 import {runPrimarySessionWakeCli}                                                                                                     from '../../../../../../ai/scripts/fleet/primarySessionWake.mjs';
+import {withOutboxLock}                                                                                                               from '../../../../../../ai/daemons/wake/outboxLock.mjs';
 
 let tempDir, state, manifestPath, stateDir;
 test.beforeEach(async () => {
@@ -27,6 +28,26 @@ test('enrolling one host agent is explicit and idempotent; another family or sta
     expect(await readNativeWakeOptIn({...input,agentId:'peer'})).toBe(null);
     await expect(readNativeWakeOptIn({...input,family:'antigravity'})).rejects.toThrow();
     await expect(enrollNativeWake({...input,agentId:'../fixture'})).rejects.toThrow()
+});
+
+test('Stop while enrollment waits on the lock leaves no new marker and preserves an existing one', async () => {
+    const input = {agentId:'fixture', family:'codex-desktop', manifestPath, stateDir}, controller = new AbortController();
+    const file  = path.join(tempDir, 'primary-session-seats', 'fixture.json');
+    await fs.mkdir(path.dirname(file), {recursive:true});
+    const entered = Promise.withResolvers(), release = Promise.withResolvers();
+    const holding = withOutboxLock(file, async () => { entered.resolve(); await release.promise });
+    await entered.promise;
+    const waiting = Promise.withResolvers();
+    const pending = enrollNativeWake({...input, signal:controller.signal,
+        lock:(target, fn) => { waiting.resolve(); return withOutboxLock(target, fn) }});
+    await waiting.promise;
+    controller.abort(); release.resolve(); await holding;
+    await expect(pending).rejects.toThrow();
+    expect(await readNativeWakeOptIn(input)).toBeNull();
+    const existing = await enrollNativeWake(input), canceled = new AbortController();
+    canceled.abort();
+    await expect(enrollNativeWake({...input, signal:canceled.signal})).rejects.toThrow();
+    expect(await readNativeWakeOptIn(input)).toEqual(existing)
 });
 
 test('native dispatch holds a busy or unguarded root, then waits for exact recipient evidence across a receiver restart', async () => {

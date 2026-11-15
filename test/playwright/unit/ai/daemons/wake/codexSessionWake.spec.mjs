@@ -1,10 +1,108 @@
-import {test, expect}                                                                                                 from '@playwright/test';
-import crypto                                                                                                         from 'node:crypto';
-import Database                                                                                                       from 'better-sqlite3';
-import fs                                                                                                             from 'node:fs/promises';
-import os                                                                                                             from 'node:os';
-import path                                                                                                           from 'node:path';
-import {listCodexWakeTargets, readCodexWakeActivity, readCodexWakeTarget, sendCodexSessionWake, readCodexWakeReceipt} from '../../../../../../ai/daemons/wake/codexSessionWake.mjs';
+import {test, expect}                                                                                                                                from '@playwright/test';
+import crypto                                                                                                                                        from 'node:crypto';
+import Database                                                                                                                                      from 'better-sqlite3';
+import fs                                                                                                                                            from 'node:fs/promises';
+import os                                                                                                                                            from 'node:os';
+import path                                                                                                                                          from 'node:path';
+import {listCodexWakeTargets, materializeCodexWakeAdmission, readCodexWakeActivity, readCodexWakeTarget, sendCodexSessionWake, readCodexWakeReceipt} from '../../../../../../ai/daemons/wake/codexSessionWake.mjs';
+
+test.describe('Codex wake hook materialization', () => {
+    let root, home, other, options;
+    test.beforeEach(async () => {
+        root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'codex-wake-hooks-')));
+        home = path.join(root, 'first'); other = path.join(root, 'second');
+        await Promise.all([fs.mkdir(home), fs.mkdir(other)]);
+        options = {home, workspaceRoot: root, nodePath: '/bin/node', modulePath: '/opt/neo/codexWakeHook.mjs',
+            manifestPath: '/opt/neo/routes.json', stateDir: '/opt/neo/state', agentId: 'neo-gpt-fixture'}
+    });
+    test.afterEach(async () => fs.rm(root, {recursive: true, force: true}));
+
+    test('preserves foreign hooks and trust, and identical starts preserve bytes and mode in each home', async () => {
+        const foreign = {hooks: {Stop: [{hooks: [{type: 'command', command: 'foreign-stop'}]}],
+            UserPromptSubmit: [{hooks: [{type: 'command', command: 'foreign-submit'}, {type: 'prompt', prompt: 'foreign'}]}]}, extra: {owner: 'other'}};
+        const file = path.join(home, 'hooks.json'), trust = path.join(home, 'config.toml');
+        await fs.writeFile(file, JSON.stringify(foreign), {mode: 0o640});
+        await fs.writeFile(trust, 'trusted_hash = "unchanged"\n');
+        const initialTrust = await fs.readFile(trust, 'utf8');
+        const result       = await materializeCodexWakeAdmission(options);
+        const first        = await fs.readFile(file, 'utf8'), parsed = JSON.parse(first), stat = await fs.stat(file);
+        expect(stat.mode & 0o777).toBe(0o640);
+        expect(parsed.extra).toEqual(foreign.extra);
+        expect(parsed.hooks.Stop).toEqual(foreign.hooks.Stop);
+        expect(parsed.hooks.UserPromptSubmit[0]).toEqual(foreign.hooks.UserPromptSubmit[0]);
+        expect(parsed.hooks.UserPromptSubmit[1].hooks[0].command).toBe(result.command);
+        await Promise.all(Array.from({length: 5}, () => materializeCodexWakeAdmission(options)));
+        expect(await fs.readFile(file, 'utf8')).toBe(first);
+        expect((await fs.stat(file)).mode & 0o777).toBe(stat.mode & 0o777);
+        expect(await fs.readFile(trust, 'utf8')).toBe(initialTrust);
+        await materializeCodexWakeAdmission({...options, home: other, agentId: 'neo-gpt-other'});
+        expect((await fs.readFile(path.join(other, 'hooks.json'), 'utf8'))).not.toBe(first);
+        expect(await fs.readFile(file, 'utf8')).toBe(first)
+    });
+
+    test('refuses altered, disabled and duplicate owned hooks without changing foreign bytes', async () => {
+        const file = path.join(home, 'hooks.json');
+        await materializeCodexWakeAdmission(options);
+        const original = JSON.parse(await fs.readFile(file, 'utf8'));
+        for (const mutate of [
+            x => { x.hooks.UserPromptSubmit[0].hooks[0].command += ' --other' },
+            x => { x.hooks.UserPromptSubmit[0].hooks[0].enabled = false },
+            x => { x.hooks.UserPromptSubmit.push(structuredClone(x.hooks.UserPromptSubmit[0])) },
+            x => { x.hooks.UserPromptSubmit[0].matcher = 'foreign' },
+            x => { x.hooks.UserPromptSubmit[0].hooks[0].statusMessage = 'foreign' }
+        ]) {
+            const value = structuredClone(original); mutate(value);
+            const bytes = JSON.stringify(value, null, 1) + '\n';
+            await fs.writeFile(file, bytes);
+            await expect(materializeCodexWakeAdmission(options)).rejects.toThrow('Conflicting or ambiguous');
+            expect(await fs.readFile(file, 'utf8')).toBe(bytes)
+        }
+    });
+
+    test('reclaims a dead owner lock and refuses a symlink target', async () => {
+        const file = path.join(home, 'hooks.json');
+        await fs.writeFile(file + '.neo-wake.lock', JSON.stringify({pid: 2147483647, startedAt: 1}));
+        await materializeCodexWakeAdmission(options);
+        await fs.rm(file);
+        const outside = path.join(other, 'outside.json');
+        await fs.writeFile(outside, '{}'); await fs.symlink(outside, file);
+        await expect(materializeCodexWakeAdmission(options)).rejects.toThrow('regular file');
+        expect(await fs.readFile(outside, 'utf8')).toBe('{}')
+    })
+
+    test('refuses malformed foreign hook containers without replacing them', async () => {
+        const file = path.join(home, 'hooks.json');
+        for (const value of [null, false, 0, [], 'foreign']) {
+            const bytes = JSON.stringify({hooks: value});
+            await fs.writeFile(file, bytes);
+            await expect(materializeCodexWakeAdmission(options)).rejects.toThrow('Invalid Codex hooks config');
+            expect(await fs.readFile(file, 'utf8')).toBe(bytes)
+        }
+    })
+
+    test('upgrades only an authenticated prior seat command in place without changing trust', async () => {
+        const file = path.join(home, 'hooks.json'), trust = path.join(home, 'config.toml');
+        const old  = {...options, nodePath: '/old/node', modulePath: '/old/codexWakeHook.mjs'};
+        await fs.writeFile(file, JSON.stringify({hooks: {UserPromptSubmit: [
+            {hooks: [{type: 'command', command: 'foreign-before'}]},
+            {hooks: [{type: 'command', command: 'foreign-after'}]}
+        ]}}));
+        await fs.writeFile(trust, 'trusted_hash = "old-vendor-hash"\n');
+        await materializeCodexWakeAdmission(old);
+        const prior  = {...old, family: 'codex-desktop'};
+        const before = await fs.readFile(file, 'utf8');
+        await expect(materializeCodexWakeAdmission(options)).rejects.toThrow('Conflicting or ambiguous');
+        await expect(materializeCodexWakeAdmission({...options, previous: {...prior, home: other}})).rejects.toThrow('does not match');
+        expect(await fs.readFile(file, 'utf8')).toBe(before);
+        const result = await materializeCodexWakeAdmission({...options, previous: prior});
+        const groups = JSON.parse(await fs.readFile(file, 'utf8')).hooks.UserPromptSubmit;
+        expect(groups.map(group => group.hooks[0].command)).toEqual(['foreign-before', 'foreign-after', result.command]);
+        expect(await fs.readFile(trust, 'utf8')).toBe('trusted_hash = "old-vendor-hash"\n');
+        const after = await fs.readFile(file, 'utf8');
+        await materializeCodexWakeAdmission({...options, previous: prior});
+        expect(await fs.readFile(file, 'utf8')).toBe(after)
+    })
+});
 
 test.describe('Codex session wake', () => {
     const id      = '01a1da8b-d4ea-76c0-9d88-f413805c5389', turn = '01a1da8b-fbf9-7c61-afc0-cfd98cc35ffd',

@@ -204,6 +204,7 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @param {Function} [options.bindProject] Curated Antigravity project binder; test seam.
  * @param {Function} [options.acquireRuntimeReferences] Existing runtime-parent lease acquisition; test seam.
  * @param {Function} [options.probeAntigravityRuntimeFn] Re-probe seam for the selected Antigravity binary.
+ * @param {Function} [options.prepareNativeWake] Optional wake-only preparation after workspace validation.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
  * @param {Number}   [options.admissionMark]    The non-Stop admission revocation mark, read where the managed
@@ -279,6 +280,7 @@ async function provisionAgent({
     ensureRepo = ensureAgentRepo,
     fastForwardRepo = fastForwardAgentRepo,
     prepareWorkspace = prepareManagedAgentWorkspace,
+    prepareNativeWake = null,
     importMemory = importSeatMemory,
     installDependencies = installSeatDependencies,
     dependencySkipSignal,
@@ -749,7 +751,7 @@ async function provisionAgent({
             deadlineMs: RUNTIME_REFERENCE_START_WAIT_MS})
         : null;
 
-    let reservation, prepared, memory, status;
+    let reservation, prepared, memory, status, nativeWakePreparation;
 
     try {
         startSignal.throwIfAborted();
@@ -820,6 +822,20 @@ async function provisionAgent({
                 launched    : Object.keys(prepared.launchAdmissionBinding?.grants ?? {})
             })
             startSignal.throwIfAborted();
+        }
+
+        if (prepareNativeWake && ['codex-desktop', 'antigravity'].includes(agent.harnessType)) {
+            try {
+                nativeWakePreparation = await prepareNativeWake({agent, instanceHome:prepared.instanceHome,
+                    workspaceRoot:prepared.targetRepoRoot,
+                    configDir:antigravityStartContext ? path.dirname(antigravityStartContext.registryDirectory) : undefined});
+                if (!nativeWakePreparation || typeof nativeWakePreparation !== 'object') {
+                    nativeWakePreparation = {state:'refused', reason:'invalid-preparation-result'}
+                }
+            } catch {
+                nativeWakePreparation = {state:'refused', reason:'preparation-failed'}
+            }
+            startSignal.throwIfAborted()
         }
 
         const bindProjectCallback = antigravityStartContext && (async descriptor => {
@@ -921,6 +937,7 @@ async function provisionAgent({
         ...(prepared.repoTrust ? {repoTrust: prepared.repoTrust} : {}),
         ...(memory.state !== 'none' ? {memoryImport: memory} : {}),
         ...(repos.length ? {repos} : {}),
+        ...(nativeWakePreparation !== undefined ? {nativeWakePreparation} : {}),
         dependencies: dependencyRows
     }
 }

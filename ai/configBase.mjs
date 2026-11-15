@@ -537,6 +537,12 @@ class ConfigBase extends ConfigProvider {
                  */
                 wakeReceiverManifestPath: leaf('', 'NEO_WAKE_RECEIVER_MANIFEST', 'string'),
                 /**
+                 * Private host state of the same receiver, supplied by its launcher. The Fleet
+                 * uses this declaration for desktop hooks; a container's records mount is read-only.
+                 * @type {string}
+                 */
+                wakeReceiverStateDir: leaf('', 'NEO_WAKE_RECEIVER_STATE_DIR', 'string'),
+                /**
                  * Plane-facing base URL of that same signed host wake receiver — the address the
                  * attached plane's Shape-B dispatcher POSTs a Fleet seat's wake digests to (`<base>/wake`
                  * is derived at the use site; e.g. `http://host.docker.internal:3199` for the local
