@@ -3,8 +3,10 @@ import fs                                                              from 'nod
 import os                                                              from 'node:os';
 import path                                                            from 'node:path';
 import {execFileSync}                                                  from 'node:child_process';
-import {prepareFleetNativeWake}                                        from '../../../../../../ai/services/fleet/prepareFleetNativeWake.mjs';
+import {prepareFleetNativeWake, resolveCodexWakeRuntime}               from '../../../../../../ai/services/fleet/prepareFleetNativeWake.mjs';
 import {materializeAntigravitySidecar,materializeAntigravityWakeHooks} from '../../../../../../ai/daemons/wake/antigravityWakeSidecar.mjs';
+import {readRuntimeGenerationRecord, runtimeGenerationPin}             from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
+import {sealRuntimeGeneration, removeSealed, changePayloadBytes}       from './fixtures/sealedRuntimeGeneration.mjs';
 
 test.describe('Fleet native wake preparation', () => {
     let root, instanceHome, workspaceRoot, stateDir, configDir, manifestPath;
@@ -19,6 +21,98 @@ test.describe('Fleet native wake preparation', () => {
     });
     test.afterEach(async () => fs.rm(root, {recursive:true, force:true}));
 
+    test('an unsealed retained runtime cannot bind an outside executable', async () => {
+        const
+            runtimeRoot = path.join(root, 'forged', 'organism'),
+            wakeDir     = path.join(runtimeRoot, 'ai', 'daemons', 'wake');
+
+        await fs.mkdir(wakeDir, {recursive: true});
+        await fs.writeFile(path.join(wakeDir, 'codexWakeHook.mjs'), '// fixture');
+        await fs.writeFile(path.join(wakeDir, 'codexWakeProtocol.json'), JSON.stringify({wire: 'neo-codex-primary-wake-v1'}));
+
+        const runtime = {
+            id        : 'a'.repeat(64), directory: path.join(root, 'forged'), runtimeRoot,
+            executable: process.execPath, payloadDigest: 'b'.repeat(64), pin: 'held'
+        };
+
+        await expect(resolveCodexWakeRuntime({
+            agentId: 'fixture', instanceHome, workspaceRoot, manifestPath, stateDir, runtime, enrolled: true
+        })).rejects.toThrow()
+    });
+
+    test('a surviving enrolled seat preserves its sealed A hook when the host uses B', async () => {
+        const generations = path.join(root, 'generations');
+        await fs.mkdir(generations);
+        const retained = await sealRuntimeGeneration(generations, {revision: 'a', codexWake: true});
+
+        try {
+            const
+                agent          = {id: 'fixture', harnessType: 'codex-desktop'},
+                options        = {agent, instanceHome, workspaceRoot, manifestPath, stateDir},
+                hookModulePath = path.join(retained.runtimeRoot, 'ai/daemons/wake/codexWakeHook.mjs'),
+                runtime        = {...runtimeGenerationPin(await readRuntimeGenerationRecord({directory: retained.directory})), pin: 'held'},
+                hookFile       = path.join(instanceHome, 'codex-home', 'hooks.json'),
+                trustFile      = path.join(instanceHome, 'codex-home', 'config.toml');
+
+            await fs.writeFile(trustFile, 'trusted_hash = "fixture-approved"\n');
+            const initial = await prepareFleetNativeWake({...options, nodePath: retained.executable, hookModulePath});
+            expect(initial.state).toBe('prepared');
+
+            const before   = await fs.readFile(hookFile), trust = await fs.readFile(trustFile);
+            const selected = await resolveCodexWakeRuntime({...options, agentId: agent.id, runtime, enrolled: true});
+
+            expect(selected).toEqual({nodePath: retained.executable, hookModulePath});
+            expect((await prepareFleetNativeWake({...options, ...selected})).state).toBe('prepared');
+            expect(await fs.readFile(hookFile)).toEqual(before);
+            expect(await fs.readFile(trustFile)).toEqual(trust);
+
+            for (const invalid of [{...runtime, pin: 'unknown'}, {...runtime, payloadDigest: 'f'.repeat(64)}]) {
+                await expect(resolveCodexWakeRuntime({
+                    ...options, agentId: agent.id, runtime: invalid, enrolled: true
+                })).rejects.toThrow();
+                expect(await fs.readFile(hookFile)).toEqual(before)
+            }
+
+            const declaration = path.join(retained.runtimeRoot, 'ai/daemons/wake/codexWakeProtocol.json');
+            await fs.chmod(declaration, 0o644);
+            await fs.writeFile(declaration, JSON.stringify({wire: 'neo-codex-primary-wake-v1', tampered: true}));
+            await fs.chmod(declaration, 0o444);
+            await expect(resolveCodexWakeRuntime({...options, agentId: agent.id, runtime, enrolled: true})).rejects.toThrow();
+            expect(await fs.readFile(hookFile)).toEqual(before)
+        } finally {
+            await removeSealed(retained.directory)
+        }
+    });
+
+    test('a retained runtime refuses changed executable or transitive wake consumer bytes', async () => {
+        const generations = path.join(root, 'generations');
+        await fs.mkdir(generations);
+
+        for (const [revision, kind] of [['a', 'executable'], ['b', 'consumer']]) {
+            const retained = await sealRuntimeGeneration(generations, {revision, codexWake: true});
+
+            try {
+                const
+                    runtime = {...runtimeGenerationPin(await readRuntimeGenerationRecord({directory: retained.directory})), pin: 'held'},
+                    options = {agentId: 'fixture', instanceHome, workspaceRoot, manifestPath, stateDir, runtime, enrolled: true};
+
+                expect((await resolveCodexWakeRuntime(options)).nodePath).toBe(retained.executable);
+                if (kind === 'executable') {
+                    await changePayloadBytes(retained)
+                } else {
+                    const consumer = path.join(retained.runtimeRoot, 'ai/daemons/wake/fleetPrimarySessionWake.mjs');
+                    const mode     = (await fs.stat(consumer)).mode & 0o777;
+
+                    await fs.chmod(consumer, 0o644);
+                    await fs.writeFile(consumer, '// substituted consumer\n');
+                    await fs.chmod(consumer, mode)
+                }
+                await expect(resolveCodexWakeRuntime(options), kind).rejects.toThrow()
+            } finally {
+                await removeSealed(retained.directory)
+            }
+        }
+    });
     test('Codex prepares its seat hook while preserving other entries on retry', async () => {
         const file = path.join(instanceHome, 'codex-home', 'hooks.json');
         await fs.writeFile(file, JSON.stringify({foreign:true, hooks:{Stop:[{hooks:[]}]}}));

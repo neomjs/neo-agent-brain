@@ -13,18 +13,20 @@ setup({
     }
 });
 
-import {test, expect}                                                          from '@playwright/test';
-import Neo                                                                     from 'neo.mjs/src/Neo.mjs';
-import * as core                                                               from 'neo.mjs/src/core/_export.mjs';
-import FleetControlBridge                                                      from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
-import FleetLifecycleService                                                   from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
-import FleetManager                                                            from '../../../../../../ai/services/fleet/FleetManager.mjs';
-import FleetRegistryService                                                    from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
-import FleetTenantService                                                      from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
-import {armFleetSeatWake}                                                      from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
-import {createFleetCockpitStatus}                                              from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
-import {createPlaneWhoIsOnlineReader}                                          from '../../../../../../ai/services/fleet/planeWhoIsOnlineReader.mjs';
-import {PACKAGE_SLOTS_RECORD, PACKAGE_RECEIPT_PATH, runtimeGenerationIdentity} from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
+import {test, expect}                                                                                                                                    from '@playwright/test';
+import Neo                                                                                                                                               from 'neo.mjs/src/Neo.mjs';
+import * as core                                                                                                                                         from 'neo.mjs/src/core/_export.mjs';
+import FleetControlBridge                                                                                                                                from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
+import FleetLifecycleService                                                                                                                             from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import FleetManager                                                                                                                                      from '../../../../../../ai/services/fleet/FleetManager.mjs';
+import FleetRegistryService                                                                                                                              from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import FleetTenantService                                                                                                                                from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
+import {armFleetSeatWake}                                                                                                                                from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
+import {createFleetCockpitStatus}                                                                                                                        from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
+import {createPlaneWhoIsOnlineReader}                                                                                                                    from '../../../../../../ai/services/fleet/planeWhoIsOnlineReader.mjs';
+import {PACKAGE_SLOTS_RECORD, PACKAGE_RECEIPT_PATH, runtimeGenerationIdentity, readRuntimeGenerationRecord, readRuntimeGeneration, runtimeGenerationPin} from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
+import {prepareFleetNativeWake}                                                                                                                          from '../../../../../../ai/services/fleet/prepareFleetNativeWake.mjs';
+import {sealRuntimeGeneration, removeSealed}                                                                                                             from './fixtures/sealedRuntimeGeneration.mjs';
 import {
     CREDENTIAL_REFUSAL_CAUSES,
     proveSeatForgeAccount,
@@ -1531,64 +1533,293 @@ test.describe('FleetManager native wake canary', () => {
         FleetManager.provisionAndStartFn = null; FleetManager.managedRoot = null; FleetManager.seatHomeHolds.clear();
     });
 
-    test('opted-in running Codex seat arms only its exact admitted generation', async () => {
-        const agent  = {id: 'seat-a', harnessType: 'codex-desktop'},
-              status = {id: 'seat-a', running: true, pid: 42, startedAt: 'start', instanceHome: '/agents/seat-a/harness/codex-desktop',
-                  launchCommand: '/generation/Codex.app/Contents/MacOS/ChatGPT', harnessGeneration: {generationId: 'gen'}},
-              lifecycle = {getRegistry: () => ({getDefinition: () => agent}), status: () => status,
-                  processes           : new Map([['seat-a', {cwd: '/work'}]]),
-                  harnessGenerationsOf: () => [{id: 'gen', binaryPath: status.launchCommand, appBundle: '/generation/Codex.app'}]},
-              calls = [];
-        FleetManager.lifecycleService = lifecycle;
-        FleetManager.wakeStateOptions = {wakeReceiverManifestPath: '/receiver/routes.json', wakeReceiverStateDir: '/receiver/state',
-            readNativeWakeOptIn: async () => ({agentId: 'seat-a', family: 'codex-desktop', stateDir: '/receiver/state'})};
-        FleetManager.wakeArmFn = async input => { calls.push(input); return {state: 'ready'} };
-        FleetManager.rotationArmFn = async () => null;
-        await FleetManager.armSeatWake('seat-a', status);
-        expect(calls[0].primarySession).toEqual({instanceHome: status.instanceHome, appBundle: '/generation/Codex.app',
-            agentId: 'seat-a', family: 'codex-desktop', hookNodePath:process.execPath,
-            hookModulePath:expect.stringContaining('/ai/daemons/wake/codexWakeHook.mjs')});
-        delete FleetManager.wakeStateOptions.wakeReceiverStateDir;
-        expect((await FleetManager.armSeatWake('seat-a', status)).wakeRoute.state).toBe('ready');
-        expect(calls[1].primarySession.family).toBe('codex-desktop');
-        status.harnessGeneration.generationId = 'wrong';
-        expect((await FleetManager.armSeatWake('seat-a', status)).wakeRoute.state).toBe('unarmed');
-        expect(calls).toHaveLength(2);
-    });
+    test('normal re-arm of a verified surviving Codex seat prepares and publishes its retained A hook', async () => {
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-wake-survivor-')));
+        let retained;
 
+        try {
+            const
+                instanceHome = path.join(root, 'fixture', 'harness', 'codex-desktop'),
+                home         = path.join(instanceHome, 'codex-home'),
+                workspace    = path.join(root, 'fixture', 'org', 'repo'),
+                stateDir     = path.join(root, 'state'),
+                manifestPath = path.join(root, 'routes.json'),
+                generations  = path.join(root, 'generations');
+
+            for (const dir of [home, workspace, stateDir, generations]) {
+                fs.mkdirSync(dir, {recursive: true, mode: 0o700})
+            }
+            fs.writeFileSync(manifestPath, JSON.stringify({routes: {}}), {mode: 0o600});
+            retained = await sealRuntimeGeneration(generations, {revision: 'a', codexWake: true});
+
+            const
+                runtime        = {...runtimeGenerationPin(await readRuntimeGenerationRecord({directory: retained.directory})), pin: 'held'},
+                hookModulePath = path.join(retained.runtimeRoot, 'ai/daemons/wake/codexWakeHook.mjs'),
+                agent          = {
+                    id      : 'fixture', harnessType: 'codex-desktop', launchOwner: 'fleet',
+                    seatHome: path.join(root, 'fixture'), metadata: {repo: {repoSlug: 'org/repo'}}
+                },
+                status = {
+                    id: 'fixture', running: true, state: 'running', pid: 42, startedAt: 'birth',
+                    instanceHome, launchCommand: '/app/bin', harnessGeneration: {generationId: 'g'},
+                    runtimeGeneration: runtime
+                },
+                start  = {id: 'verified-original'},
+                record = {cwd: workspace, runtimeStart: start},
+                routes = [],
+                hookFile = path.join(home, 'hooks.json'),
+                trustFile = path.join(home, 'config.toml');
+
+            fs.writeFileSync(trustFile, 'trusted_hash = "unchanged"\n');
+            const initial = await prepareFleetNativeWake({
+                agent, instanceHome, workspaceRoot: workspace, manifestPath, stateDir,
+                nodePath: retained.executable, hookModulePath
+            });
+            expect(initial.state).toBe('prepared');
+
+            const before = fs.readFileSync(hookFile), trust = fs.readFileSync(trustFile);
+
+            FleetManager.lifecycleService = lifecycleWithStarts({
+                getInstanceRoot     : () => root,
+                getRegistry         : () => ({getAgent: () => agent}),
+                isRunning           : () => true,
+                status              : () => ({...status, runtimeGeneration: {...status.runtimeGeneration}}),
+                processes           : new Map([['fixture', record]]),
+                harnessGenerationsOf: () => [{id: 'g', binaryPath: '/app/bin', appBundle: '/app'}],
+                matchesRuntimeStart : (candidate, original) => candidate === record && original === start,
+                probeSeat           : () => 'live'
+            });
+            FleetManager.managedRoot = root;
+            FleetManager.wakeStateOptions = {
+                wakeReceiverBase    : 'http://127.0.0.1:3199', wakeReceiverManifestPath: manifestPath,
+                wakeReceiverStateDir: stateDir,
+                readNativeWakeOptIn : async () => ({agentId: 'fixture', family: 'codex-desktop', stateDir})
+            };
+            FleetManager.provisionAndStartFn = async () => status;
+            FleetManager.wakeArmFn = async input => {
+                routes.push(input.primarySession);
+                return {state: 'ready'}
+            };
+            FleetManager.rotationArmFn = async () => null;
+
+            const result = await FleetManager.startAgent('fixture');
+            expect(result.nativeWakePreparation.state).toBe('prepared');
+            expect(routes).toHaveLength(1);
+            expect(routes[0]).toMatchObject({hookNodePath: retained.executable, hookModulePath});
+            expect(fs.readFileSync(hookFile)).toEqual(before);
+            expect(fs.readFileSync(trustFile)).toEqual(trust);
+
+            routes.length = 0;
+            const replaced = await FleetManager.armSeatWake('fixture', status, undefined, {
+                verifyRuntime: async options => {
+                    const verified = await readRuntimeGeneration(options);
+                    FleetManager.lifecycleService.processes.set('fixture', {...record});
+                    return verified
+                }
+            });
+            expect(replaced.wakeRoute.state).toBe('unarmed');
+            expect(routes).toEqual([]);
+            FleetManager.lifecycleService.processes.set('fixture', record);
+
+            const changedPin = await FleetManager.armSeatWake('fixture', status, undefined, {
+                verifyRuntime: async options => {
+                    const verified = await readRuntimeGeneration(options);
+                    status.runtimeGeneration = {...runtime, payloadDigest: 'f'.repeat(64)};
+                    return verified
+                }
+            });
+            expect(changedPin.wakeRoute.state).toBe('unarmed');
+            expect(routes).toEqual([]);
+            status.runtimeGeneration = runtime;
+
+            FleetManager.lifecycleService.probeSeat = () => 'stale';
+            routes.length = 0;
+            const stale = await FleetManager.startAgent('fixture');
+            expect(stale.nativeWakePreparation.state).toBe('refused');
+            expect(routes).toEqual([]);
+
+            let probes = 0;
+            FleetManager.lifecycleService.probeSeat = () => ++probes === 1 ? 'live' : 'stale';
+            const changedDuringSelection = await FleetManager.startAgent('fixture');
+            expect(changedDuringSelection.nativeWakePreparation.state).toBe('refused');
+            expect(routes).toEqual([]);
+            expect(fs.readFileSync(hookFile)).toEqual(before);
+
+            FleetManager.lifecycleService.probeSeat = () => 'live';
+            runtime.pin = 'unknown';
+            routes.length = 0;
+            const refused = await FleetManager.startAgent('fixture');
+            expect(refused.nativeWakePreparation.state).toBe('refused');
+            expect(routes).toEqual([]);
+            expect(fs.readFileSync(hookFile)).toEqual(before);
+
+            // A separate migration records the current host; reconciliation must not restore A.
+            runtime.pin = 'held';
+            const migration = await prepareFleetNativeWake({agent, instanceHome, workspaceRoot: workspace, manifestPath, stateDir});
+            expect(migration.state).toBe('prepared');
+            const migrated = fs.readFileSync(hookFile);
+            expect(migrated).not.toEqual(before);
+            routes.length = 0;
+
+            const afterMigration = await FleetManager.startAgent('fixture');
+            expect(afterMigration.nativeWakePreparation).toMatchObject({state: 'prepared', trust: 'unverified'});
+            expect(routes).toHaveLength(1);
+            expect(routes[0].hookNodePath).toBe(process.execPath);
+            expect(fs.readFileSync(hookFile)).toEqual(migrated);
+            expect(fs.readFileSync(trustFile)).toEqual(trust)
+        } finally {
+            if (retained) await removeSealed(retained.directory);
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+    test('opted-in running Codex seat arms only its exact admitted generation', async () => {
+        const
+            root          = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-arm-current-'))),
+            stateDir      = path.join(root, 'state'),
+            manifestPath  = path.join(root, 'routes.json'),
+            instanceHome  = path.join(root, 'seat-a', 'harness', 'codex-desktop'),
+            workspaceRoot = path.join(root, 'work');
+
+        fs.mkdirSync(path.join(instanceHome, 'codex-home'), {recursive: true});
+        fs.mkdirSync(workspaceRoot);
+        fs.mkdirSync(stateDir, {mode: 0o700});
+        fs.writeFileSync(manifestPath, '{}', {mode: 0o600});
+
+        try {
+            const
+                agent  = {id: 'seat-a', harnessType: 'codex-desktop'},
+                status = {
+                    id               : 'seat-a', running: true, pid: 42, startedAt: 'start', instanceHome,
+                    launchCommand    : '/generation/Codex.app/Contents/MacOS/ChatGPT',
+                    harnessGeneration: {generationId: 'gen'}
+                },
+                lifecycle = {
+                    getRegistry         : () => ({getDefinition: () => agent}),
+                    status              : () => status,
+                    processes           : new Map([['seat-a', {cwd: workspaceRoot}]]),
+                    probeSeat           : () => 'live',
+                    harnessGenerationsOf: () => [{id: 'gen', binaryPath: status.launchCommand, appBundle: '/generation/Codex.app'}]
+                },
+                calls = [];
+
+            expect((await prepareFleetNativeWake({agent, instanceHome, workspaceRoot, manifestPath, stateDir})).state).toBe('prepared');
+            FleetManager.lifecycleService = lifecycle;
+            FleetManager.wakeStateOptions = {
+                wakeReceiverManifestPath: manifestPath, wakeReceiverStateDir: stateDir,
+                readNativeWakeOptIn     : async () => ({agentId: 'seat-a', family: 'codex-desktop', stateDir})
+            };
+            FleetManager.wakeArmFn = async input => {
+                calls.push(input);
+                return {state: 'ready'}
+            };
+            FleetManager.rotationArmFn = async () => null;
+
+            await FleetManager.armSeatWake('seat-a', status);
+            expect(calls[0].primarySession).toEqual({
+                instanceHome  : status.instanceHome, appBundle: '/generation/Codex.app',
+                agentId       : 'seat-a', family: 'codex-desktop', hookNodePath: process.execPath,
+                hookModulePath: expect.stringContaining('/ai/daemons/wake/codexWakeHook.mjs')
+            });
+            delete FleetManager.wakeStateOptions.wakeReceiverStateDir;
+            expect((await FleetManager.armSeatWake('seat-a', status)).wakeRoute.state).toBe('ready');
+            expect(calls[1].primarySession.family).toBe('codex-desktop');
+            status.harnessGeneration.generationId = 'wrong';
+            expect((await FleetManager.armSeatWake('seat-a', status)).wakeRoute.state).toBe('unarmed');
+            expect(calls).toHaveLength(2)
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
     for (const running of [false, true]) {
         test(`Start stages a ${running ? 'running' : 'fresh'} Codex seat but enrolls only on explicit activation`, async () => {
-            const agent  = {id:'fixture', harnessType:'codex-desktop',launchOwner:'fleet',seatHome:'/managed/fixture',metadata:{repo:{repoSlug:'org/repo'}}},
-                  status = {id:'fixture',running:true,pid:42,startedAt:'birth',instanceHome:'/managed/fixture/harness/codex-desktop',
-                      launchCommand:'/app/bin',harnessGeneration:{generationId:'g'}}, calls = [];
-            let   enrollment = null;
-            const lifecycle  = lifecycleWithStarts({getInstanceRoot:() => '/managed',getRegistry:() => ({getAgent:() => agent, getDefinition:() => agent}),
-                isRunning:() => running, status:() => status, processes:new Map([['fixture',{cwd:'/managed/fixture/org/repo'}]]),
-                harnessGenerationsOf:() => [{id:'g',binaryPath:'/app/bin',appBundle:'/app'}]});
-            FleetManager.lifecycleService = lifecycle; FleetManager.managedRoot = '/managed';
-            FleetManager.wakeStateOptions = {wakeReceiverBase:'http://127.0.0.1:3199', wakeReceiverManifestPath:'/receiver/routes.json',
-                wakeReceiverStateDir:'/receiver/state', readNativeWakeOptIn:async () => enrollment,
-                prepareFleetNativeWake:async input => { calls.push(['prepare', input]); return {state:'prepared'} },
-                enrollNativeWake:async input => { calls.push(['enroll',input]); enrollment = {stateDir:input.stateDir}; return enrollment }};
-            FleetManager.provisionAndStartFn = async ({prepareNativeWake}) => ({...status,
-                ...(!running ? {nativeWakePreparation:await prepareNativeWake({agent,instanceHome:status.instanceHome,workspaceRoot:'/managed/fixture/org/repo'})} : {})});
-            FleetManager.wakeArmFn = async input => { calls.push(['arm',input.primarySession]); return {state:'ready'} };
-            FleetManager.rotationArmFn = async () => null;
-            expect(await FleetManager.startAgent('fixture')).toMatchObject({nativeWakePreparation:{state:'prepared'}});
-            expect(calls.map(x => x[0])).toEqual(['prepare','arm']);
-            expect(calls[1][1]).toBeNull(); calls.length = 0;
-            const activated = await FleetManager.startAgent('fixture',{activateNativeWake:true,expectedStartedAt:'birth'});
-            if (running) {
-                expect(activated).toMatchObject({nativeWakePreparation:{state:'prepared'}});
-                expect(calls.map(x => x[0])).toEqual(['prepare','enroll','arm']);
-                expect(calls[2][1]).toMatchObject({agentId:'fixture',family:'codex-desktop'})
-            } else {
-                expect(activated).toMatchObject({nativeWakePreparation:{state:'refused',reason:'running-seat-changed'}});
-                expect(calls).toEqual([])
+            const
+                root         = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-stage-current-'))),
+                workspace    = path.join(root, 'fixture', 'org', 'repo'),
+                stateDir     = path.join(root, 'state'),
+                manifestPath = path.join(root, 'routes.json'),
+                agent        = {
+                    id      : 'fixture', harnessType: 'codex-desktop', launchOwner: 'fleet',
+                    seatHome: path.join(root, 'fixture'), metadata: {repo: {repoSlug: 'org/repo'}}
+                },
+                status = {
+                    id           : 'fixture', running: true, pid: 42, startedAt: 'birth',
+                    instanceHome : path.join(root, 'fixture', 'harness', 'codex-desktop'),
+                    launchCommand: '/app/bin', harnessGeneration: {generationId: 'g'}
+                },
+                calls = [];
+
+            fs.mkdirSync(path.join(status.instanceHome, 'codex-home'), {recursive: true});
+            fs.mkdirSync(workspace, {recursive: true});
+            fs.mkdirSync(stateDir, {mode: 0o700});
+            fs.writeFileSync(manifestPath, '{}', {mode: 0o600});
+
+            try {
+                let   enrollment = null;
+                const lifecycle  = lifecycleWithStarts({
+                    getInstanceRoot     : () => root,
+                    getRegistry         : () => ({getAgent: () => agent, getDefinition: () => agent}),
+                    probeSeat           : () => 'live',
+                    isRunning           : () => running,
+                    status              : () => status,
+                    processes           : new Map([['fixture', {cwd: workspace}]]),
+                    harnessGenerationsOf: () => [{id: 'g', binaryPath: '/app/bin', appBundle: '/app'}]
+                });
+
+                FleetManager.lifecycleService = lifecycle;
+                FleetManager.managedRoot = root;
+                FleetManager.wakeStateOptions = {
+                    wakeReceiverBase        : 'http://127.0.0.1:3199',
+                    wakeReceiverManifestPath: manifestPath,
+                    wakeReceiverStateDir    : stateDir,
+                    readNativeWakeOptIn     : async () => enrollment,
+                    prepareFleetNativeWake  : async input => {
+                        calls.push(['prepare', input]);
+                        return prepareFleetNativeWake(input)
+                    },
+                    enrollNativeWake: async input => {
+                        calls.push(['enroll', input]);
+                        enrollment = {stateDir: input.stateDir};
+                        return enrollment
+                    }
+                };
+                FleetManager.provisionAndStartFn = async ({prepareNativeWake}) => ({
+                    ...status,
+                    ...(!running ? {
+                        nativeWakePreparation: await prepareNativeWake({
+                            agent, instanceHome: status.instanceHome, workspaceRoot: workspace
+                        })
+                    } : {})
+                });
+                FleetManager.wakeArmFn = async input => {
+                    calls.push(['arm', input.primarySession]);
+                    return {state: 'ready'}
+                };
+                FleetManager.rotationArmFn = async () => null;
+
+                expect(await FleetManager.startAgent('fixture')).toMatchObject({nativeWakePreparation: {state: 'prepared'}});
+                if (!running) {
+                    const hookPath     = path.join(status.instanceHome, 'codex-home', 'hooks.json');
+                    const preparedHook = JSON.parse(fs.readFileSync(hookPath, 'utf8'));
+                    expect(preparedHook.hooks.UserPromptSubmit[0].hooks[0].command).toContain(process.execPath)
+                }
+                expect(calls.map(entry => entry[0])).toEqual(['prepare', 'arm']);
+                expect(calls[1][1]).toBeNull();
+                calls.length = 0;
+
+                const activated = await FleetManager.startAgent('fixture', {activateNativeWake: true, expectedStartedAt: 'birth'});
+                if (running) {
+                    expect(activated).toMatchObject({nativeWakePreparation: {state: 'prepared'}});
+                    expect(calls.map(entry => entry[0])).toEqual(['prepare', 'enroll', 'arm']);
+                    expect(calls[2][1]).toMatchObject({agentId: 'fixture', family: 'codex-desktop'})
+                } else {
+                    expect(activated).toMatchObject({nativeWakePreparation: {state: 'refused', reason: 'running-seat-changed'}});
+                    expect(calls).toEqual([])
+                }
+            } finally {
+                fs.rmSync(root, {recursive: true, force: true})
             }
         })
     }
-
     for (const running of [false, true]) {
         test(`ordinary Start of an unselected ${running ? 'running' : 'fresh'} Antigravity seat has no native setup failure`, async () => {
             const agent = {
@@ -1661,7 +1892,7 @@ test.describe('FleetManager native wake canary', () => {
         const status  = {id:'fixture',running:true,pid:42,startedAt:'birth',instanceHome:'/managed/fixture/harness/codex-desktop',launchCommand:'/app/bin',harnessGeneration:{generationId:'g'}};
         let   running = false;
         FleetManager.lifecycleService = lifecycleWithStarts({getInstanceRoot:() => '/managed',getRegistry:() => ({getAgent:() => agent}), isRunning:() => running,
-            status:() => ({...status,running}),processes:new Map([['fixture',{cwd:'/managed/fixture/org/repo'}]]),
+            status:() => ({...status,running}),probeSeat:()=> 'live',processes:new Map([['fixture',{cwd:'/managed/fixture/org/repo'}]]),
             harnessGenerationsOf:() => [{id:'g',binaryPath:'/app/bin',appBundle:'/app'}]});
         FleetManager.managedRoot = '/managed';
         FleetManager.wakeStateOptions = {wakeReceiverBase:'http://127.0.0.1:3199',wakeReceiverManifestPath:'/receiver/routes.json',
@@ -1692,7 +1923,7 @@ test.describe('FleetManager native wake canary', () => {
             fs.writeFileSync(configFile,'trusted_hash = "keep"\n');
             const trustBefore = fs.readFileSync(configFile,'utf8');
             FleetManager.lifecycleService = lifecycleWithStarts({getInstanceRoot:() => root,getRegistry:() => ({getAgent:() => agent}),isRunning:() => true,
-                status:() => status,processes:new Map([['fixture',{cwd:workspace}]]),
+                status:() => status,probeSeat:()=> 'live',processes:new Map([['fixture',{cwd:workspace}]]),
                 harnessGenerationsOf:() => [{id:'g',binaryPath:'/app/bin',appBundle:'/app'}]});
             FleetManager.managedRoot = root;
             FleetManager.wakeStateOptions = {wakeReceiverBase:'http://127.0.0.1:3199',wakeReceiverManifestPath:manifestPath,wakeReceiverStateDir:stateDir};
@@ -1717,7 +1948,7 @@ test.describe('FleetManager native wake canary', () => {
               status  = {id:'fixture',running:true,pid:42,startedAt:'birth',instanceHome:'/managed/fixture/harness/codex-desktop',launchCommand:'/app/bin',harnessGeneration:{generationId:'g'}},
               entered = Promise.withResolvers(), release = Promise.withResolvers();
         const lifecycle = lifecycleWithStarts({getInstanceRoot:() => '/managed',getRegistry:() => ({getAgent:() => agent}),isRunning:() => true,
-            status:() => status,processes:new Map([['fixture',{cwd:'/managed/fixture/org/repo'}]]),
+            status:() => status,probeSeat:()=> 'live',processes:new Map([['fixture',{cwd:'/managed/fixture/org/repo'}]]),
             harnessGenerationsOf:() => [{id:'g',binaryPath:'/app/bin',appBundle:'/app'}]});
         FleetManager.lifecycleService = lifecycle; FleetManager.managedRoot = '/managed';
         FleetManager.wakeStateOptions = {wakeReceiverBase:'http://127.0.0.1:3199',wakeReceiverManifestPath:'/receiver/routes.json',

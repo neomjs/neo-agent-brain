@@ -22,16 +22,16 @@ import {
     proveSeatForgeAccount,
     resolveSeatGitIdentity
 }                                                                                    from './seatGitIdentity.mjs';
-import {readSeatModelCatalog}                  from './seatModelCatalog.mjs';
-import {startAgentProvisioned}                 from './startAgentProvisioned.mjs';
-import {readInstalledRuntimeGeneration}        from './runtimeGeneration.mjs';
-import {REPLACE_SEAT_CREDENTIAL_SCOPES}        from '../../../src/fleet/contract/wire.mjs';
-import path                                    from 'node:path';
-import fs                                      from 'node:fs/promises';
-import {fileURLToPath}                         from 'node:url';
-import {enrollNativeWake, readNativeWakeOptIn} from '../../daemons/wake/fleetPrimarySessionWake.mjs';
-import {prepareFleetNativeWake}                from './prepareFleetNativeWake.mjs';
-import {proveRegisteredAntigravityProject}     from './antigravityProjectRegistry.mjs';
+import {readSeatModelCatalog}                                  from './seatModelCatalog.mjs';
+import {startAgentProvisioned}                                 from './startAgentProvisioned.mjs';
+import {readInstalledRuntimeGeneration, readRuntimeGeneration} from './runtimeGeneration.mjs';
+import {REPLACE_SEAT_CREDENTIAL_SCOPES}                        from '../../../src/fleet/contract/wire.mjs';
+import path                                                    from 'node:path';
+import fs                                                      from 'node:fs/promises';
+import {isDeepStrictEqual}                                     from 'node:util';
+import {enrollNativeWake, readNativeWakeOptIn}                 from '../../daemons/wake/fleetPrimarySessionWake.mjs';
+import {prepareFleetNativeWake, resolveCodexWakeRuntime}       from './prepareFleetNativeWake.mjs';
+import {proveRegisteredAntigravityProject}                     from './antigravityProjectRegistry.mjs';
 
 export {REPLACE_SEAT_CREDENTIAL_SCOPES};
 
@@ -45,6 +45,23 @@ function nativeWakeLaunch(lifecycle, agentId, status, family, generations = null
         throw new Error('native wake launch generation or workspace is unproven')
     }
     return {live, record, generation}
+}
+
+/** @summary Rechecks the original managed Start before using its runtime as hook authority. */
+function assertCodexRuntimeStart(lifecycle, record, runtime) {
+    if (lifecycle.probeSeat(record) !== 'live' || runtime?.pin === 'held' && (!record.runtimeStart ||
+        lifecycle.matchesRuntimeStart(record, record.runtimeStart, {adopted:false}) !== true)) {
+        throw new Error('Codex wake original Start is unproven')
+    }
+}
+
+/** @summary Fences async hook inspection against replacement of the Start or runtime pin. */
+function recheckCodexRuntimeStart(lifecycle, agentId, status, record, runtime) {
+    const current = nativeWakeLaunch(lifecycle, agentId, status, 'codex-desktop');
+    if (current.record !== record || !isDeepStrictEqual(current.live.runtimeGeneration, runtime)) {
+        throw new Error('Codex wake original Start changed')
+    }
+    assertCodexRuntimeStart(lifecycle, record, runtime)
 }
 
 /** @summary Derives the only managed home and workspace eligible for native wake preparation. */
@@ -604,9 +621,15 @@ class FleetManager extends Base {
     async startAgent(agentId, {activateNativeWake = false, expectedStartedAt = null} = {}) {
         this.assertStartPermitted('startAgent', agentId);
 
-        const lifecycle     = this.getLifecycleService(),
-              startSignal   = lifecycle.beginStart(agentId),
-              admissionMark = lifecycle.getLaunchAdmission?.()?.revocationMark(agentId) ?? null;
+        const lifecycle            = this.getLifecycleService(),
+              startSignal          = lifecycle.beginStart(agentId),
+              admissionMark        = lifecycle.getLaunchAdmission?.()?.revocationMark(agentId) ?? null,
+              verifiedWakeRuntimes = new Map(),
+              verifyWakeRuntime    = ({directory, pin}) => {
+                  const key = JSON.stringify(pin);
+                  if (!verifiedWakeRuntimes.has(key)) verifiedWakeRuntimes.set(key, readRuntimeGeneration({directory}));
+                  return verifiedWakeRuntimes.get(key)
+              };
 
         try {
             return await this.withSeatHome(agentId, async () => {
@@ -677,8 +700,15 @@ class FleetManager extends Base {
                         const recheck = lifecycle.status(agentId);
                         if (!recheck.running || recheck.pid !== live.pid || recheck.startedAt !== live.startedAt ||
                             recheck.harnessGeneration?.generationId !== live.harnessGeneration.generationId) throw new Error('launch changed');
-                        preparation = await prepareNativeWake({agent, instanceHome:live.instanceHome, workspaceRoot:record.cwd, configDir})
-                    } catch { preparation = {state:'refused', reason:'running-seat-unproven'} }
+                        if (family === 'codex-desktop') assertCodexRuntimeStart(lifecycle, record, live.runtimeGeneration);
+                        const hookRuntime = family === 'codex-desktop' ? await resolveCodexWakeRuntime({agentId, instanceHome:live.instanceHome,
+                            workspaceRoot:record.cwd, manifestPath, stateDir, runtime:live.runtimeGeneration, enrolled:Boolean(existing), verifyRuntime:verifyWakeRuntime}) : {};
+                        if (family === 'codex-desktop') {
+                            recheckCodexRuntimeStart(lifecycle, agentId, status, record, live.runtimeGeneration)
+                        }
+                        preparation = await prepareNativeWake({agent, instanceHome:live.instanceHome, workspaceRoot:record.cwd, configDir, ...hookRuntime})
+                    } catch (error) { preparation = {state:'refused', reason:error?.code === 'CODEX_WAKE_COMPATIBILITY_UNPROVEN'
+                        ? 'codex-wake-compatibility-unproven' : 'running-seat-unproven'} }
                 } else if (!preparation) preparation = status?.nativeWakePreparation;
                 startSignal.throwIfAborted();
                 if (activateNativeWake) {
@@ -697,6 +727,8 @@ class FleetManager extends Base {
                 if (activateNativeWake && supported && !declared && !preparation) preparation = {state:'refused', reason:'receiver-not-declared'};
                 if (preparation?.state === 'prepared' && family === 'codex-desktop') {
                     preparation = {...preparation, trust:'unverified', nextStep:'Review the seat hook in Codex settings and submit an ordinary prompt to confirm it runs in this session.'}
+                } else if (preparation?.reason === 'codex-wake-compatibility-unproven') {
+                    preparation = {...preparation, nextStep:'Keep this chat running. At its next planned managed Start, Fleet stages the installed hook; review it in Codex Settings → Hooks if requested.'}
                 } else if (preparation?.state === 'refused') {
                     preparation = {...preparation, nextStep:'Check the seat wake setup and receiver configuration, then try again.'}
                 }
@@ -706,7 +738,7 @@ class FleetManager extends Base {
 
                 // Keep the home until a late subscription has been withdrawn after cancellation;
                 // otherwise that cleanup could remove the next Start's canonical subscription.
-                const armed = await this.armSeatWake(agentId, status, startSignal);
+                const armed = await this.armSeatWake(agentId, status, startSignal, {verifyRuntime:verifyWakeRuntime});
 
                 if (!startSignal.aborted) return preparation ? {...armed, nativeWakePreparation:preparation} : armed;
 
@@ -753,9 +785,11 @@ class FleetManager extends Base {
      * @param {String} agentId Registry agent id.
      * @param {Object} status The lifecycle status `startAgent` produced.
      * @param {AbortSignal} [startSignal] The same lifecycle-owned pending attempt.
+     * @param {Object} [options] Optional operation-scoped runtime verification.
+     * @param {Function} [options.verifyRuntime] Sealed-runtime verifier for this Start only.
      * @returns {Promise<Object>} `status`, plus `wakeRoute` and `rotationRoute` where each applies to the seat.
      */
-    async armSeatWake(agentId, status, startSignal) {
+    async armSeatWake(agentId, status, startSignal, {verifyRuntime = readRuntimeGeneration} = {}) {
         const
             lifecycle = this.getLifecycleService(),
             registry  = lifecycle.getRegistry(),
@@ -776,8 +810,10 @@ class FleetManager extends Base {
                     const {live, record, generation} = nativeWakeLaunch(lifecycle, agentId, status, agent.harnessType);
                     primarySession = {instanceHome: live.instanceHome, appBundle: generation.appBundle, agentId, family: agent.harnessType};
                     if (agent.harnessType === 'codex-desktop') {
-                        const hookNodePath   = process.execPath,
-                              hookModulePath = fileURLToPath(new URL('../../daemons/wake/codexWakeHook.mjs', import.meta.url));
+                        assertCodexRuntimeStart(lifecycle, record, live.runtimeGeneration);
+                        const {nodePath:hookNodePath, hookModulePath} = await resolveCodexWakeRuntime({agentId, instanceHome:live.instanceHome,
+                            workspaceRoot:record.cwd, manifestPath:options.wakeReceiverManifestPath, stateDir:optIn.stateDir,
+                            runtime:live.runtimeGeneration, enrolled:true, verifyRuntime});
                         if (!(await fs.stat(hookModulePath)).isFile()) throw new Error('native wake hook module is unavailable');
                         primarySession = {...primarySession, hookNodePath, hookModulePath};
                     }
@@ -797,6 +833,9 @@ class FleetManager extends Base {
                     const recheck = lifecycle.status(agentId);
                     if (!recheck.running || recheck.pid !== live.pid || recheck.startedAt !== live.startedAt ||
                         recheck.harnessGeneration?.generationId !== live.harnessGeneration.generationId) throw new Error('native wake launch changed during admission');
+                    if (agent.harnessType === 'codex-desktop') {
+                        recheckCodexRuntimeStart(lifecycle, agentId, status, record, live.runtimeGeneration)
+                    }
                 }
             }
             wakeRoute = await this.getWakeArmFn()({
