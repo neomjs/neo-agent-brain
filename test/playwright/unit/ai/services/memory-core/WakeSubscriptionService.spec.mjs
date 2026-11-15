@@ -3417,6 +3417,20 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(entry.family).toBe('provisioned-fam');
         });
 
+        test('a row without a displayName takes the stored name, as an auto-provisioned identity has none (#1772)', async () => {
+            GraphService.upsertNode({id: '@neo-provisioned-named', type: 'AgentIdentity', name: 'Nova', properties: {participationStatus: 'active'}});
+            GraphService.upsertNode({id: '@neo-provisioned-bare',  type: 'AgentIdentity', properties: {participationStatus: 'active'}});
+            seedAgent('@neo-rostered-named', {displayName: 'Rosa'});
+
+            const
+                {agents} = await WakeSubscriptionService.whoIsOnline({verbose: true, now: new Date(T0)}),
+                nameOf   = identity => agents.find(agent => agent.identity === identity).name;
+
+            expect(nameOf('@neo-provisioned-named')).toBe('Nova');
+            expect(nameOf('@neo-provisioned-bare')).toBe('@neo-provisioned-bare');
+            expect(nameOf('@neo-rostered-named'), 'a displayName still wins').toBe('Rosa')
+        });
+
         test('fresh add_memory activity → online (recency-primary, verbose)', async () => {
             seedAgent('@neo-active');
             seedActivity('@neo-active', {timestamp: iso(T0ms - 2 * 60 * 1000)});

@@ -1293,7 +1293,8 @@ class WakeSubscriptionService extends Base {
     /**
      * @summary Projects a single AgentIdentity node to its liveness verdict via the
      * participationStatus-gate → add_memory-recency precedence.
-     * @param {Object} node Parsed AgentIdentity node.
+     * @param {Object} node A parsed AgentIdentity row, `{id, label, properties}`. Its name is
+     *   `properties.name`; a `displayName`, which only the roots give, wins over it.
      * @param {Number} nowMs Clock epoch ms.
      * @param {Map<String, Object>} [validationByLogin] Live auth-staleness snapshot keyed by
      *   normalized GitHub login.
@@ -1306,7 +1307,7 @@ class WakeSubscriptionService extends Base {
     _projectAgentLiveness(node, nowMs, validationByLogin=new Map()) {
         const props               = node.properties || {},
               identity            = node.id,
-              name                = node.name || props.displayName || node.id,
+              name                = props.displayName || props.name || node.id,
               family              = resolveResidentFamilyById(node.id) ?? props.family ?? props.modelFamily ?? null,
               participationStatus = props.participationStatus || 'active',
               signals             = {participationStatus, statusReason: props.statusReason ?? null, participationSince: props.since ?? null, activityRecency: null},
