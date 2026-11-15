@@ -426,9 +426,8 @@ function getReconciledWalSegmentCacheKey(dir, markerType, segmentKey) {
  * @param {String} dir Directory for WAL segment files.
  * @param {String} segmentKey UTC-day segment key.
  * @returns {void}
- * @private
  */
-function deleteReconciledWalSegmentCacheEntries(dir, segmentKey) {
+export function deleteReconciledWalSegmentCacheEntries(dir, segmentKey) {
     if (!dir || !segmentKey) return;
     const resolvedDir = path.resolve(dir);
     reconciledWalSegmentCache.delete(`${resolvedDir}\u0000embed\u0000${segmentKey}`);
