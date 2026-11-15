@@ -284,19 +284,34 @@ test.describe('rebuildMessageEdges maintenance script', () => {
         }
     });
 
+    const identity  = id => node(id, 'AgentIdentity'),
+          broadcast = () => node('AGENT:*', 'BroadcastSentinel'),
+          // the facts MailboxService.getMessage reads off one message's edges
+          routeFacts = messageId => {
+              const rows = liveEdges().filter(row => row.source === messageId);
+
+              return {
+                  sentBy        : rows.find(row => row.type === 'SENT_BY')?.target ?? null,
+                  sentTo        : rows.filter(row => row.type === 'SENT_TO').map(row => row.target),
+                  deliveredToMe : false,
+                  hasDeliveries : false,
+                  canReadInboxOf: () => false
+              };
+          };
+
     test('a message older than the WAL gains the carriers its fields name, normalized and stamped as the projection writes them', () => {
         seedLive({nodes: [
             message('MESSAGE:direct', {from: 'neo-opus-vega', to: '@neo-opus-ada'}),
             message('MESSAGE:broadcast', {from: '@neo-opus-ada', to: 'AGENT:*'}),
-            node('@neo-opus-vega', 'AGENT'), node('@neo-opus-ada', 'AGENT'), node('AGENT:*', 'AGENT')
+            identity('@neo-opus-vega'), identity('@neo-opus-ada'), broadcast()
         ]});
 
         const result = runRebuildMessageEdges({dbPath, apply: true, logger: quiet}),
               base   = {weight: 1, timestamp: '2026-09-25T10:00:00.000Z', userId: 'neo-opus-vega', sharedEntity: true};
 
         expect(result.types).toEqual({
-            SENT_BY: {fields: 2, linked: 2, present: 0, missingTarget: 0, conceptsCreated: 0},
-            SENT_TO: {fields: 2, linked: 2, present: 0, missingTarget: 0, conceptsCreated: 0}
+            SENT_BY: {fields: 2, linked: 2, present: 0, missingTarget: 0, conceptsCreated: 0, invalid: 0},
+            SENT_TO: {fields: 2, linked: 2, present: 0, missingTarget: 0, conceptsCreated: 0, invalid: 0}
         });
         expect(liveEdges().map(({source, target, type, properties}) => ({source, target, type, properties}))).toEqual([
             {source: 'MESSAGE:broadcast', target: '@neo-opus-ada',  type: 'SENT_BY', properties: base},
@@ -311,7 +326,7 @@ test.describe('rebuildMessageEdges maintenance script', () => {
             nodes: [
                 message('MESSAGE:held', {from: '@neo-opus-vega', to: '@neo-opus-ada'}),
                 message('MESSAGE:stranger', {from: '@nobody', to: '@neo-opus-ada'}),
-                node('@neo-opus-vega', 'AGENT'), node('@neo-opus-ada', 'AGENT'), node('neo-opus-4-7', 'AGENT')
+                identity('@neo-opus-vega'), identity('@neo-opus-ada'), identity('neo-opus-4-7')
             ],
             edges: [{id: 'kept', source: 'MESSAGE:held', target: 'neo-opus-4-7', type: 'SENT_BY', properties: {weight: 1}}]
         });
@@ -319,8 +334,8 @@ test.describe('rebuildMessageEdges maintenance script', () => {
         const dry = runRebuildMessageEdges({dbPath, logger: quiet});
 
         expect(dry.types).toEqual({
-            SENT_BY: {fields: 2, linked: 0, present: 1, missingTarget: 1, conceptsCreated: 0},
-            SENT_TO: {fields: 2, linked: 2, present: 0, missingTarget: 0, conceptsCreated: 0}
+            SENT_BY: {fields: 2, linked: 0, present: 1, missingTarget: 1, conceptsCreated: 0, invalid: 0},
+            SENT_TO: {fields: 2, linked: 2, present: 0, missingTarget: 0, conceptsCreated: 0, invalid: 0}
         });
         expect(liveEdges().map(row => row.target)).toEqual(['neo-opus-4-7']);
 
@@ -333,29 +348,88 @@ test.describe('rebuildMessageEdges maintenance script', () => {
     test('the rebuilt carriers let the sender and the recipient open a direct message, and nobody else', () => {
         seedLive({nodes: [
             message('MESSAGE:direct', {from: '@neo-opus-vega', to: '@neo-opus-ada'}),
-            node('@neo-opus-vega', 'AGENT'), node('@neo-opus-ada', 'AGENT')
+            identity('@neo-opus-vega'), identity('@neo-opus-ada')
         ]});
 
-        // the facts MailboxService.getMessage reads off the message's edges
-        const routeFacts = () => {
-            const rows = liveEdges();
-
-            return {
-                sentBy        : rows.find(row => row.type === 'SENT_BY')?.target ?? null,
-                sentTo        : rows.filter(row => row.type === 'SENT_TO').map(row => row.target),
-                deliveredToMe : false,
-                hasDeliveries : false,
-                canReadInboxOf: () => false
-            };
-        };
-
-        expect(canReadMessage('@neo-opus-vega', routeFacts())).toBe(false);
+        expect(canReadMessage('@neo-opus-vega', routeFacts('MESSAGE:direct'))).toBe(false);
 
         runRebuildMessageEdges({dbPath, apply: true, logger: quiet});
 
-        expect(canReadMessage('@neo-opus-vega', routeFacts())).toBe(true);
-        expect(canReadMessage('@neo-opus-ada', routeFacts())).toBe(true);
-        expect(canReadMessage('@neo-gpt-emmy', routeFacts())).toBe(false);
+        expect(canReadMessage('@neo-opus-vega', routeFacts('MESSAGE:direct'))).toBe(true);
+        expect(canReadMessage('@neo-opus-ada', routeFacts('MESSAGE:direct'))).toBe(true);
+        expect(canReadMessage('@neo-gpt-emmy', routeFacts('MESSAGE:direct'))).toBe(false);
+    });
+
+    test('a route another writer adds between the scan and the flush stays the only one and counts as present', () => {
+        seedLive({nodes: [
+            message('MESSAGE:direct', {from: '@neo-opus-vega', to: '@neo-opus-ada'}),
+            identity('@neo-opus-vega'), identity('@neo-opus-ada'), identity('@neo-gpt-emmy')
+        ]});
+
+        const db = openDb();
+
+        // the precheck answers "no route" and, before the batch flushes, a competing writer links one
+        const raced = new Proxy(db, {
+            get(target, property) {
+                if (property !== 'prepare') {
+                    const value = target[property];
+                    return typeof value === 'function' ? value.bind(target) : value;
+                }
+
+                return sql => {
+                    const statement = target.prepare(sql);
+
+                    if (!sql.startsWith('SELECT 1 FROM Edges WHERE source = ? AND type = ?')) return statement;
+
+                    const precheck = statement.pluck();
+
+                    return {pluck: () => ({get: (source, type) => {
+                        const held = precheck.get(source, type);
+
+                        if (type === 'SENT_TO') {
+                            target.prepare('INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (?, NULL, ?, ?, ?, ?)')
+                                .run('competing', source, '@neo-gpt-emmy', type, JSON.stringify({id: 'competing', properties: {weight: 1}}));
+                        }
+
+                        return held;
+                    }})};
+                };
+            }
+        });
+
+        try {
+            const result = rebuildMessageEdges({db: raced, apply: true, types: ['SENT_TO']});
+
+            expect(db.prepare("SELECT target FROM Edges WHERE source = 'MESSAGE:direct' AND type = 'SENT_TO'").pluck().all()).toEqual(['@neo-gpt-emmy']);
+            expect(result.types.SENT_TO).toEqual({fields: 1, linked: 0, present: 1, missingTarget: 0, conceptsCreated: 0, invalid: 0});
+        } finally {
+            db.close();
+        }
+    });
+
+    test('malformed routing never becomes a route, and the valid historical routes beside it still do', () => {
+        seedLive({nodes: [
+            message('MESSAGE:direct', {from: '@neo-opus-vega', to: '@neo-opus-ada'}),
+            message('MESSAGE:broadcast', {from: '@neo-opus-ada', to: 'AGENT:*'}),
+            message('MESSAGE:array-to', {from: '@neo-opus-vega', to: ['AGENT:*', '@neo-opus-ada']}),
+            message('MESSAGE:concept-from', {from: '@a-concept', to: '@neo-opus-ada'}),
+            node('MESSAGE:artifact', 'ARTIFACT_TASK', {from: '@neo-opus-vega', to: 'AGENT:*'}),
+            identity('@neo-opus-vega'), identity('@neo-opus-ada'), broadcast(), node('@a-concept', 'CONCEPT')
+        ]});
+
+        const result = runRebuildMessageEdges({dbPath, apply: true, types: ['SENT_BY', 'SENT_TO'], logger: quiet});
+
+        expect(canReadMessage('@neo-gpt-emmy', routeFacts('MESSAGE:array-to'))).toBe(false);
+        expect(canReadMessage('@neo-gpt-emmy', routeFacts('MESSAGE:broadcast'))).toBe(true);
+        expect(canReadMessage('@neo-opus-ada', routeFacts('MESSAGE:direct'))).toBe(true);
+        expect(canReadMessage('@neo-gpt-emmy', routeFacts('MESSAGE:direct'))).toBe(false);
+        expect(liveEdges().filter(row => ['MESSAGE:array-to', 'MESSAGE:artifact'].includes(row.source) && row.type === 'SENT_TO')).toEqual([]);
+        expect(liveEdges().filter(row => ['MESSAGE:concept-from', 'MESSAGE:artifact'].includes(row.source) && row.type === 'SENT_BY')).toEqual([]);
+
+        expect(result.types).toEqual({
+            SENT_BY: {fields: 5, linked: 3, present: 0, missingTarget: 0, conceptsCreated: 0, invalid: 2},
+            SENT_TO: {fields: 5, linked: 3, present: 0, missingTarget: 0, conceptsCreated: 0, invalid: 2}
+        });
     });
 
     test('targetsOf reads one string or every string entry of an array, nothing else', () => {

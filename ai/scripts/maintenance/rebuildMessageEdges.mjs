@@ -21,9 +21,12 @@ import {normalizeMailboxIdentityForComparison} from '../../services/memory-core/
  * The routing carriers are `repairMessageGraphIntegrity`'s, but it rebuilds them from the message WAL,
  * which keeps only its retention window: a message older than the WAL has no route, and `getMessage`
  * refuses even its sender. So `from` and `to` link `SENT_BY` and `SENT_TO` here, normalized as the
- * projection normalizes them, one of each per message (a held carrier stays, whatever it targets), and
- * a broadcast route carries `broadcastCohort: 'legacy-unknown'`, the projection's stamp for a broadcast
- * without a recipient snapshot. That snapshot is not on the node, so `DELIVERED_TO` is not rebuilt.
+ * projection normalizes them. A route decides who may read the message, so it is linked only from a
+ * node labelled `MESSAGE`, from a single string, to a node of the kind the projection routes to, and
+ * only while the message holds no route of that type, which the insert itself checks, so a route
+ * another writer adds meanwhile stays the only one. Anything else counts as `invalid`. A broadcast
+ * route carries `broadcastCohort: 'legacy-unknown'`, the projection's stamp for a broadcast without a
+ * recipient snapshot. That snapshot is not on the node, so `DELIVERED_TO` is not rebuilt.
  *
  * Identity is decided inside the insert (`INSERT … WHERE NOT EXISTS`), and the counts are the rows it
  * changed. `--types` names the edge types to link (all six by default): the tag edges are tens of
@@ -35,8 +38,8 @@ import {normalizeMailboxIdentityForComparison} from '../../services/memory-core/
 
 /**
  * The node fields and the edge type each one becomes. A string field links one target, an array
- * field links each entry; a `carrier` field links its one string, an identity, and only while the
- * message holds no edge of that type.
+ * field links each entry. A `carrier` lists the target labels its route may name, the ones the
+ * projection writes: senders are identities or the system, destinations identities or the broadcast.
  * @type {Object[]}
  */
 export const MESSAGE_EDGE_FIELDS = Object.freeze([
@@ -44,8 +47,8 @@ export const MESSAGE_EDGE_FIELDS = Object.freeze([
     Object.freeze({field: 'partOfThread',   type: 'PART_OF_THREAD'}),
     Object.freeze({field: 'relatedTickets', type: 'REFERENCES_TICKET'}),
     Object.freeze({field: 'taggedConcepts', type: 'TAGGED_CONCEPT'}),
-    Object.freeze({field: 'from',           type: 'SENT_BY', carrier: true}),
-    Object.freeze({field: 'to',             type: 'SENT_TO', carrier: true})
+    Object.freeze({field: 'from',           type: 'SENT_BY', carrier: Object.freeze(['AgentIdentity', 'System'])}),
+    Object.freeze({field: 'to',             type: 'SENT_TO', carrier: Object.freeze(['AgentIdentity', 'BroadcastSentinel'])})
 ]);
 
 const WRITE_BATCH_SIZE = 1000;
@@ -69,7 +72,7 @@ export function targetsOf(value) {
  * @param {String[]} [options.types]       Edge types to link; every other field is skipped. Default: all six.
  * @param {Number}   [options.batchSize=1000] Writes per transaction.
  * @returns {{messages: Number, types: Object}} Per type: `{fields, linked, present, missingTarget, conceptsCreated}`;
- * ticket references also report `unresolved` counts by refusal class.
+ * ticket references also report `unresolved` counts by refusal class, and carriers `invalid`.
  */
 export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIELDS.map(entry => entry.type), batchSize = WRITE_BATCH_SIZE}) {
     const
@@ -79,13 +82,19 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
         nodeExists = db.prepare('SELECT 1 FROM Nodes WHERE id = ?').pluck(),
         edgeExists = db.prepare('SELECT 1 FROM Edges WHERE source = ? AND target = ? AND type = ? LIMIT 1').pluck(),
         typeHeld   = db.prepare('SELECT 1 FROM Edges WHERE source = ? AND type = ? LIMIT 1').pluck(),
+        labelOf    = db.prepare("SELECT json_extract(data, '$.label') FROM Nodes WHERE id = ?").pluck(),
         insertEdge = apply && db.prepare(`
             INSERT INTO Edges (id, user_id, source, target, type, data)
             SELECT ?, ?, ?, ?, ?, ?
             WHERE NOT EXISTS (SELECT 1 FROM Edges WHERE source = ? AND target = ? AND type = ?)`),
+        insertRoute = apply && db.prepare(`
+            INSERT INTO Edges (id, user_id, source, target, type, data)
+            SELECT ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM Edges WHERE source = ? AND type = ?)`),
         insertNode = apply && db.prepare('INSERT OR IGNORE INTO Nodes (id, user_id, data) VALUES (?, NULL, ?)'),
         result     = {messages: 0, types: {}},
-        row        = type => result.types[type] ??= {fields: 0, linked: 0, present: 0, missingTarget: 0, conceptsCreated: 0},
+        row        = (type, carrier) => result.types[type] ??= {fields: 0, linked: 0, present: 0, missingTarget: 0, conceptsCreated: 0, ...(carrier ? {invalid: 0} : {})},
+        edgeData   = (id, source, target, type, props, extra) => ({id, source, target, type, properties: {weight: 1, timestamp: props.sentAt ?? null, userId: props.userId ?? null, sharedEntity: true, ...extra}}),
         seenConcepts = new Set();
 
     let pending = [];
@@ -104,12 +113,44 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
 
         if (data === undefined) continue;
 
-        const props = JSON.parse(data)?.properties || {};
+        const node  = JSON.parse(data) || {},
+              props = node.properties || {};
 
         result.messages++;
 
         for (const {field, type, carrier} of fields) {
-            const targets = carrier ? targetsOf(props[field]).slice(0, 1) : targetsOf(props[field]);
+            if (carrier) {
+                if (props[field] === undefined || props[field] === null) continue;
+
+                const counts = row(type, true),
+                      target = typeof props[field] === 'string' ? normalizeMailboxIdentityForComparison(props[field]) : null;
+
+                counts.fields++;
+
+                if (node.label !== 'MESSAGE' || !target || target === '@me' || target === '@') { counts.invalid++; continue; }
+                if (typeHeld.get(messageId, type)) { counts.present++; continue; }
+
+                const label = labelOf.get(target);
+
+                if (label === undefined) { counts.missingTarget++; continue; }
+                if (!carrier.includes(label)) { counts.invalid++; continue; }
+
+                counts.linked++;
+
+                if (apply) {
+                    const edge = edgeData(globalThis.crypto.randomUUID(), messageId, target, type, props, target === 'AGENT:*' ? {broadcastCohort: 'legacy-unknown'} : {});
+
+                    queue(() => {
+                        if (insertRoute.run(edge.id, edge.properties.userId, messageId, target, type, JSON.stringify(edge), messageId, type).changes === 0) {
+                            counts.linked--;
+                            counts.present++;
+                        }
+                    });
+                }
+                continue;
+            }
+
+            const targets = targetsOf(props[field]);
 
             if (targets.length === 0) continue;
 
@@ -117,10 +158,8 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
 
             counts.fields++;
 
-            if (carrier && typeHeld.get(messageId, type)) { counts.present++; continue; }
-
             for (const authoredTarget of targets) {
-                let target = carrier ? normalizeMailboxIdentityForComparison(authoredTarget) : authoredTarget, externalRef;
+                let target = authoredTarget, externalRef;
 
                 if (type === 'REFERENCES_TICKET') {
                     counts.unresolved ||= {};
@@ -145,18 +184,10 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
                 counts.linked++;
 
                 if (apply) {
-                    const
-                        edgeId     = globalThis.crypto.randomUUID(),
-                        properties = {
-                            weight: 1, timestamp: props.sentAt ?? null, userId: props.userId ?? null, sharedEntity: true,
-                            ...(externalRef ? {externalRef} : {}),
-                            ...(type === 'SENT_TO' && target === 'AGENT:*' ? {broadcastCohort: 'legacy-unknown'} : {})
-                        };
+                    const edge = edgeData(globalThis.crypto.randomUUID(), messageId, target, type, props, externalRef ? {externalRef} : {});
 
                     queue(() => {
-                        const changes = insertEdge.run(edgeId, properties.userId, messageId, target, type, JSON.stringify({id: edgeId, source: messageId, target, type, properties}), messageId, target, type).changes;
-
-                        if (changes === 0) counts.linked--;
+                        if (insertEdge.run(edge.id, edge.properties.userId, messageId, target, type, JSON.stringify(edge), messageId, target, type).changes === 0) counts.linked--;
                     });
                 }
             }
