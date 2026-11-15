@@ -14,6 +14,9 @@ import fs             from 'fs-extra';
 import path           from 'path';
 import {canReadMessage} from '../../../../../../ai/services/memory-core/helpers/messageAdmission.mjs';
 import {
+    createCommand,
+    parseRowidRange,
+    READ_AT_SOURCE,
     rebuildMessageEdges,
     runRebuildMessageEdges,
     targetsOf
@@ -430,6 +433,85 @@ test.describe('rebuildMessageEdges maintenance script', () => {
             SENT_BY: {fields: 5, linked: 3, present: 0, missingTarget: 0, conceptsCreated: 0, invalid: 2},
             SENT_TO: {fields: 5, linked: 3, present: 0, missingTarget: 0, conceptsCreated: 0, invalid: 2}
         });
+    });
+
+    const receipt = id => {
+        const {readAt, readAtSource} = liveNode(id).properties;
+
+        return {readAt, readAtSource};
+    };
+
+    test('a restored receiving route stamps the read receipt a message lacks and leaves every other receipt state alone', () => {
+        const readAt = '2026-09-26T08:00:00.000Z',
+              none   = {readAt: undefined, readAtSource: undefined},
+              stamp  = {readAt: '2026-09-25T10:00:00.000Z', readAtSource: READ_AT_SOURCE};
+
+        seedLive({
+            nodes: [
+                message('MESSAGE:unread',     {from: '@neo-opus-vega', to: '@neo-opus-ada'}),
+                message('MESSAGE:broadcast',  {from: '@neo-opus-vega', to: 'AGENT:*'}),
+                message('MESSAGE:read',       {from: '@neo-opus-vega', to: '@neo-opus-ada', readAt}),
+                message('MESSAGE:no-sent-at', {from: '@neo-opus-vega', to: '@neo-opus-ada', sentAt: null}),
+                message('MESSAGE:delivered',  {from: '@neo-opus-vega', to: 'AGENT:*'}),
+                identity('@neo-opus-vega'), identity('@neo-opus-ada'), broadcast()
+            ],
+            edges: [{id: 'delivery', source: 'MESSAGE:delivered', target: '@neo-opus-ada', type: 'DELIVERED_TO', properties: {weight: 1}}]
+        });
+
+        expect(runRebuildMessageEdges({dbPath, types: ['SENT_TO'], logger: quiet}).readStamped).toBe(2);
+        expect(receipt('MESSAGE:unread')).toEqual(none);
+
+        const applied = runRebuildMessageEdges({dbPath, apply: true, types: ['SENT_TO'], logger: quiet});
+
+        expect(applied.types.SENT_TO.linked).toBe(5);
+        expect(applied.readStamped).toBe(2);
+        expect(receipt('MESSAGE:unread')).toEqual(stamp);
+        expect(receipt('MESSAGE:broadcast')).toEqual(stamp);
+        expect(receipt('MESSAGE:read')).toEqual({readAt, readAtSource: undefined});
+        expect(receipt('MESSAGE:no-sent-at')).toEqual(none);
+        expect(receipt('MESSAGE:delivered')).toEqual(none);
+        expect(runRebuildMessageEdges({dbPath, apply: true, types: ['SENT_TO'], logger: quiet}).readStamped).toBe(0);
+    });
+
+    test('a restored sender route alone stamps nothing: the recipient could already read the message', () => {
+        seedLive({
+            nodes: [message('MESSAGE:direct', {from: '@neo-opus-vega', to: '@neo-opus-ada'}), identity('@neo-opus-vega'), identity('@neo-opus-ada')],
+            edges: [{id: 'route', source: 'MESSAGE:direct', target: '@neo-opus-ada', type: 'SENT_TO', properties: {weight: 1}}]
+        });
+
+        const result = runRebuildMessageEdges({dbPath, apply: true, types: ['SENT_BY', 'SENT_TO'], logger: quiet});
+
+        expect(result.types.SENT_BY.linked).toBe(1);
+        expect(result.types.SENT_TO.present).toBe(1);
+        expect(result.readStamped).toBe(0);
+        expect(receipt('MESSAGE:direct')).toEqual({readAt: undefined, readAtSource: undefined});
+    });
+
+    test('--stamp-restored-routes stamps only the messages whose receiving route lies in the rowid range', () => {
+        const ids = ['below', 'first', 'read', 'last', 'above'].map(name => `MESSAGE:${name}`);
+
+        seedLive({
+            nodes: [
+                ...ids.map(id => message(id, {from: '@neo-opus-vega', to: '@neo-opus-ada', ...(id === 'MESSAGE:read' ? {readAt: '2026-09-26T08:00:00.000Z'} : {})})),
+                identity('@neo-opus-ada')
+            ],
+            // a fresh table numbers them in insert order: rowids 1 to 5
+            edges: ids.map(id => ({id: `route-${id}`, source: id, target: '@neo-opus-ada', type: 'SENT_TO', properties: {weight: 1}}))
+        });
+
+        const restoredRoutes = createCommand().parse(['node', 'rebuildMessageEdges', '--db-path', dbPath, '--stamp-restored-routes', '2-4']).opts().stampRestoredRoutes;
+
+        expect(runRebuildMessageEdges({dbPath, restoredRoutes, logger: quiet})).toEqual({routes: 3, readStamped: 2});
+        expect(receipt('MESSAGE:first')).toEqual({readAt: undefined, readAtSource: undefined});
+
+        expect(runRebuildMessageEdges({dbPath, apply: true, restoredRoutes, logger: quiet})).toEqual({routes: 3, readStamped: 2});
+        expect(ids.map(id => receipt(id).readAtSource ?? null)).toEqual([null, READ_AT_SOURCE, null, READ_AT_SOURCE, null]);
+        expect(receipt('MESSAGE:read').readAt).toBe('2026-09-26T08:00:00.000Z');
+    });
+
+    test('parseRowidRange reads <first>-<last> and refuses anything else', () => {
+        expect(parseRowidRange('4016144-4026679')).toEqual({first: 4016144, last: 4026679});
+        ['4026679-4016144', '4016144', 'a-b', '-1-2', ''].forEach(value => expect(() => parseRowidRange(value)).toThrow('expected <first>-<last>'));
     });
 
     test('targetsOf reads one string or every string entry of an array, nothing else', () => {
