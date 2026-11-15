@@ -333,7 +333,8 @@ export function holdsWakes({read, hasRotationRoute, now, windowMs}) {
  *   since a person may resume the old session after a first send failed.
  * - `complete`: a successor marker replies to the receipt since the request. A Memory Core session id
  *   that changes inside the old transcript is no successor.
- * - `refuse`: the receipt never gets a rotation, with the reason recorded on it.
+ * - `refuse`: the receipt never gets a rotation, with the reason recorded on it. `writer-unproven`: sent
+ *   within `windowMs` of a predecessor's successor marker by a writer not proven to be a new session.
  * - `incomplete`: the window passed without a fresh session.
  * - `wait`: nothing to do yet (the turn that wrote the receipt is still live, or the receiver has the
  *   request).
@@ -367,6 +368,10 @@ export function decideRotation({read, now, windowMs, minIntervalMs}) {
         return {action: 'request'}
     }
 
+    // inside the window after a successor appeared, only a provably new writer may rotate the seat again
+    if (read.predecessor && !read.predecessor.writerProven && Date.parse(read.receipt.sentAt) - Date.parse(read.predecessor.successorAt) < windowMs) {
+        return {action: 'refuse', reason: 'writer-unproven'}
+    }
     if (read.promptedTurnAt)            return {action: 'refuse', reason: 'prompted-after-receipt'};
     if (read.successor)                 return {action: 'refuse', reason: 'successor-present'};
     if (pastWindow)                     return {action: 'incomplete', reason: 'receipt-not-consumed'};

@@ -762,12 +762,95 @@ test.describe('session-rotation lane: an amendment is not a new receipt, and the
         expect(outcome.completed).toBe(1);
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'completed', successorMessageId: 'MESSAGE:successor'});
 
-        insertSelfMessage(db, 'MESSAGE:v10-1', 26); // a corrected handover, sent before the receipt settled
+        insertSelfMessage(db, 'MESSAGE:v10-1', 26); // the old session again, after the successor's marker
 
-        // 70 minutes after the request, past the minimum interval: an amendment is still no receipt
+        // 70 minutes after the request, past the minimum interval: a post-successor handover with no proven
+        // new writer is refused, and nothing is sent
         expect((await runLane(db, {now: NOW + 40 * MIN})).sent).toEqual([]);
+        expect(rotationOf(db, 'MESSAGE:v10-1')).toMatchObject({state: 'refused', reason: 'writer-unproven'});
+        expect(rotationOf(db, 'MESSAGE:addendum')).toBeUndefined()
+    });
 
-        for (const id of ['MESSAGE:addendum', 'MESSAGE:v10-1']) expect(rotationOf(db, id)).toBeUndefined()
+    test('Emmy\'s Round-1 control: the old writer\'s addendum 38 minutes after the successor\'s marker is refused writer-unproven with no send, with or without successor progress since', async () => {
+        const build = successorProgressAgo => {
+            const db = createGraph();
+
+            insertRoute(db);
+            insertMemory(db, 'mem-old', 40, 'session-old');
+            insertSelfMessage(db, 'MESSAGE:receipt', 39.3, {sessionRotation: {...OPEN, requestedAt: at(39.2), deliveredAt: at(39.2), state: 'completed', completedAt: at(37.3)}});
+            insertSuccessor(db, 'MESSAGE:successor', 38.3, 'MESSAGE:receipt');
+            insertInterval(db, 'successor-turn', {startedAgo: 36.3, progressAgo: successorProgressAgo, expiresIn: 50});
+            insertMemory(db, 'mem-successor', 35.3, 'session-new');
+            insertNode(db, 'MESSAGE:addendum', 'MESSAGE', {
+                from          : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(20 * SEC),
+                taggedConcepts: ['sunset-protocol-handover'], originSessionId: 'session-old'
+            });
+            insertInterval(db, 'old-writer-close', {startedAgo: 1, progressAgo: 10 * SEC, closed: true}); // its close, 10 s later
+            insertMemory(db, 'mem-old-close', 10 * SEC, 'session-old');
+
+            return db
+        };
+
+        for (const progressAgo of [35.3, 5 * SEC]) { // no successor progress since its save; progress after the old close
+            const db = build(progressAgo);
+
+            expect((await runLane(db)).sent).toEqual([]);
+            expect(rotationOf(db, 'MESSAGE:addendum')).toMatchObject({state: 'refused', reason: 'writer-unproven'})
+        }
+    });
+
+    test('a successor\'s own sunset still rotates: a stamped new writer inside the window, or any writer once the window since the marker has passed', async () => {
+        const build = ({writer, sinceMarker}) => {
+            const db = createGraph();
+
+            insertRoute(db);
+            insertSelfMessage(db, 'MESSAGE:receipt', sinceMarker + 2, {sessionRotation: {
+                ...OPEN, requestedAt: at(sinceMarker + 1.5), deliveredAt: at(sinceMarker + 1.5), state: 'completed', completedAt: at(sinceMarker - 1)
+            }});
+            insertSuccessor(db, 'MESSAGE:successor', sinceMarker, 'MESSAGE:receipt');
+            insertNode(db, 'MESSAGE:next', 'MESSAGE', {
+                from          : SEAT, to: SEAT, subject: '[sunset] focus items: 2, 2 placed', sentAt: at(5),
+                taggedConcepts: ['sunset-protocol-handover'], ...(writer ? {originSessionId: writer} : {})
+            });
+
+            return db
+        };
+
+        expect((await runLane(build({writer: 'session-new', sinceMarker: 40}))).sent).toHaveLength(1);
+        expect((await runLane(build({writer: null, sinceMarker: 190}))).sent).toHaveLength(1);
+
+        const inside = build({writer: null, sinceMarker: 40});
+
+        expect((await runLane(inside)).sent).toEqual([]);
+        expect(rotationOf(inside, 'MESSAGE:next')).toMatchObject({state: 'refused', reason: 'writer-unproven'})
+    });
+
+    test('Emmy\'s Round-1 inverse ordering: a successor\'s sunset after its marker but before the completion stamp waits for the predecessor to settle, then gets its own disposition', async () => {
+        const build = writer => {
+            const db = createGraph();
+
+            insertRoute(db);
+            insertMemory(db, 'mem-old', 50, 'session-old');
+            insertSelfMessage(db, 'MESSAGE:receipt', 46, {sessionRotation: {...OPEN, requestedAt: at(45), deliveredAt: at(45)}}); // no completion stamp yet
+            insertSuccessor(db, 'MESSAGE:successor', 44, 'MESSAGE:receipt');
+            insertNode(db, 'MESSAGE:next', 'MESSAGE', {
+                from          : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(2),
+                taggedConcepts: ['sunset-protocol-handover'], ...(writer ? {originSessionId: writer} : {})
+            });
+
+            return db
+        };
+
+        for (const [writer, expected] of [['session-new', {state: 'requested'}], [null, {state: 'refused', reason: 'writer-unproven'}]]) {
+            const db = build(writer);
+
+            expect((await runLane(db)).outcome.completed).toBe(1); // the predecessor settles first
+            expect(rotationOf(db, 'MESSAGE:next')).toBeUndefined();
+
+            await runLane(db, {now: NOW + MIN});
+
+            expect(rotationOf(db, 'MESSAGE:next'), String(writer)).toMatchObject(expected)
+        }
     });
 
     test('a marker replying to the amendment completes the open receipt', async () => {

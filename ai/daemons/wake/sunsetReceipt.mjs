@@ -55,9 +55,14 @@ export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
  * aside, and only when that message is a sunset handover: any newer self-message that is not one (a
  * rescinding note) turns the rotation off. A seat that wrote no self-message in the range has no receipt.
  * An amendment is no new receipt: a handover sent while an earlier one's rotation was open (requested,
- * not yet settled) folds into that one, so it neither strands the rotation nor rotates the seat again.
- * The successor is the earliest marker whose `inReplyTo` names the receipt or one of its amendments; a
- * marker replying to any other message changes nothing.
+ * not yet settled) and before that rotation's first successor marker folds into it. An open rotation
+ * is returned before any later receipt, so a later handover never strands it. The successor is the
+ * earliest marker whose `inReplyTo` names the receipt or one of its amendments; a marker replying to any
+ * other message changes nothing.
+ *
+ * A handover sent after a requested rotation's successor marker has a predecessor: the old session may
+ * still write, and a Memory Core session id can survive a rotation, so only a stamped writer that differs
+ * from the predecessor's old session proves a new generation (`predecessor.writerProven`).
  *
  * The receipt count is the summary lane's stamp, else the subject's own, else `'missing'`: a deferred
  * summary run never holds a rotation.
@@ -93,7 +98,8 @@ export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
  * the marker carries no sender session and a memory saved after it may be another session's;
  * `liveTurnUntil` is the latest `expiresAt` among the unexpired active intervals while the receipt's
  * turn has no close, else `null`; `lastRequestedAt` is the newest rotation request among the seat's
- * OTHER self-messages in the range.
+ * OTHER self-messages in the range; `predecessor` is `{oldSessionId, successorAt, writerProven}` for a
+ * receipt sent after a requested rotation's successor marker, else `null`.
  */
 export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().toISOString()}) {
     const bare     = identity.replace(/^@/, ''),
@@ -112,14 +118,49 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
 
     if (!newest || !isHandover(newest)) return null;
 
-    // The newest run of handovers (another self-message ends it); the receipt is the one whose rotation was
-    // open when the newest was sent, and every handover after it in the run is its amendment.
-    const runEnd  = notes.findIndex(message => !isHandover(message)),
-          run     = runEnd === -1 ? notes : notes.slice(0, runEnd),
-          receipt = run.find(message => isOpenAt(message.properties.sessionRotation, newest.properties.sentAt)) || newest,
-          chain   = new Set(run.slice(0, run.indexOf(receipt) + 1).map(message => bareMessageId(message.id))),
-          // newest first, so the earliest reply is the last match
-          marker  = messages.filter(message => isMarker(message) && chain.has(bareMessageId(message.properties.inReplyTo))).at(-1);
+    // Walk the newest run of handovers (another self-message ends it) oldest first. A handover sent while
+    // the current receipt's rotation is open, and before its first successor marker, amends it; any other
+    // handover is a receipt of its own. One sent after a requested rotation's marker has a predecessor
+    // that may still write, so its writer must differ provably from that rotation's old session.
+    const runEnd     = notes.findIndex(message => !isHandover(message)),
+          run        = (runEnd === -1 ? notes : notes.slice(0, runEnd)).toReversed(),
+          markers    = messages.filter(isMarker).toReversed(),
+          firstReply = ids => markers.find(message => ids.has(bareMessageId(message.properties.inReplyTo))) || null;
+
+    let receipt = null, chain = null, marker = null, predecessor = null, open = null;
+
+    for (const handover of run) {
+        const at = handover.properties.sentAt;
+
+        if (receipt && isOpenAt(receipt.properties.sessionRotation, at) && !(marker && marker.properties.sentAt <= at)) {
+            chain.add(bareMessageId(handover.id));
+            marker = firstReply(chain);
+            continue
+        }
+
+        const rotation = receipt?.properties.sessionRotation;
+
+        if (rotation?.requestedAt) {
+            if (!TERMINAL_ROTATION_STATES.includes(rotation.state)) open = {receipt, chain, marker};
+            // a request that found no successor ends the lineage; one that did is the next receipt's predecessor
+            predecessor = marker && marker.properties.sentAt <= at
+                ? {oldSessionId: rotation.oldSessionId ?? null, successorAt: marker.properties.sentAt}
+                : null
+        }
+
+        receipt = handover;
+        chain   = new Set([bareMessageId(handover.id)]);
+        marker  = firstReply(chain)
+    }
+
+    // an open rotation settles first: a later receipt waits for it
+    if (open) ({receipt, chain, marker} = open), predecessor = null;
+
+    if (predecessor) {
+        const {originSessionId} = receipt.properties;
+
+        predecessor.writerProven = !!originSessionId && originSessionId !== predecessor.oldSessionId
+    }
 
     // The node id is `AGENT_TURN_PRESENCE:<identity>:<turnId>`, so a key range on the primary index
     // reads one seat's intervals without scanning every seat's.
@@ -188,7 +229,8 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
         successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt} : null,
         promptedTurnAt : promptedAt || null,
         liveTurnUntil  : liveUntil || null,
-        lastRequestedAt: requestedAts.sort().at(-1) || null
+        lastRequestedAt: requestedAts.sort().at(-1) || null,
+        predecessor
     }
 }
 
