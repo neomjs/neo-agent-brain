@@ -1,5 +1,5 @@
 import {test, expect}     from '@playwright/test';
-import {execFileSync}     from 'node:child_process';
+import {execFileSync, spawnSync} from 'node:child_process';
 import fs                 from 'node:fs';
 import path               from 'node:path';
 import process            from 'node:process';
@@ -56,6 +56,48 @@ test.describe('optional Fleet server composition', () => {
             expect(source).toMatch(/request_header -X-Preferred-Username[\s\S]*?@fleet path/);
             expect(source).toMatch(/respond 404\s*\n\s*\}/)
         }
+    });
+
+    test('only a local MC POST transport refusal emits a bounded diagnostic', () => {
+        const image = spawnSync('docker', ['image', 'inspect', '--format', '{{.Id}}', compose.services.ingress.image], {
+            encoding: 'utf8', timeout: 5000
+        });
+        test.skip(image.status !== 0, 'the Docker daemon or locally cached Compose ingress image is unavailable');
+
+        // Use the real Caddyfile and resolve its upstreams to closed ports inside this container.
+        const output = execFileSync('docker', [
+            'run', '--rm', '-i', '--pull=never', '--network', 'none', '--add-host', 'mc-server:127.0.0.1',
+            '--add-host', 'fleet-server:127.0.0.1', '--entrypoint', 'sh', image.stdout.trim(), '-ec', `
+                cat > /tmp/Caddyfile
+                caddy start --config /tmp/Caddyfile --adapter caddyfile > /tmp/caddy.log 2>&1 || { cat /tmp/caddy.log; exit 1; }
+                probe() {
+                    wget -S -O /dev/null -T 3 --header 'Mcp-Session-Id: private-mc-probe' "$@" 2>&1 |
+                        awk '$1 == "HTTP/1.1" { print $1, $2 }'
+                }
+                probe --post-data=private-mc-probe 'http://127.0.0.1:8080/mc/mcp?q=private-mc-probe'
+                probe http://127.0.0.1:8080/mc/mcp
+                probe http://127.0.0.1:8080/fleet/probe
+                caddy stop
+                cat /tmp/caddy.log
+            `
+        ], {input: localCaddy, encoding: 'utf8', timeout: 20000});
+
+        const statuses = Array.from(output.matchAll(/^HTTP\/1\.1 (\d{3})/gm), match => Number(match[1])),
+              requests = output.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line))
+                  .filter(entry => entry.logger?.startsWith('http.log.'));
+
+        expect(statuses).toEqual([502, 502, 404]);
+        expect(output).not.toContain('private-mc-probe');
+        expect(requests).toEqual([{
+            category: 'connection_refused',
+            duration: expect.any(Number),
+            level   : 'error',
+            logger  : 'http.log.access.mc_gateway',
+            msg     : expect.any(String),
+            service : 'memory-core',
+            status  : 502,
+            ts      : expect.any(Number)
+        }])
     });
 
     test('the local profile elects Fleet without changing the ingress dependency gate', () => {

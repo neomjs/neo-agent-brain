@@ -1,4 +1,24 @@
 :8080 {
+	# Only the MC transport-error route selects the diagnostic logger.
+	log {
+		output discard
+		level ERROR
+	}
+	log mc_gateway {
+		no_hostname
+		output stderr
+		level ERROR
+		format filter {
+			fields {
+				request delete
+				resp_headers delete
+				user_id delete
+				bytes_read delete
+				size delete
+			}
+		}
+	}
+
 	route {
 		request_header -X-Preferred-Username
 		request_header -X-Auth-Request-Preferred-Username
@@ -27,5 +47,22 @@
 	handle_errors 502 {
 		@fleet path /fleet /fleet/probe /fleet/events
 		respond @fleet 404
+
+		@mcPost {
+			method POST
+			path /mc/mcp
+		}
+		route @mcPost {
+			log_name mc_gateway
+			# Upstream errors can contain arbitrary text. Emit only these fixed labels.
+			map {err.message} {mc_failure} {
+				~(?i)connection\srefused$ connection_refused
+				~(?i)connection\sreset\sby\speer$ connection_reset
+				~EOF$ upstream_eof
+				default upstream_error
+			}
+			log_append service memory-core
+			log_append category {mc_failure}
+		}
 	}
 }
