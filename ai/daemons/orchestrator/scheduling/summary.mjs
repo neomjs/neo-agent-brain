@@ -3,27 +3,11 @@ import {
     markSunsetHandoversSummaryProcessed,
     writeSunsetFocusItemsReceipt
 } from '../../wake/queries.mjs';
+import {parseFocusItemsReceipt} from '../../wake/sunsetReceipt.mjs';
 import {
     getPendingMemorySummaryBackfillJobs,
     isNoProgressBackoffActive as isMemorySummaryBackfillBackoffActive
 } from './memorySummaryBackfill.mjs';
-
-/**
- * @summary Parses the sunset subject's focus count without accepting truncated or unsafe numbers.
- * @param {String} subject
- * @returns {{named: Number, placed: Number}|null}
- */
-export function parseFocusItemsReceipt(subject) {
-    const match = typeof subject === 'string' && subject.match(/\bfocus items: (\d+), (\d+) placed\b/);
-
-    if (!match) return null;
-
-    const named = Number(match[1]), placed = Number(match[2]);
-
-    return Number.isSafeInteger(named) && Number.isSafeInteger(placed) && placed <= named
-        ? {named, placed}
-        : null;
-}
 
 /**
  * @summary Describes an unexplained missing focus receipt using the existing defect-fold grammar.

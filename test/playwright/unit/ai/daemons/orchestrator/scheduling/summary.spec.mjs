@@ -3,7 +3,6 @@ import Database       from 'better-sqlite3';
 import {
     buildSummaryTrigger,
     buildFocusItemsDefect,
-    parseFocusItemsReceipt,
     hasDrainableMemorySummaryBackfill,
     getPendingSummarizationJobs,
     getPendingSessionSummaryCount,
@@ -11,6 +10,7 @@ import {
 } from '../../../../../../../ai/daemons/orchestrator/scheduling/summary.mjs';
 import {foldDefectObservations, parseDefectNote} from '../../../../../../../ai/services/memory-core/helpers/defectObservationFold.mjs';
 import {getUnreadSunsetHandovers}                from '../../../../../../../ai/daemons/wake/queries.mjs';
+import {parseFocusItemsReceipt}                  from '../../../../../../../ai/daemons/wake/sunsetReceipt.mjs';
 
 test.describe('orchestrator/scheduling/summary (#11864 / Epic #11831)', () => {
     test('buildSummaryTrigger prioritizes unread sunset handovers over the periodic sweep', () => {

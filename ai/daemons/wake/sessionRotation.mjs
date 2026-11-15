@@ -335,12 +335,14 @@ export function holdsWakes({read, hasRotationRoute, now, windowMs}) {
  *   that changes inside the old transcript is no successor.
  * - `refuse`: the receipt never gets a rotation, with the reason recorded on it.
  * - `incomplete`: the window passed without a fresh session.
- * - `wait`: nothing to do yet (the receipt count is not consumed, the turn that wrote the receipt is
- *   still live, or the receiver has the request).
+ * - `wait`: nothing to do yet: the turn that wrote the receipt is still live, the receiver has the request,
+ *   or (`writer-close-pending`) a receipt after a predecessor's successor marker shows no close by the
+ *   seat's newest saver. Nothing then tells the successor's own sunset from the predecessor's late writer,
+ *   so the receipt stays pending until a close attributes it or its window passes; no marker age decides it.
  * - `none`: no receipt, or one already settled.
  *
- * The receipt count is read from `focusItemsReceipt`: counts or `'missing'` rotate, an absent
- * count waits for the summary lane. The context size is never an input: the seat chose to end.
+ * The receipt count never holds a rotation: the read always carries counts or `'missing'`, and both
+ * rotate. The context size is never an input: the seat chose to end.
  *
  * @param {Object} options
  * @param {Object|null} options.read `readSunsetReceipt`'s answer.
@@ -370,11 +372,11 @@ export function decideRotation({read, now, windowMs, minIntervalMs}) {
     if (read.promptedTurnAt)            return {action: 'refuse', reason: 'prompted-after-receipt'};
     if (read.successor)                 return {action: 'refuse', reason: 'successor-present'};
     if (pastWindow)                     return {action: 'incomplete', reason: 'receipt-not-consumed'};
-    if (read.receipt.focusItemsReceipt === null) return {action: 'wait', reason: 'receipt-count-pending'};
     if (read.lastRequestedAt && now - Date.parse(read.lastRequestedAt) < minIntervalMs) {
         return {action: 'refuse', reason: 'minimum-interval'}
     }
     if (read.liveTurnUntil) return {action: 'wait', reason: 'live-turn'};
+    if (read.predecessor && !read.writerClosedAt) return {action: 'wait', reason: 'writer-close-pending'};
 
     return {action: 'request'}
 }

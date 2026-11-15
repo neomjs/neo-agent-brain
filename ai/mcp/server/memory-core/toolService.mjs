@@ -539,10 +539,13 @@ export function composeMemoryCoreHealthcheck({
 /**
  * @summary Accepts an A2A message at the durable WAL boundary and defers its derived graph
  * projection so graph saturation cannot withhold the write receipt.
+ *
+ * The request's Memory Core session rides as an option, as `recordSeen` does below: the session
+ * `add_memory` saves under, which a sunset handover keeps as its writer. The wire cannot set it.
  * @param {Object} args add_message arguments.
  * @returns {Promise<Object>}
  */
-const addMessageTool = args => MailboxService.addMessage(args, {deferProjection: true});
+const addMessageTool = args => MailboxService.addMessage(args, {deferProjection: true, serverSessionId: SessionService.currentSessionId});
 
 /**
  * @summary The ordinary model-visible mailbox boundary — the only place an ordinary listing records `seenAt`.

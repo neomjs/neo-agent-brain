@@ -110,6 +110,14 @@ function insertTurn(db, turnId, minutesAgo, {identity = SEAT, wakeSubmitNonce} =
     })
 }
 
+// The stored interval shape: every event rewrites `lastProgressAt`, and only a close sets `terminal`.
+function insertInterval(db, turnId, {startedAgo, progressAgo = startedAgo, closed = false, expiresIn = 60}) {
+    insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:${turnId}`, 'AGENT_TURN_PRESENCE', {
+        agentIdentity: SEAT, turnId, startedAt: at(startedAgo), lastProgressAt: at(progressAgo),
+        status       : closed ? 'terminal' : 'active', terminalState: closed ? 'completed' : null, expiresAt: at(-expiresIn)
+    })
+}
+
 function insertDirectMessage(db, id, minutesAgo, to = SEAT) {
     insertNode(db, id, 'MESSAGE', {from: '@neo-peer', to, subject: 'a review request', sentAt: at(minutesAgo), taggedConcepts: []});
     db.prepare('INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (?, ?, ?, ?, ?, ?)')
@@ -322,20 +330,32 @@ test.describe('session-rotation lane (#1383)', () => {
         expect(present).toContain('The operator is present.')
     });
 
-    test('the receipt count (#1401): an absent count waits for the summary lane, a missing one rotates anyway', async () => {
-        const pending = createGraph();
+    test('the receipt count (#1401): an unstamped receipt reads its count from its subject, so a deferred summary lane holds nothing (Vega\'s 02:23:24Z sunset)', async () => {
+        const read    = db => readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN)}),
+              counted = createGraph();
 
-        insertRoute(pending);
-        insertSelfMessage(pending, 'MESSAGE:receipt', 10, {focusItemsReceipt: 'unconsumed'});
+        insertRoute(counted);
+        insertNode(counted, 'MESSAGE:receipt', 'MESSAGE', {
+            from: SEAT, to: SEAT, subject: '[sunset · focus items: 6, 6 placed]', sentAt: at(10), taggedConcepts: ['sunset-protocol-handover']
+        });
 
-        expect((await runLane(pending)).outcome).toMatchObject({requested: 0, waiting: 1});
+        expect(read(counted).receipt.focusItemsReceipt).toEqual({named: 6, placed: 6});
+        expect((await runLane(counted)).sent).toHaveLength(1);
 
-        const missing = createGraph();
+        const uncounted = createGraph();
 
-        insertRoute(missing);
-        insertSelfMessage(missing, 'MESSAGE:receipt', 10, {focusItemsReceipt: 'missing'});
+        insertRoute(uncounted);
+        insertSelfMessage(uncounted, 'MESSAGE:receipt', 10, {focusItemsReceipt: 'unconsumed'}); // subject `[sunset]`, no stamp
 
-        expect((await runLane(missing)).sent).toHaveLength(1)
+        expect(read(uncounted).receipt.focusItemsReceipt).toBe('missing');
+        expect((await runLane(uncounted)).sent).toHaveLength(1);
+
+        const stamped = createGraph();
+
+        insertRoute(stamped);
+        insertSelfMessage(stamped, 'MESSAGE:receipt', 10, {focusItemsReceipt: {named: 2, placed: 2}}); // the lane's stamp wins
+
+        expect(read(stamped).receipt.focusItemsReceipt).toEqual({named: 2, placed: 2})
     });
 
     test('AC-11 + #1712 AC-2: the earliest marker after the request completes the rotation with the marker, the old id and the messages the hold kept', async () => {
@@ -571,14 +591,6 @@ test.describe('session-rotation lane (#1383)', () => {
 test.describe('session-rotation lane: the receipt turn ends at its writer\'s close (#1722)', () => {
     const SEC = 1 / 60; // `at` counts minutes
 
-    // The stored interval shape: every event rewrites `lastProgressAt`, and only a close sets `terminal`.
-    function insertInterval(db, turnId, {startedAgo, progressAgo = startedAgo, closed = false, expiresIn = 60}) {
-        insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:${turnId}`, 'AGENT_TURN_PRESENCE', {
-            agentIdentity: SEAT, turnId, startedAt: at(startedAgo), lastProgressAt: at(progressAgo),
-            status       : closed ? 'terminal' : 'active', terminalState: closed ? 'completed' : null, expiresAt: at(-expiresIn)
-        })
-    }
-
     function closeInterval(db, turnId, closedAgo) {
         const id   = `AGENT_TURN_PRESENCE:${SEAT}:${turnId}`,
               node = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data);
@@ -725,5 +737,217 @@ test.describe('session-rotation lane: the receipt turn ends at its writer\'s clo
         save(db, 'mem-new', 6, 'session-new');                                             // ...saving alongside its close
 
         expect((await runLane(db)).sent).toEqual([])
+    });
+});
+
+test.describe('session-rotation lane: an amendment is not a new receipt, and the receipt names its writer (#1739)', () => {
+    const SEC  = 1 / 60;
+    const OPEN = {
+        state       : 'requested', eventId: rotationEventId('MESSAGE:receipt'), subscriptionId: 'WAKE_SUB:rotate',
+        oldSessionId: 'session-old', requestedAt: at(29), deliveredAt: at(29)
+    };
+
+    test('Grace\'s 01:41:58Z sunset: an amendment after the request folds into the open receipt, its marker completes it, and the amendment never rotates the seat', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        insertMemory(db, 'mem-old', 40, 'session-old');
+        insertSelfMessage(db, 'MESSAGE:receipt', 30, {sessionRotation: OPEN});
+        insertSuccessor(db, 'MESSAGE:successor', 28, 'MESSAGE:receipt');               // the fresh session's marker
+        insertSelfMessage(db, 'MESSAGE:addendum', 27, {focusItemsReceipt: 'missing'}); // the old session, woken by a subagent
+
+        const {outcome, sent} = await runLane(db);
+
+        expect(sent).toEqual([]);
+        expect(outcome.completed).toBe(1);
+        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'completed', successorMessageId: 'MESSAGE:successor'});
+
+        insertSelfMessage(db, 'MESSAGE:v10-1', 26); // the old session again, after the successor's marker
+
+        // 70 minutes after the request, past the minimum interval: no close attributes the post-successor
+        // handover, so it stays pending, and nothing is sent or recorded
+        const later = await runLane(db, {now: NOW + 40 * MIN});
+
+        expect(later.sent).toEqual([]);
+        expect(later.outcome.waiting).toBe(1);
+        expect(rotationOf(db, 'MESSAGE:v10-1')).toBeUndefined();
+        expect(rotationOf(db, 'MESSAGE:addendum')).toBeUndefined()
+    });
+
+    test('Emmy\'s overlap controls: the old writer\'s counted addendum while the successor\'s turn is live sends nothing, 38 minutes or 3 h 13 min after the marker, with or without successor progress since, and under a reconnected Memory Core id', async () => {
+        // `sinceMarker` 38.3 is Round 1's fixture; 193.3 is Round 2's: marker 00:02, successor turn 03:00 and
+        // diary 03:01, addendum 03:15, its close 03:15:10, the lane at 03:15:20
+        const build = ({sinceMarker, successorProgressAgo, writer}) => {
+            const db = createGraph();
+
+            insertRoute(db);
+            insertMemory(db, 'mem-old', sinceMarker + 1.7, 'session-old');
+            insertSelfMessage(db, 'MESSAGE:receipt', sinceMarker + 1, {focusItemsReceipt: {named: 1, placed: 1}, sessionRotation: {
+                ...OPEN, requestedAt: at(sinceMarker + 0.9), deliveredAt: at(sinceMarker + 0.9), state: 'completed', completedAt: at(sinceMarker - 1)
+            }});
+            insertSuccessor(db, 'MESSAGE:successor', sinceMarker, 'MESSAGE:receipt');
+            insertInterval(db, 'successor-turn', {startedAgo: 15.3, progressAgo: successorProgressAgo, expiresIn: 44.7});
+            insertMemory(db, 'mem-successor', 14.3, 'session-new');
+            insertNode(db, 'MESSAGE:addendum', 'MESSAGE', {
+                from          : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(20 * SEC),
+                focusItemsReceipt: {named: 1, placed: 1}, taggedConcepts: ['sunset-protocol-handover'], originSessionId: writer
+            });
+            insertInterval(db, 'old-writer-close', {startedAgo: 1, progressAgo: 10 * SEC, closed: true}); // its close, 10 s later
+            insertMemory(db, 'mem-old-close', 10 * SEC, writer);
+
+            return db
+        };
+
+        for (const sinceMarker of [38.3, 193.3]) {
+            // no successor progress since its save; progress after the old close; the old native writer after a reconnect.
+            // A close by a session that saved before the receipt is another live session of the seat, so it refuses;
+            // a reconnected id is first seen after the receipt, so the receipt waits on the successor's live turn.
+            for (const [successorProgressAgo, writer, expected] of [
+                [14.3,    'session-old',         {state: 'refused', reason: 'prompted-after-receipt'}],
+                [5 * SEC, 'session-old',         {state: 'refused', reason: 'prompted-after-receipt'}],
+                [14.3,    'session-reconnected', undefined]
+            ]) {
+                const db  = build({sinceMarker, successorProgressAgo, writer}),
+                      run = await runLane(db);
+
+                expect(run.sent, `${sinceMarker} min, ${writer}`).toEqual([]);
+                expected
+                    ? expect(rotationOf(db, 'MESSAGE:addendum')).toMatchObject(expected)
+                    : expect(rotationOf(db, 'MESSAGE:addendum')).toBeUndefined();
+
+                // once the successor's turn expires, the stamp still releases nothing: the receipt stays pending
+                expect((await runLane(db, {now: NOW + 50 * MIN})).sent).toEqual([])
+            }
+        }
+    });
+
+    test('Emmy\'s positive control: a successor\'s own sunset 1 h 43 min after its marker rotates once its own close lands, as it does 40 minutes after; before that close it stays pending', async () => {
+        // tonight's seat: marker 01:43:44Z, the successor's diaries, its handover 03:27:09Z and its add_memory 39 s later
+        const build = ({sinceMarker, closed}) => {
+            const db = createGraph();
+
+            insertRoute(db);
+            insertSelfMessage(db, 'MESSAGE:receipt', sinceMarker + 2, {sessionRotation: {
+                ...OPEN, requestedAt: at(sinceMarker + 1.5), deliveredAt: at(sinceMarker + 1.5), state: 'completed', completedAt: at(sinceMarker - 1)
+            }});
+            insertSuccessor(db, 'MESSAGE:successor', sinceMarker, 'MESSAGE:receipt');
+            insertMemory(db, 'mem-successor', 16, 'session-new');
+            insertNode(db, 'MESSAGE:next', 'MESSAGE', {
+                from          : SEAT, to: SEAT, subject: '[sunset] focus items: 9, 9 placed', sentAt: at(1),
+                taggedConcepts: ['sunset-protocol-handover'], originSessionId: 'session-new'
+            });
+
+            if (closed) {
+                insertInterval(db, 'successor-close', {startedAgo: 2, progressAgo: 21 * SEC, closed: true});
+                insertMemory(db, 'mem-successor-close', 21 * SEC, 'session-new')
+            }
+
+            return db
+        };
+
+        for (const sinceMarker of [103.4, 40]) {
+            const rotated = build({sinceMarker, closed: true});
+
+            expect((await runLane(rotated)).sent, `${sinceMarker} min`).toHaveLength(1);
+            expect(rotationOf(rotated, 'MESSAGE:next')).toMatchObject({state: 'requested', oldSessionId: 'session-new'});
+
+            const pending = build({sinceMarker, closed: false});
+
+            expect((await runLane(pending)).outcome).toMatchObject({requested: 0, waiting: 1})
+        }
+    });
+
+    test('Emmy\'s Round-1 inverse ordering: a successor\'s sunset after its marker but before the completion stamp waits for the predecessor to settle, then gets its own disposition', async () => {
+        const build = writer => {
+            const db = createGraph();
+
+            insertRoute(db);
+            insertMemory(db, 'mem-old', 50, 'session-old');
+            insertSelfMessage(db, 'MESSAGE:receipt', 46, {sessionRotation: {...OPEN, requestedAt: at(45), deliveredAt: at(45)}}); // no completion stamp yet
+            insertSuccessor(db, 'MESSAGE:successor', 44, 'MESSAGE:receipt');
+            insertNode(db, 'MESSAGE:next', 'MESSAGE', {
+                from          : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(2),
+                taggedConcepts: ['sunset-protocol-handover'], ...(writer ? {originSessionId: writer} : {})
+            });
+
+            return db
+        };
+
+        // with no close in view, a stamped and an unstamped handover alike stay pending: the ambiguity is kept, never sent
+        for (const writer of ['session-new', null]) {
+            const db = build(writer);
+
+            expect((await runLane(db)).outcome.completed).toBe(1); // the predecessor settles first
+            expect(rotationOf(db, 'MESSAGE:next')).toBeUndefined();
+
+            const next = await runLane(db, {now: NOW + MIN});
+
+            expect(next.sent, String(writer)).toEqual([]);
+            expect(next.outcome.waiting).toBe(1);
+            expect(rotationOf(db, 'MESSAGE:next')).toBeUndefined()
+        }
+    });
+
+    test('a marker replying to the amendment completes the open receipt', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        insertMemory(db, 'mem-old', 40, 'session-old');
+        insertSelfMessage(db, 'MESSAGE:receipt', 30, {sessionRotation: OPEN});
+        insertSelfMessage(db, 'MESSAGE:addendum', 27);
+        insertSuccessor(db, 'MESSAGE:successor', 25, 'MESSAGE:addendum'); // the newest handover the fresh session read
+
+        expect((await runLane(db)).outcome.completed).toBe(1);
+        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({state: 'completed', successorMessageId: 'MESSAGE:successor'});
+        expect(rotationOf(db, 'MESSAGE:addendum')).toBeUndefined()
+    });
+
+    test('a handover sent after the receipt settled is a new receipt: inside the minimum interval it is refused, past it the request goes', async () => {
+        const settled = minutesAgo => ({...OPEN, state: 'completed', requestedAt: at(minutesAgo), deliveredAt: at(minutesAgo), completedAt: at(minutesAgo - 2)});
+
+        const tooSoon = createGraph();
+
+        insertRoute(tooSoon);
+        insertSelfMessage(tooSoon, 'MESSAGE:receipt', 21, {sessionRotation: settled(20)});
+        insertSelfMessage(tooSoon, 'MESSAGE:next', 5); // the fresh session's own sunset
+
+        expect((await runLane(tooSoon)).sent).toEqual([]);
+        expect(rotationOf(tooSoon, 'MESSAGE:next')).toMatchObject({state: 'refused', reason: 'minimum-interval'});
+
+        const apart = createGraph();
+
+        insertRoute(apart);
+        insertSelfMessage(apart, 'MESSAGE:receipt', 50, {sessionRotation: settled(49)});
+        insertSelfMessage(apart, 'MESSAGE:next', 5);
+
+        expect((await runLane(apart)).sent).toHaveLength(1);
+        expect(rotationOf(apart, 'MESSAGE:next')).toMatchObject({state: 'requested'})
+    });
+
+    test('Mnemosyne\'s 01:50:08Z sunset: a receipt naming its writer is closed by that session\'s add_memory, though its last earlier diary is another session\'s', async () => {
+        // Times relative to the receipt, read from the live rows; between her last diary and the receipt the bridge reconnected.
+        const build = originSessionId => {
+            const db = createGraph();
+
+            insertRoute(db);
+            insertMemory(db, 'mem-before-reconnect', 10 + 57.44, 'session-before');
+            insertNode(db, 'MESSAGE:receipt', 'MESSAGE', {
+                from          : SEAT, to: SEAT, subject: '[sunset]', sentAt: at(10), focusItemsReceipt: {named: 5, placed: 5},
+                taggedConcepts: ['sunset-protocol-handover'], ...(originSessionId ? {originSessionId} : {})
+            });
+            insertInterval(db, 'tool-beacon',  {startedAgo: 10 + 39.36, progressAgo: 10 + 46.9 * SEC, expiresIn: 49.2});     // PostToolUse, never closed
+            insertInterval(db, 'memory-close', {startedAgo: 10 + 40.2 * SEC, progressAgo: 10 - 26.9 * SEC, closed: true}); // the closing add_memory
+            insertMemory(db, 'mem-close', 10 - 26.9 * SEC, 'session-writer');                                             // that add_memory's row
+
+            return db
+        };
+
+        // without the stamp, today's inference: the close is a session first seen after the receipt, so the turn waits
+        expect((await runLane(build(null))).outcome).toMatchObject({requested: 0, waiting: 1});
+
+        const stamped = build('session-writer');
+
+        expect((await runLane(stamped)).sent).toHaveLength(1);
+        expect(rotationOf(stamped, 'MESSAGE:receipt')).toMatchObject({state: 'requested', oldSessionId: 'session-writer'})
     });
 });

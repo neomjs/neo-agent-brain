@@ -25,7 +25,7 @@ import {
  *   the receiver's duplicate rather than a second session.
  * - **Guards** ({@link decideRotation}): a prompt or a successor marker after the receipt refuses it, and
  *   so does a second request of one seat inside the minimum interval. The refusal and its reason are
- *   recorded. The handover's receipt count (`focusItemsReceipt`) must be consumed first.
+ *   recorded.
  * - **Records:** `requested`, `completed` (the successor marker, the old session id and the messages the
  *   wake hold kept; `newSessionId` stays `null`, because the marker names no sender session),
  *   `refused`, `incomplete` (the window passed). Each one is a log line, and the record stays on the
@@ -59,6 +59,10 @@ export async function runSessionRotation({db, deliver, operatorPresence, windowM
         if (verdict.action === 'none') continue;
 
         if (verdict.action === 'wait') {
+            // the one wait nothing else surfaces: an unattributable receipt after a predecessor's marker
+            if (verdict.reason === 'writer-close-pending') {
+                writeLog('INFO', `[Orchestrator] session-rotation: pending for ${identity} (${verdict.reason}), receipt ${receipt.id}`);
+            }
             outcome.waiting++;
             continue
         }
