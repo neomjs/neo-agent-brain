@@ -1563,8 +1563,8 @@ class ConfigBase extends ConfigProvider {
                      */
                     windowMs: leaf(30000, 'NEO_DISK_PRESSURE_WINDOW_MS', 'number'),
                     /**
-                     * Minimum reclaimable build-cache bytes required to route `disk-pressure` to
-                     * `prune-build-cache` instead of `record` (default 1 GiB).
+                     * Minimum reclaimable build-cache bytes above `buildCacheWarmFloorBytes` required to route
+                     * `disk-pressure` to `prune-build-cache` instead of `record` (default 1 GiB).
                      * @type {Number}
                      */
                     minReclaimableBuildCacheBytes: leaf(1024 * 1024 * 1024, 'NEO_DISK_PRESSURE_MIN_RECLAIMABLE_BUILD_CACHE_BYTES', 'positiveInt'),

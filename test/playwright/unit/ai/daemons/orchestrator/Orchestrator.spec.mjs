@@ -38,6 +38,11 @@ import {
     beginProviderActivity,
     ensureProviderActivitySchema
 } from '../../../../../../ai/services/shared/providerActivityLedger.mjs';
+import {
+    defectNoteFingerprint,
+    foldDefectObservations,
+    inspectDefectNoteCapture
+} from '../../../../../../ai/services/memory-core/helpers/defectObservationFold.mjs';
 
 let   testOrchestratorSeq            = 0;
 const TEST_NEURAL_LINK_BRIDGE_PORT   = 18081;
@@ -3183,6 +3188,462 @@ test.describe('#1333 — Focus (v1) host-edge projection refresh is gated to hos
             hostOrchestrator.destroy();
         } finally {
             fs.removeSync(tmpDir);
+        }
+    });
+});
+
+test.describe('#1756 — disk-pressure warm-floor wiring and episode-scoped defect-note lifecycle', () => {
+    const GIB         = 1024 ** 3,
+          OBSERVED_AT = Date.parse('2026-11-15T07:00:00.000Z');
+
+    function buildEngineDiskSnapshot(diagnosisService, {
+        usedPercent = 97.36,
+        availableBytes = 0,
+        imagesReclaimableBytes = Math.round(35.9 * GIB),
+        volumesReclaimableBytes = Math.round(31.9 * GIB),
+        reclaimableBuildCacheBytes = Math.round(1.48 * GIB),
+        mountPath = '/app/.neo-ai-data',
+        status = 'available',
+        errors = [],
+        sustained = true
+    } = {}) {
+        const totalBytes = 64 * GIB,
+              usedBytes  = Math.round((usedPercent / 100) * totalBytes),
+              freeBytes  = Math.max(0, totalBytes - usedBytes),
+              statfs     = status === 'unavailable' ? null : {
+                  path          : mountPath,
+                  totalBytes,
+                  usedBytes,
+                  freeBytes,
+                  availableBytes: availableBytes ?? freeBytes,
+                  usedPercent
+              },
+              df         = status === 'unavailable' ? null : {
+                  images    : {totalSizeBytes: 40 * GIB, reclaimableBytes: imagesReclaimableBytes, totalCount: 8, activeCount: 2},
+                  volumes   : {totalSizeBytes: 32 * GIB, reclaimableBytes: volumesReclaimableBytes, totalCount: 6, activeCount: 1},
+                  buildCache: {
+                      totalSizeBytes  : reclaimableBuildCacheBytes + Math.round(0.5 * GIB),
+                      reclaimableBytes: reclaimableBuildCacheBytes,
+                      totalCount      : 10,
+                      inUseCount      : 2
+                  }
+              },
+              samples    = statfs ? (sustained
+                  ? [
+                      {statfs, df, observedAtMs: OBSERVED_AT - 60_000},
+                      {statfs, df, observedAtMs: OBSERVED_AT}
+                  ]
+                  : [{statfs, df, observedAtMs: OBSERVED_AT}]
+              ) : [],
+              diagnosis  = diagnosisService.diagnoseEngineDisk({
+                  targetId   : 'docker-engine',
+                  diskSample : samples.at(-1) || null,
+                  diskSamples: samples,
+                  readFailed : status !== 'available' || errors.length > 0,
+                  observedAt : OBSERVED_AT
+              });
+
+        return {
+            schemaVersion : 1,
+            recordType    : 'deployment-engine-disk-state',
+            targetIdentity: {kind: 'engine', id: 'docker-engine'},
+            observedAt    : OBSERVED_AT,
+            status,
+            statfs,
+            df,
+            diagnosis,
+            errors
+        };
+    }
+
+    function createDiskPressureOrchestrator({dataDir, applyLifecycle, publishNote}) {
+        const logs         = [],
+              orchestrator = Neo.create(Orchestrator, {
+                  dataDir,
+                  healthService: {recordTaskOutcome() {}}
+              });
+
+        orchestrator.deploymentRuntimeAccessService.runtimeAccessConfig = {
+            enabled        : true,
+            allowedServices: ['chroma', 'kb-server', 'mc-server', 'local-model']
+        };
+        orchestrator.deploymentRuntimeAccessService.applyLifecycle = applyLifecycle || (async () => {
+            throw new Error('unexpected lifecycle actuation');
+        });
+        orchestrator.recoveryActuatorService.recoveryOverrideDir = path.join(dataDir, 'deployment-state');
+        orchestrator.recoveryActuatorService.actuatorConfig      = {
+            enabled                    : true,
+            blockedSupervisedTasks     : [],
+            blockedComposeServices     : [],
+            blockedDeployTargets       : [],
+            healAttemptsPath           : path.join(dataDir, 'heal-attempts.json'),
+            recoveryRunStateDir        : path.join(dataDir, 'recovery-runs'),
+            recoveryRunRetentionLimit  : 100,
+            baseBackoffMs              : 0,
+            maxBackoffMs               : 0,
+            maxAttemptsPerWindow       : 5,
+            maxAttemptsWindowMs        : 60_000,
+            verifyCooldownMs           : 0,
+            healthyObservationThreshold: 1,
+            futility                   : {
+                maxIdenticalVerdicts: 50,
+                windowMs            : 3_600_000,
+                baseThawQuietMs     : 1_800_000,
+                tierMultiplier      : 2,
+                maxThawQuietMs      : 86_400_000
+            }
+        };
+        orchestrator.pulseAuthorityLease       = () => 'held';
+        orchestrator.writeLog                  = (level, message) => logs.push({level, message});
+        orchestrator.publishDiskPressureDefect = publishNote;
+
+        return {orchestrator, logs};
+    }
+
+    test('publishDiskPressureDefect uses the quiet mailbox writer with defect-note and disk-pressure tags and propagates failure', async () => {
+        const original = MailboxService.addMessage,
+              calls    = [],
+              note     = {
+                  subject: 'defect-note: docker-engine disk-pressure broke /data at 97.36% used (availableBytes=0, reclaimable images=1, volumes=2, buildCache=3)',
+                  body   : 'Unrelieved Docker / data-mount disk pressure (record).'
+              };
+
+        try {
+            MailboxService.addMessage = async (value, options) => {
+                calls.push({value, options, identity: RequestContextService.getAgentIdentityNodeId()});
+                return {messageId: 'MESSAGE:disk-accepted'};
+            };
+
+            expect(await Orchestrator.prototype.publishDiskPressureDefect.call({}, note)).toEqual({messageId: 'MESSAGE:disk-accepted'});
+            expect(await Orchestrator.prototype.publishDiskPressureDefect.call({swarmHeartbeatIdentity: '@neo-gemini-julia'}, note))
+                .toEqual({messageId: 'MESSAGE:disk-accepted'});
+
+            expect(calls).toEqual([
+                {
+                    identity: '@system',
+                    options : {deferProjection: true},
+                    value   : {
+                        ...note,
+                        to            : 'AGENT:*',
+                        taggedConcepts: ['defect-note', 'disk-pressure'],
+                        priority      : 'normal',
+                        wakeSuppressed: true
+                    }
+                },
+                {
+                    identity: '@neo-gemini-julia',
+                    options : {deferProjection: true},
+                    value   : {
+                        ...note,
+                        to            : 'AGENT:*',
+                        taggedConcepts: ['defect-note', 'disk-pressure'],
+                        priority      : 'normal',
+                        wakeSuppressed: true
+                    }
+                }
+            ]);
+
+            MailboxService.addMessage = async () => { throw new Error('mailbox unavailable'); };
+            await expect(Orchestrator.prototype.publishDiskPressureDefect.call({}, note)).rejects.toThrow('mailbox unavailable');
+        } finally {
+            MailboxService.addMessage = original;
+        }
+    });
+
+    test('wires buildCacheWarmFloorBytes and emits one defect-note per episode across restarts, folding cleanly through recovery and re-open', async () => {
+        const tmpDir    = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-disk-episode-')),
+              published = [];
+        let   pruneRuns = 0;
+
+        try {
+            const {orchestrator: first} = createDiskPressureOrchestrator({
+                dataDir       : tmpDir,
+                applyLifecycle: async () => {
+                    pruneRuns++;
+                    return {data: {spaceReclaimedBytes: 0}};
+                },
+                publishNote   : async note => {
+                    published.push(note);
+                    return {messageId: `MESSAGE:${published.length}`};
+                }
+            });
+
+            expect(first.containerHealthDiagnosisService.configValues.buildCacheWarmFloorBytes)
+                .toBe(AiConfig.orchestrator.diskPressure.buildCacheWarmFloorBytes);
+
+            const deadBandDisk = buildEngineDiskSnapshot(first.containerHealthDiagnosisService, {
+                usedPercent               : 97.36,
+                availableBytes            : 0,
+                imagesReclaimableBytes    : Math.round(35.9 * GIB),
+                volumesReclaimableBytes   : Math.round(31.9 * GIB),
+                reclaimableBuildCacheBytes: Math.round(1.48 * GIB)
+            });
+
+            const firstOutcomes = await first.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: deadBandDisk}
+            });
+
+            expect(pruneRuns).toBe(0);
+            expect(firstOutcomes).toHaveLength(1);
+            expect(firstOutcomes[0]).toMatchObject({
+                serviceKey : 'docker-engine',
+                actionClass: CONTAINER_HEALTH_ACTION_CLASSES.record,
+                status     : 'recorded'
+            });
+            expect(published).toHaveLength(1);
+            expect(published[0].subject).toContain('defect-note: docker-engine disk-pressure broke /app/.neo-ai-data at 97.36% used');
+            expect(published[0].subject).toContain('availableBytes=0');
+            expect(published[0].subject).toContain(`images=${Math.round(35.9 * GIB)}`);
+            expect(published[0].subject).toContain(`volumes=${Math.round(31.9 * GIB)}`);
+            expect(published[0].subject).toContain(`buildCache=${Math.round(1.48 * GIB)}`);
+            expect(published[0].body).toContain('(record)');
+            expect(published[0].body).toContain('reclaimableAboveWarmFloorBytes: 0');
+
+            const statePath = first.getDiskPressureEpisodeStatePath();
+            expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({
+                active : true,
+                trigger: 'record'
+            });
+
+            // Repeated poll in same active episode emits nothing.
+            await first.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: deadBandDisk}
+            });
+            expect(published).toHaveLength(1);
+            first.destroy();
+
+            // Simulated daemon restart over the same dataDir preserves active episode dedupe.
+            const {orchestrator: restarted} = createDiskPressureOrchestrator({
+                dataDir    : tmpDir,
+                publishNote: async note => {
+                    published.push(note);
+                    return {messageId: `MESSAGE:${published.length}`};
+                }
+            });
+
+            await restarted.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: deadBandDisk}
+            });
+            expect(published).toHaveLength(1);
+
+            // Unavailable or error-carrying engineDisk samples must NEVER falsely close the episode.
+            const unavailableDisk = buildEngineDiskSnapshot(restarted.containerHealthDiagnosisService, {
+                status: 'unavailable',
+                errors: [{code: 'system-df-failed'}]
+            });
+            await restarted.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: unavailableDisk}
+            });
+
+            const degradedLowDisk = buildEngineDiskSnapshot(restarted.containerHealthDiagnosisService, {
+                usedPercent: 75,
+                status     : 'degraded',
+                errors     : [{code: 'partial-read'}],
+                sustained  : false
+            });
+            await restarted.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: degradedLowDisk}
+            });
+            expect(published).toHaveLength(1);
+            expect(JSON.parse(fs.readFileSync(statePath, 'utf8')).active).toBe(true);
+
+            // Fresh valid statfs below threshold emits `[recovered]` and closes the episode.
+            const recoveredDisk = buildEngineDiskSnapshot(restarted.containerHealthDiagnosisService, {
+                usedPercent   : 82.5,
+                availableBytes: Math.round(11.2 * GIB),
+                sustained     : false
+            });
+            await restarted.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: recoveredDisk}
+            });
+
+            expect(published).toHaveLength(2);
+            expect(published[1].subject).toBe(published[0].subject.replace('defect-note: ', 'defect-note: [recovered] '));
+            expect(published[1].body).toContain('usedPercent: 82.5%');
+            expect(JSON.parse(fs.readFileSync(statePath, 'utf8')).active).toBe(false);
+
+            const openCapture      = inspectDefectNoteCapture({subject: published[0].subject, to: 'AGENT:*', taggedConcepts: ['defect-note', 'disk-pressure']}),
+                  recoveredCapture = inspectDefectNoteCapture({subject: published[1].subject, to: 'AGENT:*', taggedConcepts: ['defect-note', 'disk-pressure']});
+            expect(openCapture).toMatchObject({admitted: true, parseable: true});
+            expect(recoveredCapture).toMatchObject({admitted: true, parseable: true});
+            expect(defectNoteFingerprint(published[0].subject)).toBe(defectNoteFingerprint(published[1].subject));
+
+            const foldedAfterRecovery = foldDefectObservations([
+                {from: '@system', sentAt: '2026-11-15T07:00:00Z', subject: published[0].subject},
+                {from: '@system', sentAt: '2026-11-15T07:05:00Z', subject: published[1].subject}
+            ], {now: Date.parse('2026-11-15T07:06:00Z')});
+            expect(foldedAfterRecovery).toHaveLength(1);
+            expect(foldedAfterRecovery[0]).toMatchObject({
+                state    : 'recovered',
+                parseable: true,
+                surface  : 'docker-engine disk-pressure'
+            });
+
+            // A subsequent pressure episode emits a fresh defect-note and re-opens the folded observation to red.
+            await restarted.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: deadBandDisk}
+            });
+            expect(published).toHaveLength(3);
+
+            const foldedAfterReopen = foldDefectObservations([
+                {from: '@system', sentAt: '2026-11-15T07:00:00Z', subject: published[0].subject},
+                {from: '@system', sentAt: '2026-11-15T07:05:00Z', subject: published[1].subject},
+                {from: '@system', sentAt: '2026-11-15T07:10:00Z', subject: published[2].subject}
+            ], {now: Date.parse('2026-11-15T07:11:00Z')});
+            expect(foldedAfterReopen).toHaveLength(1);
+            expect(foldedAfterReopen[0]).toMatchObject({
+                state: 'red',
+                count: 3
+            });
+
+            restarted.destroy();
+        } finally {
+            fs.removeSync(tmpDir);
+        }
+    });
+
+    test('prune-build-cache stays silent when space is reclaimed, emits on prune-freed-nothing, and retries when mailbox publication fails', async () => {
+        const relievedDir   = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-disk-relieved-')),
+              unrelievedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-disk-unrelieved-')),
+              relievedNotes = [],
+              alarmNotes    = [];
+        let   failFirstSend = true;
+
+        try {
+            const {orchestrator: relieved} = createDiskPressureOrchestrator({
+                dataDir       : relievedDir,
+                applyLifecycle: async () => ({
+                    data: {
+                        spaceReclaimedBytes: 6 * GIB,
+                        statfsBefore       : {freeBytes: 2 * GIB},
+                        statfsAfter        : {freeBytes: 8 * GIB}
+                    }
+                }),
+                publishNote   : async note => {
+                    relievedNotes.push(note);
+                    return {messageId: 'MESSAGE:unexpected'};
+                }
+            });
+
+            const prunableDisk = buildEngineDiskSnapshot(relieved.containerHealthDiagnosisService, {
+                usedPercent               : 94.5,
+                availableBytes            : 2 * GIB,
+                reclaimableBuildCacheBytes: 9 * GIB
+            });
+
+            const relievedOutcomes = await relieved.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: prunableDisk}
+            });
+            expect(relievedOutcomes[0]).toMatchObject({
+                actionClass    : CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache,
+                status         : 'actuated',
+                actuatorOutcome: {status: 'actioned'}
+            });
+            expect(relievedNotes).toEqual([]);
+            expect(fs.existsSync(relieved.getDiskPressureEpisodeStatePath())).toBe(false);
+            relieved.destroy();
+
+            const {orchestrator: unrelieved, logs} = createDiskPressureOrchestrator({
+                dataDir       : unrelievedDir,
+                applyLifecycle: async () => ({
+                    data: {
+                        spaceReclaimedBytes: 0,
+                        statfsBefore       : {freeBytes: 1 * GIB},
+                        statfsAfter        : {freeBytes: 1 * GIB}
+                    }
+                }),
+                publishNote   : async note => {
+                    if (failFirstSend) {
+                        failFirstSend = false;
+                        throw new Error('transient mailbox failure');
+                    }
+                    alarmNotes.push(note);
+                    return {messageId: 'MESSAGE:alarm-1'};
+                }
+            });
+
+            const zeroFreedDisk = buildEngineDiskSnapshot(unrelieved.containerHealthDiagnosisService, {
+                usedPercent               : 95.25,
+                availableBytes            : 1 * GIB,
+                reclaimableBuildCacheBytes: 4 * GIB
+            });
+
+            const firstOutcomes = await unrelieved.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: zeroFreedDisk}
+            });
+            expect(firstOutcomes[0]).toMatchObject({
+                actionClass    : CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache,
+                status         : 'actuated',
+                actuatorOutcome: {
+                    status    : 'recorded',
+                    reasonCode: 'prune-freed-nothing',
+                    alarmOnly : true
+                }
+            });
+            expect(alarmNotes).toEqual([]);
+            expect(logs.some(entry => entry.level === 'WARN' && entry.message.includes('transient mailbox failure'))).toBe(true);
+            expect(fs.existsSync(unrelieved.getDiskPressureEpisodeStatePath())).toBe(false);
+
+            // Next poll retries publication even when a follow-up decision routes to record.
+            const followUpRecordDisk = buildEngineDiskSnapshot(unrelieved.containerHealthDiagnosisService, {
+                usedPercent               : 95.25,
+                availableBytes            : 1 * GIB,
+                reclaimableBuildCacheBytes: Math.round(1.5 * GIB)
+            });
+            await unrelieved.consumeContainerHealthDecisions({
+                status  : 'written',
+                snapshot: {services: [], engineDisk: followUpRecordDisk}
+            });
+            expect(alarmNotes).toHaveLength(1);
+            expect(JSON.parse(fs.readFileSync(unrelieved.getDiskPressureEpisodeStatePath(), 'utf8')).active).toBe(true);
+
+            // Also verify direct prune-freed-nothing publication when publish succeeds on the first try.
+            const directDir   = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-disk-direct-')),
+                  directNotes = [];
+            try {
+                const {orchestrator: direct} = createDiskPressureOrchestrator({
+                    dataDir       : directDir,
+                    applyLifecycle: async () => ({
+                        data: {
+                            spaceReclaimedBytes: 0,
+                            statfsBefore       : {freeBytes: 512 * 1024 * 1024},
+                            statfsAfter        : {freeBytes: 512 * 1024 * 1024}
+                        }
+                    }),
+                    publishNote   : async note => {
+                        directNotes.push(note);
+                        return {messageId: 'MESSAGE:direct-1'};
+                    }
+                });
+
+                await direct.consumeContainerHealthDecisions({
+                    status  : 'written',
+                    snapshot: {services: [], engineDisk: zeroFreedDisk}
+                });
+                expect(directNotes).toHaveLength(1);
+                expect(directNotes[0].body).toContain('(prune-freed-nothing)');
+                expect(JSON.parse(fs.readFileSync(direct.getDiskPressureEpisodeStatePath(), 'utf8'))).toMatchObject({
+                    active : true,
+                    trigger: 'prune-freed-nothing'
+                });
+                direct.destroy();
+            } finally {
+                fs.removeSync(directDir);
+            }
+
+            unrelieved.destroy();
+        } finally {
+            fs.removeSync(relievedDir);
+            fs.removeSync(unrelievedDir);
         }
     });
 });

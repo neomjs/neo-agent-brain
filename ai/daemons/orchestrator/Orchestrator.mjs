@@ -116,7 +116,29 @@ import {resolveCloudOnlyDefault} from './services/deploymentDurabilityPosture.mj
  * that would then block on itself.
  * @type {String}
  */
-const PROVIDER_RESIDENCY_TASK_NAME = 'provider-residency-repair';
+const PROVIDER_RESIDENCY_TASK_NAME     = 'provider-residency-repair';
+const DISK_PRESSURE_EPISODE_STATE_FILE = 'disk-pressure-defect-episode.json';
+
+/**
+ * @summary Coerces a numeric metric into a non-negative integer byte count.
+ * @param {*} value Candidate numeric metric.
+ * @returns {Number}
+ */
+function toNonNegativeInt(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : 0;
+}
+
+/**
+ * @summary Formats a disk usage percentage to at most two decimal places.
+ * @param {*} value Candidate percentage reading.
+ * @returns {String}
+ */
+function formatDiskPercent(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return '0';
+    return (Math.round(parsed * 100) / 100).toString();
+}
 
 
 /**
@@ -404,6 +426,25 @@ export class Orchestrator extends Base {
     }
 
     /**
+     * @summary Publishes an unrelieved disk-pressure defect or recovery note through the mailbox.
+     * @param {{subject: String, body: String}} note Canonical `defect-note:` subject and diagnostic body.
+     * @returns {Promise<Object>} The accepted mailbox write receipt.
+     */
+    async publishDiskPressureDefect(note) {
+        const identity = this.swarmHeartbeatIdentity;
+
+        return RequestContextService.run({
+            agentIdentityNodeId: identity ? normalizeAgentIdentityNodeId(identity) : '@system'
+        }, () => MailboxService.addMessage({
+            ...note,
+            to            : 'AGENT:*',
+            taggedConcepts: ['defect-note', 'disk-pressure'],
+            priority      : 'normal',
+            wakeSuppressed: true
+        }, {deferProjection: true}));
+    }
+
+    /**
      * @summary One-shot active alarm dispatcher for the REM consolidation-liveness watchdog.
      *
      * The watchdog's passive leg is the health record plus WARN log. This active leg mirrors
@@ -616,6 +657,7 @@ export class Orchestrator extends Base {
 
         return ClassSystemUtil.beforeSetInstance(value, ContainerHealthDiagnosisService, {
             diagnosisConfig: {
+                buildCacheWarmFloorBytes     : diskPressure.buildCacheWarmFloorBytes,
                 diskPressurePercent          : diskPressure.percent,
                 diskPressureWindowMs         : diskPressure.windowMs,
                 minReclaimableBuildCacheBytes: diskPressure.minReclaimableBuildCacheBytes,
@@ -1210,13 +1252,201 @@ export class Orchestrator extends Base {
             return [];
         }
 
+        let outcomes;
+
         try {
-            return await this.containerHealthControllerService.consumeSnapshot({snapshot: result.snapshot});
+            outcomes = await this.containerHealthControllerService.consumeSnapshot({snapshot: result.snapshot});
         } catch (error) {
             this.writeLog('ERROR', `[Orchestrator] Container-health control cycle failed: ${error.message}`);
 
             return [];
         }
+
+        if (result.snapshot?.engineDisk && !this.authorityLeaseLost && this.pulseAuthorityLease() === 'held') {
+            try {
+                await this.reconcileDiskPressureDefectEpisode({
+                    engineDisk: result.snapshot.engineDisk,
+                    outcomes
+                });
+            } catch (error) {
+                this.writeLog('WARN', `[Orchestrator] Disk-pressure defect episode reconciliation failed: ${error.message}`);
+            }
+        }
+
+        return outcomes;
+    }
+
+    /**
+     * @summary Resolves the persisted state file path for the active disk-pressure defect episode.
+     * @returns {String}
+     */
+    getDiskPressureEpisodeStatePath() {
+        return path.join(this.dataDir, DISK_PRESSURE_EPISODE_STATE_FILE);
+    }
+
+    /**
+     * @summary Reads the persisted disk-pressure defect episode state, defaulting safely when absent or malformed.
+     * @returns {Object}
+     */
+    readDiskPressureEpisodeState() {
+        const statePath = this.getDiskPressureEpisodeStatePath();
+
+        try {
+            const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+            if (parsed && typeof parsed === 'object' && typeof parsed.active === 'boolean') {
+                if (parsed.active && (typeof parsed.noteCore !== 'string' || !parsed.noteCore.trim())) {
+                    return {active: false};
+                }
+
+                return parsed;
+            }
+        } catch {
+            return {active: false};
+        }
+
+        return {active: false};
+    }
+
+    /**
+     * @summary Atomically persists the disk-pressure defect episode state while the authority lease remains held.
+     * @param {Object} state Episode state payload.
+     * @returns {Boolean} True when persisted; false when fenced by authority-lease loss.
+     */
+    writeDiskPressureEpisodeState(state) {
+        if (this.authorityLeaseLost) return false;
+
+        const statePath = this.getDiskPressureEpisodeStatePath(),
+              tempPath  = `${statePath}.${process.pid}.${Date.now()}.tmp`;
+
+        fs.mkdirSync(path.dirname(statePath), {recursive: true});
+        fs.writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+
+        if (this.authorityLeaseLost) {
+            fs.rmSync(tempPath, {force: true});
+            return false;
+        }
+
+        fs.renameSync(tempPath, statePath);
+        return true;
+    }
+
+    /**
+     * @summary Emits at most one `defect-note:` per unrelieved disk-pressure episode and a matching `[recovered]`
+     * note once a fresh `statfs` reading drops below the configured pressure ceiling.
+     * @param {Object} [options={}]
+     * @param {Object|null} [options.engineDisk=null] Snapshot `engineDisk` observation and diagnosis.
+     * @param {Object[]} [options.outcomes=[]] Controller outcomes produced for the snapshot.
+     * @param {Number} [options.now=Date.now()] Observation epoch milliseconds.
+     * @returns {Promise<Object>} Reconciliation disposition (`noop`, `opened`, or `recovered`).
+     */
+    async reconcileDiskPressureDefectEpisode({engineDisk = null, outcomes = [], now = Date.now()} = {}) {
+        if (!engineDisk || typeof engineDisk !== 'object' || this.authorityLeaseLost) {
+            return {action: 'noop'};
+        }
+
+        const episode = this.readDiskPressureEpisodeState();
+
+        if (episode.active === true) {
+            const hasFreshStatfs = engineDisk.status !== 'unavailable' &&
+                engineDisk.status !== 'degraded' &&
+                !(Array.isArray(engineDisk.errors) && engineDisk.errors.length > 0) &&
+                Boolean(engineDisk.statfs && typeof engineDisk.statfs === 'object'),
+                  currentUsedPercent = hasFreshStatfs ? Number(engineDisk.statfs.usedPercent) : NaN;
+
+            if (Number.isFinite(currentUsedPercent) && currentUsedPercent < AiConfig.orchestrator.diskPressure.percent) {
+                const mountPath       = engineDisk.statfs.path || engineDisk.statfs.mountPath || episode.mountPath || AiConfig.plane.dataRoot,
+                      usedPercentText = formatDiskPercent(currentUsedPercent),
+                      availableBytes  = toNonNegativeInt(engineDisk.statfs.availableBytes),
+                      subject         = `defect-note: [recovered] ${episode.noteCore}`,
+                      body            = [
+                          `Docker / data-mount disk usage dropped below ${AiConfig.orchestrator.diskPressure.percent}%.`,
+                          `- mountPath: ${mountPath}`,
+                          `- usedPercent: ${usedPercentText}%`,
+                          `- availableBytes: ${availableBytes}`
+                      ].join('\n');
+
+                await this.publishDiskPressureDefect({subject, body});
+                this.writeDiskPressureEpisodeState({
+                    active      : false,
+                    recoveredAt : new Date(now).toISOString(),
+                    lastNoteCore: episode.noteCore
+                });
+
+                return {action: 'recovered', subject};
+            }
+
+            return {action: 'noop'};
+        }
+
+        const decision    = engineDisk.diagnosis,
+              targetId    = engineDisk.targetIdentity?.id || decision?.serviceKey || 'docker-engine',
+              diskOutcome = Array.isArray(outcomes)
+                  ? outcomes.find(entry => entry?.serviceKey === targetId) || null
+                  : null;
+
+        if (!decision || decision.status !== 'diagnosed' || diskOutcome?.status === 'declined') {
+            return {action: 'noop'};
+        }
+
+        const details         = decision.diagnosis?.details || decision.details || {},
+              actuatorOutcome = diskOutcome?.actuatorOutcome || null,
+              routedToRecord  = decision.actionClass === 'record' ||
+                  details.actionClass === 'record' ||
+                  diskOutcome?.status === 'recorded',
+              pruneFreedNothing = actuatorOutcome?.alarmOnly === true ||
+                  actuatorOutcome?.reasonCode === 'prune-freed-nothing',
+              trigger           = pruneFreedNothing ? 'prune-freed-nothing' : routedToRecord ? 'record' : null;
+
+        if (!trigger) {
+            return {action: 'noop'};
+        }
+
+        const statfs                         = engineDisk.statfs || details.statfs || null,
+              df                             = engineDisk.df || null,
+              images                         = df?.images || details.images || null,
+              volumes                        = df?.volumes || details.volumes || null,
+              buildCache                     = df?.buildCache || details.buildCache || null,
+              mountPath                      = statfs?.path || statfs?.mountPath || AiConfig.plane.dataRoot,
+              usedPercent                    = Number(statfs?.usedPercent),
+              usedPercentText                = formatDiskPercent(usedPercent),
+              availableBytes                 = toNonNegativeInt(statfs?.availableBytes),
+              imagesReclaimableBytes         = toNonNegativeInt(images?.reclaimableBytes),
+              volumesReclaimableBytes        = toNonNegativeInt(volumes?.reclaimableBytes),
+              buildCacheReclaimableBytes     = toNonNegativeInt(buildCache?.reclaimableBytes ?? details.reclaimableBuildCacheBytes),
+              reclaimableAboveWarmFloorBytes = toNonNegativeInt(details.reclaimableAboveWarmFloorBytes),
+              noteCore                       =
+                  `docker-engine disk-pressure broke ${mountPath} at ${usedPercentText}% used ` +
+                  `(availableBytes=${availableBytes}, reclaimable images=${imagesReclaimableBytes}, ` +
+                  `volumes=${volumesReclaimableBytes}, buildCache=${buildCacheReclaimableBytes})`,
+              subject                        = `defect-note: ${noteCore}`,
+              body                           = [
+                  `Unrelieved Docker / data-mount disk pressure (${trigger}).`,
+                  `- mountPath: ${mountPath}`,
+                  `- usedPercent: ${usedPercentText}%`,
+                  `- availableBytes: ${availableBytes}`,
+                  `- images.reclaimableBytes: ${imagesReclaimableBytes}`,
+                  `- volumes.reclaimableBytes: ${volumesReclaimableBytes}`,
+                  `- buildCache.reclaimableBytes: ${buildCacheReclaimableBytes}`,
+                  `- reclaimableAboveWarmFloorBytes: ${reclaimableAboveWarmFloorBytes}`
+              ].join('\n');
+
+        await this.publishDiskPressureDefect({subject, body});
+        this.writeDiskPressureEpisodeState({
+            active          : true,
+            noteCore,
+            openedAt        : new Date(now).toISOString(),
+            trigger,
+            mountPath,
+            usedPercent     : Number.isFinite(usedPercent) ? usedPercent : 0,
+            availableBytes,
+            reclaimableBytes: {
+                images    : imagesReclaimableBytes,
+                volumes   : volumesReclaimableBytes,
+                buildCache: buildCacheReclaimableBytes
+            }
+        });
+
+        return {action: 'opened', subject, trigger};
     }
 
     /**
