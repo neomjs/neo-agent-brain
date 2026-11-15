@@ -11,16 +11,16 @@ setup({
     }
 });
 
-import {test, expect}         from '@playwright/test';
-import {spawnSync}            from 'node:child_process';
-import fs                     from 'node:fs';
-import os                     from 'node:os';
-import path                   from 'node:path';
-import {DatabaseSync}         from 'node:sqlite';
-import {fileURLToPath}        from 'node:url';
-import Neo                    from 'neo.mjs/src/Neo.mjs';
-import * as core              from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager        from 'neo.mjs/src/manager/Instance.mjs';
+import {test, expect}  from '@playwright/test';
+import {spawnSync}     from 'node:child_process';
+import fs              from 'node:fs';
+import os              from 'node:os';
+import path            from 'node:path';
+import {DatabaseSync}  from 'node:sqlite';
+import {fileURLToPath} from 'node:url';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import {
     DEFAULT_STANDALONE_PLANE_ID,
     parseStandaloneArgs,
@@ -137,7 +137,7 @@ function createCustomGraphDb(dbPath, nodes) {
 }
 
 /**
- * @summary Builds a B4-safe writable fake `GraphService.db` supporting `upsertNode`, `linkNodes`, and RLS reads.
+ * @summary Builds a writable fake `GraphService.db` supporting `upsertNode`, `linkNodes`, and RLS reads without mutating `AiConfig`.
  * @param {{value: (String|null)}} requester Active requester holder.
  * @returns {Object}
  */
@@ -195,7 +195,7 @@ function makeTopologyDb(requester) {
 test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)', () => {
     const DAY_UTC = Date.UTC(2026, 10, 15, 12, 0, 0);
 
-    test('AC-1: fails closed on missing, sentinel, or unrostered --owner before touching targetWalDir, and validates custom rosters via --target-graph-db', async () => {
+    test('AC-1: fails closed on missing --target-graph-db or missing, sentinel, or unrostered --owner before touching targetWalDir', async () => {
         const sandbox      = makeTempDir('mc-promote-ac1-');
         const sourceWalDir = path.join(sandbox, 'source-wal');
         const targetWalDir = path.join(sandbox, 'untouched-target-wal');
@@ -213,6 +213,32 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
 
             expect(fs.existsSync(targetWalDir)).toBe(false);
 
+            // Seed a real SQLite graph DB with a custom team seat (plus @system / AGENT:* sentinels).
+            createCustomGraphDb(customDbPath, [
+                {id: '@system', label: 'System'},
+                {id: 'AGENT:*', label: 'BroadcastSentinel'},
+                {id: '@custom-team-seat', label: 'AgentIdentity', properties: {displayName: 'Custom Seat'}}
+            ]);
+
+            // Missing or blank `--target-graph-db` rejects naming `--target-graph-db` before touching targetWalDir.
+            for (const missingGraphDb of [undefined, null, '', '   ']) {
+                expect(() => resolveRosteredPromotionOwner({
+                    owner        : '@custom-team-seat',
+                    targetGraphDb: missingGraphDb
+                })).toThrow(/--target-graph-db/);
+
+                await expect(
+                    promoteStandaloneWal({
+                        sourceWalDir,
+                        targetWalDir,
+                        owner        : '@custom-team-seat',
+                        targetGraphDb: missingGraphDb
+                    })
+                ).rejects.toThrow(/--target-graph-db/);
+                expect(fs.existsSync(targetWalDir)).toBe(false);
+            }
+
+            // Invalid, sentinel, or unrostered `--owner` (including `@neo-gemini-julia`, proving `identityRoots.mjs` is never read) rejects before touching targetWalDir.
             for (const invalidOwner of [
                 undefined,
                 '',
@@ -223,47 +249,20 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
                 'AGENT:*',
                 'role:maintainer',
                 'human:outsider',
-                '@random-outsider'
+                '@random-outsider',
+                '@neo-gemini-julia'
             ]) {
                 await expect(
                     promoteStandaloneWal({
                         sourceWalDir,
                         targetWalDir,
-                        owner: invalidOwner
+                        owner        : invalidOwner,
+                        targetGraphDb: customDbPath
                     })
                 ).rejects.toThrow(/--owner/);
                 expect(fs.existsSync(targetWalDir)).toBe(false);
             }
 
-            // Empty --user-id and missing --target-graph-db also reject before touching targetWalDir.
-            await expect(
-                promoteStandaloneWal({
-                    sourceWalDir,
-                    targetWalDir,
-                    owner : '@neo-gemini-julia',
-                    userId: '   '
-                })
-            ).rejects.toThrow(/--user-id/);
-            expect(fs.existsSync(targetWalDir)).toBe(false);
-
-            await expect(
-                promoteStandaloneWal({
-                    sourceWalDir,
-                    targetWalDir,
-                    owner        : '@neo-gemini-julia',
-                    targetGraphDb: path.join(sandbox, 'does-not-exist.sqlite')
-                })
-            ).rejects.toThrow(/--target-graph-db/);
-            expect(fs.existsSync(targetWalDir)).toBe(false);
-
-            // Seed a real SQLite graph DB with a custom team seat (plus @system / AGENT:* sentinels).
-            createCustomGraphDb(customDbPath, [
-                {id: '@system', label: 'System'},
-                {id: 'AGENT:*', label: 'BroadcastSentinel'},
-                {id: '@custom-team-seat', label: 'AgentIdentity', properties: {displayName: 'Custom Seat'}}
-            ]);
-
-            // Identity present in `identityRoots.mjs` (`@neo-gemini-julia`) is REFUSED when absent from `--target-graph-db`.
             await expect(
                 promoteStandaloneWal({
                     sourceWalDir,
@@ -280,7 +279,39 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
                 targetGraphDb: customDbPath
             })).toThrow(/invalid or sentinel --owner/);
 
-            // Custom rostered AgentIdentity present in `--target-graph-db` succeeds and normalizes bare handle.
+            // Empty `--user-id`, non-existent `--target-graph-db`, and directory `--target-graph-db` also reject before touching targetWalDir.
+            await expect(
+                promoteStandaloneWal({
+                    sourceWalDir,
+                    targetWalDir,
+                    owner        : '@custom-team-seat',
+                    targetGraphDb: customDbPath,
+                    userId       : '   '
+                })
+            ).rejects.toThrow(/--user-id/);
+            expect(fs.existsSync(targetWalDir)).toBe(false);
+
+            await expect(
+                promoteStandaloneWal({
+                    sourceWalDir,
+                    targetWalDir,
+                    owner        : '@custom-team-seat',
+                    targetGraphDb: path.join(sandbox, 'does-not-exist.sqlite')
+                })
+            ).rejects.toThrow(/--target-graph-db/);
+            expect(fs.existsSync(targetWalDir)).toBe(false);
+
+            await expect(
+                promoteStandaloneWal({
+                    sourceWalDir,
+                    targetWalDir,
+                    owner        : '@custom-team-seat',
+                    targetGraphDb: sandbox
+                })
+            ).rejects.toThrow(/--target-graph-db/);
+            expect(fs.existsSync(targetWalDir)).toBe(false);
+
+            // Rostered AgentIdentity present in `--target-graph-db` succeeds and normalizes bare handle.
             const customTargetWalDir = path.join(sandbox, 'custom-target-wal');
             const customReceipt      = await promoteStandaloneWal({
                 sourceWalDir,
@@ -302,14 +333,20 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
     });
 
     test('AC-2: merges same-day UTC segments without clobbering existing plane records, filters --workspace, preserves standalone planeId, writes zero markers, and is idempotent on re-run', async () => {
-        const sandbox          = makeTempDir('mc-promote-ac2-');
-        const fakeHome         = path.join(sandbox, 'home');
-        const defaultWalDir    = path.join(fakeHome, '.neo-ai', 'memory-core', 'wal');
-        const targetWalDir     = path.join(sandbox, 'plane-wal');
-        const workspaceRepoDir = path.join(sandbox, 'checkout-brain');
+        const sandbox            = makeTempDir('mc-promote-ac2-');
+        const fakeHome           = path.join(sandbox, 'home');
+        const defaultWalDir      = path.join(fakeHome, '.neo-ai', 'memory-core', 'wal');
+        const targetWalDir       = path.join(sandbox, 'plane-wal');
+        const fixtureGraphDbPath = path.join(sandbox, 'plane-graph.sqlite');
+        const workspaceRepoDir   = path.join(sandbox, 'checkout-brain');
         fs.mkdirSync(workspaceRepoDir, {recursive: true});
 
         try {
+            createCustomGraphDb(fixtureGraphDbPath, [
+                {id: '@neo-gemini-julia', label: 'AgentIdentity'},
+                {id: '@neo-opus-grace', label: 'AgentIdentity'}
+            ]);
+
             // Seed standalone WAL in default `<homedir>/.neo-ai/memory-core/wal` across two workspaces.
             await appendWalMemory(
                 buildStandaloneRecord({
@@ -342,9 +379,9 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
             // Pre-populate target plane WAL in the SAME `wal-2026-11-15.jsonl` segment.
             await appendWalMemory(
                 {
-                    id                    : 'existing-plane-turn-0',
-                    timestamp             : DAY_UTC,
-                    metadata              : {
+                    id       : 'existing-plane-turn-0',
+                    timestamp: DAY_UTC,
+                    metadata : {
                         prompt       : 'Existing full-plane memory',
                         thought      : 'Written directly by full Agent OS plane',
                         response     : 'Must stay byte-identical on promotion merge',
@@ -374,11 +411,12 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
 
             // Promote using default sourceWalDir (`homedir`) and filesystem-path `--workspace` resolved via git remote.
             const firstRun = await promoteStandaloneWal({
-                homedir  : fakeHome,
+                homedir      : fakeHome,
                 targetWalDir,
-                owner    : 'neo-gemini-julia',
-                workspace: workspaceRepoDir,
-                execGit  : args => args.includes('get-url') ? 'git@github.com:NeoMJS/Neo-Agent-Brain.git' : null
+                targetGraphDb: fixtureGraphDbPath,
+                owner        : 'neo-gemini-julia',
+                workspace    : workspaceRepoDir,
+                execGit      : args => args.includes('get-url') ? 'git@github.com:NeoMJS/Neo-Agent-Brain.git' : null
             });
 
             expect(firstRun).toEqual({
@@ -430,10 +468,11 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
 
             // Re-run with identical inputs: 100% idempotent, 0 writes, 0 touched segments.
             const secondRun = await promoteStandaloneWal({
-                homedir  : fakeHome,
+                homedir      : fakeHome,
                 targetWalDir,
-                owner    : '@neo-gemini-julia',
-                workspace: 'github.com/neomjs/neo-agent-brain'
+                targetGraphDb: fixtureGraphDbPath,
+                owner        : '@neo-gemini-julia',
+                workspace    : 'github.com/neomjs/neo-agent-brain'
             });
 
             expect(secondRun).toEqual({
@@ -462,7 +501,13 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
             const sourceWalDir    = path.join(sandbox, 'standalone-wal');
             const targetWalDir    = path.join(sandbox, 'plane-wal');
             const badTargetWalDir = path.join(sandbox, 'bad-plane-wal');
+            const cliGraphDbPath  = path.join(sandbox, 'cli-plane-graph.sqlite');
             const promotedId      = 'mem-cli-promoted-1717';
+
+            createCustomGraphDb(cliGraphDbPath, [
+                {id: '@neo-gemini-julia', label: 'AgentIdentity'},
+                {id: '@neo-opus-ada', label: 'AgentIdentity'}
+            ]);
 
             // Verify CLI argument parser supports both `--flag value` and `--flag=value` forms for promote.
             expect(parseStandaloneArgs([
@@ -483,16 +528,15 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
                 workspace    : 'github.com/neomjs/neo-agent-brain'
             });
 
-            // Verify `neo-memory-core promote --help` exits 0 and documents promote flags.
+            // Verify `neo-memory-core promote --help` exits 0 and documents required promote flags.
             const helpRun = spawnSync(process.execPath, [STANDALONE_BIN, 'promote', '--help'], {
                 cwd     : REPO_ROOT,
                 encoding: 'utf8'
             });
             expect(helpRun.status).toBe(0);
-            expect(helpRun.stdout).toContain('neo-memory-core promote');
-            expect(helpRun.stdout).toContain('--target-wal-dir');
-            expect(helpRun.stdout).toContain('--owner');
-            expect(helpRun.stdout).toContain('--target-graph-db');
+            expect(helpRun.stdout).toContain('neo-memory-core promote --target-wal-dir <dir> --target-graph-db <path> --owner <agentIdentity> [options]');
+            expect(helpRun.stdout).toContain('--target-graph-db <path>');
+            expect(helpRun.stdout).toContain('(required)');
 
             await appendWalMemory(
                 buildStandaloneRecord({
@@ -504,7 +548,23 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
                 {dir: sourceWalDir, planeId: DEFAULT_STANDALONE_PLANE_ID}
             );
 
-            // Unrostered `--owner` via CLI exits 1 and writes nothing to `badTargetWalDir`.
+            // Missing `--target-graph-db` via CLI exits 1 naming `--target-graph-db` and writes nothing to `badTargetWalDir`.
+            const missingGraphCli = spawnSync(
+                process.execPath,
+                [
+                    STANDALONE_BIN,
+                    'promote',
+                    '--source-wal-dir', sourceWalDir,
+                    '--target-wal-dir', badTargetWalDir,
+                    '--owner', 'neo-gemini-julia'
+                ],
+                {cwd: REPO_ROOT, encoding: 'utf8'}
+            );
+            expect(missingGraphCli.status).toBe(1);
+            expect(missingGraphCli.stderr).toContain('--target-graph-db');
+            expect(fs.existsSync(badTargetWalDir)).toBe(false);
+
+            // Unrostered `--owner` via CLI exits 1 naming `not a rostered AgentIdentity` and writes nothing to `badTargetWalDir`.
             const rejectedCli = spawnSync(
                 process.execPath,
                 [
@@ -512,6 +572,7 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
                     'promote',
                     '--source-wal-dir', sourceWalDir,
                     '--target-wal-dir', badTargetWalDir,
+                    '--target-graph-db', cliGraphDbPath,
                     '--owner', '@unrostered-outsider'
                 ],
                 {cwd: REPO_ROOT, encoding: 'utf8'}
@@ -520,7 +581,7 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
             expect(rejectedCli.stderr).toContain('not a rostered AgentIdentity');
             expect(fs.existsSync(badTargetWalDir)).toBe(false);
 
-            // Rostered `--owner` via CLI exits 0 and emits JSON receipt on stdout.
+            // Rostered `--owner` with `--target-graph-db` via CLI exits 0 and emits JSON receipt on stdout.
             const okCli = spawnSync(
                 process.execPath,
                 [
@@ -528,6 +589,7 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
                     'promote',
                     '--source-wal-dir', sourceWalDir,
                     '--target-wal-dir', targetWalDir,
+                    '--target-graph-db', cliGraphDbPath,
                     '--owner', 'neo-gemini-julia'
                 ],
                 {cwd: REPO_ROOT, encoding: 'utf8'}
@@ -542,13 +604,14 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
                 userId               : 'neo-gemini-julia'
             });
 
-            //Also verify in-process `runPromoteCli` idempotent re-run emits JSON receipt cleanly.
+            // Also verify in-process `runPromoteCli` idempotent re-run emits JSON receipt cleanly.
             let capturedStdout = '';
             await runPromoteCli(
                 parseStandaloneArgs([
                     'promote',
                     `--source-wal-dir=${sourceWalDir}`,
                     `--target-wal-dir=${targetWalDir}`,
+                    `--target-graph-db=${cliGraphDbPath}`,
                     '--owner=@neo-gemini-julia'
                 ]),
                 {stdout: {write: chunk => { capturedStdout += chunk; }}}

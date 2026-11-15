@@ -205,7 +205,7 @@ export function parseStandaloneArgs(argv = process.argv.slice(2)) {
 export function formatStandaloneHelp() {
     return [
         'Usage: neo-memory-core [options]',
-        '       neo-memory-core promote --target-wal-dir <dir> --owner <agentIdentity> [options]',
+        '       neo-memory-core promote --target-wal-dir <dir> --target-graph-db <path> --owner <agentIdentity> [options]',
         '',
         'Standalone zero-daemon Neo.mjs Memory Core MCP server (JSONL WAL + node:sqlite FTS5).',
         '',
@@ -221,11 +221,11 @@ export function formatStandaloneHelp() {
         '',
         'Promote options:',
         '  --target-wal-dir <dir>      Target full-plane Memory Core WAL directory (required)',
+        '  --target-graph-db <path>    Target full-plane SQLite graph DB path for AgentIdentity roster validation (required)',
         '  --owner <agentIdentity>     Rostered AgentIdentity handle to stamp onto promoted records (required)',
         '  --source-wal-dir <dir>      Standalone source WAL directory (default: <data-root>/wal)',
         '  --data-root <dir>           Standalone plane root used when --source-wal-dir is omitted',
-        '  --target-graph-db <path>    Optional SQLite graph DB path to validate custom team AgentIdentity rosters',
-        '  --user-id <userId>          Optional explicit RLS userId override (default: normalized --owner)',
+        '  --user-id <userId>          Explicit RLS userId override (default: normalized --owner)',
         '  --workspace <slug-or-path>  Promote only records matching the resolved workspace key'
     ].join('\n');
 }

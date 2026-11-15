@@ -1,21 +1,20 @@
-import fsSync                                                           from 'node:fs';
-import fs                                                               from 'node:fs/promises';
-import os                                                               from 'node:os';
-import path                                                             from 'node:path';
-import {DatabaseSync}                                                   from 'node:sqlite';
-import {IDENTITIES}                                                     from '../../../graph/identityRoots.mjs';
-import {BROADCAST_SENTINEL, SYSTEM_SENDER}                              from '../../../graph/mailboxRoots.mjs';
-import {normalizeAgentIdentityNodeId}                                   from '../../../graph/normalizeAgentIdentityNodeId.mjs';
-import {DEFAULT_STANDALONE_PLANE_ID, standalonePlacement}               from '../../../mcp/server/memory-core/standalone.mjs';
-import {isOpaquePlaneId}                                                from '../../../planeConfig.mjs';
-import {deleteReconciledWalSegmentCacheEntries, getWalRecordsFileName}  from './memoryWalStore.mjs';
-import {normalizeRawMemoryUserId}                                       from './rawMemoryGraphIdentity.mjs';
-import {resolveStandaloneWorkspaceKey}                                  from './standaloneWorkspaceKey.mjs';
-import {withAppendLock}                                                 from './walAppendLock.mjs';
+import fsSync                                                          from 'node:fs';
+import fs                                                              from 'node:fs/promises';
+import os                                                              from 'node:os';
+import path                                                            from 'node:path';
+import {DatabaseSync}                                                  from 'node:sqlite';
+import {BROADCAST_SENTINEL, SYSTEM_SENDER}                             from '../../../graph/mailboxRoots.mjs';
+import {normalizeAgentIdentityNodeId}                                  from '../../../graph/normalizeAgentIdentityNodeId.mjs';
+import {DEFAULT_STANDALONE_PLANE_ID, standalonePlacement}              from '../../../mcp/server/memory-core/standalone.mjs';
+import {isOpaquePlaneId}                                               from '../../../planeConfig.mjs';
+import {deleteReconciledWalSegmentCacheEntries, getWalRecordsFileName} from './memoryWalStore.mjs';
+import {normalizeRawMemoryUserId}                                      from './rawMemoryGraphIdentity.mjs';
+import {resolveStandaloneWorkspaceKey}                                 from './standaloneWorkspaceKey.mjs';
+import {withAppendLock}                                                from './walAppendLock.mjs';
 
 /**
  * @module ai/services/memory-core/helpers/promoteStandaloneWal
- * @summary Promotes standalone Memory Core JSONL WAL segments into a full Agent OS plane WAL with fail-closed rostered-owner and RLS tenant stamping.
+ * @summary Promotes standalone Memory Core JSONL WAL segments into a full Agent OS plane WAL with fail-closed target-plane graph roster validation and RLS tenant stamping.
  */
 
 const WAL_SEGMENT_RE = /^wal-(\d{4}-\d{2}-\d{2})\.jsonl$/;
@@ -112,13 +111,19 @@ function readRosteredIdentitiesFromGraphDb(resolvedGraphDbPath) {
 }
 
 /**
- * @summary Validates `--owner` fail-closed against `--target-graph-db` (when supplied) or `IDENTITIES` in `identityRoots.mjs`.
+ * @summary Validates `--owner` fail-closed against `AgentIdentity` nodes in the target plane SQLite graph database.
  * @param {Object} options
  * @param {*} options.owner Raw `--owner` input.
- * @param {String} [options.targetGraphDb] Optional SQLite graph DB path.
+ * @param {String} options.targetGraphDb Target plane SQLite graph database path (`--target-graph-db`).
  * @returns {String} Canonical `@<identity>` node ID.
  */
 export function resolveRosteredPromotionOwner({owner, targetGraphDb} = {}) {
+    if (typeof targetGraphDb !== 'string' || targetGraphDb.trim().length === 0) {
+        throw new Error(
+            'promoteStandaloneWal: --target-graph-db is required and must point to the target plane SQLite graph database.'
+        );
+    }
+
     if (typeof owner !== 'string' || owner.trim().length === 0) {
         throw new Error(
             'promoteStandaloneWal: --owner is required and must name a rostered AgentIdentity (for example "@neo-gemini-julia").'
@@ -134,39 +139,12 @@ export function resolveRosteredPromotionOwner({owner, targetGraphDb} = {}) {
         );
     }
 
-    if (targetGraphDb !== undefined && targetGraphDb !== null) {
-        if (typeof targetGraphDb !== 'string' || targetGraphDb.trim().length === 0) {
-            throw new Error('promoteStandaloneWal: --target-graph-db must be a non-empty path when provided.');
-        }
-
-        const resolvedGraphDbPath = path.resolve(targetGraphDb.trim());
-        const rosteredIds         = readRosteredIdentitiesFromGraphDb(resolvedGraphDbPath);
-
-        if (!rosteredIds.has(canonicalOwner)) {
-            throw new Error(
-                `promoteStandaloneWal: --owner "${canonicalOwner}" is not a rostered AgentIdentity in target graph "${resolvedGraphDbPath}".`
-            );
-        }
-
-        return canonicalOwner;
-    }
-
-    const rosteredIds = new Set(
-        IDENTITIES
-            .filter(entry =>
-                entry?.type === 'AgentIdentity' &&
-                typeof entry.id === 'string' &&
-                entry.id !== SYSTEM_SENDER.id &&
-                entry.id !== BROADCAST_SENTINEL.id
-            )
-            .map(entry => normalizeAgentIdentityNodeId(entry.id))
-            .filter(isDirectNonSentinelIdentity)
-    );
+    const resolvedGraphDbPath = path.resolve(targetGraphDb.trim());
+    const rosteredIds         = readRosteredIdentitiesFromGraphDb(resolvedGraphDbPath);
 
     if (!rosteredIds.has(canonicalOwner)) {
         throw new Error(
-            `promoteStandaloneWal: --owner "${canonicalOwner}" is not a rostered AgentIdentity in identityRoots.mjs ` +
-            '(pass --target-graph-db to validate against a custom plane graph).'
+            `promoteStandaloneWal: --owner "${canonicalOwner}" is not a rostered AgentIdentity in target graph "${resolvedGraphDbPath}".`
         );
     }
 
@@ -232,7 +210,7 @@ function resolveIsoTimestamp(record, metadata, memoryProperties) {
 }
 
 /**
- * @summary Stamps verified owner identity, RLS `userId`, and v1 graph-projection metadata onto one promoted WAL record while preserving standalone provenance.
+ * @summary Stamps verified owner identity, RLS `userId`, and graph-projection metadata onto one promoted WAL record while preserving standalone provenance.
  * @param {Object} record Source standalone WAL record.
  * @param {Object} options
  * @param {String} options.canonicalOwner Verified `@<identity>` owner handle.
@@ -245,7 +223,7 @@ export function stampPromotedWalRecord(record, {canonicalOwner, resolvedUserId, 
     const existingGraphProjection = (record.graphProjection && typeof record.graphProjection === 'object')
         ? record.graphProjection
         : {};
-    const existingMemoryProps     = (existingGraphProjection.memoryProperties && typeof existingGraphProjection.memoryProperties === 'object')
+    const existingMemoryProps = (existingGraphProjection.memoryProperties && typeof existingGraphProjection.memoryProperties === 'object')
         ? existingGraphProjection.memoryProperties
         : {};
 
@@ -256,11 +234,11 @@ export function stampPromotedWalRecord(record, {canonicalOwner, resolvedUserId, 
 
     return {
         ...record,
-        segmentKey            : record.segmentKey || segmentKey,
-        planeId               : resolvedPlaneId,
-        agentIdentity         : canonicalOwner,
-        userId                : resolvedUserId,
-        metadata              : {
+        segmentKey   : record.segmentKey || segmentKey,
+        planeId      : resolvedPlaneId,
+        agentIdentity: canonicalOwner,
+        userId       : resolvedUserId,
+        metadata     : {
             ...existingMeta,
             planeId      : isOpaquePlaneId(existingMeta.planeId) ? existingMeta.planeId : resolvedPlaneId,
             agentIdentity: canonicalOwner,
@@ -341,10 +319,10 @@ async function readWalSegmentRecords(filePath) {
  * @summary Promotes standalone WAL records into a target Agent OS plane WAL directory idempotently under per-segment append locks.
  * @param {Object} [options={}]
  * @param {String} options.targetWalDir Target plane WAL directory (`--target-wal-dir`).
+ * @param {String} options.targetGraphDb Target plane SQLite graph database path (`--target-graph-db`).
  * @param {String} options.owner Rostered owner identity (`--owner`).
  * @param {String} [options.sourceWalDir] Explicit standalone source WAL directory (`--source-wal-dir`).
  * @param {String} [options.dataRoot] Optional standalone `--data-root` used when `sourceWalDir` is omitted.
- * @param {String} [options.targetGraphDb] Optional target plane SQLite graph path (`--target-graph-db`) for custom team rosters.
  * @param {String} [options.userId] Optional explicit RLS `userId` override (`--user-id`).
  * @param {String} [options.workspace] Optional workspace slug or directory filter (`--workspace`).
  * @param {String} [options.cwd=process.cwd()] Working directory used when resolving path-shaped `--workspace` filters.
@@ -368,6 +346,12 @@ export async function promoteStandaloneWal({
 } = {}) {
     if (typeof targetWalDir !== 'string' || targetWalDir.trim().length === 0) {
         throw new Error('promoteStandaloneWal: --target-wal-dir is required.');
+    }
+
+    if (typeof targetGraphDb !== 'string' || targetGraphDb.trim().length === 0) {
+        throw new Error(
+            'promoteStandaloneWal: --target-graph-db is required and must point to the target plane SQLite graph database.'
+        );
     }
 
     if (sourceWalDir !== undefined && sourceWalDir !== null) {
@@ -401,8 +385,8 @@ export async function promoteStandaloneWal({
         }).workspace;
     }
 
-    const segmentKeys         = await listChronologicalSegmentKeys(resolvedSourceWalDir);
-    const segmentsTouched     = [];
+    const segmentKeys           = await listChronologicalSegmentKeys(resolvedSourceWalDir);
+    const segmentsTouched       = [];
     let   promotedCount         = 0;
     let   skippedDuplicateCount = 0;
 
@@ -423,8 +407,8 @@ export async function promoteStandaloneWal({
 
         await withAppendLock(targetSegmentPath, async () => {
             const {rawText: existingRaw, records: existingRecords} = await readWalSegmentRecords(targetSegmentPath);
-            const seenIds  = new Set(existingRecords.map(entry => entry.id));
-            const toAppend = [];
+            const seenIds                                          = new Set(existingRecords.map(entry => entry.id));
+            const toAppend                                         = [];
 
             for (const sourceRecord of matchingRecords) {
                 if (seenIds.has(sourceRecord.id)) {
