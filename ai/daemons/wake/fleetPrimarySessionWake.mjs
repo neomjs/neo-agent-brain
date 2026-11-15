@@ -17,10 +17,17 @@ import * as codex                                                              f
 import {formatLocalWakeDigest}                                                 from './localWakeAdapters.mjs';
 import {withOutboxLock}                                                        from './outboxLock.mjs';
 import {bindPrimarySession, deliverPrimarySessionWake, readPrimarySessionWake} from './primarySessionWake.mjs';
-import {hasPrimaryWakeRecipient, primaryWakeSpoolPath}                         from './primaryWakeSpool.mjs';
-import {WakeReceiverState}                                                     from './receiverState.mjs';
-import {observePrimaryWakeSelection}                                           from './primaryWakeSelection.mjs';
-import {readPrivateWakeJson as readPrivate, readNativeWakeOptIn}               from './nativeWakeEnrollment.mjs';
+import {
+    ACTIVE_TURN_ADAPTER_DEPENDENCY,
+    ACTIVE_TURN_UNAVAILABLE_REASON,
+    hasPrimaryWakeRecipient,
+    isUrgentWakeRecord,
+    primaryWakeSpoolPath,
+    urgentPrimaryWakeSpoolPath
+} from './primaryWakeSpool.mjs';
+import {WakeReceiverState}                                       from './receiverState.mjs';
+import {observePrimaryWakeSelection}                             from './primaryWakeSelection.mjs';
+import {readPrivateWakeJson as readPrivate, readNativeWakeOptIn} from './nativeWakeEnrollment.mjs';
 export {enrollNativeWake, readNativeWakeOptIn}                                  from './nativeWakeEnrollment.mjs';
 
 const exec       = promisify(execFile);
@@ -105,13 +112,16 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
     const [subscriptionId,route] = routes[0], config = route.adapterConfig.primarySession;
     const statePath              = statePathFor(stateDir,route.agentIdentity);
     return withOutboxLock(statePath, async () => {
-        const {binding,inflight} = await readPrimarySessionWake({statePath});
-        if (inflight?.status !== 'unknown' || inflight.nonce !== nonce || binding?.threadId !== threadId ||
+        const {binding,inflight,urgentInflight} = await readPrimarySessionWake({statePath});
+        const isUrgentMatch                     = urgentInflight?.status === 'unknown' && urgentInflight.nonce === nonce,
+              isNormalMatch = !isUrgentMatch && inflight?.status === 'unknown' && inflight.nonce === nonce,
+              activeAttempt = isUrgentMatch ? urgentInflight : (isNormalMatch ? inflight : null);
+        if (!activeAttempt || binding?.threadId !== threadId ||
             binding.seat !== route.agentIdentity || binding.family !== family) return denied;
-        const state = new WakeReceiverState({stateDir}), record = await state.read(inflight.recordKey);
+        const state = new WakeReceiverState({stateDir}), record = await state.read(activeAttempt.recordKey);
         if (record.subscriptionId !== subscriptionId || record.envelope?.agentIdentity !== binding.seat ||
             !['pending','dispatching'].includes(record.state) || record.envelope.eventType !== 'wake/digest') return denied;
-        const claimPath = statePath + '.claim.json';
+        const claimPath = statePath + (isUrgentMatch ? '.urgent.claim.json' : '.claim.json');
         const previous  = await readPrivate(claimPath);
         if (previous?.nonce === nonce) return denied;
         // A correlated hook has spent this marker. Only this exact bound attempt may certify its
@@ -122,7 +132,7 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
                 const liveRoute = (await readPrivate(manifestPath))?.routes?.[subscriptionId];
                 if (!isDeepStrictEqual(liveRoute,route) ||
                     (await readNativeWakeOptIn({manifestPath,agentId,family}))?.stateDir !== stateDir) return denied;
-                await writeFileAtomic(claimPath, JSON.stringify({nonce,recordKey:inflight.recordKey,threadId,
+                await writeFileAtomic(claimPath, JSON.stringify({nonce,recordKey:activeAttempt.recordKey,threadId,
                     generation:binding.generation,turnId:typeof turnId === 'string' ? turnId : null,admitted:false,reason}), {mode:0o600,fsync:true});
                 return denied
             })
@@ -145,9 +155,9 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
             const liveRoute = (await readPrivate(manifestPath))?.routes?.[subscriptionId];
             if (!isDeepStrictEqual(liveRoute,route) ||
                 (await readNativeWakeOptIn({manifestPath,agentId,family}))?.stateDir !== stateDir) return denied;
-            const receiptToken = randomUUID();
-            await writeFileAtomic(claimPath, JSON.stringify({nonce,receiptToken,recordKey:inflight.recordKey,threadId,generation:binding.generation,
-                turnId: typeof turnId === 'string' ? turnId : null, admitted:matches}), {mode:0o600,fsync:true});
+            const receiptToken = randomUUID(), observedAt = new Date().toISOString();
+            await writeFileAtomic(claimPath, JSON.stringify({nonce,receiptToken,recordKey:activeAttempt.recordKey,threadId,generation:binding.generation,
+                turnId: typeof turnId === 'string' ? turnId : null, admitted:matches, ...(matches ? {observedAt} : {})}), {mode:0o600,fsync:true});
             return matches ? {admitted:true,digest:formatLocalWakeDigest(record.envelope)+'\n[NEO_WAKE_RECEIVED:'+receiptToken+']'} : denied
         })
     })
@@ -179,17 +189,24 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         return latestRoot(config,live,statePath,appDataDir,codexTransport,antigravityTransport,seat,inspectResident)
     };
     let before = await readBinding();
-    if (before.inflight?.status === 'unknown' && before.binding) {
+    if ((before.inflight?.status === 'unknown' || before.urgentInflight?.status === 'unknown') && before.binding) {
         // The nonce conveys no message. Redemption and withdrawal of its unclaimed grant share
         // the recipient lock, so a late marker cannot disclose the digest after replacement.
         await withOutboxLock(statePath, async () => {
             const current = await readBinding();
-            if (current.version !== before.version || current.inflight?.nonce !== before.inflight.nonce) return;
-            const claim = await readPrivate(statePath + '.claim.json');
-            if (claim?.nonce === current.inflight.nonce && claim.admitted === true) return;
+            if (current.version !== before.version) return;
+            const canWithdrawNormal = current.inflight?.status === 'unknown' && current.inflight.nonce === before.inflight?.nonce &&
+                !await readPrivate(statePath + '.claim.json').then(c => c?.nonce === current.inflight.nonce && c.admitted === true);
+            const canWithdrawUrgent = current.urgentInflight?.status === 'unknown' && current.urgentInflight.nonce === before.urgentInflight?.nonce &&
+                !await readPrivate(statePath + '.urgent.claim.json').then(c => c?.nonce === current.urgentInflight.nonce && c.admitted === true);
+            if (!canWithdrawNormal && !canWithdrawUrgent) return;
             const next = await select().catch(() => null);
             if (next?.root && (current.binding.generation !== generation || current.binding.threadId !== next.threadId)) {
-                await writeFileAtomic(statePath, JSON.stringify({...current,inflight:null}), {mode:0o600,fsync:true})
+                await writeFileAtomic(statePath, JSON.stringify({
+                    ...current,
+                    ...(canWithdrawNormal ? {inflight:null} : {}),
+                    ...(canWithdrawUrgent ? {urgentInflight:null} : {})
+                }), {mode:0o600,fsync:true})
             }
         });
         before = await readBinding()
@@ -198,8 +215,9 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
     if (!isCodex && !sidecar) return pending('awaiting App sidecar');
     if (!isCodex && (sidecar.appPid !== live.pid || sidecar.appStart !== live.startedAt ||
         sidecar.appBundle !== appBundle || sidecar.instanceHome !== instanceHome)) return pending('sidecar does not own instance');
+    const slotReady = async attempt => !attempt || (attempt.status === 'delivered' && await recorded(attempt.recordKey));
     let selected;
-    if (!before.inflight || before.inflight.status === 'delivered' && await recorded(before.inflight.recordKey)) {
+    if (await slotReady(before.inflight) && await slotReady(before.urgentInflight)) {
         selected = await select().catch(() => null);
         if (!selected?.root) return pending('latest started main session is unproven');
         if (before.binding?.threadId !== selected.threadId || before.binding?.generation !== generation) {
@@ -209,7 +227,9 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         }
     }
     const prior = await readBinding();
-    if (!prior.binding || (prior.binding.generation !== generation && prior.inflight?.recordKey !== record.recordKey)) {
+    if (!prior.binding || (prior.binding.generation !== generation &&
+        prior.inflight?.recordKey !== record.recordKey &&
+        prior.urgentInflight?.recordKey !== record.recordKey)) {
         return unknown('previous launch has an unresolved wake')
     }
     const deliveryGeneration = prior.binding.generation;
@@ -218,49 +238,96 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         home, binary, threadId, workspaceRoot:live.workspaceRoot, generation, manifestPath, stateDir, agentId:config.agentId,
         runtimePid:live.pid, nodePath:config.hookNodePath, modulePath:config.hookModulePath
     });
-    const cursorPath   = statePath + '.cursor.json';
-    let   denialReason = null,
-          result     = await deliverPrimarySessionWake({
-        statePath,seat,generation:deliveryGeneration,family,recordKey:record.recordKey,isRecordedDelivered:recorded,
-        readTarget: async binding => {
+    const urgent        = isUrgentWakeRecord(record);
+    const cursorPathFor = slotUrgent => statePath + (slotUrgent ? '.urgent.cursor.json' : '.cursor.json');
+    const claimPathFor  = slotUrgent => statePath + (slotUrgent ? '.urgent.claim.json' : '.claim.json');
+    let   denialReason  = null,
+          result         = await deliverPrimarySessionWake({
+        statePath,seat,generation:deliveryGeneration,family,recordKey:record.recordKey,urgent,isRecordedDelivered:recorded,
+        readTarget: async (binding, {urgent: slotUrgent} = {}) => {
             if (binding.generation !== generation) return null;
             const root = await select();
             if (root?.threadId !== binding.threadId) return null;
             if (isCodex) {
                 const activity = await codexTransport.readCodexWakeActivity({home, threadId:root.threadId});
-                if (activity.state !== 'idle') return null;
+                if (!slotUrgent) {
+                    if (activity.state !== 'idle') return null;
+                    const admission = await verifyCodex(root);
+                    return admission?.verified === true ? root : null
+                }
+                if (activity.state === 'idle') {
+                    const admission = await verifyCodex(root);
+                    return admission?.verified === true ? {...root, deliveryMode: 'idle'} : null
+                }
+                const hasActiveTurnAdapter = typeof codexTransport.sendCodexActiveTurnWake === 'function' &&
+                    typeof codexTransport.readCodexActiveTurnReceipt === 'function';
+                if (!hasActiveTurnAdapter) {
+                    return {root: false, reason: ACTIVE_TURN_UNAVAILABLE_REASON, dependency: ACTIVE_TURN_ADAPTER_DEPENDENCY}
+                }
                 const admission = await verifyCodex(root);
+                return admission?.verified === true
+                    ? {...root, deliveryMode: 'active-turn', activeTurnId: activity?.turnId ?? root.activeTurnId ?? null}
+                    : null
+            }
+            if (!slotUrgent) {
+                if (root.status !== 'CASCADE_RUN_STATUS_IDLE') return null;
+                const admission = await antigravityTransport.verifyAntigravityWakeAdmission({instanceHome,appDataDir,projectId,threadId:root.threadId,generation,statePath});
                 return admission?.verified === true ? root : null
             }
-            if (root.status !== 'CASCADE_RUN_STATUS_IDLE') return null;
+            if (root.status === 'CASCADE_RUN_STATUS_IDLE') {
+                const admission = await antigravityTransport.verifyAntigravityWakeAdmission({instanceHome,appDataDir,projectId,threadId:root.threadId,generation,statePath});
+                return admission?.verified === true ? {...root, deliveryMode: 'idle'} : null
+            }
+            const hasActiveTurnAdapter = typeof antigravityTransport.sendAntigravityActiveTurnWake === 'function' &&
+                typeof antigravityTransport.readAntigravityActiveTurnReceipt === 'function';
+            if (!hasActiveTurnAdapter) {
+                return {root: false, reason: ACTIVE_TURN_UNAVAILABLE_REASON, dependency: ACTIVE_TURN_ADAPTER_DEPENDENCY}
+            }
             const admission = await antigravityTransport.verifyAntigravityWakeAdmission({instanceHome,appDataDir,projectId,threadId:root.threadId,generation,statePath});
-            return admission?.verified === true ? root : null
+            return admission?.verified === true
+                ? {...root, deliveryMode: 'active-turn', activeTurnId: root.activeTurnId ?? null}
+                : null
         },
-        send: async ({binding,nonce}) => {
+        send: async ({binding,nonce,urgent:slotUrgent,attempt,target}) => {
             if (binding.generation !== generation || (currentRoute && !await currentRoute())) return {status:'not-sent'};
             const {threadId} = binding, text = wakeText(nonce), root = await select();
             if (root?.threadId !== threadId) return {status:'not-sent'};
             const cursor = isCodex ? root.receiptOffset : antigravityTransport.captureAntigravityWakeCursor({appDataDir,threadId});
-            await writeFileAtomic(cursorPath, JSON.stringify({nonce,cursor}), {mode:0o600,fsync:true});
-            if (isCodex) return codexTransport.sendCodexSessionWake({binary,home,threadId,text,verifyAdmission:verifyCodex});
-            return antigravityTransport.sendAntigravitySessionWake({threadId,message:text,
-                agentapiExecutable:sidecar.environment.ANTIGRAVITY_AGENTAPI_EXE, environment:sidecar.environment})
+            await writeFileAtomic(cursorPathFor(slotUrgent), JSON.stringify({nonce,cursor}), {mode:0o600,fsync:true});
+            const activeTurn = (attempt?.deliveryMode || target?.deliveryMode) === 'active-turn';
+            if (isCodex) {
+                return activeTurn
+                    ? codexTransport.sendCodexActiveTurnWake({binary,home,threadId,turnId:target?.activeTurnId ?? null,text,verifyAdmission:verifyCodex})
+                    : codexTransport.sendCodexSessionWake({binary,home,threadId,text,verifyAdmission:verifyCodex})
+            }
+            return activeTurn
+                ? antigravityTransport.sendAntigravityActiveTurnWake({threadId,turnId:target?.activeTurnId ?? null,message:text,
+                    agentapiExecutable:sidecar.environment.ANTIGRAVITY_AGENTAPI_EXE, environment:sidecar.environment})
+                : antigravityTransport.sendAntigravitySessionWake({threadId,message:text,
+                    agentapiExecutable:sidecar.environment.ANTIGRAVITY_AGENTAPI_EXE, environment:sidecar.environment})
         },
-        readReceipt: async ({binding,nonce,recordKey}) => {
-            const {threadId} = binding, text = wakeText(nonce), saved = await readPrivate(cursorPath);
+        readReceipt: async ({binding,nonce,recordKey,urgent:slotUrgent,attempt}) => {
+            const {threadId} = binding, text = wakeText(nonce), saved = await readPrivate(cursorPathFor(slotUrgent));
             if (saved?.nonce !== nonce) return null;
-            const claim = await readPrivate(statePath + '.claim.json');
+            const claim = await readPrivate(claimPathFor(slotUrgent));
             if (claim?.nonce !== nonce || claim.recordKey !== recordKey || claim.generation !== binding.generation || claim.threadId !== threadId) return null;
             if (claim.admitted === false) {
                 denialReason = ['resident-unavailable', 'selection-unavailable'].includes(claim.reason) ? claim.reason : null;
                 return {...binding,recordKey,nonce,status:'not-sent'}
             }
             if (claim.admitted !== true) return null;
-            const proof = isCodex ? await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptToken:claim.receiptToken,receiptOffset:saved.cursor}) :
-                antigravityTransport.readAntigravityWakeReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor});
-            if (proof?.state !== 'turn-started' && proof?.outcome !== 'observed') return null;
+            const activeTurn = attempt?.deliveryMode === 'active-turn';
+            const proof      = isCodex
+                ? (activeTurn && typeof codexTransport.readCodexActiveTurnReceipt === 'function'
+                    ? await codexTransport.readCodexActiveTurnReceipt({home,threadId,text,receiptToken:claim.receiptToken,receiptOffset:saved.cursor})
+                    : await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptToken:claim.receiptToken,receiptOffset:saved.cursor}))
+                : (activeTurn && typeof antigravityTransport.readAntigravityActiveTurnReceipt === 'function'
+                    ? antigravityTransport.readAntigravityActiveTurnReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor})
+                    : antigravityTransport.readAntigravityWakeReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor}));
+            if (!['turn-started', 'turn-steered'].includes(proof?.state) && proof?.outcome !== 'observed') return null;
             if (isCodex && claim.turnId && claim.turnId !== proof.turnId) return null;
-            return {...binding,recordKey,nonce,status:'consumed'}
+            const observedAt = typeof proof?.observedAt === 'string' ? proof.observedAt : (typeof claim.observedAt === 'string' ? claim.observedAt : null);
+            return {...binding,recordKey,nonce,status:'consumed',...(observedAt ? {observedAt} : {})}
         }
     });
     if (result.status === 'pending' && denialReason) result = {...result,reason:`native-recipient:${denialReason}`};
@@ -292,7 +359,7 @@ export async function dispatchAntigravitySidecarRecords({manifestPath,stateDir,e
     }
 }
 
-/** @summary Revalidates the host route, reads a signed receiver record, and publishes only correlated receipt fields. */
+/** @summary Revalidates the host route, drains urgent spool pointers before ordinary ones, and publishes correlated receipt fields. */
 export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route,sidecar,dispatch = dispatchFleetPrimarySessionWake}) {
     if (route.harnessTargetMetadata?.adapter !== 'primary-session') return;
     const config = route.adapterConfig?.primarySession;
@@ -300,26 +367,53 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
     const current = (await readPrivate(manifestPath))?.routes?.[subscriptionId];
     if (!current || current.agentIdentity !== route.agentIdentity || current.harnessTargetMetadata?.adapter !== 'primary-session' ||
         current.admits !== 'wake/digest' || !isDeepStrictEqual(current.adapterConfig?.primarySession,config)) return;
-    const pointerPath = primaryWakeSpoolPath(stateDir,route.agentIdentity);
-    const pointer     = await readPrivate(pointerPath);
-    if (!pointer || !isKey(pointer.recordKey)) return;
-    const record = await state.read(pointer.recordKey);
-    if (!['pending','dispatching'].includes(record.state) || record.subscriptionId !== subscriptionId ||
-        record.envelope?.subscriptionId !== subscriptionId || record.route?.agentIdentity !== route.agentIdentity ||
-        record.envelope?.agentIdentity !== route.agentIdentity || record.envelope?.eventType !== 'wake/digest') return;
     const publicRoute  = {agentIdentity:route.agentIdentity,harnessTargetMetadata:route.harnessTargetMetadata,adapterConfig:route.adapterConfig};
     const currentRoute = async () =>
         isDeepStrictEqual((await readPrivate(manifestPath))?.routes?.[subscriptionId],current) &&
         (await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family}))?.stateDir === stateDir;
-    const result = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute});
-    if (result?.status === 'delivered' && hasPrimaryWakeRecipient(result.recipient, {seat:route.agentIdentity, recordKey:record.recordKey})) {
-        const {recordKey} = record;
-        await writeFileAtomic(pointerPath+'.result', JSON.stringify({recordKey,subscriptionId,recipient:result.recipient}), {mode:0o600,fsync:true})
-    } else {
+
+    const drainPointer = async pointerPath => {
+        const pointer = await readPrivate(pointerPath);
+        if (!pointer || !isKey(pointer.recordKey)) return {active:false};
+        const record = await state.read(pointer.recordKey);
+        if (!['pending','dispatching'].includes(record.state) || record.subscriptionId !== subscriptionId ||
+            record.envelope?.subscriptionId !== subscriptionId || record.route?.agentIdentity !== route.agentIdentity ||
+            record.envelope?.agentIdentity !== route.agentIdentity || record.envelope?.eventType !== 'wake/digest') return {active:false};
+        const result = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute});
+        if (result?.status === 'delivered' && hasPrimaryWakeRecipient(result.recipient, {seat:route.agentIdentity, recordKey:record.recordKey})) {
+            const {recordKey} = record;
+            await writeFileAtomic(pointerPath+'.result', JSON.stringify({
+                recordKey,
+                subscriptionId,
+                recipient: result.recipient,
+                ...(typeof result.recipientObservedAt === 'string' ? {recipientObservedAt: result.recipientObservedAt} : {})
+            }), {mode:0o600,fsync:true});
+            return {active:false}
+        }
         // Only fixed diagnostics cross back to the receiver; never project vendor errors or payloads.
-        const reason = ['native-recipient:resident-unavailable', 'native-recipient:selection-unavailable'].includes(result?.reason)
+        const reason = ['native-recipient:resident-unavailable', 'native-recipient:selection-unavailable', ACTIVE_TURN_UNAVAILABLE_REASON].includes(result?.reason)
             ? result.reason : result?.status === 'unknown' ? 'native-recipient:receipt-unproven' : 'native-recipient:awaiting-readiness';
-        await writeFileAtomic(pointerPath+'.status', JSON.stringify({recordKey:record.recordKey,subscriptionId,reason}), {mode:0o600,fsync:true})
+        const dependency = reason === ACTIVE_TURN_UNAVAILABLE_REASON ? (result?.dependency || ACTIVE_TURN_ADAPTER_DEPENDENCY) : null;
+        await writeFileAtomic(pointerPath+'.status', JSON.stringify({
+            recordKey: record.recordKey,
+            subscriptionId,
+            reason,
+            ...(dependency ? {dependency} : {})
+        }), {mode:0o600,fsync:true});
+        return {active:true}
+    };
+
+    const urgentOutcome = await drainPointer(urgentPrimaryWakeSpoolPath(stateDir,route.agentIdentity));
+    const normalPath    = primaryWakeSpoolPath(stateDir,route.agentIdentity);
+    if (!urgentOutcome.active) {
+        await drainPointer(normalPath);
+        return
+    }
+    const normalPointer = await readPrivate(normalPath);
+    if (!normalPointer || !isKey(normalPointer.recordKey)) return;
+    const sessionState = await readPrimarySessionWake({statePath:statePathFor(stateDir,route.agentIdentity)}).catch(() => null);
+    if (sessionState?.inflight?.recordKey === normalPointer.recordKey) {
+        await drainPointer(normalPath)
     }
 }
 

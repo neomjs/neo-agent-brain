@@ -339,4 +339,58 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
 
         await fs.rm(home, {recursive: true, force: true});
     });
+
+    test('projects stage and split-latency verdicts via includeStages without altering default return shape', async () => {
+        const root    = await tmpRoot(),
+              records = path.join(root, 'records');
+
+        await writeRecord(records, {
+            recordKey          : 'k-stage-1',
+            subscriptionId     : 'WAKE_SUB:stage',
+            state              : 'delivered',
+            urgent             : true,
+            sourceEventIds     : ['MESSAGE:urgent-1'],
+            sourceSentAt       : '2026-11-15T09:10:00.000Z',
+            acceptedAt         : '2026-11-15T09:10:00.060Z',
+            recipientObservedAt: '2026-11-15T09:10:00.180Z',
+            dispatchFinishedAt : '2026-11-15T09:10:00.185Z'
+        });
+
+        const staged = await readWakeDelivery({
+            recordsDir   : records,
+            messageIds   : ['MESSAGE:urgent-1', 'MESSAGE:policy-1'],
+            includeStages: true,
+            policyQueue  : {
+                'MESSAGE:policy-1': {
+                    subscriptionId: 'WAKE_SUB:stage',
+                    sentAt        : '2026-11-15T09:10:01.000Z',
+                    firstQueuedAt : '2026-11-15T09:10:01.005Z',
+                    priority      : 'normal',
+                    urgent        : false
+                }
+            },
+            now          : '2026-11-15T09:10:02.005Z'
+        });
+
+        expect(staged.messages['MESSAGE:urgent-1']).toEqual({
+            state: 'delivered',
+            at   : '2026-11-15T09:10:00.185Z'
+        });
+        expect(staged.messageStages['MESSAGE:urgent-1']).toMatchObject({
+            stage            : 'delivered',
+            settled          : true,
+            urgent           : true,
+            eventToHostMs    : 60,
+            hostToRecipientMs: 120,
+            totalLatencyMs   : 180
+        });
+        expect(staged.messageStages['MESSAGE:policy-1']).toMatchObject({
+            stage            : 'waiting-for-policy',
+            settled          : false,
+            policyWaitMs     : 1000,
+            hostToRecipientMs: null
+        });
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
 });

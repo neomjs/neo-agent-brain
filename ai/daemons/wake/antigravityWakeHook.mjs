@@ -45,23 +45,31 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
         let wakeInput = input;
         if (!reserved) {
             const state = await readPrimarySessionWake({statePath});
-            const nonce = state.inflight?.nonce;
-            if (state.inflight?.status === 'unknown' && state.binding?.threadId === input.conversationId &&
-                state.binding?.generation === generation && typeof nonce === 'string') {
-                const cursor     = privateJson(statePath + '.cursor.json');
-                const marker     = '[NEO_WAKE_V1:' + nonce + '] [WAKE]';
-                let   continuing = false;
-                if (input.invocationNum > 0) {
+            for (const [slotKey, cursorSuffix, claimSuffix] of [
+                ['urgentInflight', '.urgent.cursor.json', '.urgent.claim.json'],
+                ['inflight',       '.cursor.json',        '.claim.json']
+            ]) {
+                const attempt = state[slotKey], nonce = attempt?.nonce;
+                if (attempt?.status === 'unknown' && state.binding?.threadId === input.conversationId &&
+                    state.binding?.generation === generation && typeof nonce === 'string') {
                     try {
-                        const claim = privateJson(statePath + '.claim.json');
-                        continuing = claim.admitted === true && claim.nonce === nonce &&
-                            claim.threadId === input.conversationId && claim.generation === generation;
-                    } catch { /* No admitted wake in this invocation. */ }
-                }
-                if (cursor.nonce === nonce &&
-                    hasAntigravityPendingSystemWake({appDataDir,threadId:input.conversationId,text:marker,cursor:cursor.cursor})) {
-                    if (continuing) return {};
-                    wakeInput = {...input,lastUserInput:marker,invocationNum:0};
+                        const cursor     = privateJson(statePath + cursorSuffix);
+                        const marker     = '[NEO_WAKE_V1:' + nonce + '] [WAKE]';
+                        let   continuing = false;
+                        if (input.invocationNum > 0) {
+                            try {
+                                const claim = privateJson(statePath + claimSuffix);
+                                continuing = claim.admitted === true && claim.nonce === nonce &&
+                                    claim.threadId === input.conversationId && claim.generation === generation;
+                            } catch { /* No admitted wake in this invocation. */ }
+                        }
+                        if (cursor.nonce === nonce &&
+                            hasAntigravityPendingSystemWake({appDataDir,threadId:input.conversationId,text:marker,cursor:cursor.cursor})) {
+                            if (continuing) return {};
+                            wakeInput = {...input,lastUserInput:marker,invocationNum:0};
+                            break;
+                        }
+                    } catch { /* Slot cursor unavailable; inspect remaining slot. */ }
                 }
             }
         }
@@ -69,9 +77,11 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
         return await handleAntigravityPreInvocation({...context,input:wakeInput,consume:async ({threadId,nonce,denyOnly}) => {
             if (denyOnly) {
                 // No negative claim request for an unrelated thread or an unbound nonce.
-                const current = await readPrimarySessionWake({statePath});
+                const current       = await readPrimarySessionWake({statePath}),
+                      matchesNormal = current.inflight?.status === 'unknown' && current.inflight?.nonce === nonce,
+                      matchesUrgent = current.urgentInflight?.status === 'unknown' && current.urgentInflight?.nonce === nonce;
                 if (current.binding?.threadId !== threadId || current.binding?.generation !== generation ||
-                    current.inflight?.status !== 'unknown' || current.inflight?.nonce !== nonce) return {admitted:false};
+                    (!matchesNormal && !matchesUrgent)) return {admitted:false};
             }
             return consume({manifestPath,stateDir,agentId:config.agentId,family:'antigravity',threadId,nonce,denyOnly,expectedGeneration:generation})
         }});

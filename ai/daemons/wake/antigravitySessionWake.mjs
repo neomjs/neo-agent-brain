@@ -353,11 +353,14 @@ export async function handleAntigravityPreInvocation({input,consume,...context})
         return deny
     }
     if (input.invocationNum > 0) {
-        try {
-            const claim = JSON.parse(fs.readFileSync(context.statePath + '.claim.json','utf8'));
-            return claim.admitted === true && claim.nonce === match[1] && claim.threadId === input.conversationId &&
-                claim.generation === context.generation ? {} : deny;
-        } catch { return deny }
+        for (const suffix of ['.urgent.claim.json', '.claim.json']) {
+            try {
+                const claim = JSON.parse(fs.readFileSync(context.statePath + suffix,'utf8'));
+                if (claim.admitted === true && claim.nonce === match[1] && claim.threadId === input.conversationId &&
+                    claim.generation === context.generation) return {};
+            } catch { /* Inspect remaining claim slot. */ }
+        }
+        return deny
     }
     const result = await consume({threadId:input.conversationId,nonce:match[1]});
     if (!result?.admitted || typeof result.digest !== 'string') return deny;

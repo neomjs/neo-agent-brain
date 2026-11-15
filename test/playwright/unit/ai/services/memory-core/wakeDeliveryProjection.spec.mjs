@@ -4,6 +4,8 @@ import {
     projectMessageDelivery,
     projectPullRouteVerdict,
     projectWakeDelivery,
+    projectWakeDeliveryStages,
+    projectWakeRecordStage,
     PULL_ROUTE_SILENCE_MS
 } from '../../../../../../ai/services/memory-core/wakeDeliveryProjection.mjs';
 
@@ -347,4 +349,120 @@ test.describe('projectPullRouteVerdict — a pull route concluded by its own pol
             .toEqual({state: 'undeliverable', reason: silent.lastOutcomeReason, consecutiveFailures: undefined});
         expect(projectIdentityWakeReachability([{id: 'pull'}, {id: 'push'}], {pull: silent})).toEqual({state: 'unknown'})
     })
+});
+
+test.describe('projectWakeRecordStage & projectWakeDeliveryStages — stage and split-latency reporting', () => {
+    test('distinguishes waiting-for-policy, waiting-for-chat-boundary, waiting-for-receipt, and delivered without settling on host ack', () => {
+        const policyQueue = {
+            'MESSAGE:policy': {
+                subscriptionId: 'WAKE_SUB:sub-a',
+                sentAt        : '2026-11-15T09:00:00.000Z',
+                firstQueuedAt : '2026-11-15T09:00:00.010Z',
+                priority      : 'normal',
+                urgent        : false
+            }
+        };
+
+        const boundaryRecord = {
+            recordKey      : 'a'.repeat(64),
+            subscriptionId : 'WAKE_SUB:sub-a',
+            sourceEventIds : ['MESSAGE:active-turn'],
+            state          : 'pending',
+            urgent         : true,
+            sourceSentAt   : '2026-11-15T09:00:00.000Z',
+            firstQueuedAt  : Date.parse('2026-11-15T09:00:00.005Z'),
+            emittedAt      : '2026-11-15T09:00:00.055Z',
+            acceptedAt     : '2026-11-15T09:00:00.070Z',
+            hostStagedAt   : '2026-11-15T09:00:00.075Z',
+            waitStage      : 'waiting-for-chat-boundary',
+            deferReason    : 'native-recipient:active-turn-adapter-unavailable',
+            namedDependency: '#1741'
+        };
+
+        const hostAckOnlyRecord = {
+            recordKey        : 'b'.repeat(64),
+            subscriptionId   : 'WAKE_SUB:sub-a',
+            sourceEventIds   : ['MESSAGE:host-ack-only'],
+            state            : 'pending',
+            urgent           : true,
+            sourceSentAt     : '2026-11-15T09:00:00.000Z',
+            acceptedAt       : '2026-11-15T09:00:00.060Z',
+            hostStagedAt     : '2026-11-15T09:00:00.065Z',
+            nativeInitiatedAt: '2026-11-15T09:00:00.080Z',
+            nativeStatus     : 'unknown',
+            waitStage        : 'waiting-for-receipt',
+            deferReason      : 'native-recipient:receipt-unproven'
+        };
+
+        const deliveredRecord = {
+            recordKey          : 'c'.repeat(64),
+            subscriptionId     : 'WAKE_SUB:sub-a',
+            sourceEventIds     : ['MESSAGE:settled'],
+            state              : 'delivered',
+            urgent             : true,
+            sourceSentAt       : '2026-11-15T09:00:00.000Z',
+            firstQueuedAt      : Date.parse('2026-11-15T09:00:00.004Z'),
+            emittedAt          : '2026-11-15T09:00:00.054Z',
+            acceptedAt         : '2026-11-15T09:00:00.064Z',
+            hostStagedAt       : '2026-11-15T09:00:00.066Z',
+            nativeInitiatedAt  : '2026-11-15T09:00:00.090Z',
+            recipientObservedAt: '2026-11-15T09:00:00.214Z',
+            dispatchFinishedAt : '2026-11-15T09:00:00.220Z',
+            waitStage          : 'delivered'
+        };
+
+        const stages = projectWakeDeliveryStages(
+            [boundaryRecord, hostAckOnlyRecord, deliveredRecord],
+            {
+                messageIds: ['MESSAGE:policy', 'MESSAGE:active-turn', 'MESSAGE:host-ack-only', 'MESSAGE:settled'],
+                policyQueue,
+                now       : '2026-11-15T09:00:01.000Z'
+            }
+        );
+
+        expect(stages['MESSAGE:policy']).toMatchObject({
+            stage            : 'waiting-for-policy',
+            settled          : false,
+            eventToHostMs    : null,
+            hostToRecipientMs: null,
+            policyWaitMs     : 990
+        });
+
+        expect(stages['MESSAGE:active-turn']).toMatchObject({
+            stage            : 'waiting-for-chat-boundary',
+            settled          : false,
+            urgent           : true,
+            reason           : 'native-recipient:active-turn-adapter-unavailable',
+            dependency       : '#1741',
+            eventToHostMs    : 70,
+            hostToRecipientMs: null,
+            totalLatencyMs   : null
+        });
+
+        expect(stages['MESSAGE:host-ack-only']).toMatchObject({
+            stage             : 'waiting-for-receipt',
+            settled           : false,
+            urgent            : true,
+            reason            : 'native-recipient:receipt-unproven',
+            eventToHostMs     : 60,
+            hostToRecipientMs : null,
+            chatBoundaryWaitMs: 20,
+            receiptWaitMs     : 920,
+            totalLatencyMs    : null
+        });
+
+        expect(projectWakeRecordStage(deliveredRecord)).toMatchObject({
+            stage             : 'delivered',
+            settled           : true,
+            urgent            : true,
+            dependency        : null,
+            policyWaitMs      : 50,
+            eventToHostMs     : 64,
+            hostToRecipientMs : 150,
+            chatBoundaryWaitMs: 26,
+            receiptWaitMs     : 124,
+            totalLatencyMs    : 214
+        });
+        expect(stages['MESSAGE:settled'].settled).toBe(true);
+    });
 });

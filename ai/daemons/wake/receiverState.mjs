@@ -88,17 +88,20 @@ export class WakeReceiverState {
      * @param {String[]} [options.sourceEventIds=[]]
      * @param {Object} options.envelope Parsed signed wake envelope.
      * @param {Object} options.route Graphless host route metadata (never the signing key).
+     * @param {String|null} [options.acceptedAt=null] Explicit acceptance ISO timestamp when supplied by caller clock.
+     * @param {Object|null} [options.metadata=null] Initial stage/timing metadata recorded alongside acceptance.
      * @returns {Promise<Object>} Acceptance status (`accepted` or `duplicate`) plus the record.
      */
-    async accept({subscriptionId, eventId, sourceEventIds = [], envelope, route} = {}) {
+    async accept({subscriptionId, eventId, sourceEventIds = [], envelope, route, acceptedAt = null, metadata = null} = {}) {
         const recordKey  = getWakeRecordKey({subscriptionId, eventId, sourceEventIds});
         const recordPath = this.getRecordPath(recordKey);
-        const now        = new Date().toISOString();
+        const now        = typeof acceptedAt === 'string' && acceptedAt.length > 0 ? acceptedAt : new Date().toISOString();
         const record     = {
             recordKey,
             subscriptionId,
             eventId,
             sourceEventIds,
+            ...(metadata && typeof metadata === 'object' ? metadata : {}),
             state     : REPLAYABLE_STATE,
             acceptedAt: now,
             updatedAt : now,

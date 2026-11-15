@@ -120,4 +120,89 @@ test.describe('primary session wake ownership', () => {
         recorded = true;
         expect((await handoff()).status).toBe('bound');
     });
+
+    test('urgent delivery uses urgentInflight without evicting an unresolved ordinary inflight attempt', async () => {
+        await bind();
+        const normalKey  = '1'.repeat(64),
+              urgentKey  = '2'.repeat(64),
+              urgentKey2 = '3'.repeat(64),
+              delivered  = new Set(),
+              sentCalls  = [];
+
+        const runAttempt = (recordKey, urgent, readReceipt = async () => null) => deliverPrimarySessionWake({
+            statePath,
+            ...binding,
+            recordKey,
+            urgent,
+            readTarget         : proof,
+            send               : async req => { sentCalls.push({recordKey: req.recordKey, urgent: req.urgent, nonce: req.nonce}); return {status: 'accepted'} },
+            readReceipt,
+            isRecordedDelivered: async id => delivered.has(id)
+        });
+
+        const normalAttempt = await runAttempt(normalKey, false);
+        expect(normalAttempt.status).toBe('unknown');
+        expect(sentCalls).toHaveLength(1);
+
+        expect((await runAttempt('4'.repeat(64), false)).status).toBe('unknown');
+        expect(sentCalls, 'second ordinary attempt stays blocked behind normal inflight').toHaveLength(1);
+
+        const urgentAttempt = await runAttempt(urgentKey, true);
+        expect(urgentAttempt.status).toBe('unknown');
+        expect(urgentAttempt.nonce).not.toBe(normalAttempt.nonce);
+        expect(sentCalls).toHaveLength(2);
+        expect(sentCalls[1]).toMatchObject({recordKey: urgentKey, urgent: true});
+
+        const persisted = await readPrimarySessionWake({statePath});
+        expect(persisted.inflight).toMatchObject({status: 'unknown', recordKey: normalKey, nonce: normalAttempt.nonce});
+        expect(persisted.urgentInflight).toMatchObject({status: 'unknown', recordKey: urgentKey, nonce: urgentAttempt.nonce});
+
+        expect((await runAttempt(urgentKey, true)).status).toBe('unknown');
+        expect((await runAttempt(urgentKey2, true)).status).toBe('unknown');
+        expect(sentCalls, 'duplicate and second urgent attempts never double-send').toHaveLength(2);
+
+        expect((await bind(second, 1)).status).toBe('unknown');
+        expect((await revokePrimarySession({statePath, seat: binding.seat, expectedVersion: 1})).status).toBe('unknown');
+
+        const urgentSettled = await runAttempt(urgentKey, true, async () => ({
+            status    : 'consumed',
+            ...binding,
+            threadId  : first,
+            recordKey : urgentKey,
+            nonce     : urgentAttempt.nonce,
+            observedAt: '2026-11-15T09:05:00.000Z'
+        }));
+        expect(urgentSettled).toMatchObject({
+            status             : 'delivered',
+            nonce              : urgentAttempt.nonce,
+            recipientObservedAt: '2026-11-15T09:05:00.000Z'
+        });
+        delivered.add(urgentKey);
+
+        expect((await readPrimarySessionWake({statePath})).inflight).toMatchObject({
+            status   : 'unknown',
+            recordKey: normalKey,
+            nonce    : normalAttempt.nonce
+        });
+
+        const normalSettled = await runAttempt(normalKey, false, async () => ({
+            status   : 'consumed',
+            ...binding,
+            threadId : first,
+            recordKey: normalKey,
+            nonce    : normalAttempt.nonce
+        }));
+        expect(normalSettled).toMatchObject({status: 'delivered', nonce: normalAttempt.nonce});
+        delivered.add(normalKey);
+        expect(sentCalls).toHaveLength(2);
+
+        expect((await bindPrimarySession({
+            statePath,
+            ...binding,
+            threadId           : second,
+            expectedVersion    : 1,
+            proveTarget        : proof,
+            isRecordedDelivered: async id => delivered.has(id)
+        })).status).toBe('bound');
+    });
 });

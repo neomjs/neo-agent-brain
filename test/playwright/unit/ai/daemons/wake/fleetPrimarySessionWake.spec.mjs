@@ -253,3 +253,62 @@ test('withdrawal of enrollment while a recipient is proving its root prevents co
     expect(await attempt).toEqual({admitted:false});
     await expect(fs.stat(path.join(directory,'fixture.json.claim.json'))).rejects.toMatchObject({code:'ENOENT'})
 });
+
+test('urgent wake follows main-session handoff and steers an active turn when the active-turn adapter seam is present', async () => {
+    const seat      = '@fixture', oldRoot = randomUUID(), newRoot = randomUUID();
+    const sub       = 'WAKE_SUB:urgent-handoff', generation = '301:birth', family = 'codex-desktop';
+    let   latest    = oldRoot, activity = 'idle', steered = [], idleSent = [], admittedNonce = null;
+    const transport = {
+        listCodexWakeTargets      : async () => [{root: true, threadId: latest, startedAt: latest === oldRoot ? 1 : 2, receiptOffset: 0}],
+        readCodexWakeActivity     : async () => ({state: activity, turnId: activity === 'busy' ? 'active-turn-1' : null}),
+        verifyCodexWakeAdmission  : async () => ({verified: true}),
+        sendCodexSessionWake      : async req => { idleSent.push(req); return {state: 'enqueued'} },
+        readCodexWakeReceipt      : async () => ({state: 'unknown'}),
+        sendCodexActiveTurnWake   : async req => { steered.push(req); return {state: 'steered'} },
+        readCodexActiveTurnReceipt: async ({threadId, text}) => {
+            const nonce = text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+            return admittedNonce === nonce ? {state: 'turn-steered', threadId, turnId: 'active-turn-1', observedAt: '2026-11-15T09:12:00.000Z'} : {state: 'unknown'}
+        }
+    };
+    const config = {agentId: 'fixture', family, instanceHome: path.join(tempDir, 'home'), appBundle: path.join(tempDir, 'ChatGPT.app')};
+    const route  = {agentIdentity: seat, harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
+    await enrollNativeWake({manifestPath, stateDir, agentId: config.agentId, family});
+    await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes: {[sub]: route}}));
+    const nowIso   = new Date().toISOString();
+    const envelope = {
+        eventType     : 'wake/digest',
+        agentIdentity : seat,
+        subscriptionId: sub,
+        payload       : {
+            totalEvents: 1,
+            urgent     : true,
+            breakdown  : {sent_to_me: {count: 1, highestPriority: 'high', latest: {priority: 'high', sentAt: nowIso, subject: 'urgent handoff + steer'}}}
+        }
+    };
+    const {record} = await state.accept({subscriptionId: sub, eventId: 'urgent-handoff', envelope, route});
+    const options  = {state, stateDir, manifestPath, codexTransport: transport, inspectResident: async () => ({generation, workspaceRoot: tempDir})};
+
+    expect((await dispatchFleetPrimarySessionWake(record, options)).status).toBe('unknown');
+    expect(idleSent).toHaveLength(1);
+    const staleNonce = idleSent[0].text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+
+    latest   = newRoot;
+    activity = 'busy';
+    expect(await consumeNativeWakePrompt({...options, agentId: config.agentId, family, threadId: oldRoot, turnId: 'active-turn-1', nonce: staleNonce})).toEqual({admitted: false});
+    expect((await dispatchFleetPrimarySessionWake(record, options)).status).toBe('unknown');
+    expect(steered).toHaveLength(1);
+    expect(steered[0]).toMatchObject({threadId: newRoot, turnId: 'active-turn-1'});
+
+    const newNonce   = steered[0].text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+    const redemption = await consumeNativeWakePrompt({...options, agentId: config.agentId, family, threadId: newRoot, turnId: 'active-turn-1', nonce: newNonce});
+    expect(redemption.admitted).toBe(true);
+    expect(redemption.digest).toContain('urgent handoff + steer');
+    admittedNonce = newNonce;
+
+    const settled = await dispatchFleetPrimarySessionWake(record, options);
+    expect(settled).toMatchObject({
+        status             : 'delivered',
+        recipientObservedAt: '2026-11-15T09:12:00.000Z',
+        recipient          : {seat, generation, threadId: newRoot, recordKey: record.recordKey, nonce: newNonce}
+    });
+});

@@ -8,11 +8,11 @@
  * path. Container Memory Core owns matching/coalescing/retry; this process owns only the local
  * final mile.
  */
-import crypto  from 'node:crypto';
-import fs      from 'node:fs/promises';
-import http    from 'node:http';
-import net     from 'node:net';
-import path    from 'node:path';
+import crypto                from 'node:crypto';
+import fs                    from 'node:fs/promises';
+import http                  from 'node:http';
+import net                   from 'node:net';
+import path                  from 'node:path';
 import {readFileSync, watch} from 'node:fs';
 
 import {WakeReceiverState}                       from './receiverState.mjs';
@@ -33,13 +33,41 @@ import {
     seatHolderKey
 } from './sessionRotation.mjs';
 import {isEntryModule}                                                        from '../../services/shared/isEntryModule.mjs';
-import {hasPrimaryWakeRecipient, primaryWakeSeatForAddress, stagePrimaryWake} from './primaryWakeSpool.mjs';
-import {readNativeWakeOptIn}                                                  from './nativeWakeEnrollment.mjs';
+import {
+    ACTIVE_TURN_ADAPTER_DEPENDENCY,
+    ACTIVE_TURN_UNAVAILABLE_REASON,
+    hasPrimaryWakeRecipient,
+    isUrgentWakeRecord,
+    primaryWakeSeatForAddress,
+    stagePrimaryWake
+} from './primaryWakeSpool.mjs';
+import {readNativeWakeOptIn}  from './nativeWakeEnrollment.mjs';
+import {isUrgentWakeEnvelope} from '../../services/memory-core/wakeCoalescePolicy.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 
 function isSeatId(value) {
     return typeof value === 'string' && /^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/.test(value)
+}
+
+/** @summary Extracts initial priority, urgency, and source-timing metadata from an accepted envelope. */
+function deriveAcceptMetadata(envelope, nowMs) {
+    const
+        urgent        = isUrgentWakeEnvelope(envelope, nowMs),
+        sentToMe      = envelope?.payload?.breakdown?.sent_to_me,
+        priority      = sentToMe?.highestPriority || sentToMe?.latest?.priority || (urgent ? 'high' : 'normal'),
+        sourceSentAt  = envelope?.payload?.earliestSentAt || envelope?.payload?.latestUrgentSentAt || sentToMe?.latest?.sentAt || null,
+        firstQueuedAt = Number.isFinite(envelope?.payload?.firstQueuedAt) ? envelope.payload.firstQueuedAt : null,
+        emittedAt     = typeof envelope?.emittedAt === 'string' ? envelope.emittedAt : null;
+
+    return {
+        urgent,
+        priority,
+        waitStage: 'waiting-for-chat-boundary',
+        ...(sourceSentAt ? {sourceSentAt} : {}),
+        ...(firstQueuedAt !== null ? {firstQueuedAt} : {}),
+        ...(emittedAt ? {emittedAt} : {})
+    }
 }
 
 /**
@@ -391,7 +419,12 @@ export function createWakeReceiver({
 
     const drain = () => {
         drainPromise = drainPromise.then(async () => {
-            const pending = await watched.list('pending');
+            const nowMs   = clock(),
+                  rawList = await watched.list('pending'),
+                  pending = [
+                      ...rawList.filter(item => isUrgentWakeRecord(item, nowMs)),
+                      ...rawList.filter(item => !isUrgentWakeRecord(item, nowMs))
+                  ];
 
             for (const record of pending) {
                 // Only a presently admitted route may send a native wake. A legacy pending snapshot may
@@ -549,6 +582,7 @@ export function createWakeReceiver({
                 let outcome = 'failed';
                 let outcomeReason;
                 let expectedRecipient;
+                let nativeRecipientObservedAt = null;
 
                 // A manifest can change while context probing awaited. Do not let a captured GUI
                 // snapshot type after that route has been cut over to native delivery.
@@ -598,7 +632,7 @@ export function createWakeReceiver({
                             }
                         }
                     }
-                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath}) : dispatch(dispatching, rotationGuard ? {rotationGuard, rotationHolder} : undefined),
+                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath, now: clock()}) : dispatch(dispatching, rotationGuard ? {rotationGuard, rotationHolder} : undefined),
                         (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch, record.subscriptionId);
 
                     outcome = typeof result === 'string' ? result : native ? result?.status : result?.outcome;
@@ -610,9 +644,18 @@ export function createWakeReceiver({
                     }
 
                     if (native && ['pending', 'unknown'].includes(outcome)) {
+                        const attemptIso      = new Date(clock()).toISOString(),
+                              deferReason     = String(result?.reason || 'primary-session-unresolved'),
+                              awaitingReceipt = outcome === 'unknown' || deferReason === 'native-recipient:receipt-unproven',
+                              waitStage       = awaitingReceipt ? 'waiting-for-receipt' : 'waiting-for-chat-boundary',
+                              namedDependency = result?.dependency || (deferReason === ACTIVE_TURN_UNAVAILABLE_REASON ? ACTIVE_TURN_ADAPTER_DEPENDENCY : null);
                         await watched.transition(record.recordKey, 'dispatching', 'pending', {
-                            deferReason : String(result?.reason || 'primary-session-unresolved'),
-                            nativeStatus: outcome,
+                            deferReason,
+                            nativeStatus   : outcome,
+                            hostStagedAt   : dispatching.hostStagedAt || attemptIso,
+                            waitStage,
+                            namedDependency: namedDependency || null,
+                            ...(awaitingReceipt ? {nativeInitiatedAt: dispatching.nativeInitiatedAt || attemptIso} : {}),
                             ...(expectedRecipient ? {expectedRecipient} : {})
                         });
                         continue;
@@ -621,6 +664,9 @@ export function createWakeReceiver({
                     if (native && (outcome !== 'delivered' || !hasPrimaryWakeRecipient(result?.recipient, {seat:dispatching.route.agentIdentity, recordKey:dispatching.recordKey}))) {
                         await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-invalid-outcome'});
                         continue;
+                    }
+                    if (native && typeof result?.recipientObservedAt === 'string') {
+                        nativeRecipientObservedAt = result.recipientObservedAt
                     }
 
                     if (result && typeof result === 'object' && result.outcomeReason) {
@@ -683,10 +729,17 @@ export function createWakeReceiver({
                     logger.error?.(`[Wake Receiver] adapter failed for ${record.subscriptionId}: ${outcomeReason}`);
                 }
 
+                const finishedIso = new Date(clock()).toISOString(),
+                      isNative    = dispatching.route?.harnessTargetMetadata?.adapter === 'primary-session';
                 await watched.transition(record.recordKey, 'dispatching', outcome, {
                     ...(outcomeReason ? {outcomeReason} : {}),
                     ...(expectedRecipient ? {expectedRecipient} : {}),
-                    dispatchFinishedAt: new Date().toISOString()
+                    ...(outcome === 'delivered' ? {
+                        waitStage          : 'delivered',
+                        recipientObservedAt: nativeRecipientObservedAt || finishedIso,
+                        ...(isNative ? {hostStagedAt: dispatching.hostStagedAt || finishedIso, namedDependency: null} : {})
+                    } : {}),
+                    dispatchFinishedAt: finishedIso
                 });
             }
         }).catch(error => {
@@ -745,12 +798,15 @@ export function createWakeReceiver({
                 harnessTargetMetadata: route.harnessTargetMetadata,
                 adapterConfig        : route.adapterConfig
             };
-            const accepted = await watched.accept({
+            const acceptNowMs = clock();
+            const accepted    = await watched.accept({
                 subscriptionId,
                 eventId,
                 sourceEventIds,
                 envelope,
-                route: publicRoute
+                route     : publicRoute,
+                acceptedAt: new Date(acceptNowMs).toISOString(),
+                metadata  : deriveAcceptMetadata(envelope, acceptNowMs)
             });
 
             writeJson(response, accepted.status === 'accepted' ? 202 : 200, {

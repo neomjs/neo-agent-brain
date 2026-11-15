@@ -911,4 +911,262 @@ test.describe('CoalescingEngineService', () => {
         expect(deliverCalls[0].eventData.payload.breakdown.sent_to_me.latest.messageId).toBe('M-EDGE');
     });
 
+    test.describe('Urgent A2A coalescing & refractory bypass (fake-clock controls)', () => {
+        function createFakeClock(initialMs = Date.parse('2026-11-15T09:00:00.000Z')) {
+            let now    = initialMs,
+                nextId = 1;
+            const timers = new Map();
+
+            return {
+                now        : () => now,
+                iso        : (offsetMs = 0) => new Date(now + offsetMs).toISOString(),
+                pendingSize: () => timers.size,
+                setTimer   : (fn, delayMs) => {
+                    const id = nextId++;
+                    timers.set(id, {id, dueAt: now + Math.max(0, delayMs), fn});
+                    return id
+                },
+                clearTimer : id => {
+                    timers.delete(id)
+                },
+                async advanceTo(targetMs) {
+                    while (true) {
+                        let earliest = null;
+                        for (const entry of timers.values()) {
+                            if (entry.dueAt <= targetMs && (!earliest || entry.dueAt < earliest.dueAt || (entry.dueAt === earliest.dueAt && entry.id < earliest.id))) {
+                                earliest = entry;
+                            }
+                        }
+                        if (!earliest) break;
+                        timers.delete(earliest.id);
+                        now = earliest.dueAt;
+                        earliest.fn();
+                        await Promise.resolve();
+                        await Promise.resolve();
+                    }
+                    now = Math.max(now, targetMs);
+                    await Promise.resolve();
+                    await Promise.resolve();
+                },
+                async advanceBy(deltaMs) {
+                    await this.advanceTo(now + deltaMs);
+                }
+            }
+        }
+
+        test('AC-1 — high event expedites during ordinary 150s debounce and 120s refractory while normal control holds', async () => {
+            const clock = createFakeClock();
+            CoalescingEngineService.configure({
+                coalesceWindowSeconds : 150,
+                flushRefractorySeconds: 120,
+                flushHardCapSeconds   : 300
+            }, {
+                resolveDeliveryReadState: () => ({}),
+                nowFn                   : clock.now,
+                setTimerFn              : clock.setTimer,
+                clearTimerFn            : clock.clearTimer
+            });
+
+            const controlSub = buildSubscription({
+                id                   : 'WAKE_SUB:control-seat',
+                agentIdentity        : '@control',
+                harnessTargetMetadata: {url: 'https://example.com/control'}
+            });
+            const urgentSub = buildSubscription({
+                id                   : 'WAKE_SUB:urgent-seat',
+                agentIdentity        : '@urgent',
+                harnessTargetMetadata: {url: 'https://example.com/urgent'}
+            });
+
+            CoalescingEngineService.enqueue(controlSub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-CTRL-1',
+                priority : 'normal',
+                sentAt   : clock.iso()
+            }, 100));
+            CoalescingEngineService.enqueue(urgentSub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-NORM-1',
+                priority : 'normal',
+                sentAt   : clock.iso()
+            }, 101));
+
+            await clock.advanceBy(5_000);
+            expect(deliverCalls.length).toBe(0);
+
+            CoalescingEngineService.enqueue(urgentSub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-HIGH-1',
+                priority : 'high',
+                sentAt   : clock.iso()
+            }, 102));
+
+            await clock.advanceBy(49);
+            expect(deliverCalls.length).toBe(0);
+
+            await clock.advanceBy(1);
+            expect(deliverCalls.length).toBe(1);
+            expect(deliverCalls[0].subscription.id).toBe('WAKE_SUB:urgent-seat');
+            expect(deliverCalls[0].eventData.payload.urgent).toBe(true);
+            expect(deliverCalls[0].eventData.payload.sourceEventIds).toEqual(['M-NORM-1', 'M-HIGH-1']);
+
+            await clock.advanceBy(6_000);
+            CoalescingEngineService.enqueue(urgentSub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-HIGH-2',
+                priority : 'high',
+                sentAt   : clock.iso()
+            }, 103));
+
+            await clock.advanceBy(50);
+            expect(deliverCalls.length, 'urgent wake bypasses active 120s ordinary refractory').toBe(2);
+            expect(deliverCalls[1].eventData.payload.sourceEventIds).toEqual(['M-HIGH-2']);
+
+            expect(deliverCalls.some(c => c.subscription.id === 'WAKE_SUB:control-seat'),
+                'ordinary control remains held until its 150s window').toBe(false);
+            await clock.advanceTo(clock.now() + 140_000);
+            expect(deliverCalls.filter(c => c.subscription.id === 'WAKE_SUB:control-seat').length).toBe(1);
+        });
+
+        test('AC-1 — quiet, already-read, stale, or read-before-flush high events never expedite ordinary wakes', async () => {
+            const clock   = createFakeClock(),
+                  readMap = new Set(['M-READ-ENQUEUE']);
+            CoalescingEngineService.configure({
+                coalesceWindowSeconds : 150,
+                flushRefractorySeconds: 120,
+                flushHardCapSeconds   : 300
+            }, {
+                resolveDeliveryReadState: messageId => readMap.has(messageId) ? {readAt: clock.iso()} : {},
+                nowFn                   : clock.now,
+                setTimerFn              : clock.setTimer,
+                clearTimerFn            : clock.clearTimer
+            });
+
+            const sub = buildSubscription({
+                id                   : 'WAKE_SUB:guarded',
+                agentIdentity        : '@guarded',
+                harnessTargetMetadata: {url: 'https://example.com/guarded'}
+            });
+
+            CoalescingEngineService.enqueue(sub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-ORDINARY',
+                priority : 'normal',
+                sentAt   : clock.iso()
+            }, 200));
+
+            await clock.advanceBy(1_000);
+            CoalescingEngineService.enqueue(sub, buildEnvelope('wake/sent_to_me', {
+                messageId     : 'M-QUIET-HIGH',
+                priority      : 'high',
+                wakeSuppressed: true,
+                sentAt        : clock.iso()
+            }, 201));
+            CoalescingEngineService.enqueue(sub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-READ-ENQUEUE',
+                priority : 'high',
+                sentAt   : clock.iso()
+            }, 202));
+            CoalescingEngineService.enqueue(sub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-STALE-HIGH',
+                priority : 'high',
+                sentAt   : new Date(clock.now() - MESSAGE_WAKE_MAX_AGE_MS - 5_000).toISOString()
+            }, 203));
+            CoalescingEngineService.enqueue(sub, buildEnvelope('wake/task_state_changed', {
+                taskId        : 'TASK:1',
+                priority      : 'high',
+                newState      : 'Working',
+                lastModifiedAt: clock.iso()
+            }, 204));
+
+            await clock.advanceBy(5_000);
+            expect(deliverCalls.length, 'disqualified high candidates must not expedite').toBe(0);
+
+            CoalescingEngineService.enqueue(sub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-READ-BEFORE-FLUSH',
+                priority : 'high',
+                sentAt   : clock.iso()
+            }, 205));
+            readMap.add('M-READ-BEFORE-FLUSH');
+
+            await clock.advanceBy(100);
+            expect(deliverCalls.length, 'high marked read before flush restores ordinary debounce hold').toBe(0);
+            expect(CoalescingEngineService.getPendingPolicySnapshot()['M-ORDINARY']).toMatchObject({
+                subscriptionId: 'WAKE_SUB:guarded',
+                urgent        : false
+            });
+
+            await clock.advanceBy(150_000);
+            expect(deliverCalls.length).toBe(1);
+            expect(deliverCalls[0].eventData.payload.urgent).toBe(false);
+            expect(deliverCalls[0].eventData.payload.sourceEventIds).toEqual(['M-ORDINARY', 'TASK:1']);
+        });
+
+        test('AC-1 & AC-3 — normal flood never delays active urgent timer; repeated high burst batches boundedly and trailing normal delivers', async () => {
+            const clock = createFakeClock();
+            CoalescingEngineService.configure({
+                coalesceWindowSeconds : 150,
+                flushRefractorySeconds: 120,
+                flushHardCapSeconds   : 300
+            }, {
+                resolveDeliveryReadState: () => ({}),
+                nowFn                   : clock.now,
+                setTimerFn              : clock.setTimer,
+                clearTimerFn            : clock.clearTimer
+            });
+
+            const sub = buildSubscription({
+                id                   : 'WAKE_SUB:burst',
+                agentIdentity        : '@burst',
+                harnessTargetMetadata: {url: 'https://example.com/burst'}
+            });
+
+            CoalescingEngineService.enqueue(sub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-URG-0',
+                priority : 'high',
+                sentAt   : clock.iso()
+            }, 300));
+
+            for (let i = 1; i <= 8; i++) {
+                await clock.advanceBy(5);
+                CoalescingEngineService.enqueue(sub, buildEnvelope('wake/sent_to_me', {
+                    messageId: `M-FLOOD-${i}`,
+                    priority : 'normal',
+                    sentAt   : clock.iso()
+                }, 300 + i));
+            }
+
+            await clock.advanceBy(10);
+            expect(deliverCalls.length, 'normal flood cannot push urgent timer past 50ms').toBe(1);
+            expect(deliverCalls[0].eventData.payload.sourceEventIds).toContain('M-URG-0');
+            expect(deliverCalls[0].eventData.payload.sourceEventIds).toContain('M-FLOOD-8');
+
+            for (let i = 1; i <= 10; i++) {
+                await clock.advanceBy(400);
+                CoalescingEngineService.enqueue(sub, buildEnvelope('wake/sent_to_me', {
+                    messageId: `M-BURST-HIGH-${i}`,
+                    priority : 'high',
+                    sentAt   : clock.iso()
+                }, 400 + i));
+            }
+
+            await clock.advanceBy(6_000);
+            expect(deliverCalls.length, '10 rapid high events coalesce within urgent refractory').toBeLessThanOrEqual(3);
+            const deliveredIds = deliverCalls.flatMap(call => call.eventData.payload.sourceEventIds);
+            for (let i = 1; i <= 10; i++) {
+                expect(deliveredIds).toContain(`M-BURST-HIGH-${i}`);
+            }
+
+            const countBeforeTrailing = deliverCalls.length;
+            await clock.advanceBy(1_000);
+            CoalescingEngineService.enqueue(sub, buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-AFTER-BURST-NORMAL',
+                priority : 'normal',
+                sentAt   : clock.iso()
+            }, 500));
+
+            await clock.advanceBy(1_000);
+            expect(deliverCalls.length).toBe(countBeforeTrailing);
+
+            await clock.advanceBy(150_000);
+            expect(deliverCalls.length).toBe(countBeforeTrailing + 1);
+            expect(deliverCalls.at(-1).eventData.payload.sourceEventIds).toEqual(['M-AFTER-BURST-NORMAL']);
+        });
+    });
+
 });
