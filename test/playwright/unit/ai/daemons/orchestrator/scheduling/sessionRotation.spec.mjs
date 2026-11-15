@@ -771,8 +771,8 @@ test.describe('session-rotation lane: an amendment is not a new receipt, and the
         expect(rotationOf(db, 'MESSAGE:addendum')).toBeUndefined()
     });
 
-    test('Emmy\'s Round-1 control: the old writer\'s addendum 38 minutes after the successor\'s marker is refused writer-unproven with no send, with or without successor progress since', async () => {
-        const build = successorProgressAgo => {
+    test('Emmy\'s Round-1 control: the old writer\'s addendum 38 minutes after the successor\'s marker is refused writer-unproven with no send, with or without successor progress since, and under a reconnected Memory Core id', async () => {
+        const build = (successorProgressAgo, writer) => {
             const db = createGraph();
 
             insertRoute(db);
@@ -783,23 +783,24 @@ test.describe('session-rotation lane: an amendment is not a new receipt, and the
             insertMemory(db, 'mem-successor', 35.3, 'session-new');
             insertNode(db, 'MESSAGE:addendum', 'MESSAGE', {
                 from          : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(20 * SEC),
-                taggedConcepts: ['sunset-protocol-handover'], originSessionId: 'session-old'
+                taggedConcepts: ['sunset-protocol-handover'], originSessionId: writer
             });
             insertInterval(db, 'old-writer-close', {startedAgo: 1, progressAgo: 10 * SEC, closed: true}); // its close, 10 s later
-            insertMemory(db, 'mem-old-close', 10 * SEC, 'session-old');
+            insertMemory(db, 'mem-old-close', 10 * SEC, writer);
 
             return db
         };
 
-        for (const progressAgo of [35.3, 5 * SEC]) { // no successor progress since its save; progress after the old close
-            const db = build(progressAgo);
+        // no successor progress since its save; progress after the old close; the old native writer after a reconnect
+        for (const [progressAgo, writer] of [[35.3, 'session-old'], [5 * SEC, 'session-old'], [35.3, 'session-reconnected']]) {
+            const db = build(progressAgo, writer);
 
             expect((await runLane(db)).sent).toEqual([]);
             expect(rotationOf(db, 'MESSAGE:addendum')).toMatchObject({state: 'refused', reason: 'writer-unproven'})
         }
     });
 
-    test('a successor\'s own sunset still rotates: a stamped new writer inside the window, or any writer once the window since the marker has passed', async () => {
+    test('a successor\'s own sunset rotates once the window since the marker has passed; inside it no stamp proves a generation, so it is refused', async () => {
         const build = ({writer, sinceMarker}) => {
             const db = createGraph();
 
@@ -816,13 +817,14 @@ test.describe('session-rotation lane: an amendment is not a new receipt, and the
             return db
         };
 
-        expect((await runLane(build({writer: 'session-new', sinceMarker: 40}))).sent).toHaveLength(1);
-        expect((await runLane(build({writer: null, sinceMarker: 190}))).sent).toHaveLength(1);
+        for (const writer of ['session-new', null]) {
+            expect((await runLane(build({writer, sinceMarker: 190}))).sent, `past the window, ${writer}`).toHaveLength(1);
 
-        const inside = build({writer: null, sinceMarker: 40});
+            const inside = build({writer, sinceMarker: 40});
 
-        expect((await runLane(inside)).sent).toEqual([]);
-        expect(rotationOf(inside, 'MESSAGE:next')).toMatchObject({state: 'refused', reason: 'writer-unproven'})
+            expect((await runLane(inside)).sent, `inside the window, ${writer}`).toEqual([]);
+            expect(rotationOf(inside, 'MESSAGE:next')).toMatchObject({state: 'refused', reason: 'writer-unproven'})
+        }
     });
 
     test('Emmy\'s Round-1 inverse ordering: a successor\'s sunset after its marker but before the completion stamp waits for the predecessor to settle, then gets its own disposition', async () => {
@@ -841,7 +843,7 @@ test.describe('session-rotation lane: an amendment is not a new receipt, and the
             return db
         };
 
-        for (const [writer, expected] of [['session-new', {state: 'requested'}], [null, {state: 'refused', reason: 'writer-unproven'}]]) {
+        for (const [writer, expected] of [['session-new', {state: 'refused', reason: 'writer-unproven'}], [null, {state: 'refused', reason: 'writer-unproven'}]]) {
             const db = build(writer);
 
             expect((await runLane(db)).outcome.completed).toBe(1); // the predecessor settles first
