@@ -131,6 +131,53 @@ runtime checkout, or unreachable graph fails the activation/status-flip gate; it
 to a warning. `ai/scripts/fleet/onboardPeer.mjs` applies the same fail-closed comparison before a
 resident can reach launch.
 
+## Pure family protocol and projection
+
+Family operations need stable bytes across signatures and retries, and complete history when a reader
+classifies an account. These modules validate or derive a supplied value without reading credentials,
+writing storage or selecting a running seat. Their caller still establishes source authority,
+completeness, plane binding and admission in the owning transaction.
+
+| Boundary | Source owner | Result |
+| --- | --- | --- |
+| Deterministic JSON | [canonicalJson.mjs](../../ai/services/shared/canonicalJson.mjs) | A detached ordered value, or strict serialization that refuses unsupported JSON data before it disappears. |
+| Stable record identities | [identityPublicationKeys.mjs](../../ai/services/shared/identityPublicationKeys.mjs) | Domain-separated keys bound to plane, provider/API-base/stable-user ID and the applicable incarnation or logical operation. Login changes do not rename membership. |
+| Closed logical operations | [identityPublicationOperation.mjs](../../ai/services/shared/identityPublicationOperation.mjs) | A frozen validated operation and delivery-independent digest, or a field-addressed refusal. |
+| Signed delivery | [identityPublicationSignature.mjs](../../ai/services/shared/identityPublicationSignature.mjs) | An authenticated immutable envelope, or refusal. Authentication does not admit its operation. |
+| Exact family vocabulary | [identityPublicationVocabulary.mjs](../../ai/services/memory-core/helpers/identityPublicationVocabulary.mjs) | Introduction-intent and collision checks over the complete caller-supplied catalog, retaining exact labels. |
+| Founding input | [identityFoundingSeed.mjs](../../ai/graph/identityFoundingSeed.mjs) | A complete provider-bound payload and content digest from explicit source inputs; a matching digest establishes content consistency. |
+| Temporal account families | [identityFamilyProjection.mjs](../../ai/graph/identityFamilyProjection.mjs) | Membership and effective family intervals, point reads and complete author-window unions from one supplied source revision. |
+
+The fixed v1 profile defines six operation shapes: `baseline`, `bind`, `retire`, `rekey`, `confirm` and `correct`.
+The complete baseline supports 128 bindings within a derived 588,887-byte compact carrier limit.
+An excess binding refuses the whole input and reports its index, available seat identity, count,
+limit and remedy. An empty array is explicit input; the validator does not establish that a live
+census is empty or complete.
+
+The signed carrier binds its purpose, audience, stable issuer, key ID, delivery times and complete
+operation using Ed25519 and the `neo.identity-family-publication.v1` domain followed by one zero byte.
+The caller supplies current trust and the shared-clock reading. Validity is exactly 300,000 ms with
+`issuedAt <= now < expiresAt`; re-signing preserves logical operation identity while rechecking trust
+and time. The [credential and membership decision](https://github.com/neomjs/neo-agent-institution/blob/dev/learn/agentos/decisions/0038-fm-client-topology.md)
+owns the service, custody and recovery requirements beyond this pure boundary.
+
+Family comparison derives a collision key using NFKC, removal of JavaScript whitespace,
+lower/upper/lower case conversion and NFKC again. Exact labels remain unchanged; control/format
+characters and empty keys refuse. Cross-script visual confusables remain distinct. The literal
+family `unknown` is data; unavailable, unconfirmed, empty and ambiguous results are separate states.
+
+The temporal reader validates the complete retained payload before selecting a subject. Corrections
+apply at the target declaration's original admission boundary. Founding precedence ends at the
+earliest corrected different-family declaration, including retired incarnations; a correction may
+move or remove that cutoff. Membership diagnostics remain visible beside the effective intervals.
+`familiesDuring` includes every overlapping family and refuses an unclassified span without returning
+a partial positive set.
+
+The publication helper re-exports the shared deterministic canonicalizer. Ordinary publication bytes,
+field projection, scheduling and read-back APIs retain their contracts. Own `__proto__` keys remain
+data in raw canonicalized objects; `computePublishRevisionDigest` continues projecting media onto its
+declared fields first. The strict serializer is the separate entry point for signed protocol data.
+
 ## Test Pollution Hazard
 
 **The Incident:** On 2026-04-22 (session `15852d91`) and 2026-04-23 (session `8968b9f6`), the production `AgentIdentity` nodes were wiped. This was traced back to a test-pollution anti-pattern in the Playwright test suite.

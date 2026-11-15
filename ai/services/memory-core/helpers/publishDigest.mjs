@@ -1,8 +1,11 @@
-import crypto from 'node:crypto';
+import crypto                               from 'node:crypto';
+import {canonicalizeDeterministicJsonValue} from '../../shared/canonicalJson.mjs';
+
+export {canonicalizeDeterministicJsonValue} from '../../shared/canonicalJson.mjs';
 
 /**
  * @module ai/services/memory-core/helpers/publishDigest
- * @summary Pure deterministic RFC 8785 canonicalization, `revisionDigest` SHA-256 computation,
+ * @summary Shared deterministic JSON canonicalization, `revisionDigest` SHA-256 computation,
  * `Europe/Berlin` dated-publication schedule parsing (`D-1 18:00` lock cutoff + earliest release),
  * and link-shortener-tolerant read-back text matching shared by `MailboxService` and `publishExecutor`.
  * Contains no Neo or service imports so both processes can evaluate it without instantiating singletons.
@@ -252,29 +255,6 @@ export function parsePublishSchedule(scheduledFor, timeZone = PUBLISH_LOCK_TIMEZ
         earliestReleaseMs,
         earliestReleaseIso: new Date(earliestReleaseMs).toISOString()
     };
-}
-
-/**
- * @summary Produces an RFC 8785 deterministic JSON-ready value with lexicographically sorted object keys.
- * @param {*} value Value to canonicalize.
- * @returns {*}
- */
-export function canonicalizeDeterministicJsonValue(value) {
-    if (Array.isArray(value)) {
-        return value.map(canonicalizeDeterministicJsonValue);
-    }
-
-    if (value && typeof value === 'object') {
-        const sorted = {};
-        for (const key of Object.keys(value).sort()) {
-            if (value[key] !== undefined) {
-                sorted[key] = canonicalizeDeterministicJsonValue(value[key]);
-            }
-        }
-        return sorted;
-    }
-
-    return value;
 }
 
 /**
