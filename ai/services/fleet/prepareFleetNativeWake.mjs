@@ -3,9 +3,11 @@
  * @summary Prepares native wake files for one trusted Fleet seat without enrolling it.
  */
 import fs                                                                                          from 'node:fs/promises';
+import {constants as fsConstants}                                                                  from 'node:fs';
 import path                                                                                        from 'node:path';
 import {fileURLToPath}                                                                             from 'node:url';
 import {createHash}                                                                                from 'node:crypto';
+import {isDeepStrictEqual}                                                                         from 'node:util';
 import {deriveCodexHome}                                                                           from './deriveHarnessLaunchSpec.mjs';
 import {materializeCodexWakeAdmission}                                                             from '../../daemons/wake/codexSessionWake.mjs';
 import {inspectAntigravitySidecar, materializeAntigravitySidecar, materializeAntigravityWakeHooks} from '../../daemons/wake/antigravityWakeSidecar.mjs';
@@ -13,9 +15,66 @@ import {readPrivateWakeJson}                                                    
 import {withOutboxLock}                                                                            from '../../daemons/wake/outboxLock.mjs';
 import {writeFileAtomic}                                                                           from '../shared/atomicFileWrite.mjs';
 import {assertUntrackedManagedWorkspaceFile, excludeManagedNativeWakeHook}                         from './excludeManagedWorkspaceFiles.mjs';
+import {isRuntimeGenerationPin, readRuntimeGeneration, runtimeGenerationPin}                       from './runtimeGeneration.mjs';
 
-const wakeModule = name => fileURLToPath(new URL(`../../daemons/wake/${name}.mjs`, import.meta.url));
-const absolute   = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root;
+const wakeModule      = name => fileURLToPath(new URL(`../../daemons/wake/${name}.mjs`, import.meta.url));
+const absolute        = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root;
+const CODEX_WAKE_WIRE = 'neo-codex-primary-wake-v1';
+
+/**
+ * @summary Selects only a live Start's retained hook, or a previously enrolled current-host hook.
+ * The lifecycle owner must have proved the Start and its immutable runtime before calling this reader.
+ * The declaration binds the opaque nonce, redemption, root/turn, receipt and denial/restaging wire.
+ * @param {Object} options Fleet-proven seat, enrollment, current host and original Start pin.
+ * @param {String} options.agentId Managed seat identifier.
+ * @param {String} options.instanceHome Managed instance home.
+ * @param {String} options.workspaceRoot Verified Start workspace.
+ * @param {String} options.manifestPath Receiver manifest.
+ * @param {String} options.stateDir Receiver state directory.
+ * @param {Object|null} options.runtime Original Start's held runtime pin.
+ * @param {Boolean} options.enrolled Whether this seat is already enrolled.
+ * @param {Function} [options.verifyRuntime] Operation-scoped sealed-runtime verifier.
+ * @returns {Promise<{nodePath: String, hookModulePath: String}>} The one selected executable and hook.
+ */
+export async function resolveCodexWakeRuntime({agentId, instanceHome, workspaceRoot, manifestPath, stateDir, runtime, enrolled,
+    verifyRuntime = readRuntimeGeneration}) {
+    const current  = {nodePath: process.execPath, hookModulePath:wakeModule('codexWakeHook')};
+    const expected = {version:1, family:'codex-desktop', agentId, instanceHome, workspaceRoot, manifestPath, stateDir, configDir:null};
+    const previous = await readPrivateWakeJson(path.join(stateDir, 'native-wake-preparation', agentId + '.json'));
+    if (previous && !matchesReceipt(previous, expected, 'codex-desktop')) throw new Error('Mismatched seat preparation record');
+    if (!enrolled && !previous) return current;
+    // Explicit pilot migration stays on the host-owned tuple when that same host is still live.
+    if (previous?.nodePath === current.nodePath && previous?.modulePath === current.hookModulePath) return current;
+    if (!runtime) throw new Error('Codex wake Start runtime is unproven');
+    const {pin, ...claimed} = runtime;
+    if (pin !== 'held' || !isRuntimeGenerationPin(claimed)) throw new Error('Codex wake Start runtime is unproven');
+    // This is a setup/re-arm boundary, not wake dispatch: prove the complete executable closure.
+    const compatibilityError = () => Object.assign(new Error('Codex wake compatibility is unproven'), {code:'CODEX_WAKE_COMPATIBILITY_UNPROVEN'});
+    const verified           = await verifyRuntime({directory:claimed.directory, pin:claimed}).catch(() => { throw compatibilityError() });
+    if (!verified || !isDeepStrictEqual(runtimeGenerationPin(verified), claimed)) throw new Error('Codex wake Start runtime changed');
+    const hookModulePath = path.join(runtime.runtimeRoot, 'ai/daemons/wake/codexWakeHook.mjs');
+    if (previous && (previous.nodePath !== runtime.executable || previous.modulePath !== hookModulePath)) throw new Error('Codex wake migration is not retained');
+    if (runtime.executable === current.nodePath && hookModulePath === current.hookModulePath) return current;
+    const declaration = path.join(runtime.runtimeRoot, 'ai/daemons/wake/codexWakeProtocol.json');
+    const stat        = await fs.lstat(declaration).catch(() => { throw compatibilityError() });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.mode & 0o222 || await fs.realpath(declaration) !== declaration ||
+        await fs.realpath(hookModulePath) !== hookModulePath || !(await fs.stat(hookModulePath)).isFile()) {
+        throw new Error('Codex wake file does not match its sealed generation')
+    }
+    const handle = await fs.open(declaration, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    let declarationBytes;
+    try {
+        const opened = await handle.stat();
+        if (opened.dev !== stat.dev || opened.ino !== stat.ino || opened.mode !== stat.mode || opened.size !== stat.size) {
+            throw new Error('Codex wake declaration changed while opening')
+        }
+        declarationBytes = await handle.readFile()
+    } finally { await handle.close() }
+    if (JSON.parse(declarationBytes).wire !== CODEX_WAKE_WIRE) {
+        throw compatibilityError()
+    }
+    return {nodePath:runtime.executable, hookModulePath}
+}
 
 /** @summary Validates a host-owned receipt against its exact seat or shared-sidecar binding. */
 function matchesReceipt(record, expected, family) {
@@ -36,7 +95,7 @@ async function writeReceipt(file, current, previous) {
 }
 
 /** @summary Performs the serialized preparation and records only successful owned configurations. */
-async function prepareOwned({agent, instanceHome, workspaceRoot, manifestPath, stateDir, configDir, nodePath, recordsDir, completed}) {
+async function prepareOwned({agent, instanceHome, workspaceRoot, manifestPath, stateDir, configDir, nodePath, hookModulePath, recordsDir, completed}) {
     const seatFile   = path.join(recordsDir, agent.id + '.json');
     const sharedFile = agent.harnessType === 'antigravity'
         ? path.join(recordsDir, 'shared-' + createHash('sha256').update(configDir).digest('hex') + '.json') : null;
@@ -46,7 +105,7 @@ async function prepareOwned({agent, instanceHome, workspaceRoot, manifestPath, s
     const sharedBinding = {version:1, family:'antigravity', configDir, manifestPath, stateDir};
     if (previous && !matchesReceipt(previous, binding, family)) throw new Error('Mismatched seat preparation record');
     if (shared && !matchesReceipt(shared, sharedBinding, family)) throw new Error('Mismatched shared preparation record');
-    const current = {...binding, nodePath, modulePath:wakeModule(family === 'antigravity' ? 'antigravityWakeSidecar' : 'codexWakeHook'),
+    const current = {...binding, nodePath, modulePath:hookModulePath || wakeModule(family === 'antigravity' ? 'antigravityWakeSidecar' : 'codexWakeHook'),
         ...(family === 'antigravity' ? {hookPath:wakeModule('antigravityWakeHook')} : {})};
     if (family === 'codex-desktop') {
         const home = deriveCodexHome({harnessType:family, instanceHome});
@@ -81,15 +140,16 @@ async function prepareOwned({agent, instanceHome, workspaceRoot, manifestPath, s
  * @param {String} options.stateDir Absolute receiver state directory.
  * @param {String} [options.configDir] Shared Antigravity configuration directory.
  * @param {String} [options.nodePath=process.execPath] Fleet runtime executable.
+ * @param {String} [options.hookModulePath] Hook selected from the verified retained Start runtime.
  * @param {Boolean} [options.allowSharedConfig=false] Explicit host authorization for shared config.
  * @returns {Promise<Object>} Prepared or a bounded refusal, including completed stages.
  */
 export async function prepareFleetNativeWake({agent, instanceHome, workspaceRoot, manifestPath, stateDir,
-    configDir, nodePath = process.execPath, allowSharedConfig = false} = {}) {
+    configDir, nodePath = process.execPath, hookModulePath = null, allowSharedConfig = false} = {}) {
     const completed = [];
     if (!agent || !/^[a-z0-9][a-z0-9._-]{0,99}$/.test(agent.id || '') ||
         !['codex-desktop', 'antigravity'].includes(agent.harnessType) ||
-        ![instanceHome, workspaceRoot, manifestPath, stateDir, nodePath].every(absolute)) {
+        ![instanceHome, workspaceRoot, manifestPath, stateDir, nodePath].every(absolute) || (hookModulePath && !absolute(hookModulePath))) {
         return {state: 'refused', reason: 'invalid-input', completed}
     }
     if (agent.harnessType === 'antigravity' && (!allowSharedConfig || !absolute(configDir))) {
@@ -111,7 +171,7 @@ export async function prepareFleetNativeWake({agent, instanceHome, workspaceRoot
         const directory = await fs.lstat(recordsDir);
         if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077)) throw new Error('Unsafe preparation directory');
         return await withOutboxLock(path.join(recordsDir,'preparation'), () =>
-            prepareOwned({agent, instanceHome, workspaceRoot, manifestPath, stateDir, configDir, nodePath, recordsDir, completed}))
+            prepareOwned({agent, instanceHome, workspaceRoot, manifestPath, stateDir, configDir, nodePath, hookModulePath, recordsDir, completed}))
     } catch (error) {
         // Config parsing errors may contain private file contents; never return exception text to callers.
         return {state:'refused', reason:error?.code === 'FLEET_WAKE_HOOK_TRACKED' ? 'workspace-hook-tracked' : 'preparation-failed', completed}
