@@ -1535,7 +1535,7 @@ test.describe('FleetManager native wake canary', () => {
 
     test('normal re-arm of a verified surviving Codex seat prepares and publishes its retained A hook', async () => {
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-wake-survivor-')));
-        let retained;
+        let retained, vintage, incompatible;
 
         try {
             const
@@ -1666,8 +1666,43 @@ test.describe('FleetManager native wake canary', () => {
             expect(routes).toHaveLength(1);
             expect(routes[0].hookNodePath).toBe(process.execPath);
             expect(fs.readFileSync(hookFile)).toEqual(migrated);
-            expect(fs.readFileSync(trustFile)).toEqual(trust)
+            expect(fs.readFileSync(trustFile)).toEqual(trust);
+
+            // A sealed fixture models an older package with a hook but no protocol declaration.
+            vintage = await sealRuntimeGeneration(generations, {revision: 'b', codexWake: true, codexWire: null});
+            expect(fs.existsSync(path.join(vintage.runtimeRoot, 'ai/daemons/wake/codexWakeProtocol.json'))).toBe(false);
+            incompatible = await sealRuntimeGeneration(generations, {
+                revision: 'c', codexWake: true, codexWire: 'neo-codex-primary-wake-v2'
+            });
+
+            for (const candidate of [vintage, incompatible]) {
+                const candidateHook  = path.join(candidate.runtimeRoot, 'ai/daemons/wake/codexWakeHook.mjs');
+                const candidateSetup = await prepareFleetNativeWake({
+                    agent, instanceHome, workspaceRoot: workspace, manifestPath, stateDir,
+                    nodePath: candidate.executable, hookModulePath: candidateHook
+                });
+                expect(candidateSetup.state).toBe('prepared');
+                expect(fs.existsSync(candidateHook)).toBe(true);
+                const setupReceipt = JSON.parse(fs.readFileSync(path.join(stateDir, 'native-wake-preparation', 'fixture.json'), 'utf8'));
+                expect(setupReceipt).toMatchObject({nodePath: candidate.executable, modulePath: candidateHook});
+                expect(candidate.executable).not.toBe(process.execPath);
+                const candidateBytes = fs.readFileSync(hookFile);
+                status.runtimeGeneration = {...runtimeGenerationPin(await readRuntimeGenerationRecord({directory: candidate.directory})), pin: 'held'};
+                routes.length = 0;
+
+                const unsupported = await FleetManager.startAgent('fixture');
+                expect(unsupported.nativeWakePreparation).toMatchObject({
+                    state   : 'refused', reason: 'codex-wake-compatibility-unproven',
+                    nextStep: expect.stringContaining('next planned managed Start')
+                });
+                expect(unsupported.wakeRoute.state).toBe('unarmed');
+                expect(routes).toEqual([]);
+                expect(fs.readFileSync(hookFile)).toEqual(candidateBytes);
+                expect(fs.readFileSync(trustFile)).toEqual(trust)
+            }
         } finally {
+            if (incompatible) await removeSealed(incompatible.directory);
+            if (vintage) await removeSealed(vintage.directory);
             if (retained) await removeSealed(retained.directory);
             fs.rmSync(root, {recursive: true, force: true})
         }

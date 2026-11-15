@@ -20,9 +20,11 @@ import {
  * @param {Object} [options]
  * @param {String} [options.revision='a'] One hex digit of the product revision, so one root can hold distinct generations.
  * @param {Boolean} [options.codexWake=false] Include a sealed test hook and its protocol declaration.
+ * @param {String|null} [options.codexWire='neo-codex-primary-wake-v1'] The declared protocol, or null to omit it.
  * @returns {Promise<{directory: String, runtimeRoot: String, executable: String, retainedVerifier: String, record: Object}>}
  */
-export async function sealRuntimeGeneration(root, {revision = 'a', codexWake = false} = {}) {
+export async function sealRuntimeGeneration(root, {revision = 'a', codexWake = false,
+    codexWire = 'neo-codex-primary-wake-v1'} = {}) {
     const receipt = {electronVersion: '43.5.0', owners: {
         product: {revision: revision.repeat(40)}, brain: {revision: 'b'.repeat(40)}, engine: {revision: 'c'.repeat(40)}
     }};
@@ -41,7 +43,9 @@ export async function sealRuntimeGeneration(root, {revision = 'a', codexWake = f
         await fs.mkdir(wake, {recursive: true});
         await fs.writeFile(path.join(wake, 'codexWakeHook.mjs'), '// sealed test hook\n');
         await fs.writeFile(path.join(wake, 'fleetPrimarySessionWake.mjs'), '// sealed test consumer\n');
-        await fs.writeFile(path.join(wake, 'codexWakeProtocol.json'), JSON.stringify({wire: 'neo-codex-primary-wake-v1'}))
+        if (codexWire !== null) {
+            await fs.writeFile(path.join(wake, 'codexWakeProtocol.json'), JSON.stringify({wire: codexWire}))
+        }
     }
     const payload = await inventoryRuntimePayload(payloadRoot, true);
     for (const [relative, kind, mode] of [...payload.entries].reverse()) {
