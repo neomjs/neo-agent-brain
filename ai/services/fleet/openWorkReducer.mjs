@@ -42,7 +42,8 @@ const CI_STATES = Object.freeze({
 
 /**
  * @summary Who owns a PR: the seat its body names, or why there is none. An org account without a
- * resolvable line is `unowned`, never silently its login; any other account is `outside`.
+ * resolvable line is `unowned`, never silently its login; any other account is `outside`. The login only
+ * chooses among seats that share the named name.
  * @param {Object} node A search node.
  * @param {{byName: Function, byLogin: Function}} identities
  * @returns {{kind: 'seat'|'unowned'|'outside', seat: String|null, login: String|null}}
@@ -59,7 +60,7 @@ function ownerOf(node, identities) {
 
     const
         name = AUTHOR_LINE.exec(node.body ?? '')?.[1]?.trim(),
-        seat = name ? identities.byName(name) : null;
+        seat = name ? identities.byName(name, login) : null;
 
     return seat ? {kind: 'seat', seat, login} : {kind: 'unowned', seat: null, login}
 }

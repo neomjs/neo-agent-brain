@@ -31,16 +31,21 @@ const PULSE_MS = 60 * 1000;
 
 /**
  * @summary Resolve a social name (through the plane's identity rows) or a login (the registry's seats, then the
- * rows) to a seat.
+ * rows) to a seat. Distinct identities may carry one name, so a shared name resolves only to the one whose
+ * handle is the author's login; row order is no evidence of authorship.
  * @param {Function} listDefinitions `() → Object[]`, read at each lookup.
  * @param {Function} [identityRows] `() → Object[]`: the plane's `who_is_online` rows (`{identity, name}`), read at each lookup.
- * @returns {{byName: Function, byLogin: Function}}
+ * @returns {{byName: Function, byLogin: Function}} `byName(name, login)` and `byLogin(login)`
  */
 export function seatIdentities(listDefinitions, identityRows = () => []) {
     const bare = login => String(login ?? '').replace(/^@/, '');
 
     return {
-        byName : name  => identityRows().find(row => row.name === name)?.identity ?? null,
+        byName : (name, login) => {
+            const seats = [...new Set(identityRows().filter(row => row.name === name).map(row => row.identity).filter(Boolean))];
+
+            return seats.length === 1 ? seats[0] : seats.find(seat => bare(seat) === login) ?? null
+        },
         byLogin: login => listDefinitions().some(definition => bare(definition.githubUsername) === login)
             ? `@${login}`
             : identityRows().find(row => bare(row.identity) === login)?.identity ?? null

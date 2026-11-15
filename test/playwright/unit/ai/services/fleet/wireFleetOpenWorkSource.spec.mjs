@@ -27,6 +27,7 @@ import {
     seatReaders,
     wireFleetOpenWorkSource
 } from '../../../../../../ai/services/fleet/wireFleetOpenWorkSource.mjs';
+import {normalizePullRequest}                   from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
 import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const definitions = [
@@ -108,6 +109,41 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
         expect(identities.byLogin('neo-gpt-euclid')).toBeNull();
         expect(identities.byName('Theirs')).toBe('@their-agent');
         expect(identities.byName('Euclid')).toBeNull()
+    });
+
+    test('a name two identities carry resolves only to the one the author is, in either row order (#1772)', () => {
+        const rows = [{identity: '@neo-auto-nova', name: 'Nova'}, {identity: '@neo-rostered-nova', name: 'Nova'}];
+
+        for (const order of [rows, [...rows].reverse()]) {
+            const identities = seatIdentities(() => definitions, () => order);
+
+            expect(identities.byName('Nova', 'neo-rostered-nova')).toBe('@neo-rostered-nova');
+            expect(identities.byName('Nova', 'neo-auto-nova')).toBe('@neo-auto-nova');
+            expect(identities.byName('Nova', 'someone-else')).toBeNull();
+            expect(identities.byName('Nova')).toBeNull()
+        }
+
+        expect(seatIdentities(() => definitions, () => [{identity: '@neo-auto-solo', name: 'Solo'}]).byName('Solo', 'other'), 'a name one identity carries')
+            .toBe('@neo-auto-solo')
+    });
+
+    test('a PR whose body names a shared name is owned by the seat whose account opened it, in either row order (#1772)', () => {
+        const rows  = [{identity: '@neo-auto-nova', name: 'Nova'}, {identity: '@neo-rostered-nova', name: 'Nova'}, {identity: '@neo-third', name: 'Third'}],
+              pr    = (body, login) => ({number: 7, headRefOid: 'a1', body, author: {login}, repository: {nameWithOwner: 'acme/app'}, commits: {nodes: []}}),
+              owner = (login, identities, body = 'Authored by Nova (Model, Harness).') => normalizePullRequest(pr(body, login), identities).owner;
+
+        for (const order of [rows, [...rows].reverse()]) {
+            const identities = seatIdentities(() => [], () => order);
+
+            expect(owner('neo-rostered-nova', identities)).toEqual({kind: 'seat', seat: '@neo-rostered-nova', login: 'neo-rostered-nova'});
+            expect(owner('neo-auto-nova', identities)).toEqual({kind: 'seat', seat: '@neo-auto-nova', login: 'neo-auto-nova'});
+            expect(owner('neo-third', identities), 'neither Nova opened it').toEqual({kind: 'unowned', seat: null, login: 'neo-third'})
+        }
+
+        const unique = seatIdentities(() => [], () => [{identity: '@neo-gemini-maryam', name: 'Maryam'}]);
+
+        expect(owner('neo-gemini-maryam', unique, 'Authored by Maryam (Gemini 4 Carbon, Antigravity).'), 'a uniquely named auto-provisioned seat')
+            .toEqual({kind: 'seat', seat: '@neo-gemini-maryam', login: 'neo-gemini-maryam'})
     });
 
     test('no token, an HTTP failure or a GraphQL error throws for the producer to record; data comes back as data', async () => {
