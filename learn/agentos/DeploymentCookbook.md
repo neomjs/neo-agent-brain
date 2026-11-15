@@ -192,6 +192,30 @@ similar lanes. External provider endpoints are the MVP default. A self-hosted
 provider container is a profile variant and should not be coupled to the
 orchestrator container.
 
+### Persistent graph-store upgrade: legacy issue-edge weights
+
+When upgrading an existing persistent `shared-sqlite-data` volume
+(`/app/.neo-ai-data/sqlite/memory-core-graph.sqlite`) that ran corpus
+projection (`NEO_ORCHESTRATOR_CORPUS_PROJECTION_ENABLED=true`) before the
+anchored issue-edge weight cutover, run the idempotent graph migration once
+(dry-run first, then `--apply`):
+
+```sh
+docker compose -f deploy/cloud/docker-compose.yml --profile cloud exec orchestrator \
+  node ai/scripts/migrations/normalizeLegacyIssueEdgeWeights.mjs
+docker compose -f deploy/cloud/docker-compose.yml --profile cloud exec orchestrator \
+  node ai/scripts/migrations/normalizeLegacyIssueEdgeWeights.mjs --apply
+```
+
+Message-sourced edges on `ISSUE` nodes are exempt from time decay
+(`isMessageRecordEdge`), and the temporary runtime normalization pass in
+`IssueIngestor.ingestIssueStates()` now lives solely in this upgrade CLI.
+Stores that already recorded `SchemaVersion` marker
+`issue_ingestor_legacy_anchor_reset_v1` exit immediately with
+`status: "already-normalized"` and `0` writes. See
+[Persistent graph-store upgrade](cloud-deployment/Configuration.md#persistent-graph-store-upgrade-legacy-issue-edge-weights)
+for `mc-server` and `--db <path>` invocation variants.
+
 ### Optional `local-model` profile
 
 The `local-model` profile starts an internal OpenAI-compatible provider runtime

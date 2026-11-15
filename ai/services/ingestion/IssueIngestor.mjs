@@ -9,7 +9,7 @@ import {
     Memory_StorageRouter as StorageRouter
 } from '../../services.mjs';
 import logger                      from '../../mcp/server/memory-core/logger.mjs';
-import {ANCHORED_ISSUE_EDGE_TYPES} from '../memory-core/GraphService.mjs';
+import {ANCHORED_ISSUE_EDGE_TYPES} from '../../graph/issueEdgeWeightSchema.mjs';
 import {CORPUS_PROJECTION_OWNER}   from '../graph/corpusProjectionContract.mjs';
 import {
     normalizeDiscussionRoutingProjection as normalizeSourceDiscussionRoutingProjection

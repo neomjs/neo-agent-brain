@@ -10,6 +10,9 @@ import {
     participationStatusOf,
     readAgentIdentityNodes
 } from '../../graph/agentIdentityParticipation.mjs';
+import {normalizeLabels}                     from '../../graph/issueEdgeWeightSchema.mjs';
+
+export {normalizeLabels};
 
 /**
  * @module ai/services/graph/issueFocusSections
@@ -1357,22 +1360,6 @@ export function renderWorkGraphStallFindingsSection(findings = [], {
     }
 
     return section
-}
-
-/**
- * @summary Normalizes labels from graph nodes or synced issue frontmatter.
- *
- * Golden Path consumes labels from both JSON graph payloads and gray-matter
- * frontmatter. Keeping normalization centralized prevents case / whitespace
- * drift from routing non-actionable tickets back into computed work.
- *
- * @param {Array<*>} labels Raw label values.
- * @returns {String[]} Lowercase label names.
- */
-export function normalizeLabels(labels = []) {
-    return Array.isArray(labels)
-        ? labels.map(label => String(label).trim().toLowerCase()).filter(Boolean)
-        : []
 }
 
 /**

@@ -13,6 +13,14 @@ import fsExtra                                 from 'fs-extra';
 import {isDeepStrictEqual}                     from 'node:util';
 import {normalizeNodeDescription, projectNode} from './nodeProjection.mjs';
 import {LEGACY_RAW_MEMORY_NODE_LABEL}          from './helpers/rawMemoryGraphIdentity.mjs';
+import {
+    ANCHORED_ISSUE_EDGE_TYPES,
+    MESSAGE_ID_PREFIX,
+    PROTECTED_EDGE_TYPES,
+    isMessageRecordEdge
+} from '../../graph/issueEdgeWeightSchema.mjs';
+
+export {ANCHORED_ISSUE_EDGE_TYPES, PROTECTED_EDGE_TYPES, isMessageRecordEdge};
 
 const WORK_ITEM_LABELS = new Set(['ISSUE', 'PULL_REQUEST', 'DISCUSSION']);
 
@@ -139,37 +147,8 @@ function isValidGraphNodeId(id) {
     return typeof id === 'string' && id.length > 0;
 }
 
-// Exemption by type. A message's own edges are exempt by SOURCE instead: see isMessageRecordEdge.
-export const PROTECTED_EDGE_TYPES = Object.freeze([
-    'ADVANCED_BY',   // business layer: goal→work advancement is history, never scent; zombie-priority is handled by explicit retirement reweight (ai/graph/businessSchema.mjs), not decay
-    'ATTRIBUTED_TO', // direction layer: motion→direction attribution is measurement substrate — a velocity number built on decaying edges rots invisibly; fact-class per the direction contract (ai/graph/directionSchema.mjs)
-    'DELIVERED_TO',  // mailbox layer: per-recipient broadcast read/archive carrier — readAt/archivedAt live ON this edge (ai/services/memory-core/MailboxService.mjs markRead/archive); pruning it resurfaces read messages as unread
-    'SENT_TO',       // mailbox layer: recipiency authorization — markRead/archive resolve "is this mine?" by walking it; deletion erases who a message was for, which never becomes less true with age
-    'SENT_BY',       // mailbox layer: sender provenance — record, not scent; the decay floor sits below the prune threshold, so an unprotected carrier is a countdown, not an equilibrium
-    'IMPLEMENTS',
-    'EXTENDS',
-    'SYSTEM_TENET',
-    'RESOLVES'
-]);
-const PROTECTED_EDGE_TYPE_SET = new Set(PROTECTED_EDGE_TYPES);
-
-export const ANCHORED_ISSUE_EDGE_TYPES = Object.freeze(['PARENT_OF', 'BLOCKS']);
+const PROTECTED_EDGE_TYPE_SET      = new Set(PROTECTED_EDGE_TYPES);
 const ANCHORED_ISSUE_EDGE_TYPE_SET = new Set(ANCHORED_ISSUE_EDGE_TYPES);
-
-const MESSAGE_ID_PREFIX = 'MESSAGE:';
-
-/**
- * @summary Checks whether an edge originates from a `MESSAGE:` record node.
- *
- * An edge a MESSAGE node sources is the sender's record (reply, thread, ticket, tag and session links):
- * decayGlobalTopology neither decays nor prunes it, and getInboundStructuralSupport counts it as total,
- * never decaying, support. Message ids carry the prefix by construction (MailboxService).
- * @param {Object} edge `{source}` as cached or stored.
- * @returns {Boolean}
- */
-export function isMessageRecordEdge(edge) {
-    return typeof edge?.source === 'string' && edge.source.startsWith(MESSAGE_ID_PREFIX);
-}
 
 /**
  * @summary Synchronizes edge property updates across `GraphService.db.edges` without splitting
