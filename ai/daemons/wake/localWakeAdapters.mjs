@@ -777,7 +777,7 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
         focusSeedSequence   : resolvedMeta.focusSeedSequence,
         freshSessionShortcut: rotation ? resolvedMeta.freshSessionShortcut : null,
         // An absolute cutoff, so a child process that starts late cannot move it.
-        freshSessionCutoffSec: rotation ? Math.floor(rotationDeadline(record, effects.now()) / 1000) : null,
+        freshSessionCutoffSec: rotation ? Math.floor(rotationDeadline(record) / 1000) : null,
         freshSessionHolder   : rotation ? effects.rotationHolder || null : null,
         instancePid,
         tabShortcut          : resolvedMeta.tabShortcut
@@ -785,7 +785,8 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
     const outcome = await spawnOsascriptOnce(effects, args, record.subscriptionId);
 
     // A rotation whose window lost the front before its fresh-session keystroke opened nothing, so it may try
-    // again inside its age; past that point Cmd+N may have opened a session, and a retry would open two.
+    // again (`ROTATION_MAX_ACTIVATION_LOSSES`); past that point Cmd+N may have opened a session, and a retry
+    // would open two.
     // A lock that engaged during the activation or before Cmd+N took the front, and waits as a lock does.
     if (rotation && outcome?.outcome === 'failed' && isPreSessionFailure(outcome.outcomeReason)) {
         return {outcome: 'deferred', outcomeReason: effects.readScreenLocked?.() === true ? ROTATION_SCREEN_LOCKED : ROTATION_ACTIVATION_LOST}
@@ -1295,8 +1296,8 @@ export function readHumanIdleMs({spawnSyncFn = spawnSync, platform = process.pla
  *
  * The IORegistry root's `IOConsoleUsers` carry `CGSSessionScreenIsLocked = Yes` only while the screen is
  * locked, readable without a privacy grant. A locked screen keeps the front from every window, and the
- * idle clock reads it as quiet, so a rotation waits for the unlock instead of spending its age on
- * activations that cannot succeed. Anything unreadable answers `null`, which leaves the activation's own
+ * idle clock reads it as quiet, so a rotation waits for the unlock instead of spending lost activations
+ * that cannot succeed. Anything unreadable answers `null`, which leaves the activation's own
  * frontmost check as the guard.
  *
  * @param {Object} [options]

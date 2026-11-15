@@ -24,7 +24,10 @@ import {
     readScreenLocked as readHostScreenLocked
 } from './localWakeAdapters.mjs';
 import {
+    ROTATION_ACTIVATION_LOST,
     ROTATION_EXPIRED,
+    ROTATION_FRONT_LOST,
+    ROTATION_MAX_ACTIVATION_LOSSES,
     ROTATION_MAX_AGE_MS,
     ROTATION_RETRY_MS,
     ROTATION_SCREEN_LOCKED,
@@ -34,7 +37,6 @@ import {
     hasReceiptIdentity,
     isRotationExpired,
     isSessionRotation,
-    rotationLockPatch,
     routeAdmits,
     seatHolderKey
 } from './sessionRotation.mjs';
@@ -327,9 +329,9 @@ export function verifyWakeSignature(rawBody, signingKey, signature) {
  *   headroom over the route's `attemptTimeoutMs`.
  * @param {Number} [options.watchdogIntervalMs=STEP_WATCHDOG_INTERVAL_MS]
  * @param {Number} [options.rotationRetryMs=ROTATION_RETRY_MS] How soon a deferred rotation is asked again.
- * @param {Function} [options.clock=Date.now] The clock a rotation's age is read against.
+ * @param {Function} [options.clock=Date.now] The clock a rotation's deadline is read against.
  * @param {Function} [options.readScreenLocked] `() => Boolean|null`, the host's lock state; a locked screen
- *   pauses a rotation's age (`sessionRotation.mjs`).
+ *   parks a rotation without an activation (`sessionRotation.mjs`).
  * @param {String|null} [options.listenerStateDir] Where the Claude wake listener records each seat's holder
  *   (`<identity>.json`); defaults to `listeners` beside the manifest, the layout `wakeListenerHook.mjs` writes.
  * @returns {{server:http.Server,drain:Function,setManifest:Function,track:Function}}
@@ -484,32 +486,18 @@ export function createWakeReceiver({
                 });
                 if (!dispatching) continue;
 
-                // A locked screen pauses a rotation's age: the lock opens an interval, and the first read
-                // without one closes it.
-                let screenLocked = null;
+                // Read once per pass: a locked screen parks the rotation below, after the holder fence.
+                const screenLocked = isSessionRotation(dispatching.envelope) ? readScreenLocked() : null;
 
-                if (isSessionRotation(dispatching.envelope)) {
-                    screenLocked = readScreenLocked();
-
-                    const lockPatch = rotationLockPatch(dispatching, screenLocked, clock());
-
-                    if (lockPatch) {
-                        await watched.transition(record.recordKey, 'dispatching', 'dispatching', lockPatch);
-                        Object.assign(dispatching, lockPatch)
-                    }
-                }
-
-                // A rotation past its age is never typed: the seat may have been restarted since, and a
-                // late session would be a second live session of it.
+                // A rotation past its deadline is never typed (`rotationDeadline`).
                 if (isSessionRotation(dispatching.envelope) && isRotationExpired(dispatching, clock())) {
                     await watched.transition(record.recordKey, 'dispatching', 'failed', {
                         outcomeReason     : ROTATION_EXPIRED,
                         dispatchFinishedAt: new Date(clock()).toISOString()
                     });
                     logger.error?.(
-                        `[Wake Receiver] rotation EXPIRED ${record.subscriptionId}: not typed within ` +
-                        `${ROTATION_MAX_AGE_MS} ms of unlocked time after its accept, or by its hold; ` +
-                        'failed without a keystroke'
+                        `[Wake Receiver] rotation EXPIRED ${record.subscriptionId}: not typed by its hold's end, or ` +
+                        `${ROTATION_MAX_AGE_MS} ms after its accept without a hold; failed without a keystroke`
                     );
                     continue;
                 }
@@ -558,8 +546,8 @@ export function createWakeReceiver({
                     });
                     if (dispatching.deferReason !== ROTATION_SCREEN_LOCKED) {
                         logger.warn?.(
-                            `[Wake Receiver] rotation WAITING ${record.subscriptionId}: the screen is locked, so its ` +
-                            `age is paused until the unlock${holdUntil ? `, never past ${holdUntil}` : ''}`
+                            `[Wake Receiver] rotation WAITING ${record.subscriptionId}: the screen is locked; it ` +
+                            `types after the unlock${holdUntil ? `, never past ${holdUntil}` : `, inside ${ROTATION_MAX_AGE_MS} ms of its accept`}`
                         );
                     }
                     scheduleRotationRetry();
@@ -761,12 +749,13 @@ export function createWakeReceiver({
                     // either the seat returns to composer state (deliver, envelope identity intact)
                     // or the bound exhausts into an OBSERVABLE failure. A defer that can park
                     // forever is the silent non-delivery failure mode wearing a polite name.
-                    // A rotation's bound is its age instead (checked at the top of each pass): it
+                    // A rotation's bound is its deadline instead (checked at the top of each pass): it
                     // defers for a person at the keyboard, a dialog or a lost activation, and is asked
-                    // again within about a second until it types or expires.
+                    // again within about a second until it types, expires, or loses the front too often.
                     if (outcome === 'deferred') {
                         const deferCount = (dispatching.deferCount || 0) + 1,
-                              rotation   = isSessionRotation(dispatching.envelope);
+                              rotation   = isSessionRotation(dispatching.envelope),
+                              frontLost  = (dispatching.frontLostCount || 0) + (outcomeReason === ROTATION_ACTIVATION_LOST ? 1 : 0);
 
                         if (!rotation && deferCount > DIALOG_DEFER_BOUND) {
                             await watched.transition(record.recordKey, 'dispatching', 'failed', {
@@ -782,18 +771,32 @@ export function createWakeReceiver({
                             continue;
                         }
 
+                        // Each lost activation took the front from whatever a person had open, so a window that
+                        // cannot keep it fails the rotation rather than being asked until the hold ends.
+                        if (rotation && frontLost >= ROTATION_MAX_ACTIVATION_LOSSES) {
+                            await watched.transition(record.recordKey, 'dispatching', 'failed', {
+                                outcomeReason     : ROTATION_FRONT_LOST,
+                                deferCount,
+                                frontLostCount    : frontLost,
+                                dispatchFinishedAt: new Date(clock()).toISOString()
+                            });
+                            logger.error?.(
+                                `[Wake Receiver] rotation FRONT-LOST ${record.subscriptionId}: the seat's window lost ` +
+                                `the front ${frontLost} times before the fresh session; failed without opening one`
+                            );
+                            continue;
+                        }
+
                         await watched.transition(record.recordKey, 'dispatching', 'pending', {
                             deferCount,
                             deferredAt : new Date().toISOString(),
                             deferReason: outcomeReason || 'interactive-dialog-pending',
-                            ...(rotation ? {seatHolder: dispatching.seatHolder ?? null} : {}),
-                            // A lock the adapter saw at its last boundary opens the paused interval here.
-                            ...(rotation && outcomeReason === ROTATION_SCREEN_LOCKED ? rotationLockPatch(dispatching, true, clock()) : {})
+                            ...(rotation ? {seatHolder: dispatching.seatHolder ?? null, frontLostCount: frontLost} : {})
                         });
                         logger.warn?.(rotation
                             ? `[Wake Receiver] rotation DEFERRED ${record.subscriptionId} (${outcomeReason}); ` +
-                              `asked again in ${rotationRetryMs} ms, never past ${ROTATION_MAX_AGE_MS} ms ` +
-                              `after its accept (defer #${deferCount})`
+                              `asked again in ${rotationRetryMs} ms until it types or its deadline passes ` +
+                              `(defer #${deferCount}, front lost ${frontLost}/${ROTATION_MAX_ACTIVATION_LOSSES})`
                             : `[Wake Receiver] dialog gate DEFERRED ${record.subscriptionId}: a pending ` +
                               `interactive prompt holds the seat's input path; the wake waits for ` +
                               `composer state (defer #${deferCount}/${DIALOG_DEFER_BOUND})`

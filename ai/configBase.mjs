@@ -2148,9 +2148,9 @@ class ConfigBase extends ConfigProvider {
                      * How long a receipt may wait for its fresh session, counted from its `sentAt`.
                      * The plane holds the seat's wakes for at most this long, and a rotation still open
                      * past it is recorded `incomplete`, with one defect note. The receiver types a rotation
-                     * within `ROTATION_MAX_AGE_MS` of unlocked time after accepting it and before this window
-                     * ends (the envelope's `holdUntil`), or never. So a rotation open this long has failed,
-                     * and the window bounds the hold on a seat whose rotation failed on the host.
+                     * at the host's first opening (unlocked, and untouched for 3 s) before this window ends
+                     * (the envelope's `holdUntil`), or never. So a rotation open this long has failed, and
+                     * the window bounds the hold on a seat whose rotation failed on the host.
                      * @type {Number}
                      */
                     windowMs     : leaf(3 * HOUR_MS, 'NEO_SESSION_ROTATION_WINDOW_MS', 'number'),

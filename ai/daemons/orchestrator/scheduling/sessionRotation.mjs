@@ -31,8 +31,8 @@ import {
  *   `refused`, `incomplete` (the window passed). Each one is a log line, and the record stays on the
  *   handover node's `sessionRotation`.
  * - **The hold reaches the receiver:** the envelope carries `holdUntil`, the receipt's `sentAt` plus the
- *   window, so a receiver waiting on a locked screen never types after the plane stopped holding the
- *   seat's wakes.
+ *   window, so a receiver waiting for its opening (a locked screen, a person at the keyboard) never types
+ *   after the plane stopped holding the seat's wakes.
  * - **`incomplete` is told:** the plane cannot read the receiver's records, so a rotation that failed on the
  *   host surfaces only here, and an ERROR line alone reaches nobody. One `defect-note:` per receipt reports
  *   what the plane knows, that no successor marker arrived, and asks for the seat's window to be checked

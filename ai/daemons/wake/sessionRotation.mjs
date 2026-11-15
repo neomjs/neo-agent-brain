@@ -9,19 +9,16 @@
  * route that admits only `session/rotate` envelopes, and every other route admits only `wake/digest`.
  * So a rotation cannot be typed into a seat as a wake, and a wake digest cannot open a session.
  *
- * **Why typing waits for a pause, and only briefly.** A typed delivery races a person using the same
+ * **Why typing waits for an opening, and for how long.** A typed delivery races a person using the same
  * computer: the frontmost assertion catches focus lost before a keystroke batch, while focus lost between
- * a check and a keystroke sends the text to another window. So a rotation types at a pause in keyboard and
- * pointer, and an unreadable idle clock defers rather than guessing. It waits for that pause only
- * {@link ROTATION_MAX_AGE_MS}: a sunset is terminal and its fresh session starts at once, while every
- * minute of waiting lets wakes reach a session that has ended and lets a person restart the seat by hand,
- * after which a late rotation is a second live session of the seat.
- *
- * **Why a locked screen pauses that age.** A locked screen keeps the front from every window, so a rotation
- * there cannot type, and neither reason above holds: the plane holds the seat's wakes, nobody at the host
- * can restart the seat, and a restart from elsewhere claims it, which the holder fence reads. So under the
- * plane's signed hold the age counts unlocked time only ({@link rotationDeadline}), and the envelope's
- * `holdUntil` ends the wait where that hold ends. An envelope without a valid hold keeps the wall-clock age.
+ * a check and a keystroke sends the text to another window. So a rotation types only on an unlocked screen,
+ * at a pause in keyboard and pointer, and an unreadable idle clock defers rather than guessing. Under the
+ * plane's signed hold it waits for that opening until the hold ends ({@link rotationDeadline}), because
+ * nothing a shorter bound guards is left: the plane holds the seat's wakes, so none reach the session that
+ * ended, and a session someone starts by hand claims the seat on its first prompt, which the holder fence
+ * reads right before Cmd+N. A shorter bound only loses the rotation to a host that stays busy past it. Lost
+ * activations are capped instead ({@link ROTATION_MAX_ACTIVATION_LOSSES}): each one took the front from
+ * whatever a person had open. An envelope without a valid hold keeps {@link ROTATION_MAX_AGE_MS}.
  *
  * Pure (no fs, spawn or timers), so Memory Core, the manifest builder, the receiver and its adapters
  * share one fact set without widening any of their dependency closures. The rotation lane and the wake
@@ -60,12 +57,19 @@ export const WAKE_DIGEST_EVENT_TYPE = 'wake/digest';
 export const HUMAN_INPUT_QUIET_MS = 3 * 1000;
 
 /**
- * How long after the receiver accepted a rotation it may still type it; under the plane's signed hold it
- * counts unlocked time only ({@link rotationDeadline}). Past it the rotation fails without a keystroke
- * (`session-rotate-expired`): a late session is a copy, not a recovery.
+ * How long after its accept the receiver may type a rotation whose envelope carries no valid hold, as from an
+ * older plane: the receiver cannot tell when that plane stops holding the seat's wakes, so the wait keeps a
+ * wall-clock bound. Past it the rotation fails without a keystroke (`session-rotate-expired`).
  * @type {Number}
  */
 export const ROTATION_MAX_AGE_MS = 60 * 1000;
+
+/**
+ * How many activations may lose the front before a rotation fails ({@link ROTATION_FRONT_LOST}). Each one
+ * took the front from whatever a person had open, so a window that cannot keep it is not asked for hours.
+ * @type {Number}
+ */
+export const ROTATION_MAX_ACTIVATION_LOSSES = 5;
 
 /**
  * How soon the receiver asks a deferred rotation again, instead of at its next periodic re-drain.
@@ -74,22 +78,29 @@ export const ROTATION_MAX_AGE_MS = 60 * 1000;
 export const ROTATION_RETRY_MS = 1000;
 
 /**
- * Defer reason: the seat's window lost the front before the first keystroke, so nothing was typed and
- * the rotation may try again inside its age.
+ * Defer reason: the seat's window lost the front before its fresh-session keystroke, so nothing opened, and
+ * the rotation may ask again up to {@link ROTATION_MAX_ACTIVATION_LOSSES} times.
  * @type {String}
  */
 export const ROTATION_ACTIVATION_LOST = 'activation-lost';
 
 /**
- * Defer reason: the screen is locked, so no window can take the front. The rotation waits with its age
- * paused ({@link rotationLockPatch}) until the unlock, never past its envelope's `holdUntil`.
+ * Failure reason: the seat's window lost the front {@link ROTATION_MAX_ACTIVATION_LOSSES} times, each before
+ * its fresh-session keystroke, so nothing opened.
+ * @type {String}
+ */
+export const ROTATION_FRONT_LOST = 'session-rotate-front-lost';
+
+/**
+ * Defer reason: the screen is locked, so no window can take the front. The rotation waits for the unlock
+ * without activating, never past its deadline ({@link rotationDeadline}).
  * @type {String}
  */
 export const ROTATION_SCREEN_LOCKED = 'screen-locked';
 
 /**
- * Failure reason: the rotation reached its fresh-session keystroke after its deadline
- * ({@link rotationDeadline}). It opens no session, because the seat may have been restarted by hand since.
+ * Failure reason: the rotation was still untyped at its deadline ({@link rotationDeadline}), so it opens
+ * no session.
  * @type {String}
  */
 export const ROTATION_EXPIRED = 'session-rotate-expired';
@@ -212,47 +223,22 @@ export function isHumanInputDefer(reason) {
  * @returns {Boolean}
  */
 export function isRotationExpired(record, now) {
-    return !(now < rotationDeadline(record, now))
+    return !(now < rotationDeadline(record))
 }
 
 /**
- * @summary The last moment a rotation may open its session. Under the plane's signed hold, that is
- * {@link ROTATION_MAX_AGE_MS} of unlocked time after its accept and never past the envelope's `holdUntil`,
- * where the plane stops holding the seat's wakes for it; while a lock is open the deadline moves with `now`,
- * so only `holdUntil` can end it. Without a valid hold (an older plane, or a malformed one) nothing bounds a
- * paused wait, so the age stays {@link ROTATION_MAX_AGE_MS} of wall-clock time from the accept.
+ * @summary The last moment a rotation may open its session: the envelope's `holdUntil`, where the plane stops
+ * holding the seat's wakes for it, or {@link ROTATION_MAX_AGE_MS} after its accept without a valid hold.
  * @param {Object} record The receiver record.
  * @param {String} record.acceptedAt
- * @param {Number} [record.lockedMs=0] Locked time an unlock has closed.
- * @param {String|null} [record.lockedSince] The start of a lock still open.
  * @param {Object} [record.envelope] Its `payload.holdUntil`, when the plane sent one.
- * @param {Number} now
  * @returns {Number} Epoch ms, `NaN` for an unreadable accept time (never on time).
  */
-export function rotationDeadline({acceptedAt, lockedMs = 0, lockedSince = null, envelope} = {}, now) {
-    const aged = Date.parse(acceptedAt) + ROTATION_MAX_AGE_MS,
-          hold = Date.parse(envelope?.payload?.holdUntil);
+export function rotationDeadline({acceptedAt, envelope} = {}) {
+    const accepted = Date.parse(acceptedAt),
+          hold     = Date.parse(envelope?.payload?.holdUntil);
 
-    if (!Number.isFinite(hold)) return aged;
-
-    const paused = lockedMs + (lockedSince ? Math.max(0, now - Date.parse(lockedSince)) : 0);
-
-    return Math.min(aged + paused, hold)
-}
-
-/**
- * @summary The record fields that keep a rotation's age to its unlocked time: a lock opens a paused
- * interval, and the first read that finds no lock closes it into `lockedMs`. Only an observed lock pauses,
- * so an unreadable state closes an open interval as an unlock would.
- * @param {Object} record The receiver record.
- * @param {Boolean|null} locked The screen's lock state, `null` when unreadable.
- * @param {Number} now
- * @returns {Object|null} The fields to write, or `null` when nothing changes.
- */
-export function rotationLockPatch({lockedMs = 0, lockedSince = null} = {}, locked, now) {
-    if (locked === true) return lockedSince ? null : {lockedSince: new Date(now).toISOString()};
-
-    return lockedSince ? {lockedSince: null, lockedMs: lockedMs + Math.max(0, now - Date.parse(lockedSince))} : null
+    return Number.isFinite(accepted) && Number.isFinite(hold) ? hold : accepted + ROTATION_MAX_AGE_MS
 }
 
 /**
