@@ -1,25 +1,32 @@
-import {resolveTicketReference} from '../../services/graph/ticketReferences.mjs';
-import {Command}                from 'commander';
-import Database                 from 'better-sqlite3';
-import path                     from 'node:path';
-import {isEntryModule}          from '../../services/shared/isEntryModule.mjs';
+import {resolveTicketReference}                 from '../../services/graph/ticketReferences.mjs';
+import {Command}                                from 'commander';
+import Database                                 from 'better-sqlite3';
+import path                                     from 'node:path';
+import {isEntryModule}                          from '../../services/shared/isEntryModule.mjs';
+import {normalizeMailboxIdentityForComparison} from '../../services/memory-core/helpers/mailboxReadStateClassifier.mjs';
 
 /**
  * @module ai/scripts/maintenance/rebuildMessageEdges
- * @summary Rebuilds the reply, thread, ticket and tag edges of every `MESSAGE` node from the node's
- * own fields, where the live graph lacks them.
+ * @summary Rebuilds the routing, reply, thread, ticket and tag edges of every `MESSAGE` node from the
+ * node's own fields, where the live graph lacks them.
  *
  * `MailboxService` writes these edges once, at projection, from the same fields the node keeps
- * (`inReplyTo`, `partOfThread`, `relatedTickets`, `taggedConcepts`); `repairMessageGraphIntegrity`
- * repairs the three carriers only, so an edge a collector severed or a decay pruned never comes back
- * on its own. This walks the nodes and links what is missing, the way the projection does: a tag's
- * concept node is created when absent, any other target must exist, the edge carries weight 1, the
- * message's `sentAt` as `timestamp`, its `userId` and `sharedEntity`. A present edge is left alone,
- * weight included. The session edges (`ORIGINATES_IN`, `RELATED_SESSION`) live on the WAL record,
- * not the node, and are not rebuilt here.
+ * (`from`, `to`, `inReplyTo`, `partOfThread`, `relatedTickets`, `taggedConcepts`), so an edge a
+ * collector severed or a decay pruned never comes back on its own. This walks the nodes and links what
+ * is missing, the way the projection does: a tag's concept node is created when absent, any other
+ * target must exist, the edge carries weight 1, the message's `sentAt` as `timestamp`, its `userId` and
+ * `sharedEntity`. A present edge is left alone, weight included. The session edges (`ORIGINATES_IN`,
+ * `RELATED_SESSION`) live on the WAL record, not the node, and are not rebuilt here.
+ *
+ * The routing carriers are `repairMessageGraphIntegrity`'s, but it rebuilds them from the message WAL,
+ * which keeps only its retention window: a message older than the WAL has no route, and `getMessage`
+ * refuses even its sender. So `from` and `to` link `SENT_BY` and `SENT_TO` here, normalized as the
+ * projection normalizes them, one of each per message (a held carrier stays, whatever it targets), and
+ * a broadcast route carries `broadcastCohort: 'legacy-unknown'`, the projection's stamp for a broadcast
+ * without a recipient snapshot. That snapshot is not on the node, so `DELIVERED_TO` is not rebuilt.
  *
  * Identity is decided inside the insert (`INSERT … WHERE NOT EXISTS`), and the counts are the rows it
- * changed. `--types` names the edge types to link (all four by default): the tag edges are tens of
+ * changed. `--types` names the edge types to link (all six by default): the tag edges are tens of
  * thousands and feed concept scoring, so they can be applied on their own decision. The message ids
  * are read up front and each node fetched by id, so no cursor is open on the connection when a batch
  * flushes (better-sqlite3 refuses a write while a statement iterates). Dry-run by default with the
@@ -28,14 +35,17 @@ import {isEntryModule}          from '../../services/shared/isEntryModule.mjs';
 
 /**
  * The node fields and the edge type each one becomes. A string field links one target, an array
- * field links each entry.
+ * field links each entry; a `carrier` field links its one string, an identity, and only while the
+ * message holds no edge of that type.
  * @type {Object[]}
  */
 export const MESSAGE_EDGE_FIELDS = Object.freeze([
     Object.freeze({field: 'inReplyTo',      type: 'IN_REPLY_TO'}),
     Object.freeze({field: 'partOfThread',   type: 'PART_OF_THREAD'}),
     Object.freeze({field: 'relatedTickets', type: 'REFERENCES_TICKET'}),
-    Object.freeze({field: 'taggedConcepts', type: 'TAGGED_CONCEPT'})
+    Object.freeze({field: 'taggedConcepts', type: 'TAGGED_CONCEPT'}),
+    Object.freeze({field: 'from',           type: 'SENT_BY', carrier: true}),
+    Object.freeze({field: 'to',             type: 'SENT_TO', carrier: true})
 ]);
 
 const WRITE_BATCH_SIZE = 1000;
@@ -56,7 +66,7 @@ export function targetsOf(value) {
  * @param {Object}   options
  * @param {Object}   options.db            Open better-sqlite3 handle; read-only unless `apply`.
  * @param {Boolean}  [options.apply=false] Write; otherwise count only.
- * @param {String[]} [options.types]       Edge types to link; every other field is skipped. Default: all four.
+ * @param {String[]} [options.types]       Edge types to link; every other field is skipped. Default: all six.
  * @param {Number}   [options.batchSize=1000] Writes per transaction.
  * @returns {{messages: Number, types: Object}} Per type: `{fields, linked, present, missingTarget, conceptsCreated}`;
  * ticket references also report `unresolved` counts by refusal class.
@@ -68,6 +78,7 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
         readNode   = db.prepare('SELECT data FROM Nodes WHERE id = ?').pluck(),
         nodeExists = db.prepare('SELECT 1 FROM Nodes WHERE id = ?').pluck(),
         edgeExists = db.prepare('SELECT 1 FROM Edges WHERE source = ? AND target = ? AND type = ? LIMIT 1').pluck(),
+        typeHeld   = db.prepare('SELECT 1 FROM Edges WHERE source = ? AND type = ? LIMIT 1').pluck(),
         insertEdge = apply && db.prepare(`
             INSERT INTO Edges (id, user_id, source, target, type, data)
             SELECT ?, ?, ?, ?, ?, ?
@@ -97,8 +108,8 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
 
         result.messages++;
 
-        for (const {field, type} of fields) {
-            const targets = targetsOf(props[field]);
+        for (const {field, type, carrier} of fields) {
+            const targets = carrier ? targetsOf(props[field]).slice(0, 1) : targetsOf(props[field]);
 
             if (targets.length === 0) continue;
 
@@ -106,8 +117,10 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
 
             counts.fields++;
 
+            if (carrier && typeHeld.get(messageId, type)) { counts.present++; continue; }
+
             for (const authoredTarget of targets) {
-                let target = authoredTarget, externalRef;
+                let target = carrier ? normalizeMailboxIdentityForComparison(authoredTarget) : authoredTarget, externalRef;
 
                 if (type === 'REFERENCES_TICKET') {
                     counts.unresolved ||= {};
@@ -134,7 +147,11 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
                 if (apply) {
                     const
                         edgeId     = globalThis.crypto.randomUUID(),
-                        properties = {weight: 1, timestamp: props.sentAt ?? null, userId: props.userId ?? null, sharedEntity: true, ...(externalRef ? {externalRef} : {})};
+                        properties = {
+                            weight: 1, timestamp: props.sentAt ?? null, userId: props.userId ?? null, sharedEntity: true,
+                            ...(externalRef ? {externalRef} : {}),
+                            ...(type === 'SENT_TO' && target === 'AGENT:*' ? {broadcastCohort: 'legacy-unknown'} : {})
+                        };
 
                     queue(() => {
                         const changes = insertEdge.run(edgeId, properties.userId, messageId, target, type, JSON.stringify({id: edgeId, source: messageId, target, type, properties}), messageId, target, type).changes;
@@ -187,10 +204,10 @@ export function runRebuildMessageEdges({dbPath, apply = false, types, logger = c
  */
 export function createCommand() {
     return new Command('rebuildMessageEdges')
-        .description("Link the reply, thread, ticket and tag edges a MESSAGE node's fields name where the live graph lacks them. Dry-run unless --apply.")
+        .description("Link the routing, reply, thread, ticket and tag edges a MESSAGE node's fields name where the live graph lacks them. Dry-run unless --apply.")
         .requiredOption('--db-path <path>', 'live graph SQLite file (explicit, must exist)')
         .option('--apply', 'write instead of counting', false)
-        .option('--types <types>', 'comma-separated edge types to link (default: all four)', value => value.split(',').map(s => s.trim()).filter(Boolean));
+        .option('--types <types>', 'comma-separated edge types to link (default: all six)', value => value.split(',').map(s => s.trim()).filter(Boolean));
 }
 
 /**

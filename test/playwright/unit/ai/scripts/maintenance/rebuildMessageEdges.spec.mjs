@@ -12,6 +12,7 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 import Database       from 'better-sqlite3';
 import fs             from 'fs-extra';
 import path           from 'path';
+import {canReadMessage} from '../../../../../../ai/services/memory-core/helpers/messageAdmission.mjs';
 import {
     rebuildMessageEdges,
     runRebuildMessageEdges,
@@ -281,6 +282,80 @@ test.describe('rebuildMessageEdges maintenance script', () => {
         } finally {
             db.close();
         }
+    });
+
+    test('a message older than the WAL gains the carriers its fields name, normalized and stamped as the projection writes them', () => {
+        seedLive({nodes: [
+            message('MESSAGE:direct', {from: 'neo-opus-vega', to: '@neo-opus-ada'}),
+            message('MESSAGE:broadcast', {from: '@neo-opus-ada', to: 'AGENT:*'}),
+            node('@neo-opus-vega', 'AGENT'), node('@neo-opus-ada', 'AGENT'), node('AGENT:*', 'AGENT')
+        ]});
+
+        const result = runRebuildMessageEdges({dbPath, apply: true, logger: quiet}),
+              base   = {weight: 1, timestamp: '2026-09-25T10:00:00.000Z', userId: 'neo-opus-vega', sharedEntity: true};
+
+        expect(result.types).toEqual({
+            SENT_BY: {fields: 2, linked: 2, present: 0, missingTarget: 0, conceptsCreated: 0},
+            SENT_TO: {fields: 2, linked: 2, present: 0, missingTarget: 0, conceptsCreated: 0}
+        });
+        expect(liveEdges().map(({source, target, type, properties}) => ({source, target, type, properties}))).toEqual([
+            {source: 'MESSAGE:broadcast', target: '@neo-opus-ada',  type: 'SENT_BY', properties: base},
+            {source: 'MESSAGE:direct',    target: '@neo-opus-vega', type: 'SENT_BY', properties: base},
+            {source: 'MESSAGE:broadcast', target: 'AGENT:*',        type: 'SENT_TO', properties: {...base, broadcastCohort: 'legacy-unknown'}},
+            {source: 'MESSAGE:direct',    target: '@neo-opus-ada',  type: 'SENT_TO', properties: base}
+        ]);
+    });
+
+    test('a held carrier stays whatever it targets, an unknown identity is counted and never created, and a dry run writes nothing', () => {
+        seedLive({
+            nodes: [
+                message('MESSAGE:held', {from: '@neo-opus-vega', to: '@neo-opus-ada'}),
+                message('MESSAGE:stranger', {from: '@nobody', to: '@neo-opus-ada'}),
+                node('@neo-opus-vega', 'AGENT'), node('@neo-opus-ada', 'AGENT'), node('neo-opus-4-7', 'AGENT')
+            ],
+            edges: [{id: 'kept', source: 'MESSAGE:held', target: 'neo-opus-4-7', type: 'SENT_BY', properties: {weight: 1}}]
+        });
+
+        const dry = runRebuildMessageEdges({dbPath, logger: quiet});
+
+        expect(dry.types).toEqual({
+            SENT_BY: {fields: 2, linked: 0, present: 1, missingTarget: 1, conceptsCreated: 0},
+            SENT_TO: {fields: 2, linked: 2, present: 0, missingTarget: 0, conceptsCreated: 0}
+        });
+        expect(liveEdges().map(row => row.target)).toEqual(['neo-opus-4-7']);
+
+        runRebuildMessageEdges({dbPath, apply: true, logger: quiet});
+
+        expect(liveEdges().filter(row => row.type === 'SENT_BY').map(row => row.target)).toEqual(['neo-opus-4-7']);
+        expect(liveNode('@nobody')).toBeNull();
+    });
+
+    test('the rebuilt carriers let the sender and the recipient open a direct message, and nobody else', () => {
+        seedLive({nodes: [
+            message('MESSAGE:direct', {from: '@neo-opus-vega', to: '@neo-opus-ada'}),
+            node('@neo-opus-vega', 'AGENT'), node('@neo-opus-ada', 'AGENT')
+        ]});
+
+        // the facts MailboxService.getMessage reads off the message's edges
+        const routeFacts = () => {
+            const rows = liveEdges();
+
+            return {
+                sentBy        : rows.find(row => row.type === 'SENT_BY')?.target ?? null,
+                sentTo        : rows.filter(row => row.type === 'SENT_TO').map(row => row.target),
+                deliveredToMe : false,
+                hasDeliveries : false,
+                canReadInboxOf: () => false
+            };
+        };
+
+        expect(canReadMessage('@neo-opus-vega', routeFacts())).toBe(false);
+
+        runRebuildMessageEdges({dbPath, apply: true, logger: quiet});
+
+        expect(canReadMessage('@neo-opus-vega', routeFacts())).toBe(true);
+        expect(canReadMessage('@neo-opus-ada', routeFacts())).toBe(true);
+        expect(canReadMessage('@neo-gpt-emmy', routeFacts())).toBe(false);
     });
 
     test('targetsOf reads one string or every string entry of an array, nothing else', () => {
