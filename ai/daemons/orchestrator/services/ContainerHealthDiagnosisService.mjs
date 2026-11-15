@@ -1,4 +1,5 @@
-import Base from 'neo.mjs/src/core/Base.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
+import AiConfig from '../../../config.mjs';
 
 import {CONTAINER_HEALTH_ACTION_CLASSES, CONTAINER_HEALTH_FACT_TYPES} from './containerHealthFactTypes.mjs';
 
@@ -308,7 +309,6 @@ export const DEFAULT_CONTAINER_HEALTH_DIAGNOSIS_CONFIG = Object.freeze({
     // `describeMemoryWindowReachability`.
     memorySaturationWindowMs     : 30000,
     // Plane-wide Docker / data-mount disk-pressure thresholds and build-cache hygiene bounds.
-    buildCacheWarmFloorBytes     : 2 * 1024 * 1024 * 1024,
     diskPressurePercent          : 90,
     diskPressureWindowMs         : 30000,
     minReclaimableBuildCacheBytes: 1024 * 1024 * 1024
@@ -365,21 +365,9 @@ export class ContainerHealthDiagnosisService extends Base {
      * @returns {Object}
      */
     get configValues() {
-        const raw = {
+        return {
             ...DEFAULT_CONTAINER_HEALTH_DIAGNOSIS_CONFIG,
             ...(this.diagnosisConfig || {})
-        };
-
-        return {
-            ...raw,
-            buildCacheWarmFloorBytes: typeof raw.buildCacheWarmFloorBytes === 'number' &&
-                Number.isFinite(raw.buildCacheWarmFloorBytes) && raw.buildCacheWarmFloorBytes >= 0
-                ? Math.trunc(raw.buildCacheWarmFloorBytes)
-                : DEFAULT_CONTAINER_HEALTH_DIAGNOSIS_CONFIG.buildCacheWarmFloorBytes,
-            minReclaimableBuildCacheBytes: typeof raw.minReclaimableBuildCacheBytes === 'number' &&
-                Number.isFinite(raw.minReclaimableBuildCacheBytes) && raw.minReclaimableBuildCacheBytes >= 0
-                ? Math.trunc(raw.minReclaimableBuildCacheBytes)
-                : DEFAULT_CONTAINER_HEALTH_DIAGNOSIS_CONFIG.minReclaimableBuildCacheBytes
         };
     }
 
@@ -673,6 +661,13 @@ export class ContainerHealthDiagnosisService extends Base {
             });
         }
 
+        const buildCacheWarmFloorBytes = AiConfig.orchestrator.diskPressure.buildCacheWarmFloorBytes;
+        if (!Number.isFinite(buildCacheWarmFloorBytes) || buildCacheWarmFloorBytes < 0) {
+            throw new TypeError(
+                `ContainerHealthDiagnosisService: buildCacheWarmFloorBytes must be a finite non-negative number, received ${JSON.stringify(buildCacheWarmFloorBytes)}`
+            );
+        }
+
         const
             statfs = latestSample?.statfs && typeof latestSample.statfs === 'object' ? latestSample.statfs : null,
             df     = latestSample?.df && typeof latestSample.df === 'object' ? latestSample.df : null,
@@ -688,7 +683,6 @@ export class ContainerHealthDiagnosisService extends Base {
             reclaimableBuildCacheBytes = Number.isFinite(Number(buildCache.reclaimableBytes))
                 ? Math.max(0, Math.trunc(Number(buildCache.reclaimableBytes)))
                 : 0,
-            buildCacheWarmFloorBytes        = config.buildCacheWarmFloorBytes,
             reclaimableAboveWarmFloorBytes  = Math.max(0, reclaimableBuildCacheBytes - buildCacheWarmFloorBytes),
             reclaimableBuildCacheAboveFloor = reclaimableAboveWarmFloorBytes >= config.minReclaimableBuildCacheBytes,
             actionClass                     = reclaimableBuildCacheAboveFloor

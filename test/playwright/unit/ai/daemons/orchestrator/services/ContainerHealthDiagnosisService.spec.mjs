@@ -2546,24 +2546,27 @@ test.describe('ContainerHealthDiagnosisService — plane disk pressure (#1430)',
         expect(decision.facts[0].authoritative).toBe(true);
     });
 
-    test('routes warm-floor dead-band build cache [0, 3 GiB) to record and >= 3 GiB to prune-build-cache (#1756)', () => {
+    test('routes warm-floor dead-band build cache [0, 3 GiB) to record and >= 3 GiB to prune-build-cache from the AiConfig leaf (#1756)', () => {
         const service    = createService(),
-              diagnoseAt = (reclaimableBytes, targetService = service) => {
+              diagnoseAt = reclaimableBytes => {
                   const samples = [
                       diskSample({usedPercent: 97.36, reclaimableBuildCacheBytes: reclaimableBytes, observedAtMs: OBSERVED_AT - 60_000}),
                       diskSample({usedPercent: 97.36, reclaimableBuildCacheBytes: reclaimableBytes, observedAtMs: OBSERVED_AT})
                   ];
 
-                  return targetService.diagnoseEngineDisk({
+                  return service.diagnoseEngineDisk({
                       targetId   : 'docker-engine',
                       diskSample : samples.at(-1),
                       diskSamples: samples,
                       observedAt : OBSERVED_AT
                   });
               },
-              belowWarm    = Math.round(1.48 * GIB),
-              inDeadBand   = Math.round(2.5 * GIB),
-              atPruneFloor = 3 * GIB;
+              belowWarm      = Math.round(1.48 * GIB),
+              inDeadBand     = Math.round(2.5 * GIB),
+              belowPruneEdge = 3 * GIB - 1,
+              atPruneFloor   = 3 * GIB;
+
+        expect(service.configValues).not.toHaveProperty('buildCacheWarmFloorBytes');
 
         const lowDecision = diagnoseAt(belowWarm);
         expect(lowDecision.status).toBe('diagnosed');
@@ -2594,6 +2597,18 @@ test.describe('ContainerHealthDiagnosisService — plane disk pressure (#1430)',
         });
         expect(midDecision.diagnosis.details).not.toHaveProperty('keepStorageBytes');
 
+        const edgeDecision = diagnoseAt(belowPruneEdge);
+        expect(edgeDecision.status).toBe('diagnosed');
+        expect(edgeDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+        expect(edgeDecision.diagnosis.details).toMatchObject({
+            classificationReason          : 'engine-disk-pressure-no-reclaimable-build-cache',
+            buildCacheWarmFloorBytes      : 2 * GIB,
+            minReclaimableBuildCacheBytes : 1 * GIB,
+            reclaimableBuildCacheBytes    : belowPruneEdge,
+            reclaimableAboveWarmFloorBytes: 1 * GIB - 1
+        });
+        expect(edgeDecision.facts[0].details.reclaimableBuildCacheAboveFloor).toBe(false);
+
         const pruneDecision = diagnoseAt(atPruneFloor);
         expect(pruneDecision.status).toBe('diagnosed');
         expect(pruneDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache);
@@ -2609,14 +2624,6 @@ test.describe('ContainerHealthDiagnosisService — plane disk pressure (#1430)',
             buildCacheWarmFloorBytes       : 2 * GIB,
             reclaimableAboveWarmFloorBytes : 1 * GIB,
             reclaimableBuildCacheAboveFloor: true
-        });
-
-        const zeroWarmService  = createService({buildCacheWarmFloorBytes: 0}),
-              zeroWarmDecision = diagnoseAt(Math.round(1.5 * GIB), zeroWarmService);
-        expect(zeroWarmDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache);
-        expect(zeroWarmDecision.diagnosis.details).toMatchObject({
-            buildCacheWarmFloorBytes      : 0,
-            reclaimableAboveWarmFloorBytes: Math.round(1.5 * GIB)
         });
     });
 
