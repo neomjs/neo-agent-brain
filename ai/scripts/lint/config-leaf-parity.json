@@ -549,6 +549,8 @@
         "orchestrator.wakeDispatch.flushHardCapSeconds",
         "orchestrator.wakeDispatch.flushRefractorySeconds",
         "orchestrator.wakeDispatch.pollIntervalMs",
+        "orchestrator.wakeDispatch.urgentCoalesceWindowMs",
+        "orchestrator.wakeDispatch.urgentFlushRefractorySeconds",
         "plane",
         "plane.dataRoot",
         "plane.id",

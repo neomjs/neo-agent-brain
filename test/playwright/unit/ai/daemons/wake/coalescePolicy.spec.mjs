@@ -3,7 +3,11 @@ import {
     COALESCE_HARD_CAP_MS,
     computeFlushDelayMs,
     computeFlushHoldMs,
+    computeUrgentFlushDelayMs,
+    computeUrgentFlushHoldMs,
     isMessageWakeFresh,
+    isUrgentWakeEnvelope,
+    isUrgentWakeEvent,
     MESSAGE_WAKE_MAX_AGE_MS,
     POST_FLUSH_REFRACTORY_MS,
     resolveCoalesceWindowMs
@@ -201,5 +205,104 @@ test.describe('ai/services/memory-core/wakeCoalescePolicy', () => {
                 sentAt: new Date(T0 + 1).toISOString()
             })).toBe(false)
         })
+    });
+
+    test.describe('urgent wake qualification and scheduling', () => {
+        test('isUrgentWakeEvent admits only fresh high-priority sent_to_me events', () => {
+            const freshIso = new Date(T0 - 5_000).toISOString(),
+                  staleIso = new Date(T0 - MESSAGE_WAKE_MAX_AGE_MS - 1).toISOString();
+
+            expect(isUrgentWakeEvent({
+                eventType: 'wake/sent_to_me',
+                payload  : {messageId: 'M-1', priority: 'high', sentAt: freshIso}
+            }, T0)).toBe(true);
+
+            expect(isUrgentWakeEvent({
+                eventType: 'wake/sent_to_me',
+                payload  : {messageId: 'M-2', priority: 'normal', sentAt: freshIso}
+            }, T0)).toBe(false);
+
+            expect(isUrgentWakeEvent({
+                eventType: 'wake/sent_to_me',
+                payload  : {messageId: 'M-4', priority: 'high', sentAt: staleIso}
+            }, T0)).toBe(false);
+
+            expect(isUrgentWakeEvent({
+                eventType: 'wake/task_state_changed',
+                payload  : {taskId: 'T-1', priority: 'high', sentAt: freshIso}
+            }, T0)).toBe(false);
+        });
+
+        test('isUrgentWakeEnvelope validates urgent wake/digest envelopes and rejects stale or ordinary digests', () => {
+            const freshIso = new Date(T0 - 1_000).toISOString(),
+                  staleIso = new Date(T0 - MESSAGE_WAKE_MAX_AGE_MS - 1).toISOString();
+
+            expect(isUrgentWakeEnvelope({
+                eventType: 'wake/digest',
+                payload  : {
+                    breakdown: {sent_to_me: {count: 1, highestPriority: 'high', latest: {priority: 'high', sentAt: freshIso}}}
+                }
+            }, T0)).toBe(true);
+
+            expect(isUrgentWakeEnvelope({
+                eventType: 'wake/digest',
+                payload  : {
+                    breakdown: {sent_to_me: {count: 1, highestPriority: 'normal', latest: {priority: 'normal', sentAt: freshIso}}}
+                }
+            }, T0)).toBe(false);
+
+            expect(isUrgentWakeEnvelope({
+                eventType: 'wake/digest',
+                payload  : {
+                    breakdown: {sent_to_me: {count: 1, highestPriority: 'high', latest: {priority: 'high', sentAt: staleIso}}}
+                }
+            }, T0)).toBe(false);
+        });
+
+        test('computeUrgentFlushDelayMs and computeUrgentFlushHoldMs bypass ordinary debounce while honoring caller-supplied leaves', () => {
+            expect(computeUrgentFlushDelayMs({
+                now                : T0,
+                windowMs           : 150_000,
+                firstUrgentQueuedAt: T0,
+                lastUrgentFlushAt  : 0,
+                urgentWindowMs     : 50,
+                urgentRefractoryMs : 5_000
+            })).toBe(50);
+
+            expect(computeUrgentFlushDelayMs({
+                now                : T0 + 1_000,
+                windowMs           : 150_000,
+                firstUrgentQueuedAt: T0 + 1_000,
+                lastUrgentFlushAt  : T0,
+                urgentWindowMs     : 50,
+                urgentRefractoryMs : 5_000
+            })).toBe(4_000);
+
+            expect(computeUrgentFlushDelayMs({
+                now                : T0 + 1_000,
+                windowMs           : 150_000,
+                firstUrgentQueuedAt: T0 + 1_000,
+                lastUrgentFlushAt  : T0,
+                urgentWindowMs     : 120,
+                urgentRefractoryMs : 9_000
+            })).toBe(8_000);
+
+            expect(computeUrgentFlushHoldMs({
+                now                : T0 + 1_500,
+                windowMs           : 150_000,
+                firstUrgentQueuedAt: T0 + 1_000,
+                lastUrgentFlushAt  : T0,
+                urgentRefractoryMs : 5_000
+            })).toBe(3_500);
+
+            expect(computeUrgentFlushDelayMs({
+                now                : T0,
+                windowMs           : 0,
+                firstUrgentQueuedAt: T0,
+                lastUrgentFlushAt  : T0,
+                urgentWindowMs     : 50,
+                urgentRefractoryMs : 5_000
+            })).toBe(0);
+        });
     })
 });

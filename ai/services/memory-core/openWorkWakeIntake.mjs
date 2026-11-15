@@ -105,11 +105,12 @@ export async function admitOpenWorkWake(args) {
 /**
  * @summary Answers, to the Fleet's human operator, whether each admitted wake arrived: one verdict per message from
  * the wake receiver's own dispatch records (`WakeSubscriptionService#readMessageDelivery`).
- * @param {Object} args
+ * @param {Object}  args
  * @param {String[]} args.messageIds 1 to 100 wake message ids, as {@link admitOpenWorkWake}'s receipt names them.
- * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, messages: Object}>}
+ * @param {Boolean} [args.includeStages=false] When `true`, also returns `messageStages` joining in-memory coalescing queue snapshots with receiver spool records.
+ * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, messages: Object, messageStages?: Object}>}
  */
-export async function readOpenWorkWakeDelivery({messageIds} = {}) {
+export async function readOpenWorkWakeDelivery({messageIds, includeStages = false} = {}) {
     operatorOf('readOpenWorkWakeDelivery', 'read open-work wake delivery');
 
     if (!Array.isArray(messageIds) || messageIds.length < 1 || messageIds.length > MAX_MESSAGE_IDS ||
@@ -117,7 +118,7 @@ export async function readOpenWorkWakeDelivery({messageIds} = {}) {
         throw new Error(`Refused: messageIds must be 1 to ${MAX_MESSAGE_IDS} wake message ids.`)
     }
 
-    return WakeSubscriptionService.readMessageDelivery(messageIds)
+    return WakeSubscriptionService.readMessageDelivery(messageIds, includeStages ? {includeStages: true} : undefined)
 }
 
 /**

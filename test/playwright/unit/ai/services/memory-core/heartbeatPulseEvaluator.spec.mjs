@@ -144,6 +144,15 @@ test.describe('Neo.ai.services.memory-core.heartbeatPulseEvaluator — match() (
         expect(match(sub(), data({type: 'SENT_TO', source: node.id, target: OWNER}, {node}), edgeTrace)).toBe(null);
     });
 
+    test('sent_to_me: a wakeSuppressed high-priority message yields null across direct SENT_TO, AGENT:* broadcast SENT_TO, and DELIVERED_TO', () => {
+        const directNode = msg({priority: 'high', wakeSuppressed: true});
+        expect(match(sub(), data({type: 'SENT_TO', source: directNode.id, target: OWNER}, {node: directNode}), edgeTrace)).toBe(null);
+
+        const broadcastNode = msg({from: '@neo-gpt', to: 'AGENT:*', priority: 'high', wakeSuppressed: true});
+        expect(match(sub(), data({type: 'SENT_TO', source: broadcastNode.id, target: 'AGENT:*'}, {node: broadcastNode}), edgeTrace)).toBe(null);
+        expect(match(sub(), data({type: 'DELIVERED_TO', source: broadcastNode.id, target: OWNER, properties: {}}, {node: broadcastNode}), edgeTrace)).toBe(null);
+    });
+
     test('sent_to_me: a broadcast from another agent fires', () => {
         const node = msg({from: '@neo-gpt', to: 'AGENT:*'});
         expect(match(sub(), data({type: 'SENT_TO', source: node.id, target: 'AGENT:*'}, {node}), edgeTrace))

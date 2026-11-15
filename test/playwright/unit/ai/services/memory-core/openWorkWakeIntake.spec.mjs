@@ -164,6 +164,23 @@ test.describe('openWorkWakeIntake', () => {
                 }
             });
 
+            const staged = await as(operator, () => callTool('read_open_work_wake_delivery', {
+                messageIds   : ['MESSAGE:delivered', 'MESSAGE:absent'],
+                includeStages: true
+            }));
+            expect(staged.messages).toEqual({
+                'MESSAGE:delivered': {state: 'delivered', at: '2026-11-13T00:00:01.000Z'},
+                'MESSAGE:absent'   : {state: 'undelivered', at: null}
+            });
+            expect(staged.messageStages['MESSAGE:delivered']).toMatchObject({
+                stage  : 'delivered',
+                settled: true
+            });
+            expect(staged.messageStages['MESSAGE:absent']).toMatchObject({
+                stage  : 'undelivered',
+                settled: false
+            });
+
             for (const caller of ['@intake-agent', '@intake-outsider', '@intake-not-operator']) {
                 await expect(as(caller, () => readOpenWorkWakeDelivery({messageIds: ['MESSAGE:delivered']})), caller).rejects.toThrow(/human operator only/)
             }

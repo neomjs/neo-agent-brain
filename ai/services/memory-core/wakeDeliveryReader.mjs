@@ -21,13 +21,14 @@
  * @module ai/services/memory-core/wakeDeliveryReader
  */
 
-import fs                    from 'fs/promises';
-import path                  from 'path';
-import aiConfig              from '../../mcp/server/memory-core/config.mjs';
-import {TERMINAL_STATES}     from '../../daemons/wake/receiverState.mjs';
+import fs                from 'fs/promises';
+import path              from 'path';
+import aiConfig          from '../../mcp/server/memory-core/config.mjs';
+import {TERMINAL_STATES} from '../../daemons/wake/receiverState.mjs';
 import {
     projectMessageDelivery,
-    projectWakeDelivery
+    projectWakeDelivery,
+    projectWakeDeliveryStages
 } from './wakeDeliveryProjection.mjs';
 import {
     projectReceiverLiveness,
@@ -79,14 +80,18 @@ const directories = new Map();
  * @param {String} [options.recordsDir] Records directory; tests isolate through it. Defaults to the
  * `fleet.wakeReceiverRecordsDir` leaf.
  * @param {String[]} [options.messageIds] Wake message ids to answer a delivery verdict for.
- * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object, receiver: Object, messages?: Object}>}
+ * @param {Boolean} [options.includeStages=false] Whether to project stage and split-latency breakdowns.
+ * @param {Object|Object[]} [options.policyQueue] Optional pending coalescing policy snapshot.
+ * @param {Number|String|Date|null} [options.now=null] Optional observation clock for open wait durations.
+ * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object, receiver: Object, messages?: Object, messageStages?: Object}>}
  */
-export async function readWakeDelivery({recordsDir, messageIds} = {}) {
+export async function readWakeDelivery({recordsDir, messageIds, includeStages = false, policyQueue = {}, now = null} = {}) {
     const directory = recordsDir ?? aiConfig.fleet.wakeReceiverRecordsDir;
 
     if (!directory) {
         return {deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}, receiver: RECEIVER_UNKNOWN,
-            ...(messageIds ? {messages: projectMessageDelivery(null, messageIds)} : {})};
+            ...(messageIds ? {messages: projectMessageDelivery(null, messageIds)} : {}),
+            ...(includeStages ? {messageStages: projectWakeDeliveryStages(null, {messageIds, policyQueue, now})} : {})};
     }
 
     let state = directories.get(directory);
@@ -102,7 +107,13 @@ export async function readWakeDelivery({recordsDir, messageIds} = {}) {
 
     const {result, records} = await state.reading;
 
-    return messageIds ? {...result, messages: projectMessageDelivery(result.deliveryReadable ? records : null, messageIds)} : result
+    if (!messageIds && !includeStages) return result;
+
+    return {
+        ...result,
+        ...(messageIds ? {messages: projectMessageDelivery(result.deliveryReadable ? records : null, messageIds)} : {}),
+        ...(includeStages ? {messageStages: projectWakeDeliveryStages(result.deliveryReadable ? records : null, {messageIds, policyQueue, now})} : {})
+    }
 }
 
 /**

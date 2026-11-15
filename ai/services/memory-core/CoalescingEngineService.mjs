@@ -5,6 +5,10 @@ import logger                 from '../../mcp/server/memory-core/logger.mjs';
 import {
     computeFlushDelayMs,
     computeFlushHoldMs,
+    computeUrgentFlushDelayMs,
+    computeUrgentFlushHoldMs,
+    isMessageWakeFresh,
+    isUrgentWakeEvent,
     partitionMessageWakesByFreshness,
     resolveCoalesceWindowMs
 } from './wakeCoalescePolicy.mjs';
@@ -156,6 +160,20 @@ class CoalescingEngineService extends Base {
     hardCapMs = null
 
     /**
+     * @member {Number|null} urgentWindowMs=null
+     * @protected
+     * @summary Entrypoint-injected fixed micro-window (ms) for urgent wake coalescing.
+     */
+    urgentWindowMs = null
+
+    /**
+     * @member {Number|null} urgentRefractoryMs=null
+     * @protected
+     * @summary Entrypoint-injected minimum post-urgent-flush refractory interval in milliseconds.
+     */
+    urgentRefractoryMs = null
+
+    /**
      * @member {Set<McpServer>} mcpServers
      * @protected
      */
@@ -163,7 +181,7 @@ class CoalescingEngineService extends Base {
 
     /**
      * Per-subscription queue + timer state.
-     * Structure: `Map<subscriptionId, {queue: Object[], timer: ?TimerId, subscription: Object, firstQueuedAt: Number}>`
+     * Structure: `Map<subscriptionId, {queue: Object[], timer: ?TimerId, scheduledAt: ?Number, subscription: Object, firstQueuedAt: Number, lastOrdinaryQueuedAt: ?Number, firstUrgentQueuedAt: ?Number}>`
      * Populated lazily on first enqueue; cleared on flush.
      * @member {Map<String, Object>} coalesceState
      * @protected
@@ -177,6 +195,34 @@ class CoalescingEngineService extends Base {
      * @protected
      */
     lastFlushAtBySub = new Map()
+
+    /**
+     * @member {Map<String, Number>} lastUrgentFlushAtBySub
+     * @protected
+     * @summary Last confirmed urgent digest delivery time by subscription.
+     */
+    lastUrgentFlushAtBySub = new Map()
+
+    /**
+     * @member {Function} nowFn
+     * @protected
+     * @summary Injectable epoch-ms clock seam for deterministic policy verification.
+     */
+    nowFn = () => Date.now()
+
+    /**
+     * @member {Function} setTimerFn
+     * @protected
+     * @summary Injectable timer-scheduling seam for deterministic policy verification.
+     */
+    setTimerFn = (fn, ms) => setTimeout(fn, ms)
+
+    /**
+     * @member {Function} clearTimerFn
+     * @protected
+     * @summary Injectable timer-cancellation seam for deterministic policy verification.
+     */
+    clearTimerFn = timer => clearTimeout(timer)
 
     /**
      * One active digest dispatch per subscription.
@@ -216,16 +262,21 @@ class CoalescingEngineService extends Base {
      * @param {Number} dispatchConfig.coalesceWindowSeconds
      * @param {Number} dispatchConfig.flushRefractorySeconds
      * @param {Number} dispatchConfig.flushHardCapSeconds
+     * @param {Number} dispatchConfig.urgentCoalesceWindowMs
+     * @param {Number} dispatchConfig.urgentFlushRefractorySeconds
      * @param {Object}          [collaborators]                          Wiring, not configuration.
      * @param {Function|null}   [collaborators.resolveDeliveryReadState] `(messageId, recipient) => {readAt?}`
      * @param {Function|null}   [collaborators.resolveDeliveryHold]      `(recipient) => Boolean`
+     * @param {Function|null}   [collaborators.nowFn]                    `() => Number`
+     * @param {Function|null}   [collaborators.setTimerFn]               `(fn, delayMs) => TimerId`
+     * @param {Function|null}   [collaborators.clearTimerFn]             `(timerId) => void`
      */
-    configure({coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds} = {},
-        {resolveDeliveryReadState = null, resolveDeliveryHold = null} = {}
+    configure({coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds, urgentCoalesceWindowMs, urgentFlushRefractorySeconds} = {},
+        {resolveDeliveryReadState = null, resolveDeliveryHold = null, nowFn = null, setTimerFn = null, clearTimerFn = null} = {}
     ) {
-        const values = {coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds};
+        const values = {coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds, urgentCoalesceWindowMs, urgentFlushRefractorySeconds};
 
-        for (const [name, collaborator] of Object.entries({resolveDeliveryReadState, resolveDeliveryHold})) {
+        for (const [name, collaborator] of Object.entries({resolveDeliveryReadState, resolveDeliveryHold, nowFn, setTimerFn, clearTimerFn})) {
             if (collaborator !== null && typeof collaborator !== 'function') {
                 throw new Error(`CoalescingEngineService.configure requires '${name}' to be a function or null`);
             }
@@ -243,8 +294,13 @@ class CoalescingEngineService extends Base {
         this.defaultWindowSeconds     = coalesceWindowSeconds;
         this.refractoryMs             = flushRefractorySeconds * 1000;
         this.hardCapMs                = flushHardCapSeconds * 1000;
+        this.urgentWindowMs           = urgentCoalesceWindowMs;
+        this.urgentRefractoryMs       = urgentFlushRefractorySeconds * 1000;
         this.resolveDeliveryReadState = resolveDeliveryReadState;
         this.resolveDeliveryHold      = resolveDeliveryHold;
+        this.nowFn                    = nowFn || (() => Date.now());
+        this.setTimerFn               = setTimerFn || ((fn, ms) => setTimeout(fn, ms));
+        this.clearTimerFn             = clearTimerFn || (timer => clearTimeout(timer));
     }
 
     /**
@@ -310,21 +366,86 @@ class CoalescingEngineService extends Base {
 
         this._assertConfigured();
 
-        const now   = Date.now();
-        let   state = this.coalesceState.get(subId);
+        const
+            now               = this.nowFn(),
+            isUrgent          = this._isUrgentQueuedEvent(subscription, event, now),
+            canExtendOrdinary = this._canExtendOrdinaryWindow(subscription, event, now);
+        let state = this.coalesceState.get(subId);
 
         if (!state) {
-            state = {queue: [], timer: null, subscription, firstQueuedAt: now};
+            state = {
+                queue               : [event],
+                timer               : null,
+                scheduledAt         : null,
+                subscription,
+                firstQueuedAt       : now,
+                lastOrdinaryQueuedAt: isUrgent ? null : now,
+                firstUrgentQueuedAt : isUrgent ? now : null
+            };
             this.coalesceState.set(subId, state);
         } else {
             state.subscription = subscription;
+            state.queue.push(event);
+
+            if (isUrgent) {
+                state.firstUrgentQueuedAt ??= now;
+            } else if (canExtendOrdinary) {
+                state.lastOrdinaryQueuedAt = now;
+            } else {
+                return;
+            }
         }
 
-        state.queue.push(event);
-        if (state.timer) clearTimeout(state.timer);
-
         const windowMs = this._resolveWindowMs(subscription);
-        const delayMs  = computeFlushDelayMs({
+
+        if (windowMs === 0) {
+            if (state.timer) {
+                this.clearTimerFn(state.timer);
+                state.timer       = null;
+                state.scheduledAt = null;
+            }
+            void this._flush(subId);
+            return;
+        }
+
+        if (state.firstUrgentQueuedAt !== null) {
+            const
+                delayMs  = computeUrgentFlushDelayMs({
+                    now,
+                    windowMs,
+                    firstUrgentQueuedAt: state.firstUrgentQueuedAt,
+                    lastUrgentFlushAt  : this.lastUrgentFlushAtBySub.get(subId) || 0,
+                    urgentWindowMs     : this.urgentWindowMs,
+                    urgentRefractoryMs : this.urgentRefractoryMs,
+                    capMs              : this.hardCapMs
+                }),
+                targetAt = now + delayMs;
+
+            if (state.timer && state.scheduledAt !== null && targetAt >= state.scheduledAt) {
+                return;
+            }
+
+            if (state.timer) {
+                this.clearTimerFn(state.timer);
+            }
+
+            if (delayMs === 0) {
+                state.timer       = null;
+                state.scheduledAt = null;
+                void this._flush(subId);
+                return;
+            }
+
+            state.scheduledAt = targetAt;
+            state.timer       = this.setTimerFn(() => {
+                void this._flush(subId);
+            }, delayMs);
+            return;
+        }
+
+        if (state.timer) this.clearTimerFn(state.timer);
+
+        const delayMs = computeFlushDelayMs({
             now,
             windowMs,
             firstQueuedAt: state.firstQueuedAt,
@@ -334,13 +455,68 @@ class CoalescingEngineService extends Base {
         });
 
         if (delayMs === 0) {
+            state.timer       = null;
+            state.scheduledAt = null;
             void this._flush(subId);
             return;
         }
 
-        state.timer = setTimeout(() => {
+        state.scheduledAt = now + delayMs;
+        state.timer       = this.setTimerFn(() => {
             void this._flush(subId);
         }, delayMs);
+    }
+
+    /**
+     * @summary Returns whether a queued event is Already Read according to the injected read-state resolver.
+     * @protected
+     * @param {Object} subscription
+     * @param {Object} event
+     * @returns {Boolean}
+     */
+    _isCommittedReadEvent(subscription, event) {
+        if (event?.eventType !== 'wake/sent_to_me') return false;
+        if (!this.resolveDeliveryReadState || !subscription?.agentIdentity) return false;
+
+        const messageId = event.payload?.messageId;
+
+        if (!messageId) return false;
+
+        try {
+            return Boolean(this.resolveDeliveryReadState(messageId, subscription.agentIdentity)?.readAt)
+        } catch (error) {
+            logger.warn?.(`[CoalescingEngine] read-state lookup failed for ${messageId}; rendering as unread: ${error.message}`);
+            return false
+        }
+    }
+
+    /**
+     * @summary Returns whether an incoming event qualifies for urgent coalescing/refractory bypass.
+     * @protected
+     * @param {Object} subscription
+     * @param {Object} event
+     * @param {Number} now
+     * @returns {Boolean}
+     */
+    _isUrgentQueuedEvent(subscription, event, now) {
+        if (!isUrgentWakeEvent(event, now)) return false;
+
+        return !this._isCommittedReadEvent(subscription, event)
+    }
+
+    /**
+     * @summary Returns whether an incoming event may roll forward an existing ordinary debounce window.
+     * @protected
+     * @param {Object} subscription
+     * @param {Object} event
+     * @param {Number} now
+     * @returns {Boolean}
+     */
+    _canExtendOrdinaryWindow(subscription, event, now) {
+        if (event?.eventType !== 'wake/sent_to_me') return true;
+        if (!isMessageWakeFresh({sentAt: event.payload?.sentAt, now})) return false;
+
+        return !this._isCommittedReadEvent(subscription, event)
     }
 
     /**
@@ -358,10 +534,43 @@ class CoalescingEngineService extends Base {
      */
     clearAll() {
         for (const state of this.coalesceState.values()) {
-            if (state.timer) clearTimeout(state.timer);
+            if (state.timer) this.clearTimerFn(state.timer);
         }
         this.coalesceState.clear();
         this.lastFlushAtBySub.clear();
+        this.lastUrgentFlushAtBySub.clear();
+    }
+
+    /**
+     * @summary Returns a read-only array snapshot of message entries currently queued in coalescing/refractory policy.
+     * @param {Number} [now=this.nowFn()] Epoch ms used to evaluate per-event urgent policy eligibility.
+     * @returns {Array<{messageId: String, subscriptionId: String, firstQueuedAt: String|null, sentAt: String|null, priority: String, urgent: Boolean}>}
+     */
+    getPendingPolicySnapshot(now = this.nowFn()) {
+        const snapshot = [];
+
+        for (const [subscriptionId, state] of this.coalesceState.entries()) {
+            const firstQueuedIso = Number.isFinite(state.firstQueuedAt)
+                ? new Date(state.firstQueuedAt).toISOString()
+                : null;
+
+            for (const event of state.queue) {
+                if (event?.eventType !== 'wake/sent_to_me') continue;
+                const messageId = event.sourceEventId || event.payload?.messageId;
+                if (typeof messageId !== 'string' || !messageId) continue;
+
+                snapshot.push({
+                    messageId,
+                    subscriptionId,
+                    firstQueuedAt: firstQueuedIso,
+                    sentAt       : typeof event.payload?.sentAt === 'string' ? event.payload.sentAt : null,
+                    priority     : typeof event.payload?.priority === 'string' ? event.payload.priority : 'normal',
+                    urgent       : this._isUrgentQueuedEvent(state.subscription, event, now)
+                });
+            }
+        }
+
+        return snapshot
     }
 
     /**
@@ -407,7 +616,7 @@ class CoalescingEngineService extends Base {
      * @protected
      */
     _assertConfigured() {
-        if (![this.defaultWindowSeconds, this.refractoryMs, this.hardCapMs].every(Number.isFinite)) {
+        if (![this.defaultWindowSeconds, this.refractoryMs, this.hardCapMs, this.urgentWindowMs, this.urgentRefractoryMs].every(Number.isFinite)) {
             throw new Error('CoalescingEngineService is not configured by the Memory Core entrypoint');
         }
     }
@@ -432,8 +641,9 @@ class CoalescingEngineService extends Base {
         const activeDispatch = this.dispatchInFlight.get(subscriptionId);
         if (activeDispatch) {
             if (state.timer) {
-                clearTimeout(state.timer);
-                state.timer = null;
+                this.clearTimerFn(state.timer);
+                state.timer       = null;
+                state.scheduledAt = null;
             }
             await activeDispatch;
             return this._flush(subscriptionId, {force});
@@ -441,27 +651,9 @@ class CoalescingEngineService extends Base {
 
         const {queue, subscription, firstQueuedAt} = state;
         if (state.timer) {
-            clearTimeout(state.timer);
-            state.timer = null;
-        }
-
-        if (!force) {
-            const windowMs = this._resolveWindowMs(subscription);
-            const holdMs   = computeFlushHoldMs({
-                now         : Date.now(),
-                windowMs,
-                firstQueuedAt,
-                lastFlushAt : this.lastFlushAtBySub.get(subscriptionId) || 0,
-                refractoryMs: this.refractoryMs,
-                capMs       : this.hardCapMs
-            });
-
-            if (holdMs > 0) {
-                state.timer = setTimeout(() => {
-                    void this._flush(subscriptionId);
-                }, holdMs);
-                return;
-            }
+            this.clearTimerFn(state.timer);
+            state.timer       = null;
+            state.scheduledAt = null;
         }
 
         // A held seat keeps its queue, and the flush is tried again at the hard cap. On release the
@@ -469,14 +661,16 @@ class CoalescingEngineService extends Base {
         // leaves the queue as well: the messages stay unread in the mailbox either way.
         if (this._holdsDelivery(subscription)) {
             if (!force) {
-                state.timer = setTimeout(() => {
+                const nowHold = this.nowFn();
+                state.scheduledAt = nowHold + this.hardCapMs;
+                state.timer       = this.setTimerFn(() => {
                     void this._flush(subscriptionId);
                 }, this.hardCapMs);
             }
             return;
         }
 
-        this.coalesceState.delete(subscriptionId);
+        const now = this.nowFn();
 
         // Canonical mailbox-age admission, applied BEFORE any digest field is derived — the Shape
         // A/B twin of the daemon's flush-time gate. A replayed GraphLog `DELIVERED_TO` edge
@@ -485,13 +679,14 @@ class CoalescingEngineService extends Base {
         // replayed lane-claim is the highest-cost shape, since it points one peer at another over
         // territory both already hold correctly. Mailbox state stays untouched — old unread mail
         // remains listable; it simply cannot manufacture live interruption urgency.
-        const ageAdmitted = this._partitionExpiredMessageWakes(subscription, queue);
+        const ageAdmitted = this._partitionExpiredMessageWakes(subscription, queue, now);
 
         if (ageAdmitted.length === 0) {
             // Every queued message event was past the admission horizon (or carried no verifiable
             // `sentAt` — fail-closed, daemon-symmetric): consume the queue WITHOUT dispatching a
             // zero-event wake. No `lastFlushAtBySub` arming — nothing was delivered, so no
             // refractory may be claimed.
+            this.coalesceState.delete(subscriptionId);
             return;
         }
 
@@ -506,15 +701,70 @@ class CoalescingEngineService extends Base {
         if (surviving.length === 0) {
             // A committed read is user authority, not a delivery failure. Consume the queue without
             // dispatch/retry/refractory; the durable mailbox state is already the receipt.
+            this.coalesceState.delete(subscriptionId);
             return;
         }
 
+        const hasSurvivingUrgent = surviving.some(evt => !unopenableEvents.has(evt) && isUrgentWakeEvent(evt, now));
+
+        if (!force) {
+            const windowMs = this._resolveWindowMs(subscription);
+            let   holdMs   = 0;
+
+            if (hasSurvivingUrgent) {
+                holdMs = computeUrgentFlushHoldMs({
+                    now,
+                    windowMs,
+                    firstUrgentQueuedAt: state.firstUrgentQueuedAt ?? firstQueuedAt,
+                    lastUrgentFlushAt  : this.lastUrgentFlushAtBySub.get(subscriptionId) || 0,
+                    urgentRefractoryMs : this.urgentRefractoryMs,
+                    capMs              : this.hardCapMs
+                });
+            } else {
+                state.firstUrgentQueuedAt = null;
+
+                const
+                    lastOrdinaryAt    = state.lastOrdinaryQueuedAt ?? firstQueuedAt,
+                    debounceRemaining = windowMs === 0 ? 0 : Math.max(0, (lastOrdinaryAt + windowMs) - now),
+                    refractoryHold    = computeFlushHoldMs({
+                        now,
+                        windowMs,
+                        firstQueuedAt,
+                        lastFlushAt : this.lastFlushAtBySub.get(subscriptionId) || 0,
+                        refractoryMs: this.refractoryMs,
+                        capMs       : this.hardCapMs
+                    }),
+                    capRemaining      = windowMs === 0 ? 0 : Math.max(0, (firstQueuedAt + this.hardCapMs) - now);
+
+                holdMs = Math.min(Math.max(debounceRemaining, refractoryHold), capRemaining);
+            }
+
+            if (holdMs > 0) {
+                state.queue       = surviving;
+                state.scheduledAt = now + holdMs;
+                state.timer       = this.setTimerFn(() => {
+                    void this._flush(subscriptionId);
+                }, holdMs);
+                return;
+            }
+        }
+
+        this.coalesceState.delete(subscriptionId);
+
         const
-            digest          = this._buildDigestEnvelope(subscription, surviving, firstQueuedAt, {unopenableEvents}),
+            digest          = this._buildDigestEnvelope(subscription, surviving, firstQueuedAt, {
+                unopenableEvents,
+                now,
+                urgent: hasSurvivingUrgent
+            }),
             dispatchPromise = this._dispatchDigest(subscription, digest)
             .then(outcome => {
                 if (outcome === 'delivered') {
-                    this.lastFlushAtBySub.set(subscriptionId, Date.now());
+                    const settledAt = this.nowFn();
+                    this.lastFlushAtBySub.set(subscriptionId, settledAt);
+                    if (hasSurvivingUrgent) {
+                        this.lastUrgentFlushAtBySub.set(subscriptionId, settledAt);
+                    }
                 }
                 return outcome;
             })
@@ -545,14 +795,15 @@ class CoalescingEngineService extends Base {
      * @protected
      * @param {Object}   subscription Owning cached subscription (observability only).
      * @param {Object[]} events       Raw queued wake-event envelopes, in arrival order.
+     * @param {Number}   [now=this.nowFn()] Current epoch ms.
      * @returns {Object[]} Surviving envelopes in arrival order (the SAME array when nothing expired).
      */
-    _partitionExpiredMessageWakes(subscription, events) {
+    _partitionExpiredMessageWakes(subscription, events, now = this.nowFn()) {
         const messageEvents = events.filter(event => event?.eventType === 'wake/sent_to_me');
 
         if (messageEvents.length === 0) return events;
 
-        const {suppressed, oldestAgeMs} = partitionMessageWakesByFreshness(messageEvents);
+        const {suppressed, oldestAgeMs} = partitionMessageWakesByFreshness(messageEvents, now);
 
         if (suppressed.length === 0) return events;
 
@@ -653,9 +904,11 @@ class CoalescingEngineService extends Base {
      * @param {Object} [options]
      * @param {Set<Object>} [options.unopenableEvents] Positively-missing MESSAGE events which count
      * but cannot become the `latest` pointer.
+     * @param {Number} [options.now] Epoch ms when the digest is emitted.
+     * @param {Boolean} [options.urgent] Explicit surviving urgency verdict.
      * @returns {Object} Digest envelope
      */
-    _buildDigestEnvelope(subscription, events, firstQueuedAt, {unopenableEvents = new Set()} = {}) {
+    _buildDigestEnvelope(subscription, events, firstQueuedAt, {unopenableEvents = new Set(), now = this.nowFn(), urgent} = {}) {
         const breakdown = {
             sent_to_me        : {count: 0, latest: null, latestTs: null, highestPriority: 'normal'},
             task_state_changed: {count: 0, latest: null, latestTs: null},
@@ -669,6 +922,12 @@ class CoalescingEngineService extends Base {
             'wake/permission_granted': 'permission_granted',
             'wake/heartbeat_pulse'   : 'heartbeat_pulse'
         };
+
+        let earliestSentAt     = null,
+            earliestSentAtMs   = null,
+            latestUrgentSentAt = null,
+            latestUrgentMs     = null;
+        const messageSentAt = Object.create(null);
 
         for (const evt of events) {
             const bucketKey = bucketOf[evt.eventType];
@@ -709,15 +968,40 @@ class CoalescingEngineService extends Base {
                 if (WAKE_PRIORITY_RANKS[priority] > WAKE_PRIORITY_RANKS[bucket.highestPriority]) {
                     bucket.highestPriority = priority;
                 }
+
+                const sentAt = evt.payload?.sentAt;
+
+                if (typeof sentAt === 'string') {
+                    const sentMs = Date.parse(sentAt);
+
+                    if (Number.isFinite(sentMs)) {
+                        const messageId = this._getSourceEventId(evt);
+                        if (messageId && messageId !== 'unknown') {
+                            messageSentAt[messageId] = sentAt;
+                        }
+                        if (earliestSentAtMs === null || sentMs < earliestSentAtMs) {
+                            earliestSentAtMs = sentMs;
+                            earliestSentAt   = sentAt;
+                        }
+                        if (!unopenableEvents.has(evt) && isUrgentWakeEvent(evt, now) &&
+                            (latestUrgentMs === null || sentMs >= latestUrgentMs)
+                        ) {
+                            latestUrgentMs     = sentMs;
+                            latestUrgentSentAt = sentAt;
+                        }
+                    }
+                }
             }
         }
 
-        const emittedAt      = new Date();
-        const sourceEventIds = events.map(event => this._getSourceEventId(event));
-        const eventId        = `wake-digest:${crypto
-            .createHash('sha256')
-            .update(JSON.stringify([subscription.id, sourceEventIds]))
-            .digest('hex')}`;
+        const
+            emittedAt      = new Date(now),
+            isUrgent       = urgent ?? events.some(evt => !unopenableEvents.has(evt) && isUrgentWakeEvent(evt, now)),
+            sourceEventIds = events.map(event => this._getSourceEventId(event)),
+            eventId        = `wake-digest:${crypto
+                .createHash('sha256')
+                .update(JSON.stringify([subscription.id, sourceEventIds]))
+                .digest('hex')}`;
 
         return {
             schemaVersion : '1.0',
@@ -727,10 +1011,15 @@ class CoalescingEngineService extends Base {
             agentIdentity : subscription.agentIdentity,
             subscriptionId: subscription.id,
             payload       : {
-                totalEvents: events.length,
+                totalEvents  : events.length,
                 breakdown,
                 sourceEventIds,
-                windowMs   : Number.isFinite(firstQueuedAt) ? emittedAt.getTime() - firstQueuedAt : 0
+                windowMs     : Number.isFinite(firstQueuedAt) ? Math.max(0, emittedAt.getTime() - firstQueuedAt) : 0,
+                firstQueuedAt: Number.isFinite(firstQueuedAt) ? new Date(firstQueuedAt).toISOString() : emittedAt.toISOString(),
+                urgent       : Boolean(isUrgent),
+                ...(Object.keys(messageSentAt).length > 0 ? {messageSentAt} : {}),
+                ...(earliestSentAt ? {earliestSentAt} : {}),
+                ...(latestUrgentSentAt ? {latestUrgentSentAt} : {})
             },
             emittedAt: emittedAt.toISOString()
         };

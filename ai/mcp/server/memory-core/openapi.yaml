@@ -3556,9 +3556,12 @@ paths:
                   items:
                     type: string
                   description: "Wake message ids, as the intake's receipt names them."
+                includeStages:
+                  type: boolean
+                  description: "Include lifecycle stage projections joining coalescing queues and receiver spool records."
       responses:
         '200':
-          description: "`{deliveryReadable, deliveryReadReason, messages}`, `messages` keyed by message id as `{state, at}`."
+          description: "`{deliveryReadable, deliveryReadReason, messages}` keyed by message id (`{state, at}`), plus optional `messageStages`."
           content:
             application/json:
               schema:

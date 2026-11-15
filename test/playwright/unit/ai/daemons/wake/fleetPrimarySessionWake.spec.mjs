@@ -253,3 +253,216 @@ test('withdrawal of enrollment while a recipient is proving its root prevents co
     expect(await attempt).toEqual({admitted:false});
     await expect(fs.stat(path.join(directory,'fixture.json.claim.json'))).rejects.toMatchObject({code:'ENOENT'})
 });
+
+test('urgent wake follows main-session handoff and steers an active turn when the active-turn adapter seam is present', async () => {
+    const seat      = '@fixture', oldRoot = randomUUID(), newRoot = randomUUID();
+    const sub       = 'WAKE_SUB:urgent-handoff', generation = '301:birth', family = 'codex-desktop';
+    let   latest    = oldRoot, activity = 'idle', steered = [], idleSent = [], admittedNonce = null;
+    const transport = {
+        listCodexWakeTargets      : async () => [{root: true, threadId: latest, startedAt: latest === oldRoot ? 1 : 2, receiptOffset: 0}],
+        readCodexWakeActivity     : async () => ({state: activity, turnId: activity === 'busy' ? 'active-turn-1' : null}),
+        verifyCodexWakeAdmission  : async () => ({verified: true}),
+        sendCodexSessionWake      : async req => { idleSent.push(req); return {state: 'enqueued'} },
+        readCodexWakeReceipt      : async () => ({state: 'unknown'}),
+        sendCodexActiveTurnWake   : async req => { steered.push(req); return {state: 'steered'} },
+        readCodexActiveTurnReceipt: async ({threadId, text}) => {
+            const nonce = text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+            return admittedNonce === nonce ? {state: 'turn-steered', threadId, turnId: 'active-turn-1', observedAt: '2026-11-15T09:12:00.000Z'} : {state: 'unknown'}
+        }
+    };
+    const config = {agentId: 'fixture', family, instanceHome: path.join(tempDir, 'home'), appBundle: path.join(tempDir, 'ChatGPT.app')};
+    const route  = {agentIdentity: seat, harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
+    await enrollNativeWake({manifestPath, stateDir, agentId: config.agentId, family});
+    await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes: {[sub]: route}}));
+    const nowIso   = new Date().toISOString();
+    const envelope = {
+        eventType     : 'wake/digest',
+        agentIdentity : seat,
+        subscriptionId: sub,
+        payload       : {
+            totalEvents: 1,
+            urgent     : true,
+            breakdown  : {sent_to_me: {count: 1, highestPriority: 'high', latest: {priority: 'high', sentAt: nowIso, subject: 'urgent handoff + steer'}}}
+        }
+    };
+    const {record} = await state.accept({subscriptionId: sub, eventId: 'urgent-handoff', envelope, route, metadata: {urgent: true}});
+    const options  = {state, stateDir, manifestPath, codexTransport: transport, inspectResident: async () => ({generation, workspaceRoot: tempDir})};
+
+    expect((await dispatchFleetPrimarySessionWake(record, options)).status).toBe('unknown');
+    expect(idleSent).toHaveLength(1);
+    const staleNonce = idleSent[0].text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+
+    latest   = newRoot;
+    activity = 'busy';
+    expect(await consumeNativeWakePrompt({...options, agentId: config.agentId, family, threadId: oldRoot, turnId: 'active-turn-1', nonce: staleNonce})).toEqual({admitted: false});
+    expect((await dispatchFleetPrimarySessionWake(record, options)).status).toBe('unknown');
+    expect(steered).toHaveLength(1);
+    expect(steered[0]).toMatchObject({threadId: newRoot, turnId: 'active-turn-1'});
+
+    const newNonce   = steered[0].text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+    const redemption = await consumeNativeWakePrompt({...options, agentId: config.agentId, family, threadId: newRoot, turnId: 'active-turn-1', nonce: newNonce});
+    expect(redemption.admitted).toBe(true);
+    expect(redemption.digest).toContain('urgent handoff + steer');
+    admittedNonce = newNonce;
+
+    const settled = await dispatchFleetPrimarySessionWake(record, options);
+    expect(settled).toMatchObject({
+        status             : 'delivered',
+        recipientObservedAt: '2026-11-15T09:12:00.000Z',
+        recipient          : {seat, generation, threadId: newRoot, recordKey: record.recordKey, nonce: newNonce}
+    });
+});
+
+test('RA-5 — consumeNativeWakePrompt records non-root refusal onto .urgent.claim.json without touching normal .claim.json', async () => {
+    const seat      = '@fixture', rootThread = randomUUID(), subThread = randomUUID();
+    const sub       = 'WAKE_SUB:urgent-deny', generation = '302:birth', family = 'codex-desktop';
+    const nonces    = [];
+    const transport = {
+        listCodexWakeTargets    : async () => [{root: true, threadId: rootThread, startedAt: 10, receiptOffset: 0}],
+        readCodexWakeActivity   : async () => ({state: 'idle'}),
+        verifyCodexWakeAdmission: async () => ({verified: true}),
+        sendCodexSessionWake    : async ({text}) => {
+            nonces.push(text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1]);
+            return {status: 'accepted'}
+        },
+        readCodexWakeReceipt    : async () => ({state: 'unknown'})
+    };
+    const config = {agentId: 'fixture', family, instanceHome: path.join(tempDir, 'home'), appBundle: path.join(tempDir, 'ChatGPT.app')};
+    const route  = {agentIdentity: seat, harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
+    await enrollNativeWake({manifestPath, stateDir, agentId: config.agentId, family});
+    await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes: {[sub]: route}}));
+    const options = {state, stateDir, manifestPath, codexTransport: transport, inspectResident: async () => ({generation, workspaceRoot: tempDir})};
+    const nowIso  = new Date().toISOString();
+
+    const {record: urgentRecord} = await state.accept({
+        subscriptionId: sub,
+        eventId       : 'urgent-refuse',
+        envelope      : {
+            eventType: 'wake/digest', agentIdentity: seat, subscriptionId: sub,
+            payload  : {totalEvents: 1, urgent: true, breakdown: {sent_to_me: {count: 1, highestPriority: 'high', latest: {priority: 'high', sentAt: nowIso}}}}
+        },
+        route,
+        metadata: {urgent: true}
+    });
+    expect((await dispatchFleetPrimarySessionWake(urgentRecord, options)).status).toBe('unknown');
+    expect(nonces).toHaveLength(1);
+
+    const stateFile           = path.join(stateDir, 'primary-sessions', 'fixture.json');
+    const sentinelNormalClaim = {nonce: randomUUID(), recordKey: 'a'.repeat(64), admitted: true};
+    await fs.writeFile(`${stateFile}.claim.json`, JSON.stringify(sentinelNormalClaim), {mode: 0o600});
+
+    const denied = await consumeNativeWakePrompt({
+        ...options,
+        agentId : config.agentId,
+        family,
+        threadId: subThread,
+        turnId  : randomUUID(),
+        nonce   : nonces[0]
+    });
+    expect(denied).toEqual({admitted: false});
+
+    // Unknown threadId fails the binding check before any claim file is touched; force root: false
+    // on rootThread to verify the refuseSpent path writes .urgent.claim.json directly.
+    expect(JSON.parse(await fs.readFile(`${stateFile}.claim.json`, 'utf8'))).toEqual(sentinelNormalClaim);
+
+    const refuseTransport = {
+        ...transport,
+        listCodexWakeTargets: async () => [{root: false, threadId: rootThread, startedAt: 10, receiptOffset: 0}]
+    };
+    const turnId = randomUUID();
+    expect(await consumeNativeWakePrompt({
+        ...options,
+        codexTransport: refuseTransport,
+        agentId       : config.agentId,
+        family,
+        threadId      : rootThread,
+        turnId,
+        nonce         : nonces[0]
+    })).toEqual({admitted: false});
+
+    const urgentClaim = JSON.parse(await fs.readFile(`${stateFile}.urgent.claim.json`, 'utf8'));
+    expect(urgentClaim).toMatchObject({
+        nonce    : nonces[0],
+        recordKey: urgentRecord.recordKey,
+        admitted : false,
+        reason   : 'selection-unavailable'
+    });
+    expect(JSON.parse(await fs.readFile(`${stateFile}.claim.json`, 'utf8'))).toEqual(sentinelNormalClaim);
+
+    // Replaying the same spent urgent nonce stays denied without touching .claim.json.
+    expect(await consumeNativeWakePrompt({
+        ...options,
+        agentId : config.agentId,
+        family,
+        threadId: rootThread,
+        turnId,
+        nonce   : nonces[0]
+    })).toEqual({admitted: false});
+});
+
+test('RA-5 — concurrent normal (.claim.json) and urgent (.urgent.claim.json) claims remain isolated through settlement', async () => {
+    const seat      = '@fixture', threadId = randomUUID();
+    const sub       = 'WAKE_SUB:concurrent-claims', generation = '303:birth', family = 'codex-desktop';
+    const sent      = [];
+    const transport = {
+        listCodexWakeTargets    : async () => [{root: true, threadId, startedAt: 10, receiptOffset: 0}],
+        readCodexWakeActivity   : async () => ({state: 'idle'}),
+        verifyCodexWakeAdmission: async () => ({verified: true}),
+        sendCodexSessionWake    : async req => {
+            sent.push(req);
+            return {status: 'accepted'}
+        },
+        readCodexWakeReceipt    : async () => ({state: 'turn-started', threadId, turnId: 'turn-shared', observedAt: '2026-11-15T10:00:00.000Z'})
+    };
+    const config = {agentId: 'fixture', family, instanceHome: path.join(tempDir, 'home'), appBundle: path.join(tempDir, 'ChatGPT.app')};
+    const route  = {agentIdentity: seat, harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
+    await enrollNativeWake({manifestPath, stateDir, agentId: config.agentId, family});
+    await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes: {[sub]: route}}));
+    const options = {state, stateDir, manifestPath, codexTransport: transport, inspectResident: async () => ({generation, workspaceRoot: tempDir})};
+    const nowIso  = new Date().toISOString();
+
+    const {record: normalRecord} = await state.accept({
+        subscriptionId: sub,
+        eventId       : 'concurrent-normal',
+        envelope      : {
+            eventType: 'wake/digest', agentIdentity: seat, subscriptionId: sub,
+            payload  : {totalEvents: 1, urgent: false, breakdown: {sent_to_me: {count: 1, highestPriority: 'normal', latest: {priority: 'normal', sentAt: nowIso, subject: 'ordinary msg'}}}}
+        },
+        route,
+        metadata: {urgent: false}
+    });
+    const {record: urgentRecord} = await state.accept({
+        subscriptionId: sub,
+        eventId       : 'concurrent-urgent',
+        envelope      : {
+            eventType: 'wake/digest', agentIdentity: seat, subscriptionId: sub,
+            payload  : {totalEvents: 1, urgent: true, breakdown: {sent_to_me: {count: 1, highestPriority: 'high', latest: {priority: 'high', sentAt: nowIso, subject: 'urgent msg'}}}}
+        },
+        route,
+        metadata: {urgent: true}
+    });
+
+    expect((await dispatchFleetPrimarySessionWake(normalRecord, options)).status).toBe('unknown');
+    expect((await dispatchFleetPrimarySessionWake(urgentRecord, options)).status).toBe('unknown');
+    expect(sent).toHaveLength(2);
+
+    const normalNonce = sent[0].text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+    const urgentNonce = sent[1].text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+    const stateFile   = path.join(stateDir, 'primary-sessions', 'fixture.json');
+
+    const urgentConsume = await consumeNativeWakePrompt({...options, agentId: config.agentId, family, threadId, turnId: 'turn-shared', nonce: urgentNonce});
+    expect(urgentConsume.admitted).toBe(true);
+    expect(urgentConsume.digest).toContain('urgent msg');
+    await expect(fs.stat(`${stateFile}.claim.json`)).rejects.toMatchObject({code: 'ENOENT'});
+
+    expect(await dispatchFleetPrimarySessionWake(urgentRecord, options)).toMatchObject({status: 'delivered'});
+    await state.transition(urgentRecord.recordKey, 'pending', 'delivered');
+
+    const normalConsume = await consumeNativeWakePrompt({...options, agentId: config.agentId, family, threadId, turnId: 'turn-shared', nonce: normalNonce});
+    expect(normalConsume.admitted).toBe(true);
+    expect(normalConsume.digest).toContain('ordinary msg');
+    expect(JSON.parse(await fs.readFile(`${stateFile}.urgent.claim.json`, 'utf8')).nonce).toBe(urgentNonce);
+    expect(JSON.parse(await fs.readFile(`${stateFile}.claim.json`, 'utf8')).nonce).toBe(normalNonce);
+
+    expect(await dispatchFleetPrimarySessionWake(normalRecord, options)).toMatchObject({status: 'delivered'});
+});

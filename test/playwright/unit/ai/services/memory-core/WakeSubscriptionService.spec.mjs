@@ -3884,6 +3884,97 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                     reason: 'this process declares no wake receiver records directory'
                 });
             });
+
+            test('readMessageDelivery joins CoalescingEngineService policy snapshot and receiver records only when includeStages is true', async () => {
+                const recordsDir  = await fs.mkdtemp(path.join(os.tmpdir(), 'wake-sub-stages-'));
+                const priorReadFn = WakeSubscriptionService.wakeDeliveryReadFn;
+                const nowMs       = Date.parse('2026-11-15T12:00:00.000Z');
+
+                await fs.writeJson(path.join(recordsDir, 'rec-1.json'), {
+                    recordKey          : 'a'.repeat(64),
+                    subscriptionId     : 'WAKE_SUB:stages',
+                    sourceEventIds     : ['MESSAGE:delivered-rt'],
+                    state              : 'delivered',
+                    urgent             : true,
+                    acceptedAt         : '2026-11-15T11:59:59.100Z',
+                    dispatchFinishedAt : '2026-11-15T11:59:59.400Z',
+                    recipientObservedAt: '2026-11-15T11:59:59.350Z'
+                });
+
+                WakeSubscriptionService.wakeDeliveryReadFn = opts => readWakeDelivery({...opts, recordsDir});
+                CoalescingEngineService.configure(AiConfig.orchestrator.wakeDispatch, {
+                    resolveDeliveryReadState: () => ({}),
+                    nowFn                   : () => nowMs,
+                    setTimerFn              : () => 1,
+                    clearTimerFn            : () => {}
+                });
+
+                const sub = {
+                    id                   : 'WAKE_SUB:stages-policy',
+                    agentIdentity        : '@alice',
+                    harnessTarget        : 'a2a-webhook',
+                    harnessTargetMetadata: {url: 'https://example.com/wake'}
+                };
+
+                try {
+                    CoalescingEngineService.enqueue(sub, {
+                        eventType: 'wake/sent_to_me',
+                        eventId  : 'ev-pol-1',
+                        payload  : {
+                            messageId: 'MESSAGE:policy-rt',
+                            priority : 'normal',
+                            sentAt   : new Date(nowMs - 5_000).toISOString()
+                        }
+                    });
+                    CoalescingEngineService.enqueue(sub, {
+                        eventType: 'wake/sent_to_me',
+                        eventId  : 'ev-pol-2',
+                        payload  : {
+                            messageId: 'MESSAGE:policy-expired-high',
+                            priority : 'high',
+                            sentAt   : new Date(nowMs - 2 * 60 * 60 * 1000).toISOString()
+                        }
+                    });
+
+                    const ids         = ['MESSAGE:delivered-rt', 'MESSAGE:policy-rt', 'MESSAGE:policy-expired-high', 'MESSAGE:absent-rt'];
+                    const defaultRead = await WakeSubscriptionService.readMessageDelivery(ids);
+                    expect(defaultRead).not.toHaveProperty('messageStages');
+                    expect(defaultRead.messages['MESSAGE:delivered-rt']).toEqual({
+                        state: 'delivered',
+                        at   : '2026-11-15T11:59:59.400Z'
+                    });
+
+                    const stagedRead = await WakeSubscriptionService.readMessageDelivery(ids, {
+                        includeStages: true,
+                        now          : nowMs + 500
+                    });
+                    expect(stagedRead.messageStages['MESSAGE:delivered-rt']).toMatchObject({
+                        stage  : 'delivered',
+                        settled: true,
+                        urgent : true
+                    });
+                    expect(stagedRead.messageStages['MESSAGE:policy-rt']).toMatchObject({
+                        stage       : 'waiting-for-policy',
+                        settled     : false,
+                        urgent      : false,
+                        policyWaitMs: 500
+                    });
+                    expect(stagedRead.messageStages['MESSAGE:policy-expired-high']).toMatchObject({
+                        stage  : 'waiting-for-policy',
+                        settled: false,
+                        urgent : false
+                    });
+                    expect(stagedRead.messageStages['MESSAGE:absent-rt']).toMatchObject({
+                        stage  : 'undelivered',
+                        settled: false
+                    });
+                } finally {
+                    CoalescingEngineService.clearAll();
+                    CoalescingEngineService.configure(AiConfig.orchestrator.wakeDispatch);
+                    WakeSubscriptionService.wakeDeliveryReadFn = priorReadFn;
+                    await fs.remove(recordsDir);
+                }
+            });
         });
 
         test('#16058 — the summary states the windows it applied', async () => {

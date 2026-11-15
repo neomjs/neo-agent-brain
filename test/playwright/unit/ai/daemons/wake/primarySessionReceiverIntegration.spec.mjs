@@ -153,4 +153,302 @@ test.describe('signed native wake receiver integration', () => {
         expect(await state.list('delivered')).toHaveLength(1);
         expect(sends).toBe(1);
     });
+
+    test('AC-2 — before native send, urgent record preempts unsent ordinary pointer with zero GUI fallback and ordinary delivers afterward', async () => {
+        let guiCalls = 0;
+        await new Promise(resolve => server.close(resolve));
+        receiver = createWakeReceiver({
+            manifest,
+            state,
+            manifestPath,
+            logger  : {log(){}, warn(){}, error(){}},
+            dispatch: async () => { guiCalls++; return 'delivered' }
+        });
+        server = receiver.server;
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        url = `http://127.0.0.1:${server.address().port}/wake`;
+
+        const postCustom = envelope => {
+            const body      = JSON.stringify(envelope),
+                  signature = crypto.createHmac('sha256', key).update(body).digest('hex');
+            return fetch(url, {
+                method : 'POST',
+                headers: {
+                    'content-type'              : 'application/json',
+                    'x-neo-wake-subscription-id': envelope.subscriptionId,
+                    'x-neo-wake-event-id'       : envelope.eventId,
+                    'x-neo-wake-schema-version' : '1.0',
+                    'x-neo-wake-signature'      : signature
+                },
+                body
+            });
+        };
+
+        const nowIso    = new Date().toISOString();
+        const normalEnv = {
+            schemaVersion : '1.0',
+            eventType     : 'wake/digest',
+            eventId       : 'event-normal-unsent',
+            subscriptionId: sub,
+            agentIdentity : seat,
+            payload       : {
+                totalEvents   : 1,
+                sourceEventIds: ['MESSAGE:normal-unsent'],
+                breakdown     : {sent_to_me: {count: 1, highestPriority: 'normal', latest: {messageId: 'MESSAGE:normal-unsent', priority: 'normal', sentAt: nowIso, subject: 'ordinary digest'}}}
+            }
+        };
+        const urgentEnv = {
+            schemaVersion : '1.0',
+            eventType     : 'wake/digest',
+            eventId       : 'event-urgent-preempt',
+            subscriptionId: sub,
+            agentIdentity : seat,
+            payload       : {
+                totalEvents   : 1,
+                urgent        : true,
+                sourceEventIds: ['MESSAGE:urgent-preempt'],
+                breakdown     : {sent_to_me: {count: 1, highestPriority: 'high', latest: {messageId: 'MESSAGE:urgent-preempt', priority: 'high', sentAt: nowIso, subject: 'urgent interrupt'}}}
+            }
+        };
+
+        expect((await postCustom(normalEnv)).status).toBe(202);
+        await receiver.drain();
+        expect(sends, 'ordinary record staged on host spool but not yet sent to native queue').toBe(0);
+        expect(guiCalls).toBe(0);
+
+        expect((await postCustom(urgentEnv)).status).toBe(202);
+        await receiver.drain();
+        expect(guiCalls, 'pending primary-session never falls back to GUI typing').toBe(0);
+
+        await expect(fs.stat(path.join(stateDir, 'primary-sessions', 'fixture.request.json'))).rejects.toMatchObject({code: 'ENOENT'});
+        const urgentPointer = JSON.parse(await fs.readFile(path.join(stateDir, 'primary-sessions', 'fixture.urgent.request.json'), 'utf8'));
+        expect(urgentPointer.urgent).toBe(true);
+
+        const pump = () => drainFleetPrimaryWakeRecord({
+            state,
+            stateDir,
+            manifestPath,
+            subscriptionId: sub,
+            route         : manifest.routes[sub],
+            dispatch      : (record, options) => dispatchFleetPrimarySessionWake(record, {...options, inspectResident: resident, codexTransport: transport})
+        });
+
+        await pump();
+        await receiver.drain();
+        expect(consumed).toHaveLength(1);
+        expect(consumed[0]).toContain('urgent interrupt');
+        expect(sends).toBe(1);
+
+        await pump();
+        await receiver.drain();
+        expect(consumed).toHaveLength(2);
+        expect(consumed[1]).toContain('ordinary digest');
+        expect(sends).toBe(2);
+        expect(guiCalls).toBe(0);
+
+        expect((await postCustom(urgentEnv)).status).toBe(200);
+        expect((await postCustom(normalEnv)).status).toBe(200);
+        expect(sends, 'deduplication history preserved for both records').toBe(2);
+    });
+
+    test('AC-2 & AC-3 — after queue acceptance without receipt, ambiguous normal is preserved while urgent delivers once, survives restart, and isolates seats', async () => {
+        let guiCalls  = 0,
+            busyState = 'idle';
+        await new Promise(resolve => server.close(resolve));
+
+        const subPeer    = 'WAKE_SUB:peer-two',
+              seatPeer   = '@peertwo',
+              agentPeer  = 'peertwo',
+              threadPeer = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+              peerHome   = path.join(root, 'agents', agentPeer, 'harness', family),
+              peerConfig = {agentId: agentPeer, family, instanceHome: peerHome, appBundle: path.join(root, 'generation', 'Codex.app'), hookNodePath: '/bin/node', hookModulePath: '/brain/hook.mjs'};
+
+        manifest.routes[subPeer] = {
+            agentIdentity        : seatPeer,
+            signingKey           : key,
+            admits               : 'wake/digest',
+            harnessTargetMetadata: {adapter: 'primary-session', addressType: 'userDataDir', instanceAddress: path.join(peerHome, 'electron-profile')},
+            adapterConfig        : {attemptTimeoutMs: 1000, primarySession: peerConfig}
+        };
+        await fs.writeFile(manifestPath, JSON.stringify(manifest), {mode: 0o600});
+        await enrollNativeWake({manifestPath, stateDir, agentId: agentPeer, family});
+
+        const sentByThread   = [];
+        const multiTransport = {
+            listCodexWakeTargets    : async ({home}) => [{root: true, threadId: home.includes(agentPeer) ? threadPeer : threadId, startedAt: 100, receiptOffset: 0}],
+            readCodexWakeActivity   : async ({threadId: tid}) => ({state: tid === threadId ? busyState : 'idle'}),
+            verifyCodexWakeAdmission: async () => ({verified: true}),
+            sendCodexSessionWake    : async ({threadId: tid, text}) => {
+                sends++;
+                const nonce = text.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                sentByThread.push({threadId: tid, nonce});
+                if (mode === 'consume' || tid === threadPeer) {
+                    const claim = await consumeNativeWakePrompt({
+                        manifestPath,
+                        stateDir,
+                        agentId        : tid === threadPeer ? agentPeer : agentId,
+                        family,
+                        threadId       : tid,
+                        nonce,
+                        turnId         : `turn-${sentByThread.length}`,
+                        inspectResident: resident,
+                        codexTransport : multiTransport
+                    });
+                    if (claim.admitted) {
+                        consumed.push(claim.digest);
+                        delivered.add(nonce);
+                    }
+                }
+                return {status: 'accepted'}
+            },
+            readCodexWakeReceipt    : async ({text, threadId: tid}) => {
+                const nonce = text.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                return delivered.has(nonce) ? {state: 'turn-started', threadId: tid, turnId: `turn-${sentByThread.findIndex(x => x.nonce === nonce) + 1}`} : {state: 'unknown'}
+            }
+        };
+
+        receiver = createWakeReceiver({
+            manifest,
+            state,
+            manifestPath,
+            logger  : {log(){}, warn(){}, error(){}},
+            dispatch: async () => { guiCalls++; return 'delivered' }
+        });
+        server = receiver.server;
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        url = `http://127.0.0.1:${server.address().port}/wake`;
+
+        const postCustom = envelope => {
+            const body      = JSON.stringify(envelope),
+                  signature = crypto.createHmac('sha256', key).update(body).digest('hex');
+            return fetch(url, {
+                method : 'POST',
+                headers: {
+                    'content-type'              : 'application/json',
+                    'x-neo-wake-subscription-id': envelope.subscriptionId,
+                    'x-neo-wake-event-id'       : envelope.eventId,
+                    'x-neo-wake-schema-version' : '1.0',
+                    'x-neo-wake-signature'      : signature
+                },
+                body
+            });
+        };
+
+        const pumpSeat = targetSub => drainFleetPrimaryWakeRecord({
+            state,
+            stateDir,
+            manifestPath,
+            subscriptionId: targetSub,
+            route         : manifest.routes[targetSub],
+            dispatch      : (record, options) => dispatchFleetPrimarySessionWake(record, {...options, inspectResident: resident, codexTransport: multiTransport})
+        });
+
+        const nowIso      = new Date().toISOString();
+        const normalAmbig = {
+            schemaVersion : '1.0',
+            eventType     : 'wake/digest',
+            eventId       : 'event-normal-ambig',
+            subscriptionId: sub,
+            agentIdentity : seat,
+            payload       : {
+                totalEvents   : 1,
+                sourceEventIds: ['MESSAGE:normal-ambig'],
+                breakdown     : {sent_to_me: {count: 1, highestPriority: 'normal', latest: {messageId: 'MESSAGE:normal-ambig', priority: 'normal', sentAt: nowIso, subject: 'ambiguous normal'}}}
+            }
+        };
+        const urgentLater = {
+            schemaVersion : '1.0',
+            eventType     : 'wake/digest',
+            eventId       : 'event-urgent-later',
+            subscriptionId: sub,
+            agentIdentity : seat,
+            payload       : {
+                totalEvents   : 1,
+                urgent        : true,
+                sourceEventIds: ['MESSAGE:urgent-later'],
+                breakdown     : {sent_to_me: {count: 1, highestPriority: 'high', latest: {messageId: 'MESSAGE:urgent-later', priority: 'high', sentAt: nowIso, subject: 'urgent while normal unconfirmed'}}}
+            }
+        };
+        const peerUrgent = {
+            schemaVersion : '1.0',
+            eventType     : 'wake/digest',
+            eventId       : 'event-peer-two',
+            subscriptionId: subPeer,
+            agentIdentity : seatPeer,
+            payload       : {
+                totalEvents   : 1,
+                urgent        : true,
+                sourceEventIds: ['MESSAGE:peer-two'],
+                breakdown     : {sent_to_me: {count: 1, highestPriority: 'high', latest: {messageId: 'MESSAGE:peer-two', priority: 'high', sentAt: nowIso, subject: 'second seat independent'}}}
+            }
+        };
+
+        mode = 'hold';
+        expect((await postCustom(normalAmbig)).status).toBe(202);
+        await receiver.drain();
+        await pumpSeat(sub);
+        await receiver.drain();
+        expect(sends).toBe(1);
+        const normalNonce = sentByThread[0].nonce;
+
+        const [normalPending] = await state.list('pending');
+        expect(normalPending.waitStage).toBe('waiting-for-receipt');
+        expect(normalPending.deferReason).toBe('native-recipient:receipt-unproven');
+
+        busyState = 'busy';
+        expect((await postCustom(urgentLater)).status).toBe(202);
+        expect((await postCustom(peerUrgent)).status).toBe(202);
+        await receiver.drain();
+        await pumpSeat(sub);
+        await pumpSeat(subPeer);
+        await receiver.drain();
+
+        expect(consumed.some(d => d.includes('second seat independent')), 'second seat delivers independently').toBe(true);
+
+        const pendingRecords = await state.list('pending');
+        const heldUrgent     = pendingRecords.find(r => r.eventId === 'event-urgent-later');
+        expect(heldUrgent).toMatchObject({
+            deferReason    : 'native-recipient:active-turn-adapter-unavailable',
+            namedDependency: '#1741',
+            waitStage      : 'waiting-for-chat-boundary'
+        });
+        expect(guiCalls).toBe(0);
+
+        await state.transition(heldUrgent.recordKey, 'pending', 'dispatching');
+        expect(await state.recoverInterrupted()).toBe(1);
+
+        busyState = 'idle';
+        mode      = 'consume';
+        await receiver.drain();
+        await pumpSeat(sub);
+        await receiver.drain();
+
+        const deliveredAfterUrgent = await state.list('delivered');
+        expect(deliveredAfterUrgent.map(r => r.eventId)).toContain('event-urgent-later');
+        expect(consumed.some(d => d.includes('urgent while normal unconfirmed'))).toBe(true);
+        expect(sends, '1 normal + 1 peer + 1 urgent — normal was never resent').toBe(3);
+
+        const normalClaim = await consumeNativeWakePrompt({
+            manifestPath,
+            stateDir,
+            agentId,
+            family,
+            threadId,
+            nonce          : normalNonce,
+            turnId         : 'turn-1',
+            inspectResident: resident,
+            codexTransport : multiTransport
+        });
+        expect(normalClaim.admitted).toBe(true);
+        expect(normalClaim.digest).toContain('ambiguous normal');
+        delivered.add(normalNonce);
+
+        await pumpSeat(sub);
+        await receiver.drain();
+
+        const allDelivered = await state.list('delivered');
+        expect(allDelivered.map(r => r.eventId).sort()).toEqual(['event-normal-ambig', 'event-peer-two', 'event-urgent-later']);
+        expect(sends, 'normal reconciled from its original send without duplicate turn').toBe(3);
+        expect(guiCalls).toBe(0);
+    });
 });
