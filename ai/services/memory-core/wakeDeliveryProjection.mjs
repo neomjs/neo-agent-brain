@@ -28,6 +28,8 @@
  * @module ai/services/memory-core/wakeDeliveryProjection
  */
 
+import {SPOOL_CONTENTION_REASONS} from '../../daemons/wake/primaryWakeSpool.mjs';
+
 /**
  * States that count against a subscription. `failed` is a concluded non-delivery; `unknown` is a
  * dispatch whose fate was never recorded (the receiver restarted mid-dispatch), which for a
@@ -319,10 +321,12 @@ const STAGE_RANK = Object.freeze({
     undelivered                : 0,
     skipped                    : 1,
     failed                     : 2,
-    'waiting-for-policy'       : 3,
-    'waiting-for-chat-boundary': 4,
-    'waiting-for-receipt'      : 5,
-    delivered                  : 6
+    unknown                    : 3,
+    'waiting-for-policy'       : 4,
+    'waiting-for-spool'        : 5,
+    'waiting-for-chat-boundary': 6,
+    'waiting-for-receipt'      : 7,
+    delivered                  : 8
 });
 
 const ACTIVE_TURN_UNAVAILABLE_REASON = 'native-recipient:active-turn-adapter-unavailable';
@@ -381,9 +385,11 @@ function emptyStageEntry(stage, overrides = {}) {
  * @param {Object} record Receiver record snapshot.
  * @param {Object} [options]
  * @param {Number|String|Date|null} [options.now=null] Optional observation clock for open wait durations.
- * @returns {Object} Stage verdict distinguishing chat-boundary holds, unproven host sends, and recipient-settled delivery.
+ * @param {String|null}             [options.messageId=null] Target message id for per-message `messageSentAt` resolution.
+ * @param {String|Number|Date|null} [options.fallbackSentAt=null] Fallback timestamp from policy queue snapshot.
+ * @returns {Object} Stage verdict distinguishing spool contention, chat-boundary holds, unproven host sends, and recipient-settled delivery.
  */
-export function projectWakeRecordStage(record, {now = null} = {}) {
+export function projectWakeRecordStage(record, {now = null, messageId = null, fallbackSentAt = null} = {}) {
     if (!record || typeof record !== 'object') {
         return emptyStageEntry('unknown', {reason: 'record-unreadable'})
     }
@@ -396,31 +402,44 @@ export function projectWakeRecordStage(record, {now = null} = {}) {
             sentToMe?.highestPriority === 'high' ||
             sentToMe?.latest?.priority === 'high'
         )),
+        perMessageSentAt  = (messageId && payload?.messageSentAt?.[messageId]) || fallbackSentAt,
+        digestSentAt      = urgent
+            ? (payload?.latestUrgentSentAt || payload?.earliestSentAt)
+            : (payload?.earliestSentAt || payload?.latestUrgentSentAt),
         sourceSentAt      = toIsoOrNull(
-            record.sourceSentAt || payload?.earliestSentAt || payload?.latestUrgentSentAt || sentToMe?.latest?.sentAt
+            perMessageSentAt || record.sourceSentAt || digestSentAt || sentToMe?.latest?.sentAt
         ),
         firstQueuedAt     = toIsoOrNull(record.firstQueuedAt ?? payload?.firstQueuedAt),
         emittedAt         = toIsoOrNull(record.emittedAt || record.envelope?.emittedAt),
         acceptedAt        = toIsoOrNull(record.acceptedAt),
-        hostStagedAt      = toIsoOrNull(record.hostStagedAt || record.dispatchStartedAt),
-        nativeInitiatedAt = toIsoOrNull(record.nativeInitiatedAt),
         deferReason       = record.deferReason || null,
         outcomeReason     = record.outcomeReason || null,
-        awaitingReceipt   = record.state === 'unknown' ||
+        spoolBlocked      = record.waitStage === 'waiting-for-spool' || SPOOL_CONTENTION_REASONS.includes(deferReason),
+        hostStagedAt      = toIsoOrNull(spoolBlocked ? record.hostStagedAt : (record.hostStagedAt || record.dispatchStartedAt)),
+        nativeInitiatedAt = toIsoOrNull(record.nativeInitiatedAt),
+        isOpenState       = record.state === 'pending' || record.state === 'dispatching',
+        awaitingReceipt   = isOpenState && (
             record.waitStage === 'waiting-for-receipt' ||
             record.nativeStatus === 'unknown' ||
             deferReason === 'native-recipient:receipt-unproven' ||
-            deferReason === 'awaiting-receipt';
+            deferReason === 'awaiting-receipt'
+        );
 
-    let stage = 'waiting-for-chat-boundary';
+    let stage;
     if (record.state === 'delivered') {
         stage = 'delivered';
     } else if (record.state === 'failed') {
         stage = 'failed';
     } else if (record.state === 'skipped') {
         stage = 'skipped';
+    } else if (!isOpenState) {
+        stage = 'unknown';
     } else if (awaitingReceipt) {
         stage = 'waiting-for-receipt';
+    } else if (spoolBlocked) {
+        stage = 'waiting-for-spool';
+    } else {
+        stage = 'waiting-for-chat-boundary';
     }
 
     const
@@ -481,20 +500,44 @@ function normalizePolicyQueue(policyQueue) {
     const byMessage = new Map();
     if (!policyQueue || typeof policyQueue !== 'object') return byMessage;
 
+    const mergeEntry = (id, entry) => {
+        if (typeof id !== 'string' || id.length === 0 || !entry || typeof entry !== 'object') return;
+        const prev = byMessage.get(id);
+        if (!prev) {
+            byMessage.set(id, entry);
+            return
+        }
+
+        const
+            prevQueuedMs  = parseEpochMs(prev.firstQueuedAt),
+            nextQueuedMs  = parseEpochMs(entry.firstQueuedAt),
+            firstQueuedAt = prevQueuedMs === null
+                ? entry.firstQueuedAt
+                : (nextQueuedMs !== null && nextQueuedMs < prevQueuedMs ? entry.firstQueuedAt : prev.firstQueuedAt),
+            prevUrgent    = typeof prev.urgent === 'boolean' ? prev.urgent : prev.priority === 'high',
+            nextUrgent    = typeof entry.urgent === 'boolean' ? entry.urgent : entry.priority === 'high';
+
+        byMessage.set(id, {
+            ...prev,
+            firstQueuedAt,
+            sentAt  : prev.sentAt || entry.sentAt || null,
+            priority: prev.priority === 'high' || entry.priority === 'high' ? 'high' : (prev.priority || entry.priority || 'normal'),
+            urgent  : prevUrgent || nextUrgent
+        });
+    };
+
     if (Array.isArray(policyQueue)) {
         for (const item of policyQueue) {
             const ids = Array.isArray(item?.sourceEventIds) ? item.sourceEventIds : (item?.messageId ? [item.messageId] : []);
             for (const id of ids) {
-                if (typeof id === 'string' && id.length > 0) byMessage.set(id, item);
+                mergeEntry(id, item);
             }
         }
         return byMessage
     }
 
     for (const [id, entry] of Object.entries(policyQueue)) {
-        if (typeof id === 'string' && id.length > 0 && entry && typeof entry === 'object') {
-            byMessage.set(id, entry);
-        }
+        mergeEntry(id, entry);
     }
     return byMessage
 }
@@ -538,7 +581,7 @@ export function projectWakeDeliveryStages(records, {messageIds = [], policyQueue
                 firstQueuedAt = toIsoOrNull(policyEntry.firstQueuedAt),
                 policyStart   = firstQueuedAt || sourceSentAt;
             projected[id] = emptyStageEntry('waiting-for-policy', {
-                urgent      : Boolean(policyEntry.urgent || policyEntry.priority === 'high'),
+                urgent      : typeof policyEntry.urgent === 'boolean' ? policyEntry.urgent : policyEntry.priority === 'high',
                 reason      : policyEntry.reason || 'coalescing-policy-hold',
                 policyWaitMs: now !== null && policyStart ? diffMs(policyStart, now) : null,
                 timestamps  : {
@@ -557,13 +600,15 @@ export function projectWakeDeliveryStages(records, {messageIds = [], policyQueue
     }
 
     for (const record of Array.isArray(records) ? records : []) {
-        const candidate = projectWakeRecordStage(record, {now}),
-              rank      = STAGE_RANK[candidate.stage] ?? 0;
-
         for (const id of Array.isArray(record?.sourceEventIds) ? record.sourceEventIds : []) {
             if (!targetIds.has(id)) continue;
-            const existing     = projected[id],
-                  existingRank = STAGE_RANK[existing.stage] ?? 0;
+
+            const policyEntry    = policyByMessage.get(id),
+                  fallbackSentAt = policyEntry?.sentAt || policyEntry?.sourceSentAt || null,
+                  candidate      = projectWakeRecordStage(record, {now, messageId: id, fallbackSentAt}),
+                  rank           = STAGE_RANK[candidate.stage] ?? 0,
+                  existing       = projected[id],
+                  existingRank   = STAGE_RANK[existing.stage] ?? 0;
 
             if (rank > existingRank) {
                 projected[id] = candidate;

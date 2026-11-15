@@ -1,4 +1,11 @@
-import {expect, test} from '@playwright/test';
+import crypto                     from 'node:crypto';
+import fs                         from 'node:fs/promises';
+import os                         from 'node:os';
+import path                       from 'node:path';
+import {expect, test}             from '@playwright/test';
+import {createWakeReceiver}       from '../../../../../../ai/daemons/wake/receiver.mjs';
+import {WakeReceiverState}        from '../../../../../../ai/daemons/wake/receiverState.mjs';
+import {SPOOL_CONTENTION_REASONS} from '../../../../../../ai/daemons/wake/primaryWakeSpool.mjs';
 import {
     projectIdentityWakeReachability,
     projectMessageDelivery,
@@ -370,7 +377,7 @@ test.describe('projectWakeRecordStage & projectWakeDeliveryStages — stage and 
             state          : 'pending',
             urgent         : true,
             sourceSentAt   : '2026-11-15T09:00:00.000Z',
-            firstQueuedAt  : Date.parse('2026-11-15T09:00:00.005Z'),
+            firstQueuedAt  : '2026-11-15T09:00:00.005Z',
             emittedAt      : '2026-11-15T09:00:00.055Z',
             acceptedAt     : '2026-11-15T09:00:00.070Z',
             hostStagedAt   : '2026-11-15T09:00:00.075Z',
@@ -401,7 +408,7 @@ test.describe('projectWakeRecordStage & projectWakeDeliveryStages — stage and 
             state              : 'delivered',
             urgent             : true,
             sourceSentAt       : '2026-11-15T09:00:00.000Z',
-            firstQueuedAt      : Date.parse('2026-11-15T09:00:00.004Z'),
+            firstQueuedAt      : '2026-11-15T09:00:00.004Z',
             emittedAt          : '2026-11-15T09:00:00.054Z',
             acceptedAt         : '2026-11-15T09:00:00.064Z',
             hostStagedAt       : '2026-11-15T09:00:00.066Z',
@@ -464,5 +471,284 @@ test.describe('projectWakeRecordStage & projectWakeDeliveryStages — stage and 
             totalLatencyMs    : 214
         });
         expect(stages['MESSAGE:settled'].settled).toBe(true);
+    });
+
+    test('AC-4(a) — spool-contention deferrals map to waiting-for-spool with null hostStagedAt and null chatBoundaryWaitMs', () => {
+        for (const deferReason of SPOOL_CONTENTION_REASONS) {
+            const stage = projectWakeRecordStage({
+                recordKey        : `rec-${deferReason}`,
+                subscriptionId   : 'WAKE_SUB:spool',
+                sourceEventIds   : ['MESSAGE:spool-wait'],
+                state            : 'pending',
+                urgent           : deferReason === 'earlier urgent native wake outstanding',
+                sourceSentAt     : '2026-11-15T09:00:00.000Z',
+                acceptedAt       : '2026-11-15T09:00:00.050Z',
+                dispatchStartedAt: '2026-11-15T09:00:00.060Z',
+                waitStage        : 'waiting-for-spool',
+                deferReason
+            }, {now: '2026-11-15T09:00:01.000Z'});
+
+            expect(stage, deferReason).toMatchObject({
+                stage             : 'waiting-for-spool',
+                settled           : false,
+                reason            : deferReason,
+                chatBoundaryWaitMs: null,
+                receiptWaitMs     : null,
+                timestamps        : {
+                    acceptedAt       : '2026-11-15T09:00:00.050Z',
+                    hostStagedAt     : null,
+                    nativeInitiatedAt: null
+                }
+            });
+        }
+    });
+
+    test('AC-4(c) — receiver accept -> projectWakeDeliveryStages round-trip preserves ISO firstQueuedAt and finite policyWaitMs', async () => {
+        const dir        = await fs.mkdtemp(path.join(os.tmpdir(), 'wake-roundtrip-'));
+        const signingKey = crypto.randomBytes(32).toString('hex');
+        const t0         = Date.parse('2026-11-15T09:00:00.000Z');
+        let receiver, server;
+
+        try {
+            const state = new WakeReceiverState({stateDir: path.join(dir, 'state')});
+            await state.init();
+
+            const manifestPath = path.join(dir, 'manifest.json');
+            const subId        = 'WAKE_SUB:roundtrip';
+            const manifest     = {
+                schemaVersion: 1,
+                routes       : {
+                    [subId]: {
+                        agentIdentity        : '@roundtrip',
+                        signingKey,
+                        admits               : 'wake/digest',
+                        harnessTargetMetadata: {adapter: 'osascript', appName: 'Codex'},
+                        adapterConfig        : {attemptTimeoutMs: 1000}
+                    }
+                }
+            };
+            await fs.writeFile(manifestPath, JSON.stringify(manifest), {mode: 0o600});
+
+            receiver = createWakeReceiver({
+                manifest,
+                state,
+                manifestPath,
+                clock   : () => t0 + 75,
+                dispatch: async () => 'delivered',
+                logger  : {log(){}, warn(){}, error(){}}
+            });
+            server = receiver.server;
+            await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+            const url = `http://127.0.0.1:${server.address().port}/wake`;
+
+            const sentAt   = new Date(t0 - 1_000).toISOString();
+            const envelope = {
+                schemaVersion : '1.0',
+                eventType     : 'wake/digest',
+                eventId       : 'wake-digest:rt-iso',
+                agentIdentity : '@roundtrip',
+                subscriptionId: subId,
+                payload       : {
+                    totalEvents       : 1,
+                    sourceEventIds    : ['MESSAGE:roundtrip-1'],
+                    firstQueuedAt     : new Date(t0).toISOString(),
+                    urgent            : true,
+                    earliestSentAt    : sentAt,
+                    latestUrgentSentAt: sentAt,
+                    messageSentAt     : {'MESSAGE:roundtrip-1': sentAt},
+                    breakdown         : {sent_to_me: {count: 1, highestPriority: 'high', latest: {priority: 'high', sentAt}}}
+                },
+                emittedAt: new Date(t0 + 50).toISOString()
+            };
+            const body      = JSON.stringify(envelope),
+                  signature = crypto.createHmac('sha256', signingKey).update(body).digest('hex');
+
+            const response = await fetch(url, {
+                method : 'POST',
+                headers: {
+                    'content-type'              : 'application/json',
+                    'x-neo-wake-subscription-id': subId,
+                    'x-neo-wake-event-id'       : envelope.eventId,
+                    'x-neo-wake-schema-version' : '1.0',
+                    'x-neo-wake-signature'      : signature
+                },
+                body
+            });
+            expect(response.status).toBe(202);
+            await receiver.drain();
+
+            const recordFiles = (await fs.readdir(state.recordsDir)).filter(name => name.endsWith('.json'));
+            const records     = await Promise.all(
+                recordFiles.map(async name => JSON.parse(await fs.readFile(path.join(state.recordsDir, name), 'utf8')))
+            );
+            const messageStages = projectWakeDeliveryStages(records, {
+                messageIds : ['MESSAGE:roundtrip-1'],
+                policyQueue: []
+            });
+            expect(messageStages['MESSAGE:roundtrip-1']).toMatchObject({
+                stage       : 'delivered',
+                settled     : true,
+                urgent      : true,
+                policyWaitMs: 50,
+                timestamps  : {
+                    sourceSentAt : sentAt,
+                    firstQueuedAt: new Date(t0).toISOString(),
+                    emittedAt    : new Date(t0 + 50).toISOString(),
+                    acceptedAt   : new Date(t0 + 75).toISOString()
+                }
+            });
+        } finally {
+            if (server) await new Promise(resolve => server.close(resolve));
+            await fs.rm(dir, {recursive: true, force: true});
+        }
+    });
+
+    test('AC-4(d) — per-message messageSentAt avoids cross-contamination and urgent digests without map prefer latestUrgentSentAt', () => {
+        const earlyNormal = '2026-11-15T08:50:00.000Z',
+              lateUrgent  = '2026-11-15T09:00:00.000Z';
+
+        const coalescedRecord = {
+            recordKey         : 'rec-coalesced',
+            subscriptionId    : 'WAKE_SUB:mix',
+            sourceEventIds    : ['MESSAGE:early-normal', 'MESSAGE:late-urgent'],
+            state             : 'delivered',
+            urgent            : true,
+            acceptedAt        : '2026-11-15T09:00:01.000Z',
+            dispatchFinishedAt: '2026-11-15T09:00:01.200Z',
+            envelope          : {
+                emittedAt: '2026-11-15T09:00:00.050Z',
+                payload  : {
+                    earliestSentAt    : earlyNormal,
+                    latestUrgentSentAt: lateUrgent,
+                    messageSentAt     : {
+                        'MESSAGE:early-normal': earlyNormal,
+                        'MESSAGE:late-urgent' : lateUrgent
+                    },
+                    breakdown: {sent_to_me: {count: 2, highestPriority: 'high', latest: {priority: 'high', sentAt: lateUrgent}}}
+                }
+            }
+        };
+
+        const stages = projectWakeDeliveryStages([coalescedRecord], {
+            messageIds: ['MESSAGE:early-normal', 'MESSAGE:late-urgent']
+        });
+        expect(stages['MESSAGE:early-normal'].timestamps.sourceSentAt).toBe(earlyNormal);
+        expect(stages['MESSAGE:late-urgent'].timestamps.sourceSentAt).toBe(lateUrgent);
+        expect(stages['MESSAGE:early-normal'].totalLatencyMs).toBe(601_200);
+        expect(stages['MESSAGE:late-urgent'].totalLatencyMs).toBe(1_200);
+
+        const legacyUrgentNoMap = projectWakeRecordStage({
+            recordKey     : 'rec-legacy-urgent',
+            subscriptionId: 'WAKE_SUB:mix',
+            sourceEventIds: ['MESSAGE:late-urgent'],
+            state         : 'pending',
+            urgent        : true,
+            acceptedAt    : '2026-11-15T09:00:01.000Z',
+            envelope      : {
+                payload: {
+                    earliestSentAt    : earlyNormal,
+                    latestUrgentSentAt: lateUrgent,
+                    breakdown         : {sent_to_me: {count: 2, highestPriority: 'high', latest: {priority: 'high', sentAt: lateUrgent}}}
+                }
+            }
+        });
+        expect(legacyUrgentNoMap.timestamps.sourceSentAt).toBe(lateUrgent);
+    });
+
+    test('AC-4(e) — policyQueue arrays merge deterministically across subscriptions and respect boolean urgent: false on expired high', () => {
+        const stages = projectWakeDeliveryStages([], {
+            messageIds : ['MESSAGE:shared', 'MESSAGE:expired-high'],
+            policyQueue: [
+                {
+                    messageId     : 'MESSAGE:shared',
+                    subscriptionId: 'WAKE_SUB:sub-a',
+                    firstQueuedAt : '2026-11-15T09:00:10.000Z',
+                    sentAt        : '2026-11-15T09:00:00.000Z',
+                    priority      : 'normal',
+                    urgent        : false
+                },
+                {
+                    messageId     : 'MESSAGE:shared',
+                    subscriptionId: 'WAKE_SUB:sub-b',
+                    firstQueuedAt : '2026-11-15T09:00:05.000Z',
+                    sentAt        : null,
+                    priority      : 'high',
+                    urgent        : true
+                },
+                {
+                    messageId     : 'MESSAGE:expired-high',
+                    subscriptionId: 'WAKE_SUB:sub-a',
+                    firstQueuedAt : '2026-11-15T09:00:00.000Z',
+                    sentAt        : '2026-11-15T07:00:00.000Z',
+                    priority      : 'high',
+                    urgent        : false
+                }
+            ],
+            now: '2026-11-15T09:00:20.000Z'
+        });
+
+        expect(stages['MESSAGE:shared']).toMatchObject({
+            stage       : 'waiting-for-policy',
+            urgent      : true,
+            policyWaitMs: 15_000,
+            timestamps  : {
+                firstQueuedAt: '2026-11-15T09:00:05.000Z',
+                sourceSentAt : '2026-11-15T09:00:00.000Z'
+            }
+        });
+        expect(stages['MESSAGE:expired-high']).toMatchObject({
+            stage : 'waiting-for-policy',
+            urgent: false
+        });
+    });
+
+    test('AC-4(f) — unknown or unrecognized record states map to unknown without leaking into open receipt waits, and settled terminal outcomes win over receipt deferReasons', () => {
+        const unknownStage = projectWakeRecordStage({
+            recordKey     : 'rec-unknown',
+            subscriptionId: 'WAKE_SUB:x',
+            sourceEventIds: ['MESSAGE:u1'],
+            state         : 'unknown',
+            urgent        : true,
+            nativeStatus  : 'unknown',
+            deferReason   : 'native-recipient:receipt-unproven',
+            waitStage     : 'waiting-for-receipt',
+            acceptedAt    : '2026-11-15T09:00:00.050Z'
+        });
+        expect(unknownStage).toMatchObject({
+            stage     : 'unknown',
+            settled   : false,
+            urgent    : true,
+            reason    : 'native-recipient:receipt-unproven',
+            timestamps: {acceptedAt: '2026-11-15T09:00:00.050Z'}
+        });
+
+        const weirdStage = projectWakeRecordStage({
+            recordKey     : 'rec-weird',
+            subscriptionId: 'WAKE_SUB:x',
+            sourceEventIds: ['MESSAGE:u2'],
+            state         : 'unrecognized-state',
+            deferReason   : 'native-recipient:receipt-unproven'
+        });
+        expect(weirdStage.stage).toBe('unknown');
+
+        const failedAfterReceipt = projectWakeRecordStage({
+            recordKey     : 'rec-failed',
+            subscriptionId: 'WAKE_SUB:x',
+            sourceEventIds: ['MESSAGE:f1'],
+            state         : 'failed',
+            nativeStatus  : 'unknown',
+            deferReason   : 'native-recipient:receipt-unproven',
+            outcomeReason : 'transport-error'
+        });
+        expect(failedAfterReceipt).toMatchObject({stage: 'failed', reason: 'transport-error'});
+
+        const stages = projectWakeDeliveryStages([{
+            recordKey     : 'rec-unknown-2',
+            subscriptionId: 'WAKE_SUB:x',
+            sourceEventIds: ['MESSAGE:u1'],
+            state         : 'unknown',
+            outcomeReason : 'corrupt-record'
+        }], {messageIds: ['MESSAGE:u1']});
+        expect(stages['MESSAGE:u1'].stage).toBe('unknown');
     });
 });

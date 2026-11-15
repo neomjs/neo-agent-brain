@@ -4,6 +4,14 @@ import os                                                                       
 import path                                                                                          from 'node:path';
 import {bindPrimarySession, deliverPrimarySessionWake, readPrimarySessionWake, revokePrimarySession} from '../../../../../../ai/daemons/wake/primarySessionWake.mjs';
 import {withOutboxLock}                                                                              from '../../../../../../ai/daemons/wake/outboxLock.mjs';
+import {randomUUID}                                                                                  from 'node:crypto';
+import {
+    primaryWakeSpoolPath,
+    SPOOL_CONTENTION_REASONS,
+    stagePrimaryWake,
+    urgentPrimaryWakeSpoolPath
+} from '../../../../../../ai/daemons/wake/primaryWakeSpool.mjs';
+import {WakeReceiverState} from '../../../../../../ai/daemons/wake/receiverState.mjs';
 
 test.describe('primary session wake ownership', () => {
     let dir, statePath, binding, recorded, sends;
@@ -204,5 +212,204 @@ test.describe('primary session wake ownership', () => {
             proveTarget        : proof,
             isRecordedDelivered: async id => delivered.has(id)
         })).status).toBe('bound');
+    });
+});
+
+test.describe('stagePrimaryWake & deliverPrimarySessionWake urgent guards (RA-1 & RA-5)', () => {
+    const
+        seat  = '@spool-fixture',
+        sub   = 'WAKE_SUB:spool-fixture',
+        route = {agentIdentity: seat, harnessTargetMetadata: {adapter: 'primary-session'}};
+
+    const makeHighEnvelope = (eventId, sentAt) => ({
+        schemaVersion : '1.0',
+        eventType     : 'wake/digest',
+        eventId,
+        agentIdentity : seat,
+        subscriptionId: sub,
+        payload       : {
+            totalEvents: 1,
+            breakdown  : {sent_to_me: {count: 1, highestPriority: 'high', latest: {priority: 'high', sentAt}}}
+        },
+        emittedAt: sentAt
+    });
+
+    test('RA-1 — legacy record without record.urgent stays ordinary and settles cleanly past the 1h horizon without wedging', async () => {
+        const dir   = await fs.mkdtemp(path.join(os.tmpdir(), 'primary-spool-legacy-'));
+        const state = new WakeReceiverState({stateDir: dir});
+        await state.init();
+
+        try {
+            const freshIso     = new Date().toISOString();
+            const {record}     = await state.accept({subscriptionId: sub, eventId: 'legacy-1', envelope: makeHighEnvelope('legacy-1', freshIso), route});
+            const legacyRecord = {...record};
+            delete legacyRecord.urgent;
+
+            const staged = await stagePrimaryWake(legacyRecord, {state, stateDir: dir});
+            expect(staged).toEqual({status: 'pending', reason: 'awaiting the native recipient'});
+
+            const normalPtr = primaryWakeSpoolPath(dir, seat),
+                  urgentPtr = urgentPrimaryWakeSpoolPath(dir, seat);
+            expect(JSON.parse(await fs.readFile(normalPtr, 'utf8')).recordKey).toBe(legacyRecord.recordKey);
+            await expect(fs.stat(urgentPtr)).rejects.toMatchObject({code: 'ENOENT'});
+
+            await fs.writeFile(`${normalPtr}.result`, JSON.stringify({
+                recordKey     : legacyRecord.recordKey,
+                subscriptionId: sub,
+                recipient     : {seat, generation: '100:birth', threadId: randomUUID(), recordKey: legacyRecord.recordKey, nonce: randomUUID()}
+            }), {mode: 0o600});
+
+            const expiredView = {...legacyRecord, envelope: makeHighEnvelope('legacy-1', '2020-01-01T00:00:00.000Z')};
+            const settled     = await stagePrimaryWake(expiredView, {state, stateDir: dir});
+            expect(settled.status).toBe('delivered');
+            await state.transition(legacyRecord.recordKey, 'pending', 'delivered');
+
+            const nextAccepted = await state.accept({
+                subscriptionId: sub,
+                eventId       : 'after-legacy-1',
+                envelope      : makeHighEnvelope('after-legacy-1', freshIso),
+                route,
+                metadata      : {urgent: true}
+            });
+            expect(await stagePrimaryWake(nextAccepted.record, {state, stateDir: dir})).toEqual({
+                status: 'pending',
+                reason: 'awaiting the native recipient'
+            });
+        } finally {
+            await fs.rm(dir, {recursive: true, force: true});
+        }
+    });
+
+    test('RA-1 — pre-staged legacy .urgent.request.json without record.urgent still settles from its urgent result past 1h', async () => {
+        const dir   = await fs.mkdtemp(path.join(os.tmpdir(), 'primary-spool-legacy-ptr-'));
+        const state = new WakeReceiverState({stateDir: dir});
+        await state.init();
+
+        try {
+            const {record} = await state.accept({
+                subscriptionId: sub,
+                eventId       : 'legacy-pre-urgent',
+                envelope      : makeHighEnvelope('legacy-pre-urgent', '2020-01-01T00:00:00.000Z'),
+                route
+            });
+            const legacyRecord = {...record};
+            delete legacyRecord.urgent;
+
+            const urgentPtr = urgentPrimaryWakeSpoolPath(dir, seat);
+            await fs.mkdir(path.dirname(urgentPtr), {recursive: true, mode: 0o700});
+            await fs.writeFile(urgentPtr, JSON.stringify({recordKey: legacyRecord.recordKey, urgent: true}), {mode: 0o600});
+            await fs.writeFile(`${urgentPtr}.result`, JSON.stringify({
+                recordKey     : legacyRecord.recordKey,
+                subscriptionId: sub,
+                recipient     : {seat, generation: '100:birth', threadId: randomUUID(), recordKey: legacyRecord.recordKey, nonce: randomUUID()}
+            }), {mode: 0o600});
+
+            const settled = await stagePrimaryWake(legacyRecord, {state, stateDir: dir});
+            expect(settled.status).toBe('delivered');
+            await state.transition(legacyRecord.recordKey, 'pending', 'delivered');
+
+            const followUp = await state.accept({
+                subscriptionId: sub,
+                eventId       : 'follow-up',
+                envelope      : makeHighEnvelope('follow-up', new Date().toISOString()),
+                route,
+                metadata      : {urgent: false}
+            });
+            const stagedFollowUp = await stagePrimaryWake(followUp.record, {state, stateDir: dir});
+            expect(stagedFollowUp).toEqual({status: 'pending', reason: 'awaiting the native recipient'});
+        } finally {
+            await fs.rm(dir, {recursive: true, force: true});
+        }
+    });
+
+    test('RA-5 — stagePrimaryWake preserves active normal pointer/.status during urgent staging and refuses contention cleanly', async () => {
+        const dir   = await fs.mkdtemp(path.join(os.tmpdir(), 'primary-spool-guards-'));
+        const state = new WakeReceiverState({stateDir: dir});
+        await state.init();
+
+        try {
+            const nowIso    = new Date().toISOString();
+            const normal1   = (await state.accept({subscriptionId: sub, eventId: 'n1', envelope: makeHighEnvelope('n1', nowIso), route, metadata: {urgent: false}})).record;
+            const urgent1   = (await state.accept({subscriptionId: sub, eventId: 'u1', envelope: makeHighEnvelope('u1', nowIso), route, metadata: {urgent: true}})).record;
+            const normal2   = (await state.accept({subscriptionId: sub, eventId: 'n2', envelope: makeHighEnvelope('n2', nowIso), route, metadata: {urgent: false}})).record;
+            const normalPtr = primaryWakeSpoolPath(dir, seat),
+                  urgentPtr = urgentPrimaryWakeSpoolPath(dir, seat);
+
+            expect(await stagePrimaryWake(normal1, {state, stateDir: dir})).toEqual({status: 'pending', reason: 'awaiting the native recipient'});
+            await fs.writeFile(`${normalPtr}.status`, JSON.stringify({
+                recordKey     : normal1.recordKey,
+                subscriptionId: sub,
+                reason        : 'native-recipient:active-turn-adapter-unavailable',
+                dependency    : '#1741'
+            }), {mode: 0o600});
+
+            const sessionFile = path.join(dir, 'primary-sessions', `${seat.slice(1)}.json`);
+            await fs.writeFile(sessionFile, JSON.stringify({
+                version       : 1,
+                binding       : {seat, generation: '100:birth', family: 'codex-desktop', threadId: randomUUID()},
+                inflight      : {status: 'unknown', recordKey: normal1.recordKey, nonce: randomUUID()},
+                urgentInflight: null
+            }), {mode: 0o600});
+
+            expect(await stagePrimaryWake(urgent1, {state, stateDir: dir})).toEqual({status: 'pending', reason: 'awaiting the native recipient'});
+            expect(JSON.parse(await fs.readFile(normalPtr, 'utf8')).recordKey).toBe(normal1.recordKey);
+            expect(JSON.parse(await fs.readFile(`${normalPtr}.status`, 'utf8')).recordKey).toBe(normal1.recordKey);
+            expect(JSON.parse(await fs.readFile(urgentPtr, 'utf8')).recordKey).toBe(urgent1.recordKey);
+
+            const blockedNormal = await stagePrimaryWake(normal2, {state, stateDir: dir});
+            expect(blockedNormal.status).toBe('pending');
+            expect(SPOOL_CONTENTION_REASONS).toContain(blockedNormal.reason);
+            expect(JSON.parse(await fs.readFile(normalPtr, 'utf8')).recordKey).toBe(normal1.recordKey);
+        } finally {
+            await fs.rm(dir, {recursive: true, force: true});
+        }
+    });
+
+    test('RA-5 — deliverPrimarySessionWake defers ordinary delivery when an urgent attempt is unresolved', async () => {
+        const dir       = await fs.mkdtemp(path.join(os.tmpdir(), 'primary-deliver-urgent-guard-'));
+        const statePath = path.join(dir, 'seat.json');
+        const threadId  = randomUUID(),
+              urgentKey = 'e'.repeat(64),
+              normalKey = 'f'.repeat(64),
+              binding   = {seat: '@deliver-guard', generation: '200:birth', family: 'codex-desktop', threadId};
+
+        try {
+            const targetProof = async () => ({root: true, threadId, generation: '200:birth'});
+            await bindPrimarySession({
+                statePath,
+                ...binding,
+                expectedVersion    : 0,
+                proveTarget        : targetProof,
+                isRecordedDelivered: async () => false
+            });
+
+            let   sendCalls     = 0;
+            const urgentAttempt = await deliverPrimarySessionWake({
+                statePath,
+                ...binding,
+                recordKey          : urgentKey,
+                urgent             : true,
+                readTarget         : targetProof,
+                send               : async () => { sendCalls++; return {status: 'accepted'} },
+                readReceipt        : async () => null,
+                isRecordedDelivered: async () => false
+            });
+            expect(urgentAttempt.status).toBe('unknown');
+
+            const ordinaryDeferred = await deliverPrimarySessionWake({
+                statePath,
+                ...binding,
+                recordKey          : normalKey,
+                urgent             : false,
+                readTarget         : targetProof,
+                send               : async () => { sendCalls++; return {status: 'accepted'} },
+                readReceipt        : async () => null,
+                isRecordedDelivered: async () => false
+            });
+            expect(ordinaryDeferred).toEqual({status: 'pending', reason: 'urgent delivery in progress'});
+            expect(sendCalls).toBe(1);
+        } finally {
+            await fs.rm(dir, {recursive: true, force: true});
+        }
     });
 });

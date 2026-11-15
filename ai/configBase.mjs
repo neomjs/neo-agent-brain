@@ -2302,6 +2302,16 @@ class ConfigBase extends ConfigProvider {
                      */
                     coalesceWindowSeconds: leaf(150, 'NEO_WAKE_COALESCE_WINDOW_SECONDS', 'number'),
                     /**
+                     * @summary Fixed micro-window (ms) for urgent wake coalescing before immediate dispatch.
+                     * @type {Number}
+                     */
+                    urgentCoalesceWindowMs: leaf(50, 'NEO_WAKE_URGENT_COALESCE_WINDOW_MS', 'number'),
+                    /**
+                     * @summary Minimum refractory interval (seconds) between consecutive urgent wake flushes on the same subscription.
+                     * @type {Number}
+                     */
+                    urgentFlushRefractorySeconds: leaf(5, 'NEO_WAKE_URGENT_FLUSH_REFRACTORY_SECONDS', 'number'),
+                    /**
                      * Post-flush refractory (seconds): after a CONFIRMED delivery, the next digest
                      * for the same subscription is held to at least this distance — the
                      * anti-chatter floor that stops wake-per-message at just-outside-window

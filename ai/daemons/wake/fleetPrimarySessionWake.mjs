@@ -238,7 +238,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         home, binary, threadId, workspaceRoot:live.workspaceRoot, generation, manifestPath, stateDir, agentId:config.agentId,
         runtimePid:live.pid, nodePath:config.hookNodePath, modulePath:config.hookModulePath
     });
-    const urgent        = isUrgentWakeRecord(record);
+    const urgent        = isUrgentWakeRecord(record) || prior.urgentInflight?.recordKey === record.recordKey;
     const cursorPathFor = slotUrgent => statePath + (slotUrgent ? '.urgent.cursor.json' : '.cursor.json');
     const claimPathFor  = slotUrgent => statePath + (slotUrgent ? '.urgent.claim.json' : '.claim.json');
     let   denialReason  = null,

@@ -989,15 +989,31 @@ class WakeSubscriptionService extends Base {
 
     /**
      * @summary Whether each wake message arrived, from the wake receiver's own dispatch records through
-     * the one reader the wake axis uses. Records that are unreadable or undeclared leave every message
-     * `unknown`; a message in no record reads `undelivered` (`projectMessageDelivery`).
-     * @param {String[]} messageIds Wake message ids.
-     * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, messages: Object}>}
+     * the one reader the wake axis uses, optionally including lifecycle stage projections combined with
+     * in-memory coalescing policy queues.
+     * @param {String[]}    messageIds Wake message ids.
+     * @param {Object}      [opts]
+     * @param {Boolean}     [opts.includeStages=false]
+     * @param {Number|null} [opts.now=null]
+     * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, messages: Object, messageStages?: Object}>}
      */
-    async readMessageDelivery(messageIds) {
-        const {deliveryReadable, deliveryReadReason, messages} = await (this.wakeDeliveryReadFn || readWakeDelivery)({messageIds});
+    async readMessageDelivery(messageIds, {includeStages = false, now = null} = {}) {
+        const result = await (this.wakeDeliveryReadFn || readWakeDelivery)({
+            messageIds,
+            ...(includeStages ? {
+                includeStages: true,
+                policyQueue  : CoalescingEngineService.getPendingPolicySnapshot(now ?? undefined),
+                ...(now !== null ? {now} : {})
+            } : {})
+        });
+        const {deliveryReadable, deliveryReadReason, messages} = result;
 
-        return {deliveryReadable, deliveryReadReason, messages}
+        return {
+            deliveryReadable,
+            deliveryReadReason,
+            messages,
+            ...(includeStages ? {messageStages: result.messageStages} : {})
+        }
     }
 
     /**

@@ -10,7 +10,6 @@ import {readPrivateWakeJson}      from './nativeWakeEnrollment.mjs';
 import {writeFileAtomic}          from '../../services/shared/atomicFileWrite.mjs';
 import {deriveAgentInstanceHome}  from '../../services/fleet/deriveAgentInstanceHome.mjs';
 import {deriveHarnessWakeAddress} from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
-import {isUrgentWakeEnvelope}     from '../../services/memory-core/wakeCoalescePolicy.mjs';
 
 const keyPattern = /^[a-f0-9]{64}$/;
 const uuid       = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -58,11 +57,25 @@ export function urgentPrimaryWakeSpoolPath(stateDir, seat) {
     return path.join(stateDir, 'primary-sessions', seat.slice(1) + '.urgent.request.json')
 }
 
-/** @summary Returns whether a receiver record qualifies for urgent native staging and drain ordering. */
-export function isUrgentWakeRecord(record, now = Date.now()) {
-    if (!record) return false;
-    if (typeof record.urgent === 'boolean') return record.urgent;
-    return isUrgentWakeEnvelope(record.envelope, now)
+/**
+ * @summary Defer reasons emitted by the host wake spool when another in-flight or staged wake
+ * already occupies the target slot (`waiting-for-spool`, before the host chat boundary is reached).
+ */
+export const SPOOL_CONTENTION_REASONS = Object.freeze([
+    'earlier urgent native wake outstanding',
+    'urgent native wake outstanding',
+    'earlier native wake outstanding'
+]);
+
+/**
+ * @summary Returns whether a receiver record explicitly carries the stamped `urgent` flag.
+ * Pre-PR records lacking `record.urgent` evaluate deterministically to `false` so stale legacy
+ * records cannot re-enter urgent preemption or wedge a seat across restarts.
+ * @param {Object|null} record
+ * @returns {Boolean}
+ */
+export function isUrgentWakeRecord(record) {
+    return record?.urgent === true
 }
 
 async function isSpoolPointerActive(entry, state) {
@@ -98,7 +111,7 @@ async function readSpoolOutcome(pointer, record, seat, key) {
 }
 
 /** @summary Stages a signed record for host consumption, preempting unsent ordinary pointers while preserving in-flight ones. */
-export async function stagePrimaryWake(record, {state, stateDir, now = Date.now()}) {
+export async function stagePrimaryWake(record, {state, stateDir}) {
     const
         seat             = record.route?.agentIdentity,
         key              = record.recordKey,
@@ -111,10 +124,10 @@ export async function stagePrimaryWake(record, {state, stateDir, now = Date.now(
 
     return withOutboxLock(normalPointer, async () => {
         const
-            urgent        = isUrgentWakeRecord(record, now),
             currentNormal = await readPrivateWakeJson(normalPointer),
             currentUrgent = await readPrivateWakeJson(urgentPointer),
-            sessionState  = await readPrivateWakeJson(sessionStatePath);
+            sessionState  = await readPrivateWakeJson(sessionStatePath),
+            urgent        = isUrgentWakeRecord(record) || currentUrgent?.recordKey === key || sessionState?.urgentInflight?.recordKey === key;
 
         if (urgent) {
             if (currentUrgent?.recordKey !== key) {
@@ -132,7 +145,7 @@ export async function stagePrimaryWake(record, {state, stateDir, now = Date.now(
         }
 
         if (currentNormal?.recordKey !== key) {
-            if (sessionState?.inflight?.recordKey !== key && await isSpoolPointerActive(currentUrgent, state)) {
+            if (sessionState?.inflight?.recordKey !== key && currentUrgent?.recordKey !== key && await isSpoolPointerActive(currentUrgent, state)) {
                 return {status: 'pending', reason: 'urgent native wake outstanding'}
             }
             if (await isSpoolPointerActive(currentNormal, state)) {

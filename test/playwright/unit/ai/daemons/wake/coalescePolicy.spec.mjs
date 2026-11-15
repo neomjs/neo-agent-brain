@@ -10,9 +10,7 @@ import {
     isUrgentWakeEvent,
     MESSAGE_WAKE_MAX_AGE_MS,
     POST_FLUSH_REFRACTORY_MS,
-    resolveCoalesceWindowMs,
-    URGENT_COALESCE_WINDOW_MS,
-    URGENT_REFRACTORY_MS
+    resolveCoalesceWindowMs
 } from '../../../../../../ai/services/memory-core/wakeCoalescePolicy.mjs';
 
 /**
@@ -210,7 +208,7 @@ test.describe('ai/services/memory-core/wakeCoalescePolicy', () => {
     });
 
     test.describe('urgent wake qualification and scheduling', () => {
-        test('isUrgentWakeEvent admits only fresh non-quiet high-priority sent_to_me events', () => {
+        test('isUrgentWakeEvent admits only fresh high-priority sent_to_me events', () => {
             const freshIso = new Date(T0 - 5_000).toISOString(),
                   staleIso = new Date(T0 - MESSAGE_WAKE_MAX_AGE_MS - 1).toISOString();
 
@@ -222,11 +220,6 @@ test.describe('ai/services/memory-core/wakeCoalescePolicy', () => {
             expect(isUrgentWakeEvent({
                 eventType: 'wake/sent_to_me',
                 payload  : {messageId: 'M-2', priority: 'normal', sentAt: freshIso}
-            }, T0)).toBe(false);
-
-            expect(isUrgentWakeEvent({
-                eventType: 'wake/sent_to_me',
-                payload  : {messageId: 'M-3', priority: 'high', wakeSuppressed: true, sentAt: freshIso}
             }, T0)).toBe(false);
 
             expect(isUrgentWakeEvent({
@@ -266,33 +259,49 @@ test.describe('ai/services/memory-core/wakeCoalescePolicy', () => {
             }, T0)).toBe(false);
         });
 
-        test('computeUrgentFlushDelayMs and computeUrgentFlushHoldMs bypass ordinary debounce while bounding urgent bursts', () => {
+        test('computeUrgentFlushDelayMs and computeUrgentFlushHoldMs bypass ordinary debounce while honoring caller-supplied leaves', () => {
             expect(computeUrgentFlushDelayMs({
                 now                : T0,
                 windowMs           : 150_000,
                 firstUrgentQueuedAt: T0,
-                lastUrgentFlushAt  : 0
-            })).toBe(URGENT_COALESCE_WINDOW_MS);
+                lastUrgentFlushAt  : 0,
+                urgentWindowMs     : 50,
+                urgentRefractoryMs : 5_000
+            })).toBe(50);
 
             expect(computeUrgentFlushDelayMs({
                 now                : T0 + 1_000,
                 windowMs           : 150_000,
                 firstUrgentQueuedAt: T0 + 1_000,
-                lastUrgentFlushAt  : T0
-            })).toBe(URGENT_REFRACTORY_MS - 1_000);
+                lastUrgentFlushAt  : T0,
+                urgentWindowMs     : 50,
+                urgentRefractoryMs : 5_000
+            })).toBe(4_000);
+
+            expect(computeUrgentFlushDelayMs({
+                now                : T0 + 1_000,
+                windowMs           : 150_000,
+                firstUrgentQueuedAt: T0 + 1_000,
+                lastUrgentFlushAt  : T0,
+                urgentWindowMs     : 120,
+                urgentRefractoryMs : 9_000
+            })).toBe(8_000);
 
             expect(computeUrgentFlushHoldMs({
                 now                : T0 + 1_500,
                 windowMs           : 150_000,
                 firstUrgentQueuedAt: T0 + 1_000,
-                lastUrgentFlushAt  : T0
-            })).toBe(URGENT_REFRACTORY_MS - 1_500);
+                lastUrgentFlushAt  : T0,
+                urgentRefractoryMs : 5_000
+            })).toBe(3_500);
 
             expect(computeUrgentFlushDelayMs({
                 now                : T0,
                 windowMs           : 0,
                 firstUrgentQueuedAt: T0,
-                lastUrgentFlushAt  : T0
+                lastUrgentFlushAt  : T0,
+                urgentWindowMs     : 50,
+                urgentRefractoryMs : 5_000
             })).toBe(0);
         });
     })

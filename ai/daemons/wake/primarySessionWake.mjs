@@ -118,6 +118,8 @@ export async function deliverPrimarySessionWake({statePath, seat, generation, fa
         ![readTarget, send, readReceipt, isRecordedDelivered].every(fn => typeof fn === 'function')) {
         return {status: 'pending', reason: 'invalid delivery'}
     }
+    // The effect mutex serializes send/reconcile callers without blocking the owner lock that
+    // the recipient hook needs. A dead sender's mutex is reclaimed only after process death.
     return withOutboxLock(`${statePath}.effect`, async () => {
         const phase = await withOutboxLock(statePath, async () => {
             let   state     = await readPrimarySessionWake({statePath});

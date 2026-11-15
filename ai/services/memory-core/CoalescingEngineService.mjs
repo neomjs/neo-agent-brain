@@ -160,6 +160,20 @@ class CoalescingEngineService extends Base {
     hardCapMs = null
 
     /**
+     * @member {Number|null} urgentWindowMs=null
+     * @protected
+     * @summary Entrypoint-injected fixed micro-window (ms) for urgent wake coalescing.
+     */
+    urgentWindowMs = null
+
+    /**
+     * @member {Number|null} urgentRefractoryMs=null
+     * @protected
+     * @summary Entrypoint-injected minimum post-urgent-flush refractory interval in milliseconds.
+     */
+    urgentRefractoryMs = null
+
+    /**
      * @member {Set<McpServer>} mcpServers
      * @protected
      */
@@ -167,7 +181,7 @@ class CoalescingEngineService extends Base {
 
     /**
      * Per-subscription queue + timer state.
-     * Structure: `Map<subscriptionId, {queue: Object[], timer: ?TimerId, subscription: Object, firstQueuedAt: Number}>`
+     * Structure: `Map<subscriptionId, {queue: Object[], timer: ?TimerId, scheduledAt: ?Number, subscription: Object, firstQueuedAt: Number, lastOrdinaryQueuedAt: ?Number, firstUrgentQueuedAt: ?Number}>`
      * Populated lazily on first enqueue; cleared on flush.
      * @member {Map<String, Object>} coalesceState
      * @protected
@@ -248,6 +262,8 @@ class CoalescingEngineService extends Base {
      * @param {Number} dispatchConfig.coalesceWindowSeconds
      * @param {Number} dispatchConfig.flushRefractorySeconds
      * @param {Number} dispatchConfig.flushHardCapSeconds
+     * @param {Number} dispatchConfig.urgentCoalesceWindowMs
+     * @param {Number} dispatchConfig.urgentFlushRefractorySeconds
      * @param {Object}          [collaborators]                          Wiring, not configuration.
      * @param {Function|null}   [collaborators.resolveDeliveryReadState] `(messageId, recipient) => {readAt?}`
      * @param {Function|null}   [collaborators.resolveDeliveryHold]      `(recipient) => Boolean`
@@ -255,10 +271,10 @@ class CoalescingEngineService extends Base {
      * @param {Function|null}   [collaborators.setTimerFn]               `(fn, delayMs) => TimerId`
      * @param {Function|null}   [collaborators.clearTimerFn]             `(timerId) => void`
      */
-    configure({coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds} = {},
+    configure({coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds, urgentCoalesceWindowMs, urgentFlushRefractorySeconds} = {},
         {resolveDeliveryReadState = null, resolveDeliveryHold = null, nowFn = null, setTimerFn = null, clearTimerFn = null} = {}
     ) {
-        const values = {coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds};
+        const values = {coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds, urgentCoalesceWindowMs, urgentFlushRefractorySeconds};
 
         for (const [name, collaborator] of Object.entries({resolveDeliveryReadState, resolveDeliveryHold, nowFn, setTimerFn, clearTimerFn})) {
             if (collaborator !== null && typeof collaborator !== 'function') {
@@ -278,6 +294,8 @@ class CoalescingEngineService extends Base {
         this.defaultWindowSeconds     = coalesceWindowSeconds;
         this.refractoryMs             = flushRefractorySeconds * 1000;
         this.hardCapMs                = flushHardCapSeconds * 1000;
+        this.urgentWindowMs           = urgentCoalesceWindowMs;
+        this.urgentRefractoryMs       = urgentFlushRefractorySeconds * 1000;
         this.resolveDeliveryReadState = resolveDeliveryReadState;
         this.resolveDeliveryHold      = resolveDeliveryHold;
         this.nowFn                    = nowFn || (() => Date.now());
@@ -346,10 +364,6 @@ class CoalescingEngineService extends Base {
             return;
         }
 
-        if (event?.eventType === 'wake/sent_to_me' && event.payload?.wakeSuppressed === true) {
-            return;
-        }
-
         this._assertConfigured();
 
         const
@@ -401,6 +415,8 @@ class CoalescingEngineService extends Base {
                     windowMs,
                     firstUrgentQueuedAt: state.firstUrgentQueuedAt,
                     lastUrgentFlushAt  : this.lastUrgentFlushAtBySub.get(subId) || 0,
+                    urgentWindowMs     : this.urgentWindowMs,
+                    urgentRefractoryMs : this.urgentRefractoryMs,
                     capMs              : this.hardCapMs
                 }),
                 targetAt = now + delayMs;
@@ -498,7 +514,6 @@ class CoalescingEngineService extends Base {
      */
     _canExtendOrdinaryWindow(subscription, event, now) {
         if (event?.eventType !== 'wake/sent_to_me') return true;
-        if (event.payload?.wakeSuppressed === true) return false;
         if (!isMessageWakeFresh({sentAt: event.payload?.sentAt, now})) return false;
 
         return !this._isCommittedReadEvent(subscription, event)
@@ -527,27 +542,31 @@ class CoalescingEngineService extends Base {
     }
 
     /**
-     * @summary Returns a read-only snapshot of message ids currently queued in coalescing/refractory policy.
-     * @returns {Object<String, {subscriptionId: String, firstQueuedAt: String, sentAt: String|null, priority: String, urgent: Boolean}>}
+     * @summary Returns a read-only array snapshot of message entries currently queued in coalescing/refractory policy.
+     * @param {Number} [now=this.nowFn()] Epoch ms used to evaluate per-event urgent policy eligibility.
+     * @returns {Array<{messageId: String, subscriptionId: String, firstQueuedAt: String|null, sentAt: String|null, priority: String, urgent: Boolean}>}
      */
-    getPendingPolicySnapshot() {
-        const snapshot = Object.create(null);
+    getPendingPolicySnapshot(now = this.nowFn()) {
+        const snapshot = [];
 
         for (const [subscriptionId, state] of this.coalesceState.entries()) {
-            const firstQueuedIso = new Date(state.firstQueuedAt).toISOString();
+            const firstQueuedIso = Number.isFinite(state.firstQueuedAt)
+                ? new Date(state.firstQueuedAt).toISOString()
+                : null;
 
             for (const event of state.queue) {
                 if (event?.eventType !== 'wake/sent_to_me') continue;
-                const messageId = event.payload?.messageId;
+                const messageId = event.sourceEventId || event.payload?.messageId;
                 if (typeof messageId !== 'string' || !messageId) continue;
 
-                snapshot[messageId] = {
+                snapshot.push({
+                    messageId,
                     subscriptionId,
                     firstQueuedAt: firstQueuedIso,
-                    sentAt       : typeof event.payload.sentAt === 'string' ? event.payload.sentAt : null,
-                    priority     : typeof event.payload.priority === 'string' ? event.payload.priority : 'normal',
-                    urgent       : state.firstUrgentQueuedAt !== null
-                };
+                    sentAt       : typeof event.payload?.sentAt === 'string' ? event.payload.sentAt : null,
+                    priority     : typeof event.payload?.priority === 'string' ? event.payload.priority : 'normal',
+                    urgent       : this._isUrgentQueuedEvent(state.subscription, event, now)
+                });
             }
         }
 
@@ -597,7 +616,7 @@ class CoalescingEngineService extends Base {
      * @protected
      */
     _assertConfigured() {
-        if (![this.defaultWindowSeconds, this.refractoryMs, this.hardCapMs].every(Number.isFinite)) {
+        if (![this.defaultWindowSeconds, this.refractoryMs, this.hardCapMs, this.urgentWindowMs, this.urgentRefractoryMs].every(Number.isFinite)) {
             throw new Error('CoalescingEngineService is not configured by the Memory Core entrypoint');
         }
     }
@@ -651,19 +670,37 @@ class CoalescingEngineService extends Base {
             return;
         }
 
-        const
-            now         = this.nowFn(),
-            nonQuiet    = queue.filter(event => !(event?.eventType === 'wake/sent_to_me' && event.payload?.wakeSuppressed === true)),
-            ageAdmitted = this._partitionExpiredMessageWakes(subscription, nonQuiet, now);
+        const now = this.nowFn();
+
+        // Canonical mailbox-age admission, applied BEFORE any digest field is derived — the Shape
+        // A/B twin of the daemon's flush-time gate. A replayed GraphLog `DELIVERED_TO` edge
+        // re-surfaces an old unread MESSAGE as a fresh delta; without this gate the digest counts
+        // it, names it `latest`, and lets a dead lane's HIGH priority spoof an interruption — a
+        // replayed lane-claim is the highest-cost shape, since it points one peer at another over
+        // territory both already hold correctly. Mailbox state stays untouched — old unread mail
+        // remains listable; it simply cannot manufacture live interruption urgency.
+        const ageAdmitted = this._partitionExpiredMessageWakes(subscription, queue, now);
 
         if (ageAdmitted.length === 0) {
+            // Every queued message event was past the admission horizon (or carried no verifiable
+            // `sentAt` — fail-closed, daemon-symmetric): consume the queue WITHOUT dispatching a
+            // zero-event wake. No `lastFlushAtBySub` arming — nothing was delivered, so no
+            // refractory may be claimed.
             this.coalesceState.delete(subscriptionId);
             return;
         }
 
+        // Reconcile read-state before the digest exists, for the same reason freshness lives above:
+        // every outer field and rendered bucket must describe ONE admitted event set. The prior
+        // implementation skipped committed-read messages only while incrementing buckets, then
+        // derived `totalEvents`, source ids, digest identity, and the tail `logId` from the original
+        // queue — producing a turn-priced `[WAKE] … 1 events` header with zero detail when a message
+        // was read inside the coalescing window.
         const {events: surviving, unopenableEvents} = this._reconcileMessageWakeReadState(subscription, ageAdmitted);
 
         if (surviving.length === 0) {
+            // A committed read is user authority, not a delivery failure. Consume the queue without
+            // dispatch/retry/refractory; the durable mailbox state is already the receipt.
             this.coalesceState.delete(subscriptionId);
             return;
         }
@@ -680,6 +717,7 @@ class CoalescingEngineService extends Base {
                     windowMs,
                     firstUrgentQueuedAt: state.firstUrgentQueuedAt ?? firstQueuedAt,
                     lastUrgentFlushAt  : this.lastUrgentFlushAtBySub.get(subscriptionId) || 0,
+                    urgentRefractoryMs : this.urgentRefractoryMs,
                     capMs              : this.hardCapMs
                 });
             } else {
@@ -889,6 +927,7 @@ class CoalescingEngineService extends Base {
             earliestSentAtMs   = null,
             latestUrgentSentAt = null,
             latestUrgentMs     = null;
+        const messageSentAt = Object.create(null);
 
         for (const evt of events) {
             const bucketKey = bucketOf[evt.eventType];
@@ -910,6 +949,10 @@ class CoalescingEngineService extends Base {
                 bucket.latestTs = ts ?? bucket.latestTs;
             }
 
+            // Every pulse counted by its pulse-id prefix (`<source>.<payload>`), so the receiver's
+            // active-session skip can tell an idle-out reminder from a GitHub notification riding
+            // the same transport — the `latest` pointer alone hides a content pulse coalesced behind
+            // a newer idle pulse. A pulse without a prefix counts as `unknown`.
             if (bucketKey === 'heartbeat_pulse') {
                 const pulseId = String(evt.payload?.pulseId ?? ''),
                       source  = pulseId.includes('.') ? pulseId.slice(0, pulseId.indexOf('.')) : 'unknown';
@@ -932,6 +975,10 @@ class CoalescingEngineService extends Base {
                     const sentMs = Date.parse(sentAt);
 
                     if (Number.isFinite(sentMs)) {
+                        const messageId = this._getSourceEventId(evt);
+                        if (messageId && messageId !== 'unknown') {
+                            messageSentAt[messageId] = sentAt;
+                        }
                         if (earliestSentAtMs === null || sentMs < earliestSentAtMs) {
                             earliestSentAtMs = sentMs;
                             earliestSentAt   = sentAt;
@@ -970,6 +1017,7 @@ class CoalescingEngineService extends Base {
                 windowMs     : Number.isFinite(firstQueuedAt) ? Math.max(0, emittedAt.getTime() - firstQueuedAt) : 0,
                 firstQueuedAt: Number.isFinite(firstQueuedAt) ? new Date(firstQueuedAt).toISOString() : emittedAt.toISOString(),
                 urgent       : Boolean(isUrgent),
+                ...(Object.keys(messageSentAt).length > 0 ? {messageSentAt} : {}),
                 ...(earliestSentAt ? {earliestSentAt} : {}),
                 ...(latestUrgentSentAt ? {latestUrgentSentAt} : {})
             },

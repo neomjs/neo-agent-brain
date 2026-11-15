@@ -37,6 +37,7 @@ import {
     ACTIVE_TURN_ADAPTER_DEPENDENCY,
     ACTIVE_TURN_UNAVAILABLE_REASON,
     hasPrimaryWakeRecipient,
+    SPOOL_CONTENTION_REASONS,
     isUrgentWakeRecord,
     primaryWakeSeatForAddress,
     stagePrimaryWake
@@ -50,22 +51,40 @@ function isSeatId(value) {
     return typeof value === 'string' && /^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/.test(value)
 }
 
+/**
+ * @summary Normalizes an ISO-8601 timestamp string or finite epoch-ms value to a canonical ISO string.
+ * @param {String|Number|null|undefined} value
+ * @returns {String|null}
+ */
+function toCanonicalIsoOrNull(value) {
+    if (typeof value === 'string' && value.trim()) {
+        const parsed = Date.parse(value);
+        return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return new Date(value).toISOString()
+    }
+    return null
+}
+
 /** @summary Extracts initial priority, urgency, and source-timing metadata from an accepted envelope. */
 function deriveAcceptMetadata(envelope, nowMs) {
     const
-        urgent        = isUrgentWakeEnvelope(envelope, nowMs),
-        sentToMe      = envelope?.payload?.breakdown?.sent_to_me,
-        priority      = sentToMe?.highestPriority || sentToMe?.latest?.priority || (urgent ? 'high' : 'normal'),
-        sourceSentAt  = envelope?.payload?.earliestSentAt || envelope?.payload?.latestUrgentSentAt || sentToMe?.latest?.sentAt || null,
-        firstQueuedAt = Number.isFinite(envelope?.payload?.firstQueuedAt) ? envelope.payload.firstQueuedAt : null,
+        urgent       = isUrgentWakeEnvelope(envelope, nowMs),
+        sentToMe     = envelope?.payload?.breakdown?.sent_to_me,
+        priority     = sentToMe?.highestPriority || sentToMe?.latest?.priority || (urgent ? 'high' : 'normal'),
+        sourceSentAt = (urgent
+            ? (envelope?.payload?.latestUrgentSentAt || envelope?.payload?.earliestSentAt)
+            : (envelope?.payload?.earliestSentAt || envelope?.payload?.latestUrgentSentAt))
+            || sentToMe?.latest?.sentAt || null,
+        firstQueuedAt = toCanonicalIsoOrNull(envelope?.payload?.firstQueuedAt),
         emittedAt     = typeof envelope?.emittedAt === 'string' ? envelope.emittedAt : null;
 
     return {
         urgent,
         priority,
-        waitStage: 'waiting-for-chat-boundary',
         ...(sourceSentAt ? {sourceSentAt} : {}),
-        ...(firstQueuedAt !== null ? {firstQueuedAt} : {}),
+        ...(firstQueuedAt ? {firstQueuedAt} : {}),
         ...(emittedAt ? {emittedAt} : {})
     }
 }
@@ -419,11 +438,10 @@ export function createWakeReceiver({
 
     const drain = () => {
         drainPromise = drainPromise.then(async () => {
-            const nowMs   = clock(),
-                  rawList = await watched.list('pending'),
+            const rawList = await watched.list('pending'),
                   pending = [
-                      ...rawList.filter(item => isUrgentWakeRecord(item, nowMs)),
-                      ...rawList.filter(item => !isUrgentWakeRecord(item, nowMs))
+                      ...rawList.filter(item => isUrgentWakeRecord(item)),
+                      ...rawList.filter(item => !isUrgentWakeRecord(item))
                   ];
 
             for (const record of pending) {
@@ -632,7 +650,7 @@ export function createWakeReceiver({
                             }
                         }
                     }
-                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath, now: clock()}) : dispatch(dispatching, rotationGuard ? {rotationGuard, rotationHolder} : undefined),
+                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath}) : dispatch(dispatching, rotationGuard ? {rotationGuard, rotationHolder} : undefined),
                         (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch, record.subscriptionId);
 
                     outcome = typeof result === 'string' ? result : native ? result?.status : result?.outcome;
@@ -646,13 +664,17 @@ export function createWakeReceiver({
                     if (native && ['pending', 'unknown'].includes(outcome)) {
                         const attemptIso      = new Date(clock()).toISOString(),
                               deferReason     = String(result?.reason || 'primary-session-unresolved'),
+                              spoolBlocked    = SPOOL_CONTENTION_REASONS.includes(deferReason),
                               awaitingReceipt = outcome === 'unknown' || deferReason === 'native-recipient:receipt-unproven',
-                              waitStage       = awaitingReceipt ? 'waiting-for-receipt' : 'waiting-for-chat-boundary',
-                              namedDependency = result?.dependency || (deferReason === ACTIVE_TURN_UNAVAILABLE_REASON ? ACTIVE_TURN_ADAPTER_DEPENDENCY : null);
+                              waitStage       = awaitingReceipt
+                                  ? 'waiting-for-receipt'
+                                  : (spoolBlocked ? 'waiting-for-spool' : 'waiting-for-chat-boundary'),
+                              namedDependency = result?.dependency || (deferReason === ACTIVE_TURN_UNAVAILABLE_REASON ? ACTIVE_TURN_ADAPTER_DEPENDENCY : null),
+                              stagedAt        = spoolBlocked ? dispatching.hostStagedAt : (dispatching.hostStagedAt || attemptIso);
                         await watched.transition(record.recordKey, 'dispatching', 'pending', {
                             deferReason,
                             nativeStatus   : outcome,
-                            hostStagedAt   : dispatching.hostStagedAt || attemptIso,
+                            ...(stagedAt ? {hostStagedAt: stagedAt} : {}),
                             waitStage,
                             namedDependency: namedDependency || null,
                             ...(awaitingReceipt ? {nativeInitiatedAt: dispatching.nativeInitiatedAt || attemptIso} : {}),

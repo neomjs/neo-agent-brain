@@ -67,20 +67,6 @@ export const POST_FLUSH_REFRACTORY_MS = 120000;
 export const MESSAGE_WAKE_MAX_AGE_MS = 60 * 60 * 1000;
 
 /**
- * Fixed micro-window (ms) from the first eligible high-priority arrival in a queue so back-to-back
- * urgent signals coalesce without waiting for the ordinary debounce window.
- * @type {Number}
- */
-export const URGENT_COALESCE_WINDOW_MS = 50;
-
-/**
- * Post-urgent-delivery floor (ms) bounding sustained high-priority bursts while letting isolated
- * urgent messages bypass the ordinary post-flush refractory.
- * @type {Number}
- */
-export const URGENT_REFRACTORY_MS = 5000;
-
-/**
  * @summary Returns whether a canonical mailbox timestamp is still eligible for live wake delivery.
  *
  * `MailboxService.addMessage()` owns `sentAt` and stamps it with `Date#toISOString()`. Requiring
@@ -244,9 +230,9 @@ export function computeFlushHoldMs({now, windowMs, firstQueuedAt, lastFlushAt = 
 }
 
 /**
- * @summary Returns whether a raw wake event qualifies for expedited urgent scheduling.
+ * @summary Returns whether a raw wake event qualifies as a fresh high-priority `wake/sent_to_me` signal for urgent scheduling.
  * @param {Object} event Wake event envelope.
- * @param {Number} [now=Date.now()] Current epoch ms.
+ * @param {Number} [now=Date.now()] Current epoch ms (compared against canonical mailbox `sentAt`).
  * @returns {Boolean}
  */
 export function isUrgentWakeEvent(event, now = Date.now()) {
@@ -254,7 +240,7 @@ export function isUrgentWakeEvent(event, now = Date.now()) {
 
     const payload = event.payload;
 
-    if (!payload || payload.priority !== 'high' || payload.wakeSuppressed === true) {
+    if (!payload || payload.priority !== 'high') {
         return false
     }
 
@@ -274,7 +260,7 @@ export function isUrgentWakeEnvelope(envelope, now = Date.now()) {
         payload  = envelope.payload,
         sentToMe = payload?.breakdown?.sent_to_me;
 
-    if (!payload || payload.wakeSuppressed === true || payload.urgent === false) return false;
+    if (!payload || payload.urgent === false) return false;
     if (!sentToMe || !(sentToMe.count > 0)) return false;
     if (sentToMe.highestPriority !== 'high' && sentToMe.latest?.priority !== 'high') return false;
 
@@ -294,8 +280,8 @@ export function isUrgentWakeEnvelope(envelope, now = Date.now()) {
  * @param {Number} opts.windowMs Effective ordinary coalescing window in ms.
  * @param {Number} opts.firstUrgentQueuedAt Epoch ms of the queue's first urgent arrival.
  * @param {Number} [opts.lastUrgentFlushAt=0] Epoch ms of the last delivered urgent digest.
- * @param {Number} [opts.urgentWindowMs=URGENT_COALESCE_WINDOW_MS] Fixed micro-window in ms.
- * @param {Number} [opts.urgentRefractoryMs=URGENT_REFRACTORY_MS] Post-urgent refractory floor in ms.
+ * @param {Number} opts.urgentWindowMs     Fixed micro-window in ms (from `AiConfig.orchestrator.wakeDispatch.urgentCoalesceWindowMs`).
+ * @param {Number} opts.urgentRefractoryMs Post-urgent refractory floor in ms (from `AiConfig.orchestrator.wakeDispatch.urgentFlushRefractorySeconds * 1000`).
  * @param {Number} [opts.capMs=COALESCE_HARD_CAP_MS] Hard cap ceiling in ms.
  * @returns {Number} Timer delay in ms.
  */
@@ -304,8 +290,8 @@ export function computeUrgentFlushDelayMs({
     windowMs,
     firstUrgentQueuedAt,
     lastUrgentFlushAt  = 0,
-    urgentWindowMs     = URGENT_COALESCE_WINDOW_MS,
-    urgentRefractoryMs = URGENT_REFRACTORY_MS,
+    urgentWindowMs,
+    urgentRefractoryMs,
     capMs              = COALESCE_HARD_CAP_MS
 }) {
     if (windowMs === 0) return 0;
@@ -326,7 +312,7 @@ export function computeUrgentFlushDelayMs({
  * @param {Number} opts.windowMs Effective ordinary coalescing window in ms.
  * @param {Number} opts.firstUrgentQueuedAt Epoch ms of the queue's first urgent arrival.
  * @param {Number} [opts.lastUrgentFlushAt=0] Epoch ms of the last delivered urgent digest.
- * @param {Number} [opts.urgentRefractoryMs=URGENT_REFRACTORY_MS] Post-urgent refractory floor in ms.
+ * @param {Number} opts.urgentRefractoryMs Post-urgent refractory floor in ms (from `AiConfig.orchestrator.wakeDispatch.urgentFlushRefractorySeconds * 1000`).
  * @param {Number} [opts.capMs=COALESCE_HARD_CAP_MS] Hard cap ceiling in ms.
  * @returns {Number} Remaining hold in ms.
  */
@@ -335,7 +321,7 @@ export function computeUrgentFlushHoldMs({
     windowMs,
     firstUrgentQueuedAt,
     lastUrgentFlushAt  = 0,
-    urgentRefractoryMs = URGENT_REFRACTORY_MS,
+    urgentRefractoryMs,
     capMs              = COALESCE_HARD_CAP_MS
 }) {
     if (windowMs === 0) return 0;
