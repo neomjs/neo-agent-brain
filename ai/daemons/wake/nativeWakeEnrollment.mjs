@@ -2,11 +2,11 @@
  * @module ai/daemons/wake/nativeWakeEnrollment
  * @summary Private per-seat enrollment and validation for native wake delivery.
  */
-import {constants}       from 'node:fs';
-import fs                from 'node:fs/promises';
-import path              from 'node:path';
-import {writeFileAtomic} from '../../services/shared/atomicFileWrite.mjs';
-import {withOutboxLock}  from './outboxLock.mjs';
+import {constants}           from 'node:fs';
+import fs                    from 'node:fs/promises';
+import path                  from 'node:path';
+import {writeFileAtomicSync} from '../../services/shared/atomicFileWrite.mjs';
+import {withOutboxLock}      from './outboxLock.mjs';
 
 const FAMILIES = new Set(['antigravity', 'codex-desktop']);
 const absolute = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root;
@@ -43,19 +43,22 @@ export async function readNativeWakeOptIn({manifestPath, agentId, family}) {
 }
 
 /** @summary Enrolls an explicitly selected seat; no hook, app or route is changed here. */
-export async function enrollNativeWake({manifestPath, stateDir, agentId, family}) {
+export async function enrollNativeWake({manifestPath, stateDir, agentId, family, signal, lock = withOutboxLock}) {
+    signal?.throwIfAborted();
     if (!absolute(stateDir) || !FAMILIES.has(family)) throw new Error('Expected receiver state directory and native desktop family');
     const file = optInPath(manifestPath, agentId), state = await fs.lstat(stateDir);
     if (!state.isDirectory() || (state.mode & 0o077) || !(await readPrivateWakeJson(manifestPath))?.routes) {
         throw new Error('Expected an initialized private receiver')
     }
     await fs.mkdir(path.dirname(file), {recursive: true, mode: 0o700});
-    return withOutboxLock(file, async () => {
+    return lock(file, async () => {
         const previous = await readNativeWakeOptIn({manifestPath, agentId, family});
+        signal?.throwIfAborted();
         if (previous && previous.stateDir !== stateDir) throw new Error('A different receiver owns this enrollment');
         if (previous) return previous;
         const enrollment = {version: 1, family, agentId, stateDir};
-        await writeFileAtomic(file, JSON.stringify(enrollment), {mode: 0o600, fsync: true});
+        // The cancellation check and rename are one event-loop turn: Stop cannot interleave between them.
+        writeFileAtomicSync(file, JSON.stringify(enrollment), {mode: 0o600, fsync: true});
         return enrollment
     })
 }

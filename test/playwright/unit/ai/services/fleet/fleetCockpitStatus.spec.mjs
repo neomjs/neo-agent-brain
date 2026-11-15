@@ -90,6 +90,20 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows[1]).toMatchObject({id: 'counted', openLaneCount: 23})
     })
 
+    test('publishes the host-selected setup epoch only for a seat allowed to start', () => {
+        const expectedStartedAt = '2026-11-15T01:00:00Z';
+        const {rows}            = createFleetCockpitStatus({
+            agents       : [{id: 'managed'}, {id: 'released', launchRefusal: 'released'}, {id: 'unobserved'}],
+            runtimeStatus: ['managed', 'released'].map(agentId => ({
+                agentId, state: 'running', running: true, nativeWakeSetup: {expectedStartedAt, extra: 'host-only'}
+            }))
+        });
+
+        expect(rows[0].nativeWakeSetup).toEqual({expectedStartedAt});
+        expect(rows[1]).not.toHaveProperty('nativeWakeSetup');
+        expect(rows[2]).not.toHaveProperty('nativeWakeSetup')
+    });
+
     test('stamps each row with its newest attributable activity instant — events + presence, invalid/unattributed ignored', () => {
         const snapshot = createFleetCockpitStatus({
             agents: [

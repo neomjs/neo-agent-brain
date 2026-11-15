@@ -11,6 +11,8 @@ import path                            from 'node:path';
 import {execFile, execFileSync, spawn} from 'node:child_process';
 import {createHash}                    from 'node:crypto';
 import {promisify}                     from 'node:util';
+import {withOutboxLock}                from './outboxLock.mjs';
+import {writeFileAtomic}               from '../../services/shared/atomicFileWrite.mjs';
 
 const run        = promisify(execFile), UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
       MAX_HEADER = 1024 * 1024, MAX_TAIL = 4 * 1024 * 1024;
@@ -28,40 +30,64 @@ function wakeHookCommand({nodePath, modulePath, manifestPath, stateDir, agentId}
  * @param {String} options.workspaceRoot Absolute trusted Fleet workspace.
  * @param {String} options.nodePath Absolute trusted Node binary.
  * @param {String} options.modulePath Absolute trusted admission module.
+ * @param {Object} [options.previous] Prior command inputs, supplied only after the caller authenticates the
+ *   previous native route for this same seat, home, workspace, family and state.
  * @returns {Promise<Object>} Installed command and source path; not a trust or runtime receipt.
  */
-export async function materializeCodexWakeAdmission({home, workspaceRoot, nodePath, modulePath, manifestPath, stateDir, agentId}) {
+export async function materializeCodexWakeAdmission({home, workspaceRoot, nodePath, modulePath, manifestPath, stateDir, agentId, previous}) {
     if (![home, workspaceRoot, nodePath, modulePath, manifestPath, stateDir].every(value => typeof value === 'string' && path.isAbsolute(value)) || typeof agentId !== 'string' || !agentId) {
         throw new Error('Codex hook materialization requires absolute trusted paths')
     }
-    const sourcePath = path.join(home, 'hooks.json'), lock = `${sourcePath}.neo-wake-lock`;
-    const lockHandle = await fs.open(lock, 'wx', 0o600);
-    try {
+    if (previous && (previous.home !== home || previous.workspaceRoot !== workspaceRoot || previous.family !== 'codex-desktop' ||
+        previous.agentId !== agentId || previous.manifestPath !== manifestPath || previous.stateDir !== stateDir ||
+        ![previous.nodePath, previous.modulePath].every(value => typeof value === 'string' && path.isAbsolute(value)))) {
+        throw new Error('Prior Codex wake hook does not match this seat')
+    }
+    const sourcePath = path.join(home, 'hooks.json');
+    if (!(await fs.lstat(home)).isDirectory() || await fs.realpath(home) !== home) {
+        throw new Error('Codex seat home must be a real directory')
+    }
+    return withOutboxLock(`${sourcePath}.neo-wake`, async () => {
         let config = {};
         try {
             const stat = await fs.lstat(sourcePath);
             if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Codex hooks config must be a regular file');
-            config = JSON.parse(await fs.readFile(sourcePath, 'utf8'))
+            const handle = await fs.open(sourcePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+            try { config = JSON.parse(await handle.readFile('utf8')) } finally { await handle.close() }
         } catch (error) { if (error.code !== 'ENOENT') throw error }
         if (!config || typeof config !== 'object' || Array.isArray(config) ||
-            (config.hooks && (typeof config.hooks !== 'object' || Array.isArray(config.hooks)))) throw new Error('Invalid Codex hooks config');
+            (config.hooks !== undefined && (!config.hooks || typeof config.hooks !== 'object' || Array.isArray(config.hooks)))) {
+            throw new Error('Invalid Codex hooks config')
+        }
         config.hooks ||= {};
         const groups = config.hooks.UserPromptSubmit || [];
         if (!Array.isArray(groups)) throw new Error('Invalid Codex submit hooks');
-        const command = wakeHookCommand({nodePath, modulePath, manifestPath, stateDir, agentId});
-        let   count   = 0;
+        const command    = wakeHookCommand({nodePath, modulePath, manifestPath, stateDir, agentId}),
+              oldCommand = previous && wakeHookCommand(previous);
+        let owned = null;
         for (const group of groups) {
             if (!Array.isArray(group?.hooks)) throw new Error('Invalid Codex hook group');
-            group.hooks = group.hooks.filter(hook => { if (hook.statusMessage === HOOK_STATUS) { count++; return false } return true })
+            for (const hook of group.hooks) {
+                if (hook?.statusMessage !== HOOK_STATUS && hook?.command !== command && (!oldCommand || hook?.command !== oldCommand) &&
+                    !(typeof hook?.command === 'string' && (hook.command.includes(modulePath) ||
+                        previous && hook.command.includes(previous.modulePath)))) continue;
+                if (owned || hook?.statusMessage !== HOOK_STATUS || hook?.type !== 'command' ||
+                    ![command, oldCommand].includes(hook?.command) || hook?.timeout !== 10 || Object.keys(hook).length !== 4 ||
+                    Object.keys(group).length !== 1 || group.hooks.length !== 1) {
+                    throw new Error('Conflicting or ambiguous Codex wake hook')
+                }
+                owned = {group, hook}
+            }
         }
-        if (count > 1) throw new Error('Ambiguous existing Codex wake hooks');
-        groups.push({hooks: [{type: 'command', command, statusMessage: HOOK_STATUS, timeout: 10}]});
-        config.hooks.UserPromptSubmit = groups.filter(group => group.hooks.length);
-        const tmp = `${sourcePath}.${process.pid}.${Date.now()}.tmp`;
-        try { await fs.writeFile(tmp, JSON.stringify(config, null, 2) + '\n', {mode: 0o600, flag: 'wx'}); await fs.rename(tmp, sourcePath) }
-        finally { await fs.rm(tmp, {force: true}) }
+        // Do not rewrite a trusted definition: even harmless formatting changes can invalidate trust.
+        if (owned?.hook.command === command) return {sourcePath, command};
+        const nextHook = {type: 'command', command, statusMessage: HOOK_STATUS, timeout: 10};
+        if (owned) owned.group.hooks[0] = nextHook;
+        else groups.push({hooks: [nextHook]});
+        config.hooks.UserPromptSubmit = groups;
+        await writeFileAtomic(sourcePath, JSON.stringify(config, null, 2) + '\n', {mode: 0o600, preserveMode: true});
         return {sourcePath, command}
-    } finally { await lockHandle.close(); await fs.rm(lock, {force: true}) }
+    })
 }
 
 function validate(home, threadId) {

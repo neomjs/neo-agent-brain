@@ -422,6 +422,7 @@ async function boot() {
             // leaf binds the SAME `NEO_WAKE_RECEIVER_MANIFEST` export the runbook materializes the
             // receiver's plist from. Declared-empty ⇒ no local wake lane ⇒ arming typed-unobserved.
             wakeReceiverManifestPath: AiConfig.fleet.wakeReceiverManifestPath,
+            wakeReceiverStateDir    : AiConfig.fleet.wakeReceiverStateDir,
             // The receiver address this plane can reach, for arming a GUI seat started here
             // (FleetManager.armSeatWake). Host mode binds none, so its seats stay unarmed with that reason.
             wakeReceiverBase: AiConfig.fleet.wakeReceiverBase.trim()
