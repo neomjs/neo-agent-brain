@@ -74,6 +74,38 @@ Each key is also bindable via an environment variable (`NEO_KB_DEFAULT_TENANT_ID
 > recreate the affected MCP servers together with the Neo upgrade. This does not
 > change the MCP client's separate `transportType: 'sse'` legacy capability.
 
+### Persistent graph-store upgrade: legacy issue-edge weights
+
+Deployments upgrading an existing persistent `memory-core-graph.sqlite` volume
+whose stack ran corpus projection (`NEO_ORCHESTRATOR_CORPUS_PROJECTION_ENABLED=true`
+in `deploy/cloud/docker-compose.yml`) before the anchored issue-edge weight
+cutover should run the idempotent one-shot migration once against the graph
+store:
+
+```sh
+# Dry-run (default; inspects candidate edges with 0 writes):
+docker compose -f deploy/cloud/docker-compose.yml --profile cloud exec orchestrator \
+  node ai/scripts/migrations/normalizeLegacyIssueEdgeWeights.mjs
+
+# Apply atomically and stamp SchemaVersion:
+docker compose -f deploy/cloud/docker-compose.yml --profile cloud exec orchestrator \
+  node ai/scripts/migrations/normalizeLegacyIssueEdgeWeights.mjs --apply
+```
+
+Stacks running the default MCP profile without `orchestrator` can execute the
+same script inside `mc-server`, or directly against a host database file with
+`node ai/scripts/migrations/normalizeLegacyIssueEdgeWeights.mjs --db <path> [--apply]`.
+
+Why this matters: message-sourced edges (`MESSAGE:` prefix) on `ISSUE` nodes
+are exempt from time decay (`isMessageRecordEdge`), and the temporary inline
+normalization pass in `IssueIngestor.ingestIssueStates()` has been retired to
+this explicit upgrade script so historical `bug` / community write-time
+multipliers and `0.05` open-blocker discounts cannot linger permanently on
+older stores. Stores that already ran the inline pass carry `SchemaVersion`
+marker `issue_ingestor_legacy_anchor_reset_v1` and short-circuit immediately
+with `status: "already-normalized"` (`0` writes), preserving subsequent
+`linkNodes` reinforcements above `1.0`.
+
 ## Tenant push-client environment
 
 `npm run ai:kb-push-client` runs in the tenant workspace or CI job, not inside the KB server process. It therefore has its own small environment surface:
