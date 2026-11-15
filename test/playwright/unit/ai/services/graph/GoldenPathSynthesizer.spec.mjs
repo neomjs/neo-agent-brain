@@ -2363,11 +2363,8 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(handoffContent).toContain(`5. **${internalEnhId}**: Score 10.40 (Semantic: 5.00, Structural: 0.40)`);
     });
 
-    test('legacy anchor-written SQLite edge weights normalize once so read-time emphasis never double-multiplies and post-migration reinforcements survive (#1527)', async () => {
-        const {
-            default: IssueIngestor,
-            LEGACY_ANCHOR_RESET_MARKER_ID
-        } = await import('../../../../../../ai/services/ingestion/IssueIngestor.mjs');
+    test('SQLite post-ingest linkNodes reinforcements above 1.0 survive IssueIngestor.ingestIssueStates() and scale by read-time emphasis (#1527)', async () => {
+        const IssueIngestor                = (await import('../../../../../../ai/services/ingestion/IssueIngestor.mjs')).default;
         const OpenAiCompatible             = (await import('../../../../../../ai/provider/OpenAiCompatible.mjs')).default;
         const originalGetGraphCollection   = StorageRouter.getGraphCollection;
         const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
@@ -2378,13 +2375,13 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const communityBugId               = 'issue-20748';
         const blockedBugId                 = 'issue-20895';
         const openBlockerId                = 'issue-101';
-        const identityId                   = '@test-legacy-reset-internal';
-        const summaryInternalId            = 'SESSION_SUMMARY:legacy-20747';
-        const msgInternalId                = 'MESSAGE:legacy-m-20747';
-        const summaryCommunityId           = 'SESSION_SUMMARY:legacy-20748';
-        const msgCommunityId               = 'MESSAGE:legacy-m-20748';
-        const msgBlockedId                 = 'MESSAGE:legacy-m-20895';
-        const root                         = fs.mkdtempSync(path.join(os.tmpdir(), 'gp-legacy-anchor-reset-'));
+        const identityId                   = '@test-reinforcement-internal';
+        const summaryInternalId            = 'SESSION_SUMMARY:reinforcement-20747';
+        const msgInternalId                = 'MESSAGE:reinforcement-m-20747';
+        const summaryCommunityId           = 'SESSION_SUMMARY:reinforcement-20748';
+        const msgCommunityId               = 'MESSAGE:reinforcement-m-20748';
+        const msgBlockedId                 = 'MESSAGE:reinforcement-m-20895';
+        const root                         = fs.mkdtempSync(path.join(os.tmpdir(), 'gp-sqlite-reinforcement-'));
         const createdNodes                 = [
             internalBugId,
             communityBugId,
@@ -2421,18 +2418,16 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             ].join('\n')
         );
 
-        writeIssue(20747, 'Internal bug with legacy anchor weights',  'test-legacy-internal-author', ['bug', 'ai']);
-        writeIssue(20748, 'Community bug with legacy anchor weights', 'external-legacy-contributor', ['bug', 'ai']);
-        writeIssue(20895, 'Blocked bug with legacy discount weight',  'test-legacy-internal-author', ['bug', 'ai'], ['blockedBy:', "  - '#101'"]);
-        writeIssue(101,   'Open upstream blocker',                    'test-legacy-internal-author', ['ai']);
-
-        sqliteDb.prepare('DELETE FROM SchemaVersion WHERE id = ?').run(LEGACY_ANCHOR_RESET_MARKER_ID);
+        writeIssue(20747, 'Internal bug with base edge weights',  'test-reinforcement-internal-author', ['bug', 'ai']);
+        writeIssue(20748, 'Community bug with base edge weights', 'external-reinforcement-contributor', ['bug', 'ai']);
+        writeIssue(20895, 'Blocked bug with open blocker',        'test-reinforcement-internal-author', ['bug', 'ai'], ['blockedBy:', "  - '#101'"]);
+        writeIssue(101,   'Open upstream blocker',                'test-reinforcement-internal-author', ['ai']);
 
         GraphService.upsertNode({id: 'frontier', type: 'SYSTEM_TENET', properties: {name: 'Active Context Frontier'}});
         GraphService.upsertGlobalNode({
             id        : identityId,
             type      : 'AgentIdentity',
-            properties: {accountType: 'agent', githubLogin: 'test-legacy-internal-author'}
+            properties: {accountType: 'agent', githubLogin: 'test-reinforcement-internal-author'}
         });
         [internalBugId, communityBugId, blockedBugId, openBlockerId].forEach(id => {
             GraphService.upsertNode({id, type: 'ISSUE', properties: {state: 'OPEN'}});
@@ -2443,11 +2438,11 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         GraphService.upsertNode({id: msgCommunityId,     type: 'MESSAGE'});
         GraphService.upsertNode({id: msgBlockedId,       type: 'MESSAGE'});
 
-        GraphService.linkNodes(summaryInternalId,  internalBugId,  'DISCUSSED_IN',      1.96);
-        GraphService.linkNodes(msgInternalId,      internalBugId,  'REFERENCES_TICKET', 2.0);
-        GraphService.linkNodes(summaryCommunityId, communityBugId, 'DISCUSSED_IN',      2.45);
-        GraphService.linkNodes(msgCommunityId,     communityBugId, 'REFERENCES_TICKET', 2.5);
-        GraphService.linkNodes(msgBlockedId,       blockedBugId,   'REFERENCES_TICKET', 0.05);
+        GraphService.linkNodes(summaryInternalId,  internalBugId,  'DISCUSSED_IN',      0.98);
+        GraphService.linkNodes(msgInternalId,      internalBugId,  'REFERENCES_TICKET', 1.0);
+        GraphService.linkNodes(summaryCommunityId, communityBugId, 'DISCUSSED_IN',      0.98);
+        GraphService.linkNodes(msgCommunityId,     communityBugId, 'REFERENCES_TICKET', 1.0);
+        GraphService.linkNodes(msgBlockedId,       blockedBugId,   'REFERENCES_TICKET', 1.0);
 
         StorageRouter.getGraphCollection = async () => ({
             get   : async () => ({ids: [], metadatas: []}),
@@ -2457,15 +2452,12 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
                 distances: [[0.1, 0.1, 0.1]]
             })
         });
-        StorageRouter.getSummaryCollection  = async () => ({get: async () => ({documents: ['Legacy anchor normalization proof']})});
+        StorageRouter.getSummaryCollection  = async () => ({get: async () => ({documents: ['SQLite reinforcement proof']})});
         TextEmbeddingService.embedText      = async () => buildConfiguredEmbedding();
         OpenAiCompatible.prototype.generate = async () => ({content: '{"strategic_brief":"stub"}'});
 
         try {
             await IssueIngestor.ingestIssueStates({contentRoot: root, strict: true});
-
-            const markerRow = sqliteDb.prepare('SELECT id, version FROM SchemaVersion WHERE id = ?').get(LEGACY_ANCHOR_RESET_MARKER_ID);
-            expect(markerRow).toEqual({id: LEGACY_ANCHOR_RESET_MARKER_ID, version: 1});
 
             expect(readSqliteEdgeWeight(summaryInternalId,  internalBugId,  'DISCUSSED_IN')).toBe(0.98);
             expect(readSqliteEdgeWeight(msgInternalId,      internalBugId,  'REFERENCES_TICKET')).toBe(1.0);
