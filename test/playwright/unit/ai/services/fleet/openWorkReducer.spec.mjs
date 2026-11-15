@@ -84,17 +84,21 @@ test.describe('openWorkReducer — a row names the issues it closes that are sti
         expect(OPEN_WORK_SNAPSHOT).toMatch(/closingIssuesReferences\(first: 10\) \{\s*pageInfo \{\s*hasNextPage\s*\}\s*nodes \{\s*number\s*repository \{\s*nameWithOwner\s*\}\s*issueDependenciesSummary \{\s*blockedBy/)
     });
 
-    test('a list past its page or an unread count leaves the targets incomplete; a node read without them keeps today\'s rule', () => {
+    test('a list past its page, an unread count or a node without the list leaves the targets incomplete', () => {
         expect(normalizePullRequest({...node(), ...closing(true, target(3, 0))}, identities).targetsComplete).toBe(false);
         expect(normalizePullRequest({...node(), ...closing(false, {number: 3, repository: {nameWithOwner: 'acme/app'}})}, identities).targetsComplete).toBe(false);
-        expect(normalizePullRequest(node(), identities)).toMatchObject({blockedTargets: [], targetsComplete: true})
+        expect(normalizePullRequest(node(), identities)).toMatchObject({blockedTargets: [], targetsComplete: false})
     });
 
-    test('an approved row whose close target is blocked holds its author, not the merge', () => {
-        const reviews = [{state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: 'a1'}}];
+    test('an approved row holds its author while a close target is blocked, certifies no merge unread, and merges read clear', () => {
+        const
+            reviews  = [{state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: 'a1'}}],
+            approved = node({verdict: 'APPROVED', reviewers: [], reviews}),
+            holder   = extra => holderOf(normalizePullRequest({...approved, ...extra}, identities));
 
-        expect(holderOf(normalizePullRequest({...node({verdict: 'APPROVED', reviewers: [], reviews}), ...closing(false, target(275, 1))}, identities)))
-            .toMatchObject({role: 'author', kind: 'await-prerequisite', targets: ['acme/app#275']})
+        expect(holder(closing(false, target(275, 1)))).toMatchObject({role: 'author', kind: 'await-prerequisite', targets: ['acme/app#275']});
+        expect(holder({})).toEqual({role: 'unknown', kind: null, ids: []});
+        expect(holder(closing(false))).toEqual({role: 'operator', kind: 'merge', ids: []})
     })
 });
 

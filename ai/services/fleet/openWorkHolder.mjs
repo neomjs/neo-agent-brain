@@ -27,7 +27,8 @@
  * instead, still beside the approval on the head: a repository that requires no review is CLEAN without one.
  *
  * A merge waits for the issues the PR closes: while one has an open blocker (a native `blocked_by`, often another
- * PR's ticket), the approved head is its author's to see through, never the operator's merge.
+ * PR's ticket), the approved head is its author's to see through, never the operator's merge. A row without a complete
+ * read of those issues, one stored before the read existed included, certifies no merge.
  *
  * An outside comment owes a reply ({@link responderOf}) beside whatever holds the PR, never in its place: a
  * contributor's question is no less owed while the head is red or a merge waits.
@@ -56,7 +57,7 @@ const isSeat = id => typeof id === 'string' && id.startsWith('@') && id.length >
  *     kind: 'approve-runs'|'triage-outside'|'repair-ci'|'address-changes'|'rebase'|'review'|'route-review'|'await-prerequisite'|'merge'|null,
  *     ids: String[], targets?: String[]}} `targets` names the still-blocked issues an `await-prerequisite` PR closes.
  */
-export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions, disclosedFamilies = [], blockedTargets = [], targetsComplete = true}, {seatFamilies = null} = {}) {
+export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions, disclosedFamilies = [], blockedTargets = [], targetsComplete = false}, {seatFamilies = null} = {}) {
     const
         incomplete   = partial || !Array.isArray(opinions),
         onHead       = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),

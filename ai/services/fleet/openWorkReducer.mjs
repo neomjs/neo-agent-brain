@@ -125,7 +125,8 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner,
  *     disclosedFamilies, requested, reviews, opinions, reviewRecords, turns, blockedTargets, targetsComplete,
  *     requestsComplete, opinionsComplete, partial}`. `blockedTargets` are the issues it closes that GitHub counts an
- *     open blocker for; `targetsComplete` is false when that list or a count went unread, so no merge is certified.
+ *     open blocker for; `targetsComplete` is false when that list or a count went unread, a node without the list
+ *     included, so no merge is certified.
  *     `title` is the forge's prose with whitespace collapsed, or `null`; it names the PR and is never a
  *     transition. `disclosedFamilies` are the model families an outside PR names in its body or in any commit's
  *     trailer, and empty for every other PR; an outside PR with commits past the read is `partial`, since an unread
@@ -145,7 +146,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         messages  = node.commitMessages === undefined ? {nodes: [], complete: true} : connectionOf(node.commitMessages),
         outside   = owner.kind === 'outside',
         requested = requests.nodes.map(item => reviewerOf(item?.requestedReviewer, identities)),
-        targets   = node.closingIssuesReferences === undefined ? {nodes: [], complete: true} : connectionOf(node.closingIssuesReferences),
+        targets   = connectionOf(node.closingIssuesReferences),
         targetOf  = issue => issue?.repository?.nameWithOwner && Number.isInteger(issue.number) &&
             Number.isInteger(issue.issueDependenciesSummary?.blockedBy) ? `${issue.repository.nameWithOwner}#${issue.number}` : null,
         // whether each review judged the current head, and whether a bot wrote it

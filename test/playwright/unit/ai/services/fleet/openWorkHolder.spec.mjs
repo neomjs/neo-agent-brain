@@ -7,7 +7,9 @@ const
     review  = (state, onHead=true) => ({reviewer: '@neo-gpt', state, onHead}),
     // an approval or change request is both the reviewer's latest review and their latest opinion
     judged  = (state, onHead=true) => ({reviews: [review(state, onHead)], opinions: [review(state, onHead)]}),
-    row     = overrides => ({ci: 'green', verdict: null, mergeable: 'MERGEABLE', draft: false, owner: seat, requested: [], reviews: [], opinions: [], ...overrides});
+    // a fully read row: every issue the PR closes was read, and none is blocked
+    row     = overrides => ({ci: 'green', verdict: null, mergeable: 'MERGEABLE', draft: false, owner: seat, requested: [], reviews: [], opinions: [],
+        blockedTargets: [], targetsComplete: true, ...overrides});
 
 test.describe('openWorkHolder — the shared holder and next-action kind, first match wins (#761)', () => {
     test('an eligible outside PR routes to rotation for triage-outside when finished and untouched, or approve-runs when runs await approval (#1008)', () => {
@@ -284,7 +286,12 @@ test.describe('openWorkHolder — a close target still blocked holds the merge f
     });
 
     test('a target list the read did not finish never certifies the merge, though a blocked target it read still holds it (AC-4)', () => {
+        // a row stored before the read existed carries neither field: its other actions stand, its merge does not
+        const {blockedTargets, targetsComplete, ...stored} = approved();
+
         expect(holderOf(approved({targetsComplete: false}))).toEqual({role: 'unknown', kind: null, ids: []});
+        expect(holderOf(stored)).toEqual({role: 'unknown', kind: null, ids: []});
+        expect(holderOf({...stored, ci: 'red'})).toEqual({role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']});
         expect(holderOf(approved({...blocked, targetsComplete: false}))).toEqual(held)
     });
 

@@ -20,7 +20,8 @@
  * action, but no seat is that author. A `holder-unreachable` slot is a holder wake that would be sent if the holder's
  * route were not `unreachable`. A `holder-silent` slot is an admitted holder wake the receiver recorded `delivered`,
  * whose action is still open {@link HOLDER_SILENT_MS} later: silence is certified from a delivery, never an attempt.
- * Each wakes one rotation seat per head, and that seat is never the holder it escalates.
+ * Each wakes one rotation seat per head, and that seat is never the holder it escalates. A notice kind (an approved head
+ * waiting on its close target's blocker) asks nothing a rotation seat could take over, so it never escalates.
  *
  * An owed reply to an outside comment is planned beside the holder, under its own slot, and escalates as a holder's
  * wake does. Its episode is the owed turn's time, so the slot starts over when a member answers and a later outside
@@ -39,6 +40,13 @@ import {OPEN_WORK_QUERY_COSTS}                                 from '../github-w
 
 /** @summary How long a holder's delivered wake may stay unanswered before its holder reads silent. */
 export const HOLDER_SILENT_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * @summary The kinds that only inform their holder: the next step waits on someone else, so there is nothing a
+ * rotation seat could take over. They wake a reachable holder once and never escalate.
+ * @type {Set<String>}
+ */
+const NOTICE_KINDS = new Set(['await-prerequisite']);
 
 /**
  * @summary Deterministic rotation seat selection from the participating roster, advancing to the first reachable seat
@@ -219,10 +227,10 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             if (routeOf(seat) !== 'unreachable') {
                 holding[slot] = {...entry, status: 'admitted'};
                 wakes.push(entry.wake)
-            } else {
+            } else if (!NOTICE_KINDS.has(kind)) {
                 rotate(row, 'holder-unreachable', seat)
             }
-        } else if (entry.status === 'admitted' &&
+        } else if (entry.status === 'admitted' && !NOTICE_KINDS.has(kind) &&
             (silent(entry) || holding[rotationSlot(row, 'holder-silent', seat)]?.status === 'admitted')) {
             // The seat's wake arrived, and the action it asked for is still open. A sent escalation stays held
             // while it is, even through a round that could not read the delivery, so it is never sent twice.
@@ -287,7 +295,7 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         }
 
         // The author owes the action, and no seat is the author: once per head, like any rotation action
-        if (holder.role === 'author' && row.owner?.kind === 'unowned' && REASONS[holder.kind]) {
+        if (holder.role === 'author' && row.owner?.kind === 'unowned' && REASONS[holder.kind] && !NOTICE_KINDS.has(holder.kind)) {
             rotate(row, 'unowned');
             continue
         }
