@@ -23,8 +23,9 @@ import {
     ROTATION_ABORTED,
     ROTATION_ACTIVATION_LOST,
     ROTATION_EXPIRED,
+    ROTATION_SCREEN_LOCKED,
     evaluateHumanInput,
-    isPreKeystrokeFailure,
+    isPreSessionFailure,
     isRotationExpired,
     isSessionRotation,
     rotationDeadline,
@@ -236,6 +237,7 @@ async function performDispatch({adapter, adapterConfig, digest, meta, record, si
         now             : Date.now,
         platform        : process.platform,
         readHumanIdleMs,
+        readScreenLocked,
         resolveGuiInstancePid,
         spawnAsync,
         ...dependencies
@@ -752,11 +754,17 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
             return {outcome: 'deferred', outcomeReason: humanInput.reason}
         }
 
+        // The lock is read at the same boundary: one that engaged while the pid, dialog or idle reads ran
+        // keeps the front from every window, so the rotation waits for the unlock instead of activating.
+        if (effects.readScreenLocked?.() === true) {
+            return {outcome: 'deferred', outcomeReason: ROTATION_SCREEN_LOCKED}
+        }
+
         // The fence at the effect, after the last await: an attempt the receiver stopped waiting for, a
         // deadline crossed while the pid, dialog or idle reads ran, or a seat another session claimed since
-        // (the receiver's `rotationGuard`) opens no session. The script re-checks the deadline before Cmd+N.
+        // (the receiver's `rotationGuard`) opens no session. The script re-checks both before Cmd+N.
         const veto = signal?.aborted ? ROTATION_ABORTED
-            : isRotationExpired(record.acceptedAt, effects.now()) ? ROTATION_EXPIRED
+            : isRotationExpired(record, effects.now()) ? ROTATION_EXPIRED
             : effects.rotationGuard?.() || null;
 
         if (veto) return {outcome: 'failed', outcomeReason: veto}
@@ -768,19 +776,20 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
         focusSeedKey        : resolvedMeta.focusSeedKey,
         focusSeedSequence   : resolvedMeta.focusSeedSequence,
         freshSessionShortcut: rotation ? resolvedMeta.freshSessionShortcut : null,
-        freshSessionDeadlineSeconds: rotation
-            ? Math.max(0, Math.floor((rotationDeadline(record.acceptedAt) - effects.now()) / 1000))
-            : null,
-        freshSessionHolder: rotation ? effects.rotationHolder || null : null,
+        // An absolute cutoff, so a child process that starts late cannot move it.
+        freshSessionCutoffSec: rotation ? Math.floor(rotationDeadline(record) / 1000) : null,
+        freshSessionHolder   : rotation ? effects.rotationHolder || null : null,
         instancePid,
-        tabShortcut         : resolvedMeta.tabShortcut
+        tabShortcut          : resolvedMeta.tabShortcut
     });
     const outcome = await spawnOsascriptOnce(effects, args, record.subscriptionId);
 
-    // A rotation whose window lost the front before the first keystroke typed nothing, so it may try
-    // again inside its age; past that phase Cmd+N may have opened a session, and a retry would open two.
-    if (rotation && outcome?.outcome === 'failed' && isPreKeystrokeFailure(outcome.outcomeReason)) {
-        return {outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST}
+    // A rotation whose window lost the front before its fresh-session keystroke opened nothing, so it may try
+    // again (`ROTATION_MAX_ACTIVATION_LOSSES`); past that point Cmd+N may have opened a session, and a retry
+    // would open two.
+    // A lock that engaged during the activation or before Cmd+N took the front, and waits as a lock does.
+    if (rotation && outcome?.outcome === 'failed' && isPreSessionFailure(outcome.outcomeReason)) {
+        return {outcome: 'deferred', outcomeReason: effects.readScreenLocked?.() === true ? ROTATION_SCREEN_LOCKED : ROTATION_ACTIVATION_LOST}
     }
 
     return outcome;
@@ -857,8 +866,9 @@ export function processAutomationIdLines(indent = '  ') {
  * @param {String} [options.focusSeedKey] Key typed to seat focus in the composer.
  * @param {String} [options.focusSeedSequence] Named focus-seed sequence (`r-undo`).
  * @param {String|null} [options.freshSessionShortcut] Command-key shortcut that opens a fresh session.
- * @param {Number|null} [options.freshSessionDeadlineSeconds] Seconds the rotation has left: the script
- *   refuses the fresh-session keystroke once they pass, so a slow activation cannot open a late session.
+ * @param {Number|null} [options.freshSessionCutoffSec] The rotation's absolute cutoff in Unix seconds: the
+ *   script reads the clock right before Cmd+N, after the holder check, and refuses the keystroke at or past
+ *   it. An absolute time, because a duration would restart when a slow child process starts.
  * @param {{path: String, sessionId: String|null}|null} [options.freshSessionHolder] The seat holder's record and
  *   the session that held it at the rotation's first attempt (`null`: no record then). The script re-reads the
  *   record right before Cmd+N and refuses the keystroke when another session holds the seat, when the
@@ -867,12 +877,12 @@ export function processAutomationIdLines(indent = '  ') {
  * @param {String} [options.tabShortcut] Command-key shortcut for the harness tab.
  * @returns {String[]} `osascript` argv fragments ending with the digest.
  */
-export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, freshSessionDeadlineSeconds = null, freshSessionHolder = null, instancePid, tabShortcut}) {
-    const fencedFreshSession = Boolean(freshSessionShortcut) && Number.isFinite(freshSessionDeadlineSeconds);
-    const escapedAppName   = escapeAppleScript(appName);
-    const targetPid        = instancePid ? String(instancePid) : '';
-    const addressedProcess = Boolean(instancePid);
-    const appActivateLine  = addressedProcess
+export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, freshSessionCutoffSec = null, freshSessionHolder = null, instancePid, tabShortcut}) {
+    const fencedFreshSession = Boolean(freshSessionShortcut) && Number.isFinite(freshSessionCutoffSec);
+    const escapedAppName     = escapeAppleScript(appName);
+    const targetPid          = instancePid ? String(instancePid) : '';
+    const addressedProcess   = Boolean(instancePid);
+    const appActivateLine    = addressedProcess
         ? '  tell application "System Events" to set frontmost of application process id targetAutomationId to true'
         : `  tell application "${escapedAppName}" to activate`;
     const args = [
@@ -897,7 +907,6 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
         '-e', '  end tell',
         '-e', 'end assertTargetFrontmost',
         '-e', 'on run argv',
-        ...(fencedFreshSession ? ['-e', `  set rotationDeadline to (current date) + ${Math.floor(freshSessionDeadlineSeconds)}`] : []),
         '-e', '  set wakePayload to (item 1 of argv)',
         '-e', `  set targetAppName to "${escapedAppName}"`,
         '-e', '  set targetBundleId to ""',
@@ -938,9 +947,6 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
         args.push('-e', '      delay 0.5');
     }
     if (freshSessionShortcut) {
-        if (fencedFreshSession) {
-            args.push('-e', '      if (current date) > rotationDeadline then error "Rotation deadline passed before the fresh session"');
-        }
         // The record also names the session a wake was delivered to, so only its `owner.sessionId` is compared.
         if (freshSessionHolder?.path && freshSessionHolder.sessionId) {
             args.push(
@@ -952,6 +958,15 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
             args.push(
                 '-e', `      tell current application to set rotationHolderNow to (do shell script "test -e " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}" & " && echo present || true")`,
                 '-e', '      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"'
+            );
+        }
+        // The front is asserted again, since a lock can engage between the activation and here; the clock is
+        // read last, so neither the child's start nor the holder read can carry the keystroke past the cutoff.
+        if (fencedFreshSession) {
+            args.push(
+                '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before fresh session")',
+                '-e', '      tell current application to set rotationNow to ((do shell script "/bin/date +%s") as integer)',
+                '-e', `      if rotationNow >= ${Math.floor(freshSessionCutoffSec)} then error "Rotation deadline passed before the fresh session"`
             );
         }
         args.push('-e', `      keystroke "${escapeAppleScript(freshSessionShortcut)}" using command down`);
@@ -1274,6 +1289,35 @@ export function readHumanIdleMs({spawnSyncFn = spawnSync, platform = process.pla
     const match = /"HIDIdleTime"\s*=\s*(\d+)/.exec(result.stdout || '');
 
     return match ? Math.floor(Number(match[1]) / 1e6) : null
+}
+
+/**
+ * @summary Reads whether the host's screen is locked.
+ *
+ * The IORegistry root's `IOConsoleUsers` carry `CGSSessionScreenIsLocked = Yes` only while the screen is
+ * locked, readable without a privacy grant. A locked screen keeps the front from every window, and the
+ * idle clock reads it as quiet, so a rotation waits for the unlock instead of spending lost activations
+ * that cannot succeed. Anything unreadable answers `null`, which leaves the activation's own
+ * frontmost check as the guard.
+ *
+ * @param {Object} [options]
+ * @param {Function} [options.spawnSyncFn=spawnSync] Child-process seam for tests.
+ * @param {String} [options.platform=process.platform]
+ * @returns {Boolean|null} `true` while locked, `false` while unlocked, `null` when unreadable.
+ */
+export function readScreenLocked({spawnSyncFn = spawnSync, platform = process.platform} = {}) {
+    if (platform !== 'darwin') return null;
+
+    const result = spawnSyncFn('ioreg', ['-n', 'Root', '-d', '1'], {encoding: 'utf8', timeout: 2000});
+
+    if (!result || result.error || result.signal || result.status !== 0) return null;
+
+    const stdout = result.stdout || '';
+
+    // The flag's absence proves an unlock only when the read reached the console sessions.
+    if (!stdout.includes('"IOConsoleUsers"')) return null;
+
+    return /"CGSSessionScreenIsLocked"\s*=\s*Yes/.test(stdout)
 }
 
 /**
