@@ -333,11 +333,12 @@ export function holdsWakes({read, hasRotationRoute, now, windowMs}) {
  *   since a person may resume the old session after a first send failed.
  * - `complete`: a successor marker replies to the receipt since the request. A Memory Core session id
  *   that changes inside the old transcript is no successor.
- * - `refuse`: the receipt never gets a rotation, with the reason recorded on it. `writer-unproven`: sent
- *   within `windowMs` of a predecessor's successor marker, where no Memory Core id can prove its generation.
+ * - `refuse`: the receipt never gets a rotation, with the reason recorded on it.
  * - `incomplete`: the window passed without a fresh session.
- * - `wait`: nothing to do yet (the turn that wrote the receipt is still live, or the receiver has the
- *   request).
+ * - `wait`: nothing to do yet: the turn that wrote the receipt is still live, the receiver has the request,
+ *   or (`writer-close-pending`) a receipt after a predecessor's successor marker shows no close by the
+ *   seat's newest saver. Nothing then tells the successor's own sunset from the predecessor's late writer,
+ *   so the receipt stays pending until a close attributes it or its window passes; no marker age decides it.
  * - `none`: no receipt, or one already settled.
  *
  * The receipt count never holds a rotation: the read always carries counts or `'missing'`, and both
@@ -368,10 +369,6 @@ export function decideRotation({read, now, windowMs, minIntervalMs}) {
         return {action: 'request'}
     }
 
-    // inside the window after a successor appeared, nothing proves which generation wrote the receipt
-    if (read.predecessor && Date.parse(read.receipt.sentAt) - Date.parse(read.predecessor.successorAt) < windowMs) {
-        return {action: 'refuse', reason: 'writer-unproven'}
-    }
     if (read.promptedTurnAt)            return {action: 'refuse', reason: 'prompted-after-receipt'};
     if (read.successor)                 return {action: 'refuse', reason: 'successor-present'};
     if (pastWindow)                     return {action: 'incomplete', reason: 'receipt-not-consumed'};
@@ -379,6 +376,7 @@ export function decideRotation({read, now, windowMs, minIntervalMs}) {
         return {action: 'refuse', reason: 'minimum-interval'}
     }
     if (read.liveTurnUntil) return {action: 'wait', reason: 'live-turn'};
+    if (read.predecessor && !read.writerClosedAt) return {action: 'wait', reason: 'writer-close-pending'};
 
     return {action: 'request'}
 }

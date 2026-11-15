@@ -59,6 +59,10 @@ export async function runSessionRotation({db, deliver, operatorPresence, windowM
         if (verdict.action === 'none') continue;
 
         if (verdict.action === 'wait') {
+            // the one wait nothing else surfaces: an unattributable receipt after a predecessor's marker
+            if (verdict.reason === 'writer-close-pending') {
+                writeLog('INFO', `[Orchestrator] session-rotation: pending for ${identity} (${verdict.reason}), receipt ${receipt.id}`);
+            }
             outcome.waiting++;
             continue
         }

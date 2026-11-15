@@ -62,14 +62,15 @@ export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
  *
  * A handover sent after a requested rotation's successor marker has a predecessor: the old session may
  * still write, and no Memory Core id proves which generation did (a reconnect mints a new one, and a fresh
- * session can inherit the old one). The stamp attributes a close; it never identifies the native holder.
+ * session can inherit the old one).
  *
  * The receipt count is the summary lane's stamp, else the subject's own, else `'missing'`: a deferred
  * summary run never holds a rotation.
  *
- * The session reads key on the receipt's time. The old session is the one the receipt names
- * (`originSessionId`, stamped at the tool boundary), else the one that saved the seat's newest memory at
- * or before the receipt.
+ * The session reads key on the receipt's time. The old session is the one that saved the seat's newest
+ * memory at or before the receipt. Without a predecessor, the receipt's own stamp (`originSessionId`, set at
+ * the tool boundary) names it instead, which covers a reconnect before the close. With one, the stamp may be
+ * the predecessor's late writer, so it never releases a live turn (#1739).
  *
  * **The receipt's turn ends at its writer's close.** One turn leaves several intervals whose turn ids never
  * join (the prompt's, a tool-progress beacon's, the one `add_memory` closes), and presence names no session,
@@ -92,12 +93,13 @@ export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
  * @param {Object} options
  * @param {String} options.sinceIso Oldest `sentAt` a receipt may carry.
  * @param {String} [options.nowIso=new Date().toISOString()] The clock a live turn is read against.
- * @returns {Object|null} `{receipt, oldSessionId, successor, promptedTurnAt, liveTurnUntil,
- * lastRequestedAt}`, or `null` without a receipt. `receipt` is `{id, sentAt, focusItemsReceipt,
+ * @returns {Object|null} `{receipt, oldSessionId, successor, promptedTurnAt, liveTurnUntil, writerClosedAt,
+ * lastRequestedAt, predecessor}`, or `null` without a receipt. `receipt` is `{id, sentAt, focusItemsReceipt,
  * sessionRotation}`; `successor` is the marker's `{id, sentAt}` or `null`, and names no session, since
  * the marker carries no sender session and a memory saved after it may be another session's;
  * `liveTurnUntil` is the latest `expiresAt` among the unexpired active intervals while the receipt's
- * turn has no close, else `null`; `lastRequestedAt` is the newest rotation request among the seat's
+ * turn has no close, else `null`; `writerClosedAt` is that close, else `null`; `lastRequestedAt` is the
+ * newest rotation request among the seat's
  * OTHER self-messages in the range; `predecessor` is `{successorAt}` for a receipt sent after a requested
  * rotation's successor marker, else `null`.
  */
@@ -167,7 +169,7 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
               ORDER BY json_extract(data, '$.properties.timestamp') DESC
               LIMIT 1
           `).get(identity, sentAt),
-          oldSessionId = receipt.properties.originSessionId || memory?.sessionId || null,
+          oldSessionId = (!predecessor && receipt.properties.originSessionId) || memory?.sessionId || null,
           memories     = db.prepare(`
               SELECT json_extract(data, '$.properties.timestamp') AS at, json_extract(data, '$.properties.sessionId') AS sessionId
               FROM Nodes
@@ -221,6 +223,7 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
         successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt} : null,
         promptedTurnAt : promptedAt || null,
         liveTurnUntil  : liveUntil || null,
+        writerClosedAt : closedAt,
         lastRequestedAt: requestedAts.sort().at(-1) || null,
         predecessor
     }
