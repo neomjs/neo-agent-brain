@@ -35,7 +35,9 @@ import {
  *   seat's wakes.
  * - **`incomplete` is told:** the plane cannot read the receiver's records, so a rotation that failed on the
  *   host surfaces only here, and an ERROR line alone reaches nobody. One `defect-note:` per receipt carries
- *   the seat, the handover and the prompt that starts the seat by hand.
+ *   the seat, the handover and a first prompt for starting the seat by hand. That prompt says the session
+ *   was started by hand: the plane's own prompt says the plane opened it, which a person typing it would
+ *   misstate.
  */
 
 /**
@@ -46,10 +48,9 @@ import {
  * @param {Object} [options.rotation] Its `sessionRotation` record, absent when nothing was requested.
  * @param {String} options.reason The verdict's reason.
  * @param {Number} options.windowMs
- * @param {String} options.prompt The first prompt a fresh session takes.
  * @returns {{subject: String, body: String, taggedConcepts: String[]}}
  */
-export function composeIncompleteRotationNote({identity, receipt, rotation, reason, windowMs, prompt}) {
+export function composeIncompleteRotationNote({identity, receipt, rotation, reason, windowMs}) {
     return {
         subject: `defect-note: session rotation broke ${identity}: no fresh session within ${Math.round(windowMs / 60000)} min of its sunset handover ${receipt.id}`,
         body   : [
@@ -57,8 +58,8 @@ export function composeIncompleteRotationNote({identity, receipt, rotation, reas
             `- handover: ${receipt.id}, sent ${receipt.sentAt}`,
             `- rotation: requested ${rotation?.requestedAt ?? 'never'}, delivered ${rotation?.deliveredAt ?? 'never'}`,
             '',
-            'Start the seat by hand: a new session in its window, with this first prompt:',
-            prompt
+            'Start the seat by hand: a new session in its window, whose first prompt says who opened it, e.g.:',
+            `/context-recovery Fresh session for ${identity}, started by hand after your sunset handover ${receipt.id}: the plane's rotation opened none. Read the handover first.`
         ].join('\n'),
         taggedConcepts: ['defect-note', 'session-rotation']
     }
@@ -125,11 +126,7 @@ export async function runSessionRotation({db, deliver, operatorPresence, windowM
 
             // `incomplete` is terminal, so this branch runs once per receipt and so does its note.
             try {
-                await publishDefectNote?.(composeIncompleteRotationNote({
-                    identity, receipt, rotation, windowMs,
-                    reason: verdict.reason,
-                    prompt: buildRotationPrompt({agentIdentity: identity, receiptMessageId: receipt.id, operatorPresence})
-                }));
+                await publishDefectNote?.(composeIncompleteRotationNote({identity, receipt, rotation, windowMs, reason: verdict.reason}));
             } catch (error) {
                 writeLog('WARN', `[Orchestrator] session-rotation: the incomplete note for ${identity} failed (${error.message}), receipt ${receipt.id}`);
             }

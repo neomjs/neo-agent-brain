@@ -415,7 +415,9 @@ test.describe('session-rotation lane (#1383)', () => {
         expect(notes).toHaveLength(1);
         expect(notes[0].subject).toBe(`defect-note: session rotation broke ${SEAT}: no fresh session within 180 min of its sunset handover MESSAGE:receipt`);
         expect(parseDefectNote(notes[0].subject)).toMatchObject({parseable: true, surface: 'session rotation'});
-        expect(notes[0].body).toContain(buildRotationPrompt({agentIdentity: SEAT, receiptMessageId: 'MESSAGE:receipt', operatorPresence: {mode: 'present', until: null}}));
+        // A person starts the seat now, so the prompt says so instead of claiming the plane opened it.
+        expect(notes[0].body).toContain(`/context-recovery Fresh session for ${SEAT}, started by hand after your sunset handover MESSAGE:receipt`);
+        expect(notes[0].body).not.toContain('opened by the plane');
         expect(notes[0].taggedConcepts).toEqual(['defect-note', 'session-rotation']);
 
         const next = await runLane(db, {now: NOW + MIN});
