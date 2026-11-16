@@ -185,7 +185,7 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
         expect(summary.quarantined).toBe(2)
     });
 
-    test('non-rostered org MEMBER (authorAssociation: MEMBER) and formerLogins comments classify as trusted and preserve GitHub URLs untouched (#1279)', () => {
+    test('non-rostered org MEMBER and formerLogins comments with org standing classify as trusted and preserve GitHub URLs untouched (#1279)', () => {
         const memberBody = 'Receipt: https://github.com/neomjs/neo-agent-brain/blob/dev/ai/services/memory-core/MemoryService.mjs#L466';
         const formerBody = 'Historical peer receipt: https://github.com/neomjs/neo/pull/19835';
 
@@ -199,9 +199,10 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
                 authorAssociation: 'MEMBER',
                 body             : memberBody,
                 replies          : {nodes: [{
-                    id    : 'DC_former',
-                    author: {login: 'neo-gemini-pro'},
-                    body  : formerBody
+                    id               : 'DC_former',
+                    author           : {login: 'neo-gemini-pro'},
+                    authorAssociation: 'MEMBER',
+                    body             : formerBody
                 }]}
             }]}
         });
@@ -218,6 +219,25 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
         expect(formerReply.body).not.toContain('[QUARANTINED_URL');
 
         expect(projected.contentTrust.quarantined).toBe(0)
+    });
+
+    test('a formerLogins comment without org standing is quarantined like any stranger, since a released login is anyone\'s to register (#1810)', () => {
+        const projected = projectConversationTrust({
+            title   : 'Discussion #19835',
+            body    : 'Root body',
+            author  : {login: 'tobiu'},
+            comments: {nodes: [{
+                id    : 'DC_former',
+                author: {login: 'neo-gemini-pro'},
+                body  : 'Historical peer receipt: https://github.com/neomjs/neo/pull/19835'
+            }]}
+        });
+
+        const formerComment = projected.comments.nodes[0];
+
+        expect(formerComment.authorTrust).toBe(TRUST_TIERS.EXTERNAL);
+        expect(formerComment.body).toContain('[QUARANTINED_URL: github.com]');
+        expect(projected.contentTrust.quarantined).toBe(1)
     });
 });
 
