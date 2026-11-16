@@ -368,7 +368,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             'Task not found: ${taskId}',
             'Message ${taskId} is not an A2A Task (missing task.state)',
             'Unauthorized: ${me} is neither originator nor assignee for task ${taskId}',
-            'Unauthorized: ${me} as ${role} cannot transition \\`${currentState} → ${newState}\\`'
+            '`Unauthorized: ${me} as ${role} cannot transition \\`${currentState} → ${newState}\\`${allowedHint}`'
         ]) {
             expect(source, template).toContain(template)
         }
