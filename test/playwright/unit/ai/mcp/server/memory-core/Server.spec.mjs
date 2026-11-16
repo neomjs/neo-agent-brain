@@ -21,6 +21,13 @@ import path                    from 'path';
 import fs                      from 'fs-extra';
 import Neo                     from 'neo.mjs/src/Neo.mjs';
 import * as core               from 'neo.mjs/src/core/_export.mjs';
+import {
+    SUBJECT_BINDING_ACTIVATION_TABLE,
+    SUBJECT_BINDING_TABLE,
+    activateSubjectBinding,
+    bindAtFirstAdmission,
+    readSubjectBinding
+} from '../../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 import 'neo.mjs/src/manager/Instance.mjs';
 
 
@@ -1660,6 +1667,121 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             const {returned} = await renderTip({verdict: 'mismatch', conclusive: true, dialed: '127.0.0.1', answering: ['[::1]']});
 
             expect(returned).toBeUndefined();
+        });
+    });
+
+    test.describe('the verified subject selects the acting identity', () => {
+        // Activation is plane-wide state, so these steps run in order and remove their own records.
+        test.describe.configure({mode: 'serial'});
+
+        const
+            GITHUB  = 'https://api.github.com',
+            sqlite  = () => GraphService.db.storage.db,
+            subject = providerUserId => ({authProvider: 'github', providerBaseUrl: GITHUB, providerUserId}),
+            pat     = (login, providerUserId) => ({
+                token              : 'ghp-never-stored',
+                userId             : login,
+                username           : login,
+                source             : 'github-pat',
+                authProvider       : 'github',
+                authSource         : 'github-pat',
+                providerBaseUrl    : GITHUB,
+                providerUserId,
+                providerUsername   : login,
+                providerDisplayName: login
+            });
+
+        /** @summary Drops this block's bindings and the activation record, so no later test inherits them. */
+        function cleanUp(ids, nodeIds) {
+            sqlite().exec(`DROP TABLE IF EXISTS ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
+            if (sqlite().prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(SUBJECT_BINDING_TABLE)) {
+                const remove = sqlite().prepare(`DELETE FROM ${SUBJECT_BINDING_TABLE} WHERE providerUserId = ?`);
+                ids.forEach(id => remove.run(id));
+            }
+            nodeIds.forEach(id => fixtureNodeIds.add(id));
+        }
+
+        test('a refused bind rolls the new identity back: neither the store nor the cache keeps it', async () => {
+            await GraphService.initAsync();
+            const claimed = subject('18120021');
+
+            try {
+                sqlite().transaction(() => bindAtFirstAdmission(sqlite(), {subject: claimed, identityId: '@subject-1812-owner', at: 1}))();
+                const cursor = GraphService.db.lastSyncId;
+
+                expect(() => GraphService.createBoundIdentity(
+                    {id: '@subject-1812-intruder', type: 'AgentIdentity', name: 'intruder', properties: {accountType: 'agent'}},
+                    {subject: claimed}
+                )).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_SUBJECT_CLAIMED'}));
+
+                expect(rawGraphNode('@subject-1812-intruder')).toBeNull();
+                expect(GraphService.db.nodes.get('@subject-1812-intruder')).toBeFalsy();
+                expect(GraphService.db.lastSyncId).toBe(cursor);
+            } finally {
+                cleanUp(['18120021'], ['@subject-1812-intruder']);
+            }
+        });
+
+        test('before activation, a first admission binds only the identity it creates', async () => {
+            await GraphService.initAsync();
+            const serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']});
+
+            try {
+                const created = await serverInstance.buildRequestContext(pat('subject-1812-new', '18120001'));
+
+                expect(created.agentIdentityNodeId).toBe('@subject-1812-new');
+                expect(readSubjectBinding(sqlite(), subject('18120001'))).toMatchObject({
+                    identityId: '@subject-1812-new', writer: 'first-admission', foundingRevision: null
+                });
+
+                // A legacy identity keeps today's login selection and gains no binding before the cutover
+                GraphService.upsertGlobalNode({id: '@subject-1812-legacy', type: 'AgentIdentity', name: 'legacy', properties: {accountType: 'agent'}});
+                const legacy = await serverInstance.buildRequestContext(pat('subject-1812-legacy', '18120002'));
+
+                expect(legacy.agentIdentityNodeId).toBe('@subject-1812-legacy');
+                expect(readSubjectBinding(sqlite(), subject('18120002'))).toBeNull();
+            } finally {
+                cleanUp(['18120001', '18120002'], ['@subject-1812-new', '@subject-1812-legacy']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('after activation, the subject selects the identity and every conflict fails closed', async () => {
+            await GraphService.initAsync();
+            const serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']});
+            const nodeIds        = ['@subject-1812-old', '@subject-1812-renamed', '@subject-1812-legacy2', '@subject-1812-fresh'];
+
+            try {
+                await serverInstance.buildRequestContext(pat('subject-1812-old', '18120011'));
+                GraphService.upsertGlobalNode({id: '@subject-1812-legacy2', type: 'AgentIdentity', name: 'legacy', properties: {accountType: 'agent'}});
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                // A rename keeps the identity: the subject decides, not the new login
+                const renamed = await serverInstance.buildRequestContext(pat('subject-1812-renamed', '18120011'));
+                expect(renamed.agentIdentityNodeId).toBe('@subject-1812-old');
+                expect(rawGraphNode('@subject-1812-renamed')).toBeNull();
+
+                // A re-registered login gets nothing: its login names an identity bound to another subject
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-old', '18120012')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT'});
+                expect(readSubjectBinding(sqlite(), subject('18120012'))).toBeNull();
+
+                // An unbound legacy identity binds only through the administrative path
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-legacy2', '18120013')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT', message: expect.stringContaining('administrative')});
+
+                // A request without a complete subject is nonqualifying, with no fallback to the login
+                await expect(serverInstance.buildRequestContext({...pat('subject-1812-old', '18120011'), providerUserId: undefined}))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_REQUIRED'});
+
+                // A new subject whose login names no identity yet creates and binds one
+                const fresh = await serverInstance.buildRequestContext(pat('subject-1812-fresh', '18120014'));
+                expect(fresh.agentIdentityNodeId).toBe('@subject-1812-fresh');
+                expect(readSubjectBinding(sqlite(), subject('18120014')).identityId).toBe('@subject-1812-fresh');
+            } finally {
+                cleanUp(['18120011', '18120012', '18120013', '18120014'], nodeIds);
+                serverInstance.destroy();
+            }
         });
     });
 });

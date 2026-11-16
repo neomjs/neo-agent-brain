@@ -18,6 +18,7 @@ import {fenceIdentityPublication}                                       from './
 import {consumeIdentityPublicationBoot, readIdentityPublicationLineage} from './helpers/identityPublicationLineage.mjs';
 import {installIdentityFoundingSource}                                  from './helpers/identityFoundingStorage.mjs';
 import {admitIdentityPublication, readIdentityPublicationSnapshot}      from './helpers/identityPublicationAdmission.mjs';
+import {bindAtFirstAdmission}                                           from './helpers/subjectBinding.mjs';
 import {
     ANCHORED_ISSUE_EDGE_TYPES,
     MESSAGE_ID_PREFIX,
@@ -749,6 +750,41 @@ class GraphService extends Base {
      */
     upsertGlobalNode(spec) {
         this.upsertNode({...spec, properties: {...spec.properties, userId: null}});
+    }
+
+    /**
+     * @summary Creates a global `AgentIdentity` and binds its verified provider subject in one physical
+     * transaction, so a first admission never leaves an identity without the subject that created it.
+     * The identity write goes through {@link GraphService#upsertGlobalNode} as every identity write does;
+     * its storage write joins this transaction. A rollback evicts the cached node, so the cache never
+     * holds an identity the store refused, and restores the GraphLog cursor: the upsert acknowledged its
+     * own uncommitted log row, whose id a rolled-back transaction frees for another process's write.
+     * @param {Object} spec The new identity's node spec, as for {@link GraphService#upsertGlobalNode}.
+     * @param {Object} options
+     * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`.
+     * @param {Number} [options.at=Date.now()]
+     * @returns {{state: 'bound'|'matching', binding: Object}} The first-admission binding.
+     * @throws {Error} A named subject-binding refusal or a storage error; nothing is written.
+     */
+    createBoundIdentity(spec, {subject, at = Date.now()}) {
+        const sqlite = this.requireDb('AgentIdentity binding').storage.db;
+
+        if (!sqlite || sqlite.inTransaction || this.db.isExecutingTransaction) {
+            throw new Error('GraphService.createBoundIdentity requires its own physical transaction.');
+        }
+
+        const syncId = this.db.lastSyncId;
+
+        try {
+            return sqlite.transaction(() => {
+                this.upsertGlobalNode(spec);
+                return bindAtFirstAdmission(sqlite, {subject, identityId: spec.id, at});
+            }).immediate();
+        } catch (error) {
+            this.db.lastSyncId = syncId;
+            this.db.invalidateRejectedMutations([{type: 'nodes', mutation: {addedItems: [{id: spec.id}]}}]);
+            throw error;
+        }
     }
 
     /**
