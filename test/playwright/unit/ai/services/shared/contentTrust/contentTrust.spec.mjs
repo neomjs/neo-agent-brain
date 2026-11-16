@@ -28,21 +28,28 @@ test.describe('Neo.ai.services.shared.contentTrust.authorTrustClassifier', () =>
         expect(classifyAuthorTrust('tobiu')).toBe(TRUST_TIERS.OWNER)
     });
 
-    test('every roster formerLogins handle resolves to the owning resident trust tier (@-prefix + case agnostic)', () => {
-        for (const formerLogin of [
-            '@neo-gemini-pro',
-            'neo-gemini-pro',
-            'Neo-Gemini-Pro',
-            '@neo-gemini-3-1-pro',
-            '@neo-fable',
-            'neo-fable',
-            '@neo-gpt',
-            'neo-gpt',
-            '@neo-opus-4-7',
-            '@neo-claude-opus'
-        ]) {
-            expect(classifyAuthorTrust(formerLogin), `formerLogin ${formerLogin}`).toBe(TRUST_TIERS.PEER_TRUSTED)
+    const FORMER_LOGINS = ['@neo-gemini-pro', 'neo-gemini-pro', 'Neo-Gemini-Pro', '@neo-gemini-3-1-pro', '@neo-fable', 'neo-fable', '@neo-gpt', 'neo-gpt', '@neo-opus-4-7', '@neo-claude-opus'];
+
+    test('a former login with org standing keeps the owning resident trust tier (@-prefix + case agnostic)', () => {
+        for (const formerLogin of FORMER_LOGINS) {
+            for (const authorAssociation of ['MEMBER', 'owner', 'COLLABORATOR']) {
+                expect(classifyAuthorTrust(formerLogin, {authorAssociation}), `${formerLogin} ${authorAssociation}`).toBe(TRUST_TIERS.PEER_TRUSTED)
+            }
+            expect(classifyAuthorTrust(formerLogin, {collaborators: new Set([formerLogin.toUpperCase()])}), `${formerLogin} collaborator`)
+                .toBe(TRUST_TIERS.PEER_TRUSTED)
         }
+    });
+
+    test('a former login without org standing is a stranger: anyone can register a released login (#1810)', () => {
+        for (const formerLogin of FORMER_LOGINS) {
+            for (const authorAssociation of [undefined, 'NONE', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER']) {
+                const tier = classifyAuthorTrust(formerLogin, {authorAssociation});
+                expect(tier, `${formerLogin} ${authorAssociation}`).toBe(TRUST_TIERS.EXTERNAL);
+                expect(isExternalTier(tier)).toBe(true)
+            }
+        }
+        // A current login never needs corroboration
+        expect(classifyAuthorTrust('neo-gpt-euclid', {authorAssociation: 'NONE'})).toBe(TRUST_TIERS.PEER_TRUSTED)
     });
 
     test('authorAssociation (OWNER, MEMBER, COLLABORATOR) classifies non-rostered logins as REPO_TRUSTED while preserving EXTERNAL for untrusted associations', () => {

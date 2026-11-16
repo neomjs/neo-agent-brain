@@ -30,30 +30,27 @@ export function normalizeLogin(login) {
     return typeof login === 'string' ? login.trim().replace(/^@/, '').toLowerCase() : ''
 }
 
+/** @summary The roster identities that carry a GitHub login. */
+const ROSTERED = IDENTITIES.filter(identity => identity.properties?.githubLogin);
+
 /**
- * Canonical and former login → trustTier map, built once from the frozen identity roster.
- * Indexes both `properties.githubLogin` and `properties.formerLogins` so historical GitHub
- * comments, reviews, and issues authored before an identity rename still resolve to the
- * owning resident's trust tier.
+ * Current login → trustTier, built once from the frozen identity roster.
  * @type {Map<String, String>}
  */
-const KNOWN_TIER_BY_LOGIN = new Map(
-    IDENTITIES
-        .filter(identity => identity.properties?.githubLogin)
-        .flatMap(identity => {
-            const
-                tier         = identity.properties.trustTier,
-                formerLogins = Array.isArray(identity.properties.formerLogins) ? identity.properties.formerLogins : [];
+const CURRENT_TIER_BY_LOGIN = new Map(ROSTERED.map(identity => [normalizeLogin(identity.properties.githubLogin), identity.properties.trustTier]));
 
-            return [
-                [normalizeLogin(identity.properties.githubLogin), tier],
-                ...formerLogins
-                    .map(normalizeLogin)
-                    .filter(Boolean)
-                    .map(login => [login, tier])
-            ];
-        })
-);
+/**
+ * Former login → trustTier, so content ingested under a pre-rename login keeps its resident's tier.
+ * A rename releases the old login for anyone to register, so a match here counts only with the org
+ * standing `classifyAuthorTrust` checks; GitHub's own reads already show the renamed account's current login.
+ * @type {Map<String, String>}
+ */
+const FORMER_TIER_BY_LOGIN = new Map(ROSTERED.flatMap(identity =>
+    (Array.isArray(identity.properties.formerLogins) ? identity.properties.formerLogins : [])
+        .map(normalizeLogin)
+        .filter(Boolean)
+        .map(login => [login, identity.properties.trustTier])
+));
 
 /**
  * GitHub `CommentAuthorAssociation` values that prove repository maintainer / organization member
@@ -68,10 +65,12 @@ const REPO_TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
  *
  * Resolution order:
  * 1. Empty / non-string login → `UNCLASSIFIED` (no author info; still untrusted).
- * 2. Login present in the canonical roster (`githubLogin` or `formerLogins`) → that identity's tier (`owner` / `peer-trusted` / `system`).
- * 3. Login in the injected repo-collaborator set → `REPO_TRUSTED` (write-access humans we don't seed).
- * 4. GitHub `authorAssociation` in `['OWNER', 'MEMBER', 'COLLABORATOR']` → `REPO_TRUSTED` (non-rostered org members and collaborators).
- * 5. Anything else → `EXTERNAL` (the conservative default; never inferred up from prose).
+ * 2. Login is a roster identity's current `githubLogin` → that identity's tier (`owner` / `peer-trusted` / `system`).
+ * 3. Login is a roster `formerLogins` entry AND the author shows org standing (step 4 or 5 holds) → that
+ *    identity's tier. Without standing it falls through: whoever registers a released login is a stranger.
+ * 4. Login in the injected repo-collaborator set → `REPO_TRUSTED` (write-access humans we don't seed).
+ * 5. GitHub `authorAssociation` in `['OWNER', 'MEMBER', 'COLLABORATOR']` → `REPO_TRUSTED` (non-rostered org members and collaborators).
+ * 6. Anything else → `EXTERNAL` (the conservative default; never inferred up from prose).
  *
  * @param {String} login GitHub author login (bare `octocat` or `@octocat` both accepted)
  * @param {Object}               [opts]
@@ -88,8 +87,8 @@ export function classifyAuthorTrust(login, {collaborators, authorAssociation} = 
         return TRUST_TIERS.UNCLASSIFIED
     }
 
-    if (KNOWN_TIER_BY_LOGIN.has(normalized)) {
-        return KNOWN_TIER_BY_LOGIN.get(normalized)
+    if (CURRENT_TIER_BY_LOGIN.has(normalized)) {
+        return CURRENT_TIER_BY_LOGIN.get(normalized)
     }
 
     // Normalize every entry the same way regardless of container (array OR Set), so a Set
@@ -97,21 +96,15 @@ export function classifyAuthorTrust(login, {collaborators, authorAssociation} = 
     const collaboratorList = collaborators instanceof Set
         ? [...collaborators]
         : (Array.isArray(collaborators) ? collaborators : []);
-    const collaboratorSet = new Set(collaboratorList.map(normalizeLogin));
+    const
+        normalizedAssociation = typeof authorAssociation === 'string' ? authorAssociation.trim().toUpperCase() : '',
+        standing              = new Set(collaboratorList.map(normalizeLogin)).has(normalized) || REPO_TRUSTED_ASSOCIATIONS.has(normalizedAssociation);
 
-    if (collaboratorSet.has(normalized)) {
-        return TRUST_TIERS.REPO_TRUSTED
+    if (standing && FORMER_TIER_BY_LOGIN.has(normalized)) {
+        return FORMER_TIER_BY_LOGIN.get(normalized)
     }
 
-    const normalizedAssociation = typeof authorAssociation === 'string'
-        ? authorAssociation.trim().toUpperCase()
-        : '';
-
-    if (REPO_TRUSTED_ASSOCIATIONS.has(normalizedAssociation)) {
-        return TRUST_TIERS.REPO_TRUSTED
-    }
-
-    return TRUST_TIERS.EXTERNAL
+    return standing ? TRUST_TIERS.REPO_TRUSTED : TRUST_TIERS.EXTERNAL
 }
 
 /**
