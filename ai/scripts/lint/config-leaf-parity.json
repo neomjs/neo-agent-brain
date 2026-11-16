@@ -554,6 +554,7 @@
         "plane",
         "plane.dataRoot",
         "plane.id",
+        "plane.standalone",
         "projectRoot",
         "providerLaneDeclaration",
         "providerLaneDeclaration.embedding",

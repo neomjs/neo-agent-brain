@@ -773,8 +773,9 @@ class BaseServer extends Base {
         // different checkout resolves a self-consistent canonical and passes this. See the
         // CANNOT-detect section on `assertPlaneCoherence`.
         const observed = assertPlaneCoherence({
-            planeId : plane.id,
-            dataRoot: plane.dataRoot,
+            planeId   : plane.id,
+            dataRoot  : plane.dataRoot,
+            standalone: plane.standalone,
             canonicalDataRoot
         });
 

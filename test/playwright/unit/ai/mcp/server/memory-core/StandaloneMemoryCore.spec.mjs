@@ -194,6 +194,9 @@ test.describe('Standalone Memory Core MCP Server', () => {
             const canonicalPlacement = standalonePlacement();
             expect(StandaloneConfigBase.config.data.plane.id.default).toBe(canonicalPlacement.NEO_PLANE_ID);
             expect(StandaloneConfigBase.config.data.plane.dataRoot.default).toBe(canonicalPlacement.NEO_PLANE_DATA_ROOT);
+            // A durable plane other than the host's canonical one, by construction: pinned, no env.
+            expect(StandaloneConfigBase.config.data.plane.standalone.default).toBe(true);
+            expect(StandaloneConfigBase.config.data.plane.standalone.env).toBeFalsy();
             expect(StandaloneConfigBase.config.data.memoryWal.dirProd.default).toBe(canonicalPlacement.NEO_MEMORY_WAL_DIR);
             expect(StandaloneConfigBase.config.data.standaloneIndexPath.default).toBe(canonicalPlacement.NEO_MC_STANDALONE_INDEX_PATH);
             expect(StandaloneConfigBase.config.data.logPath.default).toBe(canonicalPlacement.NEO_MC_LOG_PATH);

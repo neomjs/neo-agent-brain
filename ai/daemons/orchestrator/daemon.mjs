@@ -284,6 +284,7 @@ export function assertOrchestratorPlane({aiConfig = AiConfig, rootDir = REPO_ROO
     const observed = assertPlaneCoherence({
         planeId          : plane.id,
         dataRoot         : plane.dataRoot,
+        standalone       : plane.standalone,
         canonicalDataRoot: resolvePlaneDataRoot({rootDir})
     });
 

@@ -194,6 +194,10 @@ export function assertPlaneDataRootPlacement(dataRoot, {requireWritable = false,
  * 2. `dataRoot` must be absolute — a relative root re-imports ambient-cwd resolution.
  * 3. A NON-canonical `planeId` (a declared overlay) must not resolve — symlink-transparently —
  *    to the canonical durable root: identity-without-isolation would mutate the durable plane.
+ *    A declared standalone durable plane (`standalone: true`) owns its root, which may be the
+ *    image-derived canonical path, so clause 3 skips it and refuses the canonical identity
+ *    instead: an omitted `NEO_PLANE_ID` resolves to that identity, and a borrowed id lets a
+ *    healthcheck prove the wrong plane.
  *
  * ## What this CANNOT detect — read before treating a call site as protected
  *
@@ -231,10 +235,11 @@ export function assertPlaneDataRootPlacement(dataRoot, {requireWritable = false,
  * @param {String} options.dataRoot Resolved plane data root.
  * @param {String} [options.canonicalDataRoot] The durable root reference; clause 3 only runs when provided.
  * @param {String} [options.canonicalPlaneId] Canonical identity; defaults to the twin literal.
+ * @param {Boolean} [options.standalone=false] The resolved `plane.standalone` declaration.
  * @param {Function} [options.realpathFn] Path-identity resolver, injectable for tests.
  * @returns {Object} Frozen observed identity `{planeId, dataRoot}` for emission consumers.
  */
-export function assertPlaneCoherence({planeId, dataRoot, canonicalDataRoot, canonicalPlaneId = PLANE_DEFAULTS.planeId, realpathFn = realpathOrResolve}) {
+export function assertPlaneCoherence({planeId, dataRoot, canonicalDataRoot, canonicalPlaneId = PLANE_DEFAULTS.planeId, standalone = false, realpathFn = realpathOrResolve}) {
     if (!isOpaquePlaneId(planeId)) {
         throw new Error(
             `planeConfig.assertPlaneCoherence: planeId "${planeId}" is not opaque — ` +
@@ -251,7 +256,14 @@ export function assertPlaneCoherence({planeId, dataRoot, canonicalDataRoot, cano
 
     assertPlaneDataRootPlacement(dataRoot, {realpathFn});
 
-    if (planeId !== canonicalPlaneId && canonicalDataRoot &&
+    if (standalone) {
+        if (planeId === canonicalPlaneId) {
+            throw new Error(
+                `planeConfig.assertPlaneCoherence: a standalone durable plane must declare its own NEO_PLANE_ID — ` +
+                `"${planeId}" is this host's canonical identity, and a borrowed id lets a healthcheck prove the wrong plane.`
+            );
+        }
+    } else if (planeId !== canonicalPlaneId && canonicalDataRoot &&
         realpathFn(dataRoot) === realpathFn(canonicalDataRoot)) {
         throw new Error(
             `planeConfig.assertPlaneCoherence: plane "${planeId}" resolves the durable root "${canonicalDataRoot}" — ` +
