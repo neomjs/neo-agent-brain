@@ -167,11 +167,18 @@ characters and empty keys refuse. Cross-script visual confusables remain distinc
 family `unknown` is data; unavailable, unconfirmed, empty and ambiguous results are separate states.
 
 The temporal reader validates the complete retained payload before selecting a subject. Corrections
-apply at the target declaration's original admission boundary. Founding precedence ends at the
-earliest corrected different-family declaration, including retired incarnations; a correction may
-move or remove that cutoff. Membership diagnostics remain visible beside the effective intervals.
+apply at the target declaration's original admission boundary. A consistent founding family governs
+until the earliest corrected different-family declaration, including retired incarnations; a
+correction may move or remove that cutoff. Conflicting founders remain ambiguous until the first
+admitted declaration at its original admission time, then the admitted aggregate governs, including
+its unconfirmed or ambiguous states. All founding rows and membership diagnostics remain visible.
 `familiesDuring` includes every overlapping family and refuses an unclassified span without returning
 a partial positive set.
+
+The retained founding residual is an undeclared different-family seat on a rostered identity: the
+effective family remains the founding family while the membership view reports `unconfirmed-seat`.
+An observed case where that seat passes the cross-family gate reopens the founding-precedence policy.
+The projection preserves the missing-declaration evidence and does not infer the seat's family.
 
 The publication helper re-exports the shared deterministic canonicalizer. Ordinary publication bytes,
 field projection, scheduling and read-back APIs retain their contracts. Own `__proto__` keys remain

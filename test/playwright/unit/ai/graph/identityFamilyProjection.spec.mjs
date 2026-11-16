@@ -312,15 +312,50 @@ test.describe('provider-bound founding and admitted family composition', () => {
         expect(result.founding.cutoff).toBe(20);
     });
 
-    test('all agreeing founders count, while conflicting founders stay ambiguous even after C7', () => {
+    test('all agreeing founders remain represented in the effective founding view', () => {
         const agrees = compose(source(), founding(['gpt', 'gpt']));
         expect(agrees.founding.identityKeys).toHaveLength(2);
         expect(familyAt(agrees, 0)).toEqual(classified('gpt'));
-        const conflict = compose(source(), founding(['gpt', 'claude']));
+    });
+
+    test('conflicting founders yield to the first admitted declaration without erasing their history', () => {
+        const history  = source({declarations: [declaration('a', 'A', 20), declaration('b', 'A', 40, 'claude', 3)]});
+        const conflict = compose(history, founding(['gpt', 'claude']));
         expect(conflict.founding.families).toEqual(['claude', 'gpt']);
-        for (const at of [0, 20, 100]) expect(familyAt(conflict, at).state).toBe('ambiguous-founders');
-        expect(familyAt(conflict.membership, 20)).toEqual(classified('gpt'));
+        expect(conflict.founding.identityKeys).toHaveLength(2);
+        expect(conflict.founding.cutoff).toBe(20);
+        for (const at of [0, 19]) expect(familyAt(conflict, at).state).toBe('ambiguous-founders');
+        expect(familyAt(conflict, 20)).toEqual(classified('gpt'));
+        expect(familyAt(conflict, 40)).toEqual(classified('claude'));
         expect(familiesDuring(conflict, 0, 100)).toEqual({state: 'ambiguous-founders', families: []});
+        expect(familiesDuring(conflict, 20, 100)).toEqual({state: 'classified', families: ['claude', 'gpt']});
+    });
+
+    test('conflicting founders use the admitted aggregate at the original corrected declaration boundary', () => {
+        const history = source({memberships: [member(), member('B')],
+            declarations: [declaration('a', 'A', 20), declaration('b', 'B', 30, 'claude', 3)]});
+        const before = compose(history, founding(['gpt', 'claude']));
+        expect(familyAt(before, 19).state).toBe('ambiguous-founders');
+        expect(familyAt(before, 20).state).toBe('unconfirmed-seat');
+        expect(familyAt(before, 30).state).toBe('ambiguous-seats');
+        history.corrections = [correction('fix', 'a', 'claude', 9)];
+        const corrected = compose(history, founding(['gpt', 'claude']));
+        expect(corrected.founding.cutoff).toBe(20);
+        expect(corrected.intervals.map(row => row.since)).toEqual([0, 10, 20, 30]);
+        expect(familyAt(corrected, 19).state).toBe('ambiguous-founders');
+        expect(familyAt(corrected, 20).state).toBe('unconfirmed-seat');
+        expect(familyAt(corrected, 30)).toEqual(classified('claude'));
+    });
+
+    test('retiring the first declared binding does not revive conflicting founders', () => {
+        const history = source({memberships: [member('A', 10, 30), member('B', 40)],
+            declarations: [declaration('a', 'A', 20)]});
+        const conflict = compose(history, founding(['gpt', 'claude']));
+        expect(conflict.founding.cutoff).toBe(20);
+        expect(familyAt(conflict, 20)).toEqual(classified('gpt'));
+        expect(familyAt(conflict, 35).state).toBe('empty-membership');
+        expect(familyAt(conflict, 40).state).toBe('unconfirmed-seat');
+        expect(conflict.intervals.at(-1).origin).toBe('admitted');
     });
 
     test('missing founding entries preserve C8 rather than classifying an unconfirmed account', () => {

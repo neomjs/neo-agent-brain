@@ -171,9 +171,10 @@ export function buildFamilyProjection(source) {
  * @summary Composes founding precedence with corrected admitted history for one stable subject.
  * The source owner must select this subject's complete history and founding payload from one
  * protected physical observation. This pure function proves neither that join nor source authority.
- * Founding spans the supported nonnegative query-time domain until the first corrected different
- * declaration; zero is the domain floor, not an invented identity-birth or seed-admission timestamp.
- * Conflicting founders remain ambiguous. Membership diagnostics stay unchanged in `membership`.
+ * One founding family governs until the first corrected different declaration; conflicting founders
+ * remain ambiguous until the first admitted declaration. Both cutoffs use original admission times.
+ * Zero is the supported query-domain floor, not an identity-birth or seed-admission timestamp.
+ * Founding rows and membership diagnostics stay intact beside the effective intervals.
  * @param {Object} options Closed {subject, source, founding}; all three are required.
  * @param {Object} options.subject Exact provider/base/stable-ID tuple, never a login or seat key.
  * @param {Object} options.source Complete normalized admitted history for that subject.
@@ -192,10 +193,11 @@ export function buildSubjectFamilyProjection(options) {
         const entries  = founding.entries.filter(entry => stringifyCanonicalJson(entry.subject) === key);
         const families = [...new Set(entries.map(entry => entry.family))].sort();
         let   cutoff   = null;
-        if (families.length === 1) {
+        if (families.length > 0) {
             for (const binding of bindings.values()) {
                 for (const declaration of binding.declarations) {
-                    if (declaration.family !== families[0] && (cutoff === null || declaration.since < cutoff)) {
+                    if ((families.length > 1 || declaration.family !== families[0]) &&
+                        (cutoff === null || declaration.since < cutoff)) {
                         cutoff = declaration.since;
                     }
                 }
@@ -203,7 +205,7 @@ export function buildSubjectFamilyProjection(options) {
         }
         const times     = [...new Set([0, ...membership.intervals.map(value => value.since)])].sort((a, b) => a - b);
         const intervals = times.map((since, index) => {
-            const fromFounding = families.length > 1 || families.length === 1 && (cutoff === null || since < cutoff);
+            const fromFounding = families.length > 0 && (cutoff === null || since < cutoff);
             const resolved     = fromFounding
                 ? {state: families.length === 1 ? 'classified' : 'ambiguous-founders',
                     family: families.length === 1 ? families[0] : null}

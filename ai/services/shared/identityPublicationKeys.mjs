@@ -129,7 +129,7 @@ export function familyLineageKey({planeId} = {}) {
  * @param {Object} options Validated boot lineage components.
  * @param {String} options.planeId Plane identity.
  * @param {String} options.issuer Stable Fleet issuer.
- * @param {Object} options.reservation Original attempt, kid and host run.
+ * @param {Object} options.reservation Own identity fields for the original attempt, kid and host run.
  * @param {String|null} options.fingerprint Derived public fingerprint; null before generation.
  * @returns {String} Deterministic head; equality is evidence, never generation authority.
  */
@@ -137,8 +137,14 @@ export function familyLineageHead({planeId, issuer, reservation, fingerprint} = 
     if (fingerprint !== null && (typeof fingerprint !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(fingerprint))) {
         throw new TypeError('Lineage fingerprint must be explicit null or a derived SHA-256 fingerprint.');
     }
+    const reserved = ['attemptId', 'kid', 'originRunId'].map(key => {
+        if (!reservation || !Object.hasOwn(reservation, key)) {
+            throw new TypeError('A lineage reservation requires its own ' + key + '.');
+        }
+        return identityPart(reservation[key], key);
+    });
     return recordKey('lineage-head', [identityPart(planeId, 'planeId'), identityPart(issuer, 'issuer'),
-        ...['attemptId', 'kid', 'originRunId'].map(key => identityPart(reservation?.[key], key)), fingerprint]);
+        ...reserved, fingerprint]);
 }
 
 /**
