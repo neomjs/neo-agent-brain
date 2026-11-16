@@ -238,6 +238,35 @@ export const ADR_PROTECTED_PROPERTY_KEYS = Object.freeze([
 const ADR_PROTECTED_PROPERTY_KEY_SET = new Set(ADR_PROTECTED_PROPERTY_KEYS);
 
 /**
+ * Property keys owned by a projected ontology `CONCEPT` node: every field `ConceptIngestor` projects,
+ * its projection markers, and the stored vector binding. Its payload hash covers most of them, but its
+ * repair pass compares only label, name, description and vector, so any other clobbered key would stay
+ * wrong for good. Non-ontology writers (REM Tri-Vector `SemanticGraphExtractor`, ADR edge stubs,
+ * discovered candidates) may enrich a projected concept but never rewrite these.
+ */
+export const CONCEPT_PROTECTED_PROPERTY_KEYS = Object.freeze([
+    'aliases',
+    'codeGapEligible',
+    'conceptProjectionIntegrityFindings',
+    'conceptProjectionVersion',
+    'description',
+    'isConceptEdgeStub',
+    'name',
+    'ontologyLayer',
+    'payloadHash',
+    'semanticVectorId',
+    'tags',
+    'tier',
+    'uniqueToNeo',
+    'validated',
+    'verifiedAt',
+    'weight'
+]);
+const
+    CONCEPT_PROTECTED_PROPERTY_KEY_SET = new Set(CONCEPT_PROTECTED_PROPERTY_KEYS),
+    CONCEPT_PAYLOAD_HASH               = /^[a-f0-9]{64}$/;
+
+/**
  * Complete inventory of graph node writers across `ai/`.
  * Only `AdrIngestor` (and reviewed migration/recovery carrying verified `adrAuthority` proof)
  * may mutate an admitted ADR's identity, `ADR` type label, or canonical document-vector binding.
@@ -551,6 +580,9 @@ class GraphService extends Base {
      * authoritative only when it declares `type === 'ADR'` alongside `adrAuthority.admitted === true`,
      * so echoing an existing node's `adrAuthority` on a non-`ADR` write never relabels or overwrites it.
      * An undeclared competing canonical ADR claim refuses mutation and retains the last admitted state.
+     * A projected ontology `CONCEPT` (a 64-hex `payloadHash`) gets the same boundary: only a
+     * `type === 'CONCEPT'` write carrying a 64-hex `payloadHash` or a `conceptProjectionVersion`
+     * (`ConceptIngestor`) may relabel it or rewrite `CONCEPT_PROTECTED_PROPERTY_KEYS`.
      * Closed or merged work items (`ISSUE`, `PULL_REQUEST`, `DISCUSSION`) clear `gravity_well` while
      * preserving historical `strategic_weight`, and active `gravity_well: true` writes keep the later
      * of the stored and incoming `gravity_well_asserted_at` so out-of-order digestion never moves an
@@ -586,7 +618,10 @@ class GraphService extends Base {
                 currentAuth             = currentProperties.adrAuthority,
                 isAdmittedAdr           = currentLabel === 'ADR' && currentAuth?.admitted === true,
                 incomingAuth            = properties?.adrAuthority,
-                isAuthoritativeAdrWrite = type === 'ADR' && incomingAuth?.admitted === true;
+                isAuthoritativeAdrWrite = type === 'ADR' && incomingAuth?.admitted === true,
+                isProjectedConcept      = currentLabel === 'CONCEPT' && CONCEPT_PAYLOAD_HASH.test(currentProperties.payloadHash || ''),
+                isOntologyConceptWrite  = type === 'CONCEPT'
+                    && (CONCEPT_PAYLOAD_HASH.test(properties?.payloadHash || '') || properties?.conceptProjectionVersion != null);
 
             if (isAdmittedAdr && isAuthoritativeAdrWrite) {
                 const
@@ -604,8 +639,14 @@ class GraphService extends Base {
             }
 
             const
-                preserveAdrAuthority = isAdmittedAdr && !isAuthoritativeAdrWrite,
-                updatedLabel         = preserveAdrAuthority ? 'ADR' : (type || currentLabel || 'NODE');
+                preserveAdrAuthority     = isAdmittedAdr && !isAuthoritativeAdrWrite,
+                preserveConceptAuthority = isProjectedConcept && !isOntologyConceptWrite,
+                protectedKeys            = preserveAdrAuthority     ? ADR_PROTECTED_PROPERTY_KEY_SET
+                                         : preserveConceptAuthority ? CONCEPT_PROTECTED_PROPERTY_KEY_SET
+                                         : null,
+                updatedLabel             = preserveAdrAuthority     ? 'ADR'
+                                         : preserveConceptAuthority ? 'CONCEPT'
+                                         : (type || currentLabel || 'NODE');
 
             if (node.isRecord) {
                 node.set({ label: updatedLabel });
@@ -614,13 +655,13 @@ class GraphService extends Base {
             }
 
             let p = Object.assign({}, currentProperties);
-            if (name !== undefined && !preserveAdrAuthority) {
+            if (name !== undefined && !protectedKeys?.has('name')) {
                 p.name = name;
             }
-            if (description !== undefined) {
+            if (description !== undefined && !protectedKeys?.has('description')) {
                 p.description = description;
             }
-            if (semanticVectorId !== undefined && !preserveAdrAuthority) {
+            if (semanticVectorId !== undefined && !protectedKeys?.has('semanticVectorId')) {
                 p.semanticVectorId = semanticVectorId;
             }
             if (state !== undefined) {
@@ -631,9 +672,9 @@ class GraphService extends Base {
             }
 
             if (properties !== undefined && typeof properties === 'object') {
-                if (preserveAdrAuthority) {
+                if (protectedKeys) {
                     for (const [k, v] of Object.entries(properties)) {
-                        if (!ADR_PROTECTED_PROPERTY_KEY_SET.has(k)) {
+                        if (!protectedKeys.has(k)) {
                             p[k] = v;
                         }
                     }

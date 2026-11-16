@@ -1009,15 +1009,19 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         const first = await ConceptIngestor.syncConceptsToGraph();
         expect(first.conceptsUpserted).toBe(1);
 
-        // Simulate SemanticGraphExtractor overwriting the node's label, name, description,
-        // and semanticVectorId while GraphService.upsertNode shallow-merges properties.payloadHash.
-        GraphService.upsertNode({
-            id              : 'agent-os',
-            type            : 'CLASS',
-            name            : 'Neo Agent OS Memory Management',
-            description     : 'Investigation into RAM and disk overhead.',
-            semanticVectorId: 'summary_65ddc71f-04c4-4c7d-90f0-126e11f23681'
+        // upsertNode now refuses this clobber, but rows clobbered before that guard still sit in
+        // the live graph. Write one the way upsertNode used to, past the guard, so the repair stays proven.
+        const stale = GraphService.db.nodes.get('agent-os');
+        stale.set({
+            label     : 'CLASS',
+            properties: {
+                ...stale.properties,
+                name            : 'Neo Agent OS Memory Management',
+                description     : 'Investigation into RAM and disk overhead.',
+                semanticVectorId: 'summary_65ddc71f-04c4-4c7d-90f0-126e11f23681'
+            }
         });
+        GraphService.db.storage.addNodes([stale]);
 
         const clobbered = GraphService.db.nodes.get('agent-os');
         expect(clobbered.label).toBe('CLASS');
@@ -1038,6 +1042,71 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         const third = await ConceptIngestor.syncConceptsToGraph();
         expect(third.conceptsUpserted).toBe(0);
         expect(third.conceptsSkipped).toBe(1);
+    });
+
+    test('keeps a projected CONCEPT\'s ontology fields when REM extraction upserts its id, and still takes ontology updates (#1548)', async () => {
+        const {CONCEPT_PROTECTED_PROPERTY_KEYS} = await import('../../../../../../ai/services/memory-core/GraphService.mjs');
+
+        const
+            conceptNode = {
+                id         : 'agent-os',
+                name       : 'AI-Native Architecture (Agent OS)',
+                tier       : 1,
+                description: 'The AI half of the organism.',
+                uniqueToNeo: true,
+                tags       : ['ai', 'architecture']
+            },
+            edges = [{source: 'agent-os', target: 'file:ai/services/ConceptService.mjs', type: 'IMPLEMENTED_BY'}];
+
+        writeFixture([conceptNode], edges);
+        await ConceptIngestor.syncConceptsToGraph();
+
+        const seeded = structuredClone(GraphService.db.nodes.get('agent-os').properties);
+
+        // Every key the projection writes is one the guard protects.
+        expect(Object.keys(seeded).filter(key => seeded[key] !== undefined && key !== 'userId' && !CONCEPT_PROTECTED_PROPERTY_KEYS.includes(key))).toEqual([]);
+
+        // SemanticGraphExtractor.commitTriVectorPayload's write for a CLASS entity whose name
+        // kebabs to an ontology id, plus a stray marker it must not be able to plant.
+        GraphService.upsertNode({
+            id              : 'agent-os',
+            type            : 'CLASS',
+            name            : 'Neo Agent OS Memory Management',
+            description     : 'Investigation into RAM and disk overhead.',
+            semanticVectorId: 'summary_65ddc71f-04c4-4c7d-90f0-126e11f23681',
+            properties      : {
+                logical_layer   : 'Core',
+                stability       : 'STABLE',
+                strategic_weight: 0.4,
+                tags            : ['ram', 'disk'],
+                context_source  : 'session-1548',
+                payloadHash     : 'deadbeef'
+            }
+        });
+
+        const guarded = GraphService.db.nodes.get('agent-os');
+        expect(guarded.label).toBe('CONCEPT');
+        for (const key of CONCEPT_PROTECTED_PROPERTY_KEYS) {
+            expect(guarded.properties[key], key).toEqual(seeded[key]);
+        }
+        expect(guarded.properties).toMatchObject({logical_layer: 'Core', stability: 'STABLE', strategic_weight: 0.4, context_source: 'session-1548'});
+
+        const resync = await ConceptIngestor.syncConceptsToGraph();
+        expect(resync.conceptsUpserted).toBe(0);
+        expect(resync.conceptsSkipped).toBe(1);
+
+        const changed = {...conceptNode, description: 'The Brain half of the organism.', tags: ['ai']};
+        writeFixture([changed], edges);
+
+        const update = await ConceptIngestor.syncConceptsToGraph();
+        expect(update.conceptsUpserted).toBe(1);
+
+        const updated = GraphService.db.nodes.get('agent-os');
+        expect(updated.label).toBe('CONCEPT');
+        expect(updated.properties.description).toBe('The Brain half of the organism.');
+        expect(updated.properties.tags).toEqual(['ai']);
+        expect(updated.properties.payloadHash).toBe(ConceptIngestor.computePayloadHash(changed));
+        expect(updated.properties.conceptProjectionVersion).toBe(seeded.conceptProjectionVersion);
     });
 
     test('shares row-check verdicts with ConceptService.importEdges and never writes to the concept store', async () => {
