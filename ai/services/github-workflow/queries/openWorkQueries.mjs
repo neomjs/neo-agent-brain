@@ -12,19 +12,23 @@
  * Variables: `$query` (a search string with `is:pr` and the `repo:` qualifiers), `$cursor`.
  *
  * A merged pull request adds one read, once: what its merge unblocked ({@link OPEN_WORK_UNBLOCKED}).
- * The current head's bounded check facts also bind outside CI classification before holder planning.
+ * Only the outside read adds original comment and current-head check facts for CI classification.
  * Legacy native-seat `repair-ci` wakes retain their send-time check-name read.
  */
 import {createHash} from 'node:crypto';
 
 /**
- * The open half: per PR, what a holder change is computed from, and the title the cockpit names it by.
+ * @summary Builds the shared open-work selection, with extra fields only for the outside reader.
  * The body and every commit's message (up to 100, with whether more exist) carry the model an outside PR names.
  * Each issue it closes carries GitHub's count of its open blockers, which holds an approved head off the merge.
- * @type {String}
+ * @param {String} name Static GraphQL operation name.
+ * @param {Boolean} [includeOutside=false] Include original CI evidence inside the existing connections.
+ * @returns {String}
+ * @private
  */
-export const OPEN_WORK_SNAPSHOT = `
-  query OpenWorkSnapshot($query: String!, $cursor: String) {
+function snapshotQuery(name, includeOutside = false) {
+    return `
+  query ${name}($query: String!, $cursor: String) {
     viewer { id }
     rateLimit {
       cost
@@ -143,15 +147,12 @@ export const OPEN_WORK_SNAPSHOT = `
               hasPreviousPage
             }
             nodes {
-              id
-              url
-              body
+              ${includeOutside ? 'id url body updatedAt' : ''}
               createdAt
-              updatedAt
               authorAssociation
               author {
                 __typename
-                ... on Node { id }
+                ${includeOutside ? '... on Node { id }' : ''}
                 login
               }
             }
@@ -216,7 +217,7 @@ export const OPEN_WORK_SNAPSHOT = `
                 oid
                 statusCheckRollup {
                   state
-                  contexts(first: 100) {
+                  ${includeOutside ? `contexts(first: 100) {
                     pageInfo {
                       hasNextPage
                     }
@@ -245,7 +246,7 @@ export const OPEN_WORK_SNAPSHOT = `
                         targetUrl
                       }
                     }
-                  }
+                  }` : ''}
                 }
                 checkSuites(last: 100) {
                   pageInfo {
@@ -266,6 +267,13 @@ export const OPEN_WORK_SNAPSHOT = `
     }
   }
 `;
+}
+
+/** @summary Lean authored and held seat pages, including the common holder and review facts. @type {String} */
+export const OPEN_WORK_SNAPSHOT = snapshotQuery('OpenWorkSnapshot');
+
+/** @summary Outside pages add original receipts and head-bound check evidence for CI classification. @type {String} */
+export const OPEN_WORK_OUTSIDE_SNAPSHOT = snapshotQuery('OpenWorkOutsideSnapshot', true);
 
 /**
  * The terminal half: merged or closed PRs whose close falls in the producer's window.
@@ -408,13 +416,13 @@ export const OPEN_WORK_FAILED_CHECKS = `
 
 /**
  * @summary Published GraphQL formula estimates for the static pulse documents, not timeout-cost bounds.
- * Snapshot has the search plus eleven connections for up to 50 PRs, including head checks and closing
- * issues: round((1 + 50 * 11) / 100) = 6, also measured on the live query. Terminal has one connection;
+ * Seat snapshots have the search plus ten connections for up to 50 PRs: round((1 + 50 * 10) / 100) = 5.
+ * Outside snapshots add head check contexts: round((1 + 50 * 11) / 100) = 6. Terminal has one connection;
  * the published minimum is one. Unblocked reads 10 closing issues, 50
  * blocked issues each, and two lists on each of those: round((1 + 10 + 500 + 500) / 100) = 10, which a
  * live read measured too. The gate also uses measured maxima.
  *
- * The third entry prices the previous snapshot document. The wake gate looks up every retained pulse's
+ * The third entry prices the previous published snapshot document. The wake gate looks up every retained pulse's
  * hash over its 24-hour window, and refuses a failed call it cannot price, so an upgrade would otherwise
  * hold a not-yet-activated producer for a day. It keeps one generation: the next change to the snapshot
  * replaces this hash with the then-current one rather than adding another.
@@ -422,10 +430,11 @@ export const OPEN_WORK_FAILED_CHECKS = `
  * @type {Object[]}
  */
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
-    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 6}),
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
     Object.freeze({queryHash: 'd42cc876db17c72098c97f2e53a7e96a2b15ba10fafa159e1bad9c6789860524', formulaCost: 5}),
-    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10})
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10}),
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_OUTSIDE_SNAPSHOT).digest('hex'), formulaCost: 6})
 ]);
 
 /**
@@ -436,5 +445,6 @@ export const OPEN_WORK_QUERY_COSTS = Object.freeze([
 export function openWorkQueryCost(query) {
     return query === OPEN_WORK_SNAPSHOT ? OPEN_WORK_QUERY_COSTS[0]
         : query === OPEN_WORK_TERMINAL ? OPEN_WORK_QUERY_COSTS[1]
-        : query === OPEN_WORK_UNBLOCKED ? OPEN_WORK_QUERY_COSTS[3] : null
+        : query === OPEN_WORK_UNBLOCKED ? OPEN_WORK_QUERY_COSTS[3]
+        : query === OPEN_WORK_OUTSIDE_SNAPSHOT ? OPEN_WORK_QUERY_COSTS[4] : null
 }

@@ -25,7 +25,7 @@
  */
 
 import {
-    OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
+    OPEN_WORK_SNAPSHOT, OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
 } from '../github-workflow/queries/openWorkQueries.mjs';
 import {
     normalizePullRequest, normalizeTerminal, normalizeUnblocked, reduceOpenWork
@@ -481,7 +481,7 @@ export function createOpenWorkProducer({
         if (outsideReader?.query) {
             try {
                 outsideNodes.push(...(await readSearch({
-                    query: outsideReader.query, text: OPEN_WORK_SNAPSHOT, search: ['is:pr is:open archived:false', excluded, scope].filter(Boolean).join(' '),
+                    query: outsideReader.query, text: OPEN_WORK_OUTSIDE_SNAPSHOT, search: ['is:pr is:open archived:false', excluded, scope].filter(Boolean).join(' '),
                     pageBudget, tally, apiBase: outsideReader.apiBase, stamp, progress: outside
                 })).nodes)
             } catch {}

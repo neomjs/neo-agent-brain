@@ -3,6 +3,7 @@ import {createHash}                                      from 'node:crypto';
 import {pickRotationSeat, planOpenWorkWakes, wakeGateOf} from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
 import {
     OPEN_WORK_QUERY_COSTS,
+    OPEN_WORK_OUTSIDE_SNAPSHOT,
     OPEN_WORK_SNAPSHOT,
     OPEN_WORK_TERMINAL
 } from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
@@ -735,6 +736,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         gate = observed => wakeGateOf(observed, {now: Date.parse(observed.pulses.at(-1).finishedAt) + 1000});
 
     const snapshotHash = createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'),
+        outsideHash    = createHash('sha256').update(OPEN_WORK_OUTSIDE_SNAPSHOT).digest('hex'),
         terminalHash   = createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'),
         classified     = (quota, overrides = {}) => ({...quota, queryHash: snapshotHash, reported: true,
             maxMeasuredCost: quota.cost, zeroCostFailedCalls: 0, firstAttemptAt: quota.firstAt,
@@ -754,10 +756,22 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         const result = gate(observed);
         expect(result).toMatchObject({holds: true, certification: {version: 1, policy: 'open-work-operational-estimate-v1'}});
         const bucket = result.certification.buckets.find(item => item.resetAt === iso(420));
-        expect(bucket).toMatchObject({measured: 36, estimated: 0, unattributed: 18, unattributedCalls: 3, decision: 'operational-estimate'});
-        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 6, reservePerCall: 6}));
+        expect(bucket).toMatchObject({measured: 36, estimated: 0, unattributed: 15, unattributedCalls: 3, decision: 'operational-estimate'});
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 5, reservePerCall: 5}));
         observed.pulses.at(-1).seats[0].outcome = 'failed';
         expect(gate(observed).holds).toBe(false);
+    });
+
+    test('an unmeasured outside read reserves six points independently of the lean seat query', () => {
+        const observed = history(), item = observed.pulses[100], base = item.quota[0];
+        item.quota = [classified(base), classified({...base, cost: 0, calls: 1, failed: 1, unknown: true},
+            {queryHash: outsideHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})];
+        item.costUnknown = true;
+        const result = gate(observed);
+        expect(result.holds).toBe(true);
+        expect(result.certification.buckets.find(row => row.resetAt === base.resetAt)).toMatchObject({estimated: 6, estimatedCalls: 1});
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: outsideHash, formulaCost: 6, reservePerCall: 6}));
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 5}));
     });
 
     test('query-specific reserves use formula and measured maximum, with no positive-cost double charge', () => {
@@ -780,10 +794,10 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
 
     test('a retained failed call under the previous snapshot document is still priced, so certification does not wait out the window (#1629)', () => {
         const
-            previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash].includes(entry.queryHash)),
+            previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash, outsideHash].includes(entry.queryHash)),
             observed = history(), item = observed.pulses[100], base = item.quota[0];
 
-        expect(previous).toEqual({queryHash: expect.stringMatching(/^[a-f\d]{64}$/), formulaCost: 5});
+        expect(previous).toEqual({queryHash: 'd42cc876db17c72098c97f2e53a7e96a2b15ba10fafa159e1bad9c6789860524', formulaCost: 5});
         item.quota = [
             classified(base),
             classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: previous.queryHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})
@@ -818,7 +832,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         failed.costUnknown = true;
         failed.quota = [classified({...original, cost: 0, calls: 100, failed: 100, unknown: true},
             {reported: false, maxMeasuredCost: null})];
-        // With no measured account total after all attempts, 200 reserved points exceed the share.
+        // With no measured account total after all attempts, 500 reserved points exceed the share.
         expect(gate(observed).holds).toBe(false);
         const earlier = observed.pulses[5];
         earlier.quota[0] = classified({...earlier.quota[0], remaining: 950});
@@ -827,7 +841,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         later.quota[0] = classified({...later.quota[0], remaining: 920});
         let result = gate(observed), bucket = result.certification?.buckets.find(row => row.resetAt === iso(60));
         expect(result.holds).toBe(true);
-        expect(bucket).toMatchObject({estimated: 600, decision: 'reported-user-total', userTotal: {used: 80, remaining: 920}});
+        expect(bucket).toMatchObject({estimated: 500, decision: 'reported-user-total', userTotal: {used: 80, remaining: 920}});
         // Same-millisecond failure after that successful response defeats its claimed coverage.
         later.costUnknown = true;
         later.quota.push(classified({...later.quota[0], cost: 0, calls: 1, failed: 1, unknown: true},

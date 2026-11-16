@@ -1,12 +1,15 @@
-import {expect, test}              from '@playwright/test';
-import fs                          from 'fs';
-import {createHash}                from 'node:crypto';
-import {createFleetOpenWorkSource} from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
-import {createOpenWorkProducer}    from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
-import {normalizeUnblocked}        from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
-import {planOpenWorkWakes}         from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {expect, test}                 from '@playwright/test';
+import fs                             from 'fs';
+import {createHash}                   from 'node:crypto';
+import {createFleetOpenWorkSource}    from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
+import {createOpenWorkProducer}       from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
+import {normalizeCiRepair}            from '../../../../../../ai/services/fleet/openWorkCiRepair.mjs';
+import {activeCiRepairClassification} from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
+import {normalizeUnblocked}           from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
+import {planOpenWorkWakes}            from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import * as queryDocuments            from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 import {
-    OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
+    OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
 } from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const identities = {
@@ -105,14 +108,16 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
     });
     const options = readers => ({readers, repos: async () => ['acme/app'], identities, now: () => new Date('2026-10-14T10:00:00Z')});
 
-    test('shared issuer reads compact into one bucket while zero-row seat coverage stays explicit', async () => {
+    test('shared issuer reads compact by query while zero-row seat coverage stays explicit', async () => {
         const producer = createOpenWorkProducer(options(async () => ['ada', 'gpt'].map(login => ({
             seat: '@' + login, login, apiBase: 'https://api.github.com', query: async () => answer()
         }))));
         const pulse = (await producer.pulse()).pulses.at(-1);
         expect(pulse).toMatchObject({telemetryVersion: 1, cost: 10, pages: 5, costUnknown: false, outside: {complete: true, rows: 0}});
-        expect(pulse.quota).toHaveLength(1);
-        expect(pulse.quota[0]).toMatchObject({apiBase: 'https://api.github.com', viewerId: 'issuer-1', resetAt: '2026-10-14T11:00:00.000Z', limit: 1000, cost: 10, calls: 5, failed: 0, unknown: false});
+        expect(pulse.quota).toHaveLength(2);
+        expect(pulse.quota[0]).toMatchObject({apiBase: 'https://api.github.com', viewerId: 'issuer-1', resetAt: '2026-10-14T11:00:00.000Z', limit: 1000, cost: 8, calls: 4, failed: 0, unknown: false});
+        expect(pulse.quota[1]).toMatchObject({viewerId: 'issuer-1', cost: 2, calls: 1,
+            queryHash: createHash('sha256').update(OPEN_WORK_OUTSIDE_SNAPSHOT).digest('hex')});
         expect(Date.parse(pulse.quota[0].firstAt)).toBeLessThanOrEqual(Date.parse(pulse.quota[0].lastAt));
         expect(pulse.seats).toEqual(['ada', 'gpt'].map(login => ({seat: '@' + login, benched: false, outcome: 'complete',
             authored: {complete: true, rows: 0}, held: {complete: true, rows: 0}, terminal: {required: false, complete: true, rows: 0}})));
@@ -128,9 +133,10 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
         const producer = createOpenWorkProducer(options(async () => [{seat: '@ada', login: 'ada', apiBase: 'https://api.github.com', query}]));
         await producer.pulse();
         const ordinary = (await producer.pulse()).pulses.at(-1);
-        expect(ordinary.quota.map(row => row.queryHash)).toEqual([OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL].map(text => createHash('sha256').update(text).digest('hex')));
-        expect(ordinary.quota[0]).toMatchObject({reported: true, maxMeasuredCost: 2, firstOrdinal: 1, lastOrdinal: 4, zeroCostFailedCalls: 0});
+        expect(ordinary.quota.map(row => row.queryHash)).toEqual([OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_OUTSIDE_SNAPSHOT].map(text => createHash('sha256').update(text).digest('hex')));
+        expect(ordinary.quota[0]).toMatchObject({reported: true, maxMeasuredCost: 2, firstOrdinal: 1, lastOrdinal: 2, zeroCostFailedCalls: 0});
         expect(ordinary.quota[1]).toMatchObject({firstOrdinal: 3, lastOrdinal: 3});
+        expect(ordinary.quota[2]).toMatchObject({firstOrdinal: 4, lastOrdinal: 4});
         failing = true;
         const failed = (await producer.pulse()).pulses.at(-1);
         expect(failed).toMatchObject({cost: 0, costUnknown: false, quota: [{reported: true, calls: 1, failed: 1, zeroCostFailedCalls: 1}]});
@@ -153,7 +159,8 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
         expect(pulse.quota.map(({resetAt, cost, calls, failed, unknown}) => ({resetAt, cost, calls, failed, unknown}))).toEqual([
             {resetAt: '2026-10-14T11:00:00.000Z', cost: 2, calls: 1, failed: 0, unknown: false},
             {resetAt: '2026-10-14T12:00:00.000Z', cost: 3, calls: 1, failed: 1, unknown: false},
-            {resetAt: null, cost: 0, calls: 3, failed: 0, unknown: true}
+            {resetAt: null, cost: 0, calls: 2, failed: 0, unknown: true},
+            {resetAt: null, cost: 0, calls: 1, failed: 0, unknown: true}
         ]);
         expect(pulse.seats[0]).toMatchObject({outcome: 'failed', authored: {complete: true, rows: 0}, held: {complete: false, rows: 0}});
         expect(pulse.seats[1]).toMatchObject({outcome: 'complete', authored: {complete: true, rows: 0}});
@@ -190,10 +197,12 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
             {seat: '@ada', login: 'ada', apiBase: 'https://api.github.com', query},
             {seat: '@gpt', login: 'gpt', apiBase: 'https://github.example/api', query}
         ])).pulse()).pulses.at(-1);
-        expect(pulse.quota).toHaveLength(3);
+        expect(pulse.quota).toHaveLength(4);
         expect(pulse.quota[0]).toMatchObject({remaining: null, unknown: false, calls: 1, cost: 2});
         expect(pulse.quota[1]).toMatchObject({viewerId: null, unknown: true, failed: 1, calls: 1});
-        expect(pulse.quota[2]).toMatchObject({apiBase: 'https://github.example/api', viewerId: 'issuer-1', calls: 3});
+        expect(pulse.quota[2]).toMatchObject({apiBase: 'https://github.example/api', viewerId: 'issuer-1', calls: 2});
+        expect(pulse.quota[3]).toMatchObject({apiBase: 'https://github.example/api', viewerId: 'issuer-1', calls: 1,
+            queryHash: createHash('sha256').update(OPEN_WORK_OUTSIDE_SNAPSHOT).digest('hex')});
         expect(pulse.seats[0]).toMatchObject({outcome: 'failed', authored: {complete: false, rows: 1}, held: null});
     });
 
@@ -223,8 +232,11 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
         const pulse = (await createOpenWorkProducer(options(async () => [{seat: '@ada', login: 'ada', apiBase: 'https://api.github.com',
             query: async () => answer('issuer-1', '2026-10-14T09:59:59Z')
         }])).pulse()).pulses.at(-1);
-        expect(pulse).toMatchObject({cost: 6, costUnknown: false, quota: [{resetAt: '2026-10-14T09:59:59.000Z', cost: 6, calls: 3, unknown: false}]});
-        expect(Date.parse(pulse.quota[0].firstAt)).toBeGreaterThan(Date.parse(pulse.quota[0].resetAt));
+        expect(pulse).toMatchObject({cost: 6, costUnknown: false, quota: [
+            {resetAt: '2026-10-14T09:59:59.000Z', cost: 4, calls: 2, unknown: false},
+            {resetAt: '2026-10-14T09:59:59.000Z', cost: 2, calls: 1, unknown: false}
+        ]});
+        for (const row of pulse.quota) expect(Date.parse(row.firstAt)).toBeGreaterThan(Date.parse(row.resetAt));
     });
 });
 
@@ -453,6 +465,107 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 });
 
 test.describe('openWorkProducer — each seat reads its own work with its own PAT (ADR 0038 §2.5.1 row 7)', () => {
+    test('seat query documents exclude outside-only CI and comment evidence', async () => {
+        const calls = [];
+        const query = async (document, {query: search}) => {
+            calls.push({document, kind: kindOf(search)});
+            return {rateLimit: {cost: 1}, search: {nodes: [], pageInfo: {hasNextPage: false}}};
+        };
+        await createOpenWorkProducer({readers: ada(query), repos: async () => ['acme/app'], identities,
+            now: clock('2026-11-16T10:00:00Z')}).pulse();
+        expect(calls.map(call => call.kind)).toEqual(['open', 'held', 'outside']);
+        const leanComments = /comments\s*\(last:\s*10\)\s*\{\s*pageInfo\s*\{\s*hasPreviousPage\s*\}\s*nodes\s*\{\s*createdAt\s+authorAssociation\s+author\s*\{\s*__typename\s+login\s*\}\s*\}\s*\}/;
+        for (const {document} of calls.filter(call => call.kind !== 'outside')) {
+            expect(document).not.toMatch(/\bcontexts\s*\(/);
+            expect(document.match(/\bcomments\s*\(/g)).toHaveLength(1);
+            expect(document).toMatch(leanComments);
+            expect(document).toBe(queryDocuments.OPEN_WORK_SNAPSHOT);
+        }
+        const outside = calls.find(call => call.kind === 'outside').document;
+        expect(outside).toMatch(/\bcontexts\s*\(/);
+        expect(outside.match(/\bcomments\s*\(/g)).toHaveLength(1);
+        expect(outside).toMatch(/comments\s*\(last:\s*10\)\s*\{\s*pageInfo\s*\{\s*hasPreviousPage\s*\}\s*nodes\s*\{\s*id\s+url\s+body\s+updatedAt\s+createdAt\s+authorAssociation\s+author\s*\{\s*__typename\s+\.\.\.\s+on\s+Node\s*\{\s*id\s*\}\s+login\s*\}/);
+        expect(outside).not.toBe(queryDocuments.OPEN_WORK_SNAPSHOT);
+        expect(outside).toBe(queryDocuments.OPEN_WORK_OUTSIDE_SNAPSHOT);
+    });
+
+    /** @summary Original provider evidence and a maintainer's content classification for a held outside PR. */
+    const classifiedOutsidePr = () => {
+        const head = 'a'.repeat(40), at = '2026-11-16T10:00:00Z';
+        const node = {...pr({author: 'external-dev', rollup: 'FAILURE'}), id: 'PR_7', headRefOid: head,
+            title   : 'Outside fix', body: 'External fix', authorAssociation: 'CONTRIBUTOR',
+            author  : {__typename: 'User', login: 'external-dev'},
+            comments: {nodes: [], pageInfo: {hasPreviousPage: false}},
+            commits : {nodes: [{commit: {oid: head, statusCheckRollup: {state: 'FAILURE',
+                contexts: {pageInfo: {hasNextPage: false}, nodes: [{__typename: 'CheckRun', id: 'CHECK_1', name: 'unit',
+                    status    : 'COMPLETED', conclusion: 'FAILURE', startedAt: at, completedAt: at,
+                    checkSuite: {app: {id: 'APP_1', slug: 'actions'}, workflowRun: {workflow: {id: 'WORKFLOW_1', name: 'CI'}}}}]}}}}]}};
+        const evidence = normalizeCiRepair(node, identities, {apiBase: 'https://api.github.com'}).ciRepairEvidence;
+        node.comments.nodes.push({id: 'COMMENT_1', url: 'https://github.com/acme/app/pull/7#issuecomment-1',
+            createdAt: at, updatedAt: at, authorAssociation: 'MEMBER',
+            author   : {__typename: 'User', id: 'USER_ADA', login: 'neo-opus-ada'},
+            body     : '<!-- neo-ci-repair-classification:v1 ' + JSON.stringify({head, evidenceKey: evidence.key, kind: 'content'}) + ' -->'});
+        return node;
+    };
+
+    /** @summary Answers only fields requested by the lean seat document or the outside document. */
+    const queriedOutsidePr = (node, document, title) => {
+        const result = structuredClone(node);
+        result.title = title;
+        if (!/\bcontexts\s*\(/.test(document)) {
+            delete result.commits.nodes[0].commit.statusCheckRollup.contexts;
+            result.comments.nodes = result.comments.nodes.map(({createdAt, authorAssociation, author}) =>
+                ({createdAt, authorAssociation, author: {__typename: author.__typename, login: author.login}}));
+        }
+        return result;
+    };
+
+    test('the outside document preserves evidence and classification and wins over the held seat row', async () => {
+        const node  = classifiedOutsidePr();
+        const query = async (document, {query: search}) => {
+            const kind  = kindOf(search);
+            const nodes = ['held', 'outside'].includes(kind) ? [queriedOutsidePr(node, document, kind)] : [];
+            return {rateLimit: {cost: 1}, search: {nodes, pageInfo: {hasNextPage: false}}};
+        };
+        const state = await createOpenWorkProducer({
+            readers: async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', apiBase: 'https://api.github.com', query}],
+            repos  : async () => ['acme/app'], identities,
+            now    : clock('2026-11-16T10:00:00Z')}).pulse();
+        expect(Object.keys(state.snapshot.rows)).toEqual(['acme/app#7']);
+        const row = state.snapshot.rows['acme/app#7'];
+        expect(row.title).toBe('outside');
+        expect(row.ciRepairEvidence).toMatchObject({head: node.headRefOid, failedChecks: ['unit']});
+        expect(activeCiRepairClassification(row)).toMatchObject({kind: 'content', maintainer: '@neo-opus-ada',
+            evidenceKey: row.ciRepairEvidence.key, receiptUrl: node.comments.nodes[0].url});
+    });
+
+    for (const previouslyAdmitted of [false, true]) {
+        test(`a failed outside read leaves held-seat evidence unavailable with ${previouslyAdmitted ? 'only its dormant prior' : 'no invented'} classification`, async () => {
+            const node        = classifiedOutsidePr();
+            let   failOutside = !previouslyAdmitted;
+            const query       = async (document, {query: search}) => {
+                const kind = kindOf(search);
+                if (kind === 'outside' && failOutside) throw new Error('outside search unavailable');
+                const nodes = ['held', 'outside'].includes(kind) ? [queriedOutsidePr(node, document, kind)] : [];
+                return {rateLimit: {cost: 1}, search: {nodes, pageInfo: {hasNextPage: false}}};
+            };
+            const producer = createOpenWorkProducer({
+                readers: async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', apiBase: 'https://api.github.com', query}],
+                repos  : async () => ['acme/app'], identities,
+                now    : clock('2026-11-16T10:00:00Z')});
+            const prior = previouslyAdmitted ? (await producer.pulse()).snapshot.rows['acme/app#7'] : null;
+            if (prior) expect(activeCiRepairClassification(prior)?.kind).toBe('content');
+            failOutside = true;
+            const state = await producer.pulse(), row = state.snapshot.rows['acme/app#7'];
+            expect(state.coverage).toBe('partial');
+            expect(state.pulses.at(-1).outside).toEqual({complete: false, rows: 0});
+            expect(row).toMatchObject({title: 'held', observedAt: state.observedAt, ciRepairEvidence: null,
+                ciRepairRead: {coverage: 'unavailable'}});
+            expect(row.ciRepairClassification).toEqual(prior?.ciRepairClassification ?? null);
+            expect(activeCiRepairClassification(row)).toBeNull();
+        });
+    }
+
     /**
      * @summary A query that answers as one seat: only that seat's authored or held work, recording
      * every search it was asked.
