@@ -2786,6 +2786,12 @@ paths:
                   description: "Delivery priority. Omit to let the server set it from sender class: normal for an agent, high for an operator (turn-start drain ordering). On an AGENT:* broadcast, high requires you to say what happens to the wake — wakeSuppressed: false to interrupt the fleet, or true for a durable-high broadcast nobody is woken for. High with no wakeSuppressed at all is rejected: broadcasts are presumed quiet, so it would claim urgency nothing wakes for."
                 partOfThread:
                   type: string
+                writerKey:
+                  type: string
+                  description: "Writer key the seat's harness hook stamps (a hash of seat and harness session). Never set by hand."
+                writerTurn:
+                  type: string
+                  description: "Turn id the seat's harness hook stamps, the id its turn-presence interval carries. Never set by hand."
                 taggedConcepts:
                   type: array
                   description: "Optional concept tags attached via TAGGED_CONCEPT edges. Tagging `'requestPublish'` admits a revisioned publication-gate Task (`requestPublish` category) targeting the Fleet's human operator identity (`accountType: 'human'`)."
@@ -5430,6 +5436,12 @@ components:
           items:
             type: string
           example: ["view_file", "replace"]
+        writerKey:
+          type: string
+          description: "Writer key the seat's harness hook stamps (a hash of seat and harness session). Never set by hand."
+        writerTurn:
+          type: string
+          description: "Turn id the seat's harness hook stamps, the id its turn-presence interval carries. Never set by hand."
 
     TurnPresenceRecordRequest:
       type: object

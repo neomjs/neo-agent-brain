@@ -49,6 +49,28 @@ export function parseFocusItemsReceipt(subject) {
 export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
 
 /**
+ * @summary The longest writer stamp value the store keeps, in characters. A hook stamp is a short hash or
+ * turn id; anything longer is not one.
+ * @type {Number}
+ */
+export const WRITER_STAMP_MAX_CHARS = 128;
+
+/**
+ * @summary The writer stamp a write keeps: the `writerKey` and `writerTurn` the seat's harness hook adds to
+ * `add_message` and `add_memory`, each only as a non-empty string within {@link WRITER_STAMP_MAX_CHARS}.
+ * A missing or malformed value leaves the write unstamped, and an unstamped write keeps today's verdict.
+ * @param {Object} [stamp]
+ * @param {*} [stamp.writerKey] A hash of seat and harness session; it never carries the session id itself.
+ * @param {*} [stamp.writerTurn] The turn id the turn's presence interval also carries.
+ * @returns {{writerKey?: String, writerTurn?: String}}
+ */
+export function writerStamp({writerKey, writerTurn} = {}) {
+    const valid = value => typeof value === 'string' && value.length > 0 && value.length <= WRITER_STAMP_MAX_CHARS;
+
+    return {...(valid(writerKey) ? {writerKey} : {}), ...(valid(writerTurn) ? {writerTurn} : {})}
+}
+
+/**
  * @summary The plane's whole read of one seat's sunset receipt, for the rotation lane and the wake hold.
  *
  * The receipt is the seat's NEWEST self-addressed message sent at or after `sinceIso`, successor markers
@@ -87,6 +109,10 @@ export const WRITER_CLOSE_SKEW_MS = 5 * 1000;
  * - At any time, a memory after the receipt from a session that was already writing before it is another
  *   live session of the seat, and reads as a prompt.
  * - With no close and nothing live, a prompted turn is one started after the receipt.
+ *
+ * **A stamped writer attributes its own close** ({@link releaseByWriterStamp}): when the handover and a save
+ * of its turn carry the hook's writer stamp, that save is the close whatever session it came under, and the
+ * prompt and liveness evidence is re-read against it. Without the stamp, the reading above stands.
  *
  * @param {Object} db Open `better-sqlite3` handle on the graph store.
  * @param {String} identity Canonical `@<identity>`.
@@ -129,7 +155,7 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
           markers    = messages.filter(isMarker).toReversed(),
           firstReply = ids => markers.find(message => ids.has(bareMessageId(message.properties.inReplyTo))) || null;
 
-    let receipt = null, chain = null, marker = null, predecessor = null, open = null;
+    let receipt = null, chain = null, marker = null, predecessor = null, predecessorMarker = null, open = null;
 
     for (const handover of run) {
         const at = handover.properties.sentAt;
@@ -145,7 +171,8 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
         if (rotation?.requestedAt) {
             if (!TERMINAL_ROTATION_STATES.includes(rotation.state)) open = {receipt, chain, marker};
             // a request that found no successor ends the lineage; one that did is the next receipt's predecessor
-            predecessor = marker && marker.properties.sentAt <= at ? {successorAt: marker.properties.sentAt} : null
+            predecessor       = marker && marker.properties.sentAt <= at ? {successorAt: marker.properties.sentAt} : null;
+            predecessorMarker = predecessor ? marker : null
         }
 
         receipt = handover;
@@ -154,7 +181,7 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
     }
 
     // an open rotation settles first: a later receipt waits for it
-    if (open) ({receipt, chain, marker} = open), predecessor = null;
+    if (open) ({receipt, chain, marker} = open), predecessor = null, predecessorMarker = null;
 
     // The node id is `AGENT_TURN_PRESENCE:<identity>:<turnId>`, so a key range on the primary index
     // reads one seat's intervals without scanning every seat's.
@@ -188,7 +215,8 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
                      json_extract(data, '$.properties.lastProgressAt') AS lastProgressAt,
                      COALESCE(json_extract(data, '$.properties.status'), 'active') AS status,
                      json_extract(data, '$.properties.expiresAt') AS expiresAt,
-                     json_extract(data, '$.properties.wakeSubmitNonce') AS nonce
+                     json_extract(data, '$.properties.wakeSubmitNonce') AS nonce,
+                     json_extract(data, '$.properties.turnId') AS turnId
               FROM Nodes
               WHERE id >= ? AND id < ?
                 AND COALESCE(json_extract(data, '$.properties.lastProgressAt'), json_extract(data, '$.properties.startedAt')) >= ?
@@ -210,7 +238,8 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
           }),
           promptedAt   = [...prompted, ...(otherSaveAt ? [otherSaveAt] : [])].sort()[0] || null;
 
-    const requestedAts = messages.filter(message => message !== receipt).map(message => message.properties.sessionRotation?.requestedAt).filter(Boolean);
+    const requestedAts = messages.filter(message => message !== receipt).map(message => message.properties.sessionRotation?.requestedAt).filter(Boolean),
+          stamped      = releaseByWriterStamp(db, identity, {receipt, predecessorMarker, intervals, sinceIso, nowIso});
 
     return {
         receipt: {
@@ -221,11 +250,90 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
         },
         oldSessionId,
         successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt} : null,
-        promptedTurnAt : promptedAt || null,
-        liveTurnUntil  : liveUntil || null,
-        writerClosedAt : closedAt,
+        promptedTurnAt : stamped ? promptedAt || stamped.promptedAt : promptedAt || null,
+        liveTurnUntil  : stamped ? stamped.liveTurnUntil : liveUntil || null,
+        writerClosedAt : stamped ? stamped.closedAt : closedAt,
         lastRequestedAt: requestedAts.sort().at(-1) || null,
         predecessor
+    }
+}
+
+/**
+ * @summary Attributes a receipt's close by its writer's stamp, where the session reads cannot: the
+ * `writerKey` and `writerTurn` the seat's harness hook stamps on `add_message` and `add_memory`
+ * ({@link writerStamp}).
+ *
+ * The close is a save of the handover's own turn, by the handover's writer. After a predecessor, that writer
+ * must be the one that sent the predecessor's successor marker, and every write of the seat since that marker
+ * must carry its key: an unstamped write cannot prove a sole writer. Once attributed, the prompt evidence is read
+ * against that close. A write from a later turn is a prompt unless its turn is a typed wake (its interval carries
+ * a nonce), and so is any other non-wake interval that started after the receipt or progressed after the close.
+ * The writer's own turn is exempt by id. The writer's turn is live, holding the release, only through another
+ * open interval that progressed while the writer's turn ran: a session's turns are sequential, so that is a
+ * concurrent chat, while one last seen before the writer's turn began is history.
+ *
+ * Anything short of that, a missing stamp included, returns `null` and the reading stays today's.
+ * @param {Object} db Open `better-sqlite3` handle on the graph store.
+ * @param {String} identity Canonical `@<identity>`.
+ * @param {Object} reading
+ * @param {Object} reading.receipt The receipt message `{id, properties}`.
+ * @param {Object|null} reading.predecessorMarker The predecessor's successor marker, or `null` without one.
+ * @param {Object[]} reading.intervals The seat's turn intervals in range.
+ * @param {String} reading.sinceIso
+ * @param {String} reading.nowIso
+ * @returns {{closedAt: String, promptedAt: String|null, liveTurnUntil: String|null}|null}
+ * @protected
+ */
+export function releaseByWriterStamp(db, identity, {receipt, predecessorMarker, intervals, sinceIso, nowIso}) {
+    const {writerKey: key, writerTurn: turn} = writerStamp(receipt.properties);
+    if (!key || !turn) return null;
+
+    const bare   = identity.replace(/^@/, ''),
+          sentAt = receipt.properties.sentAt,
+          writes = [
+              ...db.prepare(`
+                  SELECT json_extract(data, '$.properties.sentAt') AS at, 0 AS save,
+                         json_extract(data, '$.properties.writerKey') AS writerKey, json_extract(data, '$.properties.writerTurn') AS writerTurn
+                  FROM Nodes
+                  WHERE id LIKE 'MESSAGE:%' AND json_extract(data, '$.properties.from') IN (?, ?)
+                    AND json_extract(data, '$.properties.sentAt') >= ? AND json_extract(data, '$.properties.sentAt') <= ?
+              `).all(identity, bare, sinceIso, nowIso),
+              ...db.prepare(`
+                  SELECT json_extract(data, '$.properties.timestamp') AS at, 1 AS save,
+                         json_extract(data, '$.properties.writerKey') AS writerKey, json_extract(data, '$.properties.writerTurn') AS writerTurn
+                  FROM Nodes
+                  WHERE json_extract(data, '$.label') = 'AGENT_MEMORY' AND json_extract(data, '$.properties.agentIdentity') = ?
+                    AND json_extract(data, '$.properties.timestamp') >= ? AND json_extract(data, '$.properties.timestamp') <= ?
+              `).all(identity, sinceIso, nowIso)
+          ].map(row => ({at: row.at, save: row.save === 1, ...writerStamp(row)})),
+          closedAt = writes.filter(write => write.save && write.writerKey === key && write.writerTurn === turn && write.at >= sentAt)
+                           .map(write => write.at).sort()[0];
+
+    if (!closedAt) return null;
+
+    if (predecessorMarker) {
+        const markAt = predecessorMarker.properties.sentAt;
+
+        if (writerStamp(predecessorMarker.properties).writerKey !== key) return null;
+        if (writes.some(write => write.at > markAt && write.writerKey !== key)) return null
+    }
+
+    const wakeTurns  = new Set(intervals.filter(row => row.nonce && row.turnId).map(row => row.turnId)),
+          laterWrite = writes.filter(write => write.at > sentAt && write.writerTurn !== turn && !wakeTurns.has(write.writerTurn)).map(write => write.at),
+          others     = intervals.filter(row => !row.nonce && row.turnId !== turn),
+          laterTurn  = others.flatMap(row => [
+              ...(row.startedAt > sentAt ? [row.startedAt] : []),
+              ...(Date.parse(row.lastProgressAt) > Date.parse(closedAt) + WRITER_CLOSE_SKEW_MS ? [row.lastProgressAt] : [])
+          ]),
+          ownStart   = intervals.find(row => row.turnId === turn)?.startedAt
+                    || writes.filter(write => write.writerKey === key && write.writerTurn === turn).map(write => write.at).sort()[0]
+                    || sentAt;
+
+    return {
+        closedAt,
+        promptedAt   : [...laterWrite, ...laterTurn].sort()[0] || null,
+        liveTurnUntil: others.filter(row => row.status === 'active' && row.expiresAt > nowIso && row.lastProgressAt >= ownStart)
+                             .map(row => row.expiresAt).sort().at(-1) || null
     }
 }
 
