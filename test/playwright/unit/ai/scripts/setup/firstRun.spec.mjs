@@ -1,17 +1,27 @@
-import {expect, test}                                                                                      from '@playwright/test';
-import {execFile}                                                                                          from 'node:child_process';
-import fs                                                                                                  from 'node:fs/promises';
-import os                                                                                                  from 'node:os';
-import path                                                                                                from 'node:path';
-import {fileURLToPath}                                                                                     from 'node:url';
-import {promisify}                                                                                         from 'node:util';
-import {PLANE_MEMORY_CORE_PATH, fakeHostObservers, hostLayout, parseArgs, productionObservers, renderText} from '../../../../../../ai/scripts/setup/firstRun.mjs';
-import {RECIPE_VERSION, evaluateRecipe}                                                                    from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
-import {createHost}                                                                                        from '../../../../../../ai/services/fleet/hostEffects.mjs';
-import {presets}                                                                                           from '../../../../../../ai/services/fleet/placementPresets.mjs';
-import {RUNTIME_GENERATION_PAYLOAD}                                                                        from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
-import {contentDigest, createSetupRecord, runTarget, withConsent, withReceipt}                             from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
-import {WAKE_RECEIVER_ENTRYPOINT, WAKE_RECEIVER_PLIST_NAME}                                                from '../../../../../../ai/services/fleet/wakeReceiverSetup.mjs';
+import {expect, test}  from '@playwright/test';
+import {execFile}      from 'node:child_process';
+import fs              from 'node:fs/promises';
+import os              from 'node:os';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {promisify}     from 'node:util';
+import {
+    PLANE_MEMORY_CORE_PATH,
+    fakeHostObservers,
+    hostLayout,
+    inspectRunningComposeRecordsMount,
+    observeRunningCompose,
+    parseArgs,
+    productionObservers,
+    renderText
+} from '../../../../../../ai/scripts/setup/firstRun.mjs';
+import {RECIPE_VERSION, evaluateRecipe}                                                                       from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
+import {composeInvocationDigest, createHost, persistSetupRecord}                                              from '../../../../../../ai/services/fleet/hostEffects.mjs';
+import {presets}                                                                                              from '../../../../../../ai/services/fleet/placementPresets.mjs';
+import {RUNTIME_GENERATION_PAYLOAD}                                                                           from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
+import {composeContextOf}                                                                                     from '../../../../../../ai/services/fleet/setupOrchestration.mjs';
+import {RECEIPT_OUTCOMES, contentDigest, createSetupRecord, findReceipt, runTarget, withConsent, withReceipt} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {WAKE_RECEIVER_ENTRYPOINT, WAKE_RECEIVER_PLIST_NAME}                                                   from '../../../../../../ai/services/fleet/wakeReceiverSetup.mjs';
 
 // The CLI on a fake host: a child process per arm, stdin closed (never a TTY), the record under a temp setup root.
 
@@ -975,6 +985,239 @@ test.describe('firstRun CLI', () => {
             expect(await fs.readFile(queuedFile, 'utf8')).toBe('{"id":"queued-wake-1"}\n');
         } finally {
             await fs.rm(root, {recursive: true, force: true});
+        }
+    });
+
+    test('live Compose mount drift with absent or pending receipts blocks premature finish, and pre-custody interrupted start-wake-receiver recovers only on a clean host', async () => {
+        const
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            layout                                   = hostLayout({stateRoot, homeDir}),
+            disabledRecords                          = path.join(layout.receiverlessWakeStateDir, 'records'),
+            enabledRecords                           = path.join(layout.wakeStateDir, 'records'),
+            recordPath                               = path.join(setupRoot, `${RUN_ID}.json`),
+            callsPath                                = path.join(setupRoot, 'fake-run.json'),
+            composePath                              = path.join(setupRoot, 'fake-compose.json');
+
+        try {
+            // A. Direct production Docker inspection observer (`docker ps` + `docker inspect` mounts)
+            await fs.mkdir(layout.secretsDir, {recursive: true, mode: 0o700});
+            await fs.mkdir(path.dirname(layout.envFile), {recursive: true, mode: 0o700});
+            await fs.mkdir(disabledRecords, {recursive: true, mode: 0o700});
+            await fs.mkdir(enabledRecords, {recursive: true, mode: 0o700});
+            await fs.writeFile(
+                layout.envFile,
+                `NEO_MCP_AUTH_TOKEN_FILE=${layout.secretsDir}/mcp-auth-token\nNEO_FLEET_PLANE_TOKEN_FILE=${layout.secretsDir}/fleet-plane-token\nNEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${enabledRecords}\n`,
+                {mode: 0o600}
+            );
+
+            let   inspectedSource = disabledRecords;
+            const dockerHost      = createHost({
+                fsModule: fs,
+                platform: () => 'darwin',
+                run     : async (command, args) => {
+                    expect(command).toBe('docker');
+                    if (args[0] === 'ps') {
+                        return {stdout: 'cid-mc-server-1\n', stderr: ''};
+                    }
+                    if (args[0] === 'inspect') {
+                        return {
+                            stdout: JSON.stringify([{
+                                Type       : 'bind',
+                                Source     : inspectedSource,
+                                Destination: '/app/wake-receiver-records',
+                                RW         : false
+                            }]),
+                            stderr: ''
+                        };
+                    }
+
+                    throw new Error(`Unexpected docker command: ${args.join(' ')}`);
+                }
+            });
+
+            const
+                consentEnabled = withConsent(createSetupRecord({runId: RUN_ID, target: {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'}, recipeVersion: RECIPE_VERSION}), {
+                    stepId     : 'desktop-wake',
+                    answer     : 'enabled',
+                    consentedAt: '2026-11-16T00:00:00.000Z'
+                }),
+                staleMountObs  = await observeRunningCompose({layout, host: dockerHost, record: consentEnabled, running: true});
+
+            expect(staleMountObs).toMatchObject({
+                present          : true,
+                digest           : null,
+                inputMismatch    : true,
+                mountedRecordsDir: path.resolve(disabledRecords)
+            });
+
+            inspectedSource = enabledRecords;
+            const matchedMountObs = await observeRunningCompose({layout, host: dockerHost, record: consentEnabled, running: true});
+
+            expect(matchedMountObs).toMatchObject({present: true, problem: null});
+            expect(matchedMountObs.digest).toBeTruthy();
+            expect(await inspectRunningComposeRecordsMount(layout, dockerHost)).toMatchObject({
+                ok         : true,
+                present    : true,
+                actualMount: path.resolve(enabledRecords)
+            });
+
+            // Clean workspace for end-to-end CLI replays
+            await fs.rm(stateRoot, {recursive: true, force: true});
+
+            // B1. Consent switch declined -> enabled with new .env on disk, running container still holding old mount, and NO compose-up receipt
+            const initialDeclined = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: {...greenFake({patPath}), answers: {preset: 'local-small', 'plane-credential': patPath, 'desktop-wake': 'declined'}}
+            });
+
+            expect(initialDeclined.code, initialDeclined.stderr).toBe(0);
+
+            const
+                oldEnv            = await fs.readFile(layout.envFile, 'utf8'),
+                updatedEnv        = oldEnv.replace(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${disabledRecords}`, `NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${enabledRecords}`),
+                baseRecord        = JSON.parse(await fs.readFile(recordPath, 'utf8')),
+                strippedNoCompose = withConsent(
+                    {...baseRecord, receipts: baseRecord.receipts.filter(entry => !['compose-up', 'start-wake-receiver'].includes(entry.effectId))},
+                    {stepId: 'desktop-wake', answer: 'enabled', consentedAt: '2026-11-16T01:00:00.000Z'}
+                );
+
+            await fs.mkdir(enabledRecords, {recursive: true, mode: 0o700});
+            await fs.writeFile(layout.envFile, updatedEnv, {mode: 0o600});
+            await persistSetupRecord(recordPath, strippedNoCompose, createHost({now: () => Date.UTC(2026, 10, 16, 1, 0, 0)}));
+
+            const replayNoReceipt = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: greenFake({patPath, answers: false})
+            });
+
+            expect(replayNoReceipt.code, replayNoReceipt.stderr).toBe(0);
+            expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(2);
+            expect(JSON.parse(await fs.readFile(composePath, 'utf8')).mountedRecordsDir).toBe(path.resolve(enabledRecords));
+
+            // B2. Pending compose-up receipt written before Docker ran while container still holds old mount -> refuses settlement and exits non-0
+            await fs.writeFile(composePath, `${JSON.stringify({running: true, mountedRecordsDir: disabledRecords}, null, 2)}\n`, {mode: 0o600});
+            const
+                expectedComposeDigest = composeInvocationDigest({...composeContextOf(layout), envDigest: contentDigest(updatedEnv)}),
+                afterReplay1Record    = JSON.parse(await fs.readFile(recordPath, 'utf8')),
+                pendingComposeRecord  = withReceipt(afterReplay1Record, {
+                    effectId      : 'compose-up',
+                    outcome       : RECEIPT_OUTCOMES.pending,
+                    inputDigest   : 'pending-compose-input',
+                    expectedDigest: expectedComposeDigest,
+                    startedAt     : '2026-11-16T01:05:00.000Z'
+                });
+
+            await persistSetupRecord(recordPath, pendingComposeRecord, createHost({now: () => Date.UTC(2026, 10, 16, 1, 5, 0)}));
+
+            const blockedPendingCompose = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: greenFake({patPath, answers: false})
+            });
+
+            expect(blockedPendingCompose.code).toBe(1);
+            expect(blockedPendingCompose.stderr).toContain("'compose-up' was interrupted and is not settled");
+            expect(findReceipt(JSON.parse(await fs.readFile(recordPath, 'utf8')), 'compose-up').outcome).toBe(RECEIPT_OUTCOMES.reconcileRequired);
+            expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(2);
+
+            // Positive control: once live container holds the updated mount matching env + expectedDigest, ordinary resume settles to ok
+            await fs.writeFile(composePath, `${JSON.stringify({running: true, mountedRecordsDir: enabledRecords}, null, 2)}\n`, {mode: 0o600});
+            const settledCompose = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: greenFake({patPath, answers: false})
+            });
+
+            expect(settledCompose.code, settledCompose.stderr).toBe(0);
+            expect(findReceipt(JSON.parse(await fs.readFile(recordPath, 'utf8')), 'compose-up')).toMatchObject({
+                outcome  : RECEIPT_OUTCOMES.accepted,
+                settledBy: 'observation'
+            });
+
+            // C. Crash after outer start-wake-receiver pending receipt BEFORE custody file exists -> clean host recovers via ordinary CLI
+            const freshRecovery = await scratch();
+
+            try {
+                const
+                    recLayout  = hostLayout({stateRoot: freshRecovery.stateRoot, homeDir: freshRecovery.homeDir}),
+                    recRecordP = path.join(freshRecovery.setupRoot, `${RUN_ID}.json`),
+                    recLaunchP = path.join(freshRecovery.setupRoot, 'fake-launchd.json'),
+                    primed     = await runCli({
+                        homeDir  : freshRecovery.homeDir,
+                        setupRoot: freshRecovery.setupRoot,
+                        stateRoot: freshRecovery.stateRoot,
+                        fake     : {
+                            ...greenFake({patPath: freshRecovery.patPath}),
+                            answers: {preset: 'local-small', 'plane-credential': freshRecovery.patPath, 'desktop-wake': 'declined'}
+                        }
+                    });
+
+                expect(primed.code, primed.stderr).toBe(0);
+
+                const
+                    primedRec     = JSON.parse(await fs.readFile(recRecordP, 'utf8')),
+                    preCustodyEnv = (await fs.readFile(recLayout.envFile, 'utf8')).replace(
+                        `NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(recLayout.receiverlessWakeStateDir, 'records')}`,
+                        `NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(recLayout.wakeStateDir, 'records')}`
+                    );
+
+                await fs.mkdir(path.join(recLayout.wakeStateDir, 'records'), {recursive: true, mode: 0o700});
+                await fs.writeFile(recLayout.envFile, preCustodyEnv, {mode: 0o600});
+                await fs.writeFile(path.join(freshRecovery.setupRoot, 'fake-compose.json'), `${JSON.stringify({
+                    running          : true,
+                    mountedRecordsDir: path.join(recLayout.wakeStateDir, 'records')
+                }, null, 2)}\n`, {mode: 0o600});
+
+                const pendingPreCustody = withReceipt(
+                    withConsent(primedRec, {stepId: 'desktop-wake', answer: 'enabled', consentedAt: '2026-11-16T02:00:00.000Z'}),
+                    {
+                        effectId   : 'start-wake-receiver',
+                        outcome    : RECEIPT_OUTCOMES.pending,
+                        inputDigest: 'pre-custody-pending',
+                        startedAt  : '2026-11-16T02:00:01.000Z'
+                    }
+                );
+
+                await persistSetupRecord(recRecordP, pendingPreCustody, createHost({now: () => Date.UTC(2026, 10, 16, 2, 0, 1)}));
+
+                // Negative control first: occupied foreign port on the same pre-custody pending state stays blocked (reconcile-required, zero bootstraps)
+                const blockedConflict = await runCli({
+                    homeDir  : freshRecovery.homeDir,
+                    setupRoot: freshRecovery.setupRoot,
+                    stateRoot: freshRecovery.stateRoot,
+                    fake     : {
+                        ...greenFake({patPath: freshRecovery.patPath, answers: false}),
+                        foreignPorts: [3199]
+                    }
+                });
+
+                expect(blockedConflict.code).toBe(1);
+                expect(findReceipt(JSON.parse(await fs.readFile(recRecordP, 'utf8')), 'start-wake-receiver').outcome).toBe(RECEIPT_OUTCOMES.reconcileRequired);
+                expect(JSON.parse(await fs.readFile(recLaunchP, 'utf8')).calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
+
+                // Clean host recovery: ordinary CLI installs, starts, finalizes custody, and exits 0
+                const recoveredClean = await runCli({
+                    homeDir  : freshRecovery.homeDir,
+                    setupRoot: freshRecovery.setupRoot,
+                    stateRoot: freshRecovery.stateRoot,
+                    fake     : greenFake({patPath: freshRecovery.patPath, answers: false})
+                });
+
+                expect(recoveredClean.code, recoveredClean.stderr).toBe(0);
+                expect(findReceipt(JSON.parse(await fs.readFile(recRecordP, 'utf8')), 'start-wake-receiver').outcome).toBe(RECEIPT_OUTCOMES.accepted);
+                expect(JSON.parse(await fs.readFile(path.join(recLayout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('active');
+                expect(JSON.parse(await fs.readFile(recLaunchP, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap')).toHaveLength(1);
+            } finally {
+                await fs.rm(freshRecovery.root, {recursive: true, force: true});
+            }
+        } finally {
+            await fs.rm(path.dirname(stateRoot), {recursive: true, force: true});
         }
     });
 });

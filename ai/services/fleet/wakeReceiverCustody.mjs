@@ -290,15 +290,47 @@ function declarationMatchesCustodySpec(declaration, digest, spec) {
     return !spec.plistDigest || digest === spec.plistDigest;
 }
 
+function normalizeDeclarationSpec(spec) {
+    if (!spec || typeof spec !== 'object') {
+        return null;
+    }
+
+    return {
+        executable          : spec.executable ?? null,
+        runtimeRoot         : spec.runtimeRoot ?? null,
+        manifestPath        : spec.manifestPath ?? null,
+        stateDir            : spec.stateDir ?? spec.wakeStateDir ?? null,
+        host                : spec.host ?? null,
+        port                : Number.isInteger(spec.port) ? spec.port : null,
+        runtimeGenerationDir: spec.runtimeGenerationDir ?? spec.runtimeGeneration?.directory ?? null
+    };
+}
+
+function declarationMatchesLoadedSpec(loadedDecl, spec) {
+    return Boolean(loadedDecl.executable) &&
+        Boolean(loadedDecl.runtimeRoot) &&
+        Boolean(loadedDecl.manifestPath) &&
+        Boolean(loadedDecl.stateDir) &&
+        Number.isInteger(loadedDecl.port) &&
+        (!spec.executable || loadedDecl.executable === spec.executable) &&
+        (!spec.runtimeRoot || loadedDecl.runtimeRoot === spec.runtimeRoot) &&
+        (!spec.manifestPath || loadedDecl.manifestPath === spec.manifestPath) &&
+        (!spec.stateDir || loadedDecl.stateDir === spec.stateDir) &&
+        (!spec.host || loadedDecl.host === spec.host) &&
+        (!Number.isInteger(spec.port) || loadedDecl.port === spec.port) &&
+        (loadedDecl.runtimeGenerationDir ?? null) === (spec.runtimeGenerationDir ?? null);
+}
+
 /**
- * @summary Verifies that a loaded `launchd` service matches the expected plist path and one of the
- * allowed executable paths before adopting, probing, or mutating supervision.
+ * @summary Verifies that a loaded `launchd` service matches the expected plist path, program binary,
+ * working directory, and receiver invocation arguments (`--manifest`, `--state-dir`, `--host`, `--port`,
+ * `--neo-runtime-generation`) against at least one owned declaration spec before adopting, probing, or mutating supervision.
  * @param {Object|null} supervisor
  * @param {String} plistPath
- * @param {String|String[]} allowedExecutables
+ * @param {Object|Object[]} allowedSpecs
  * @returns {String|null}
  */
-export function supervisorMatchesDeclaration(supervisor, plistPath, allowedExecutables) {
+export function supervisorMatchesDeclaration(supervisor, plistPath, allowedSpecs) {
     if (!supervisor?.loaded) {
         return null;
     }
@@ -307,10 +339,32 @@ export function supervisorMatchesDeclaration(supervisor, plistPath, allowedExecu
         return `loaded launchd service '${WAKE_RECEIVER_LABEL}' reports unproven or foreign plist '${supervisor.plist ?? '<missing>'}', expected '${plistPath}'`;
     }
 
-    const candidates = Array.isArray(allowedExecutables) ? allowedExecutables.filter(Boolean) : [allowedExecutables].filter(Boolean);
+    const
+        specs           = (Array.isArray(allowedSpecs) ? allowedSpecs : [allowedSpecs]).map(normalizeDeclarationSpec).filter(Boolean),
+        allowedPrograms = specs.map(spec => spec.executable).filter(Boolean);
 
-    if (!supervisor.program || !candidates.includes(supervisor.program)) {
-        return `loaded launchd service '${WAKE_RECEIVER_LABEL}' runs unproven or foreign program '${supervisor.program ?? '<missing>'}', expected '${candidates[0] ?? '<unknown>'}'`;
+    if (!supervisor.program || !allowedPrograms.includes(supervisor.program)) {
+        return `loaded launchd service '${WAKE_RECEIVER_LABEL}' runs unproven or foreign program '${supervisor.program ?? '<missing>'}', expected '${allowedPrograms[0] ?? '<unknown>'}'`;
+    }
+
+    if (!Array.isArray(supervisor.arguments) || supervisor.arguments.length === 0 ||
+        typeof supervisor.workingDirectory !== 'string' || supervisor.workingDirectory.length === 0) {
+        return `loaded launchd service '${WAKE_RECEIVER_LABEL}' lacks proven working directory or receiver arguments`;
+    }
+
+    const loadedDecl = extractReceiverDeclaration({
+        Label           : WAKE_RECEIVER_LABEL,
+        ProgramArguments: supervisor.arguments,
+        WorkingDirectory: supervisor.workingDirectory
+    });
+
+    if (loadedDecl.ambiguousFlags || loadedDecl.entrypoint !== WAKE_RECEIVER_ENTRYPOINT ||
+        !LOOPBACK_WAKE_HOSTS.has(loadedDecl.host) || loadedDecl.executable !== supervisor.program) {
+        return `loaded launchd service '${WAKE_RECEIVER_LABEL}' declares unproven or foreign receiver arguments (${loadedDecl.entrypoint ?? '<missing>'})`;
+    }
+
+    if (!specs.some(spec => declarationMatchesLoadedSpec(loadedDecl, spec))) {
+        return `loaded launchd service '${WAKE_RECEIVER_LABEL}' runs foreign or mismatched receiver declaration (runtime '${loadedDecl.runtimeRoot ?? '<missing>'}', stateDir '${loadedDecl.stateDir ?? '<missing>'}', manifest '${loadedDecl.manifestPath ?? '<missing>'}')`;
     }
 
     return null;
@@ -381,20 +435,15 @@ async function corroborateLegacyDeployment({manifest, paths, target, fsModule, h
 
     const normalizedStateRoot = path.normalize(paths.stateRoot);
 
-    for (const [subscriptionId, route] of entries) {
-        const
-            meta      = route?.harnessTargetMetadata ?? {},
-            candidate = route?.adapterConfig?.primarySession?.instanceHome
-                ?? (meta.addressType === 'userDataDir' ? meta.instanceAddress : null);
-
-        if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) {
-            return `legacy wake route '${subscriptionId}' carries no deployment-corroborated seat path under '${paths.stateRoot}'`;
+    const assertOwnedSeatDir = async (subscriptionId, candidatePath, roleLabel) => {
+        if (typeof candidatePath !== 'string' || !path.isAbsolute(candidatePath)) {
+            return `legacy wake route '${subscriptionId}' carries no deployment-corroborated ${roleLabel} under '${paths.stateRoot}'`;
         }
 
-        const normalizedSeat = path.normalize(candidate);
+        const normalizedSeat = path.normalize(candidatePath);
 
         if (normalizedSeat === normalizedStateRoot || !normalizedSeat.startsWith(`${normalizedStateRoot}${path.sep}`)) {
-            return `legacy wake route '${subscriptionId}' points to '${normalizedSeat}', outside deployment state root '${normalizedStateRoot}'`;
+            return `legacy wake route '${subscriptionId}' ${roleLabel} points to '${normalizedSeat}', outside deployment state root '${normalizedStateRoot}'`;
         }
 
         let seatStat;
@@ -418,6 +467,39 @@ async function corroborateLegacyDeployment({manifest, paths, target, fsModule, h
         if (!sameOptionalUid(seatStat, hostUid)) {
             return `legacy wake route '${subscriptionId}' seat directory '${normalizedSeat}' is owned by UID ${seatStat.uid}, expected ${hostUid}`;
         }
+
+        return null;
+    };
+
+    for (const [subscriptionId, route] of entries) {
+        const
+            meta    = route?.harnessTargetMetadata ?? {},
+            adapter = meta.adapter ?? 'osascript';
+
+        if (adapter === 'primary-session') {
+            const
+                homeError = await assertOwnedSeatDir(subscriptionId, route?.adapterConfig?.primarySession?.instanceHome, 'primarySession.instanceHome'),
+                addrError = homeError ?? await assertOwnedSeatDir(subscriptionId, meta.addressType === 'userDataDir' ? meta.instanceAddress : null, 'userDataDir instanceAddress');
+
+            if (addrError) {
+                return addrError;
+            }
+
+            continue;
+        }
+
+        if (adapter === 'osascript') {
+            // Only instanceAddress + addressType drive osascript delivery; ignore unused primarySession fields.
+            const addrError = await assertOwnedSeatDir(subscriptionId, meta.addressType === 'userDataDir' ? meta.instanceAddress : null, 'userDataDir instanceAddress');
+
+            if (addrError) {
+                return addrError;
+            }
+
+            continue;
+        }
+
+        return `legacy wake route '${subscriptionId}' uses unsupported adapter '${adapter}' for legacy corroboration`;
     }
 
     return null;
@@ -512,11 +594,17 @@ export async function inspectWakeSetupState({paths, target, host, inspectSupervi
                 };
             }
 
-            const allowedPrograms = [
-                d.executable,
-                ...(custody.installState === 'installing' && custody.previousOwned?.executable ? [custody.previousOwned.executable] : [])
+            const allowedSpecs = [
+                d,
+                ...(custody.installState === 'installing' && custody.previousOwned
+                    ? [{
+                        ...custody.previousOwned,
+                        manifestPath: custody.previousOwned.manifestPath ?? custody.manifestPath,
+                        stateDir    : custody.previousOwned.stateDir ?? custody.stateDir
+                    }]
+                    : [])
             ];
-            const supervisorError = supervisorMatchesDeclaration(supervisor, paths.plistPath, allowedPrograms);
+            const supervisorError = supervisorMatchesDeclaration(supervisor, paths.plistPath, allowedSpecs);
 
             if (supervisorError) {
                 return {kind: 'conflict', owned: false, conflict: supervisorError, supervisor, plistRead, manifestCheck, custodyRead};
@@ -646,7 +734,7 @@ export async function inspectWakeSetupState({paths, target, host, inspectSupervi
         };
     }
 
-    const supervisorError = supervisorMatchesDeclaration(supervisor, paths.plistPath, d.executable);
+    const supervisorError = supervisorMatchesDeclaration(supervisor, paths.plistPath, d);
 
     if (supervisorError) {
         return {kind: 'conflict', owned: false, conflict: supervisorError, supervisor, plistRead, manifestCheck, custodyRead};
@@ -755,6 +843,8 @@ export function summarizeOwnedCustodySpec(custody) {
         executable       : custody.executable ?? null,
         runtimeRoot      : custody.runtimeRoot ?? null,
         runtimeGeneration: custody.runtimeGeneration ?? null,
+        manifestPath     : custody.manifestPath ?? null,
+        stateDir         : custody.stateDir ?? null,
         host             : custody.host ?? null,
         port             : custody.port ?? null
     };

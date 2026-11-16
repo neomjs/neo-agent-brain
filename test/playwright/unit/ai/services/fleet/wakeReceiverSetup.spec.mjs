@@ -68,13 +68,15 @@ function createScriptedLaunchdHost({
         calls           = [],
         probedEndpoints = [],
         state           = {
-            loaded    : false,
-            running   : false,
-            plistPath : null,
-            program   : null,
-            host      : null,
-            port      : null,
-            probesLeft: readyAfterProbes,
+            loaded          : false,
+            running         : false,
+            plistPath       : null,
+            program         : null,
+            workingDirectory: null,
+            arguments       : null,
+            host            : null,
+            port            : null,
+            probesLeft      : readyAfterProbes,
             ...initialLaunchd
         };
 
@@ -116,6 +118,10 @@ function createScriptedLaunchdHost({
                         `\tstate = ${state.running ? 'running' : 'not running'}`,
                         ...(state.running ? ['\tpid = 4242'] : []),
                         ...(state.program ? [`\tprogram = ${state.program}`] : []),
+                        ...(state.workingDirectory ? [`\tworking directory = ${state.workingDirectory}`] : []),
+                        ...(Array.isArray(state.arguments) && state.arguments.length > 0
+                            ? ['\targuments = {', ...state.arguments.map(item => `\t\t${item}`), '\t}']
+                            : []),
                         ...(state.plistPath ? [`\tpath = ${state.plistPath}`] : [])
                     ].join('\n'),
                     stderr: ''
@@ -135,15 +141,18 @@ function createScriptedLaunchdHost({
                 }
 
                 const
-                    xml  = await fs.readFile(args[2], 'utf8'),
-                    decl = extractReceiverDeclaration(parseLaunchAgentPlist(xml, {allowComments: false}));
+                    xml    = await fs.readFile(args[2], 'utf8'),
+                    parsed = parseLaunchAgentPlist(xml, {allowComments: false}),
+                    decl   = extractReceiverDeclaration(parsed);
 
-                state.loaded    = true;
-                state.running   = true;
-                state.plistPath = args[2];
-                state.program   = decl.executable;
-                state.host      = decl.host;
-                state.port      = decl.port;
+                state.loaded           = true;
+                state.running          = true;
+                state.plistPath        = args[2];
+                state.program          = decl.executable;
+                state.workingDirectory = parsed.WorkingDirectory ?? decl.runtimeRoot;
+                state.arguments        = parsed.ProgramArguments ?? null;
+                state.host             = decl.host;
+                state.port             = decl.port;
 
                 return {stdout: '', stderr: ''};
             }
@@ -565,7 +574,37 @@ test.describe('wakeReceiverSetup', () => {
             await expect(reconcileWakeReceiverService({...rebindInput, executable: gen2Exec, runtimeRoot: gen2Root, runtimeGeneration: upgradedGen}, unprovenHost.host))
                 .rejects.toThrow(/diverges from owned custody record|unproven or foreign program/);
 
-            // 7c. Legacy plist (no sidecar) tests: invalid schema, unrelated route, wrong deployment env, foreign endpoint never probed, valid legacy adoption
+            // 7b2. Loaded launchd job sharing plistPath + node binary but running foreign workingDirectory or arguments must refuse with 0 bootouts
+            const foreignArgsHost = createScriptedLaunchdHost({
+                initialLaunchd: {
+                    ...state,
+                    program         : gen2Exec,
+                    workingDirectory: '/tmp/foreign-runtime',
+                    arguments       : [
+                        gen2Exec,
+                        WAKE_RECEIVER_ENTRYPOINT,
+                        '--manifest', '/tmp/foreign/manifest.json',
+                        '--state-dir', '/tmp/foreign/state',
+                        '--host', '127.0.0.1',
+                        '--port', '3299'
+                    ]
+                }
+            });
+
+            expect(await observeWakeReceiverEffect({layout: rebindLayout, target, host: foreignArgsHost.host})).toMatchObject({
+                present: true,
+                problem: expect.stringMatching(/foreign or mismatched receiver declaration/)
+            });
+            await expect(reconcileWakeReceiverService({
+                ...rebindInput,
+                executable       : gen2Exec,
+                runtimeRoot      : gen2Root,
+                runtimeGeneration: upgradedGen
+            }, foreignArgsHost.host)).rejects.toThrow(/foreign or mismatched receiver declaration/);
+            expect(foreignArgsHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
+            expect(foreignArgsHost.probedEndpoints).toEqual([]);
+
+            // 7c. Legacy plist (no sidecar) tests: invalid schema, unrelated route, osascript ignoring unused primarySession decoy, wrong deployment env, foreign endpoint never probed, valid legacy adoption
             await fs.rm(layout.wakeCustodyPath, {force: true});
             await fs.writeFile(layout.wakePlistPath, serializeWakeReceiverPlist({
                 templateXml,
@@ -577,7 +616,25 @@ test.describe('wakeReceiverSetup', () => {
                 port        : 3299
             }), {mode: 0o600});
 
-            const legacyHost = createScriptedLaunchdHost({initialLaunchd: {loaded: true, running: true, plistPath: layout.wakePlistPath, program: layout.nodeBin, host: '127.0.0.1', port: 3299}});
+            const legacyHost = createScriptedLaunchdHost({
+                initialLaunchd: {
+                    loaded          : true,
+                    running         : true,
+                    plistPath       : layout.wakePlistPath,
+                    program         : layout.nodeBin,
+                    workingDirectory: layout.repoRoot,
+                    arguments       : [
+                        layout.nodeBin,
+                        WAKE_RECEIVER_ENTRYPOINT,
+                        '--manifest', layout.wakeManifestPath,
+                        '--state-dir', layout.wakeStateDir,
+                        '--host', '127.0.0.1',
+                        '--port', '3299'
+                    ],
+                    host: '127.0.0.1',
+                    port: 3299
+                }
+            });
 
             // Empty routes manifest -> uncorroborated legacy plist refused!
             await fs.writeFile(layout.wakeManifestPath, JSON.stringify({schemaVersion: 1, routes: {}}), {mode: 0o600});
@@ -612,6 +669,30 @@ test.describe('wakeReceiverSetup', () => {
             });
 
             await writeValidatedManifest({manifest: outsideBuilt.manifest, targetPath: layout.wakeManifestPath});
+            await expect(reconcileWakeReceiverService(rebindInput, legacyHost.host)).rejects.toThrow(/outside deployment state root/);
+            expect(legacyHost.probedEndpoints).toEqual([]);
+
+            // Legacy osascript route with foreign userDataDir AND a decoy primarySession.instanceHome inside stateRoot must still refuse before probing
+            const decoyOsascriptManifest = {
+                schemaVersion: 1,
+                routes       : {
+                    ...outsideBuilt.manifest.routes,
+                    'WAKE_SUB:00000000-0000-4000-8000-000000000077': {
+                        ...outsideBuilt.manifest.routes['WAKE_SUB:00000000-0000-4000-8000-000000000077'],
+                        adapterConfig: {
+                            ...outsideBuilt.manifest.routes['WAKE_SUB:00000000-0000-4000-8000-000000000077'].adapterConfig,
+                            primarySession: {
+                                family      : 'antigravity',
+                                agentId     : 'neo-gemini-maryam',
+                                instanceHome: seatDir,
+                                appBundle   : '/Applications/Antigravity.app'
+                            }
+                        }
+                    }
+                }
+            };
+
+            await fs.writeFile(layout.wakeManifestPath, `${JSON.stringify(decoyOsascriptManifest, null, 2)}\n`, {mode: 0o600});
             await expect(reconcileWakeReceiverService(rebindInput, legacyHost.host)).rejects.toThrow(/outside deployment state root/);
             expect(legacyHost.probedEndpoints).toEqual([]);
 

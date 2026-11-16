@@ -443,15 +443,22 @@ function parseLaunchctlPrint(stdout) {
         runningState = /state\s*=\s*running/i.test(stdout),
         pidMatch     = stdout.match(/\bpid\s*=\s*(\d+)/i),
         pid          = pidMatch ? Number(pidMatch[1]) : null,
-        programMatch = stdout.match(/\bprogram\s*=\s*(.+)/i),
-        pathMatch    = stdout.match(/\bpath\s*=\s*(.+)/i);
+        programMatch = stdout.match(/^[ \t]*program\s*=\s*(.+)$/mi),
+        pathMatch    = stdout.match(/^[ \t]*path\s*=\s*(.+)$/mi),
+        cwdMatch     = stdout.match(/^[ \t]*working directory\s*=\s*(.+)$/mi),
+        argsMatch    = stdout.match(/^[ \t]*arguments\s*=\s*\{([\s\S]*?)^[ \t]*\}/m),
+        argumentsArr = argsMatch
+            ? argsMatch[1].split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+            : null;
 
     return {
-        loaded : true,
-        running: runningState || (Number.isInteger(pid) && pid > 0),
+        loaded          : true,
+        running         : runningState || (Number.isInteger(pid) && pid > 0),
         pid,
-        program: programMatch ? programMatch[1].trim() : null,
-        plist  : pathMatch ? pathMatch[1].trim() : null
+        program         : programMatch ? programMatch[1].trim() : null,
+        plist           : pathMatch ? pathMatch[1].trim() : null,
+        workingDirectory: cwdMatch ? cwdMatch[1].trim() : null,
+        arguments       : argumentsArr
     };
 }
 
@@ -468,10 +475,10 @@ async function inspectSupervisor(host, hostUid) {
         const text = `${error?.stderr ?? ''}\n${error?.stdout ?? ''}\n${error?.message ?? ''}`;
 
         if (/Could not find service|service cannot be found|No such process|113/i.test(text)) {
-            return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null};
+            return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null};
         }
 
-        return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, queryError: error.message};
+        return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null, queryError: error.message};
     }
 }
 
@@ -596,11 +603,12 @@ export async function observeWakeReceiverEffect({layout, target, record = null, 
 
     if (inspection.kind === 'absent' || inspection.kind === 'owned-absent') {
         return {
-            present: false,
-            running: false,
-            owned  : Boolean(inspection.owned),
-            digest : null,
-            reason : `LaunchAgent '${WAKE_RECEIVER_LABEL}' is not installed`
+            present    : false,
+            running    : false,
+            owned      : Boolean(inspection.owned),
+            cleanAbsent: inspection.kind === 'absent',
+            digest     : null,
+            reason     : `LaunchAgent '${WAKE_RECEIVER_LABEL}' is not installed`
         };
     }
 
@@ -664,7 +672,15 @@ async function waitForListenerAndSupervisor({paths, host, hostUid}) {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
         lastSupervisor     = await inspectSupervisor(host, hostUid);
         lastListener       = await probeFn({host: paths.host, port: paths.port});
-        supervisorMismatch = supervisorMatchesDeclaration(lastSupervisor, paths.plistPath, paths.executable);
+        supervisorMismatch = supervisorMatchesDeclaration(lastSupervisor, paths.plistPath, {
+            executable          : paths.executable,
+            runtimeRoot         : paths.runtimeRoot,
+            manifestPath        : paths.manifestPath,
+            stateDir            : paths.wakeStateDir,
+            host                : paths.host,
+            port                : paths.port,
+            runtimeGenerationDir: paths.runtimeGeneration?.directory ?? null
+        });
 
         if (lastSupervisor.loaded && lastSupervisor.running && !supervisorMismatch && lastListener.wakeReceiver) {
             return {supervisor: lastSupervisor, listener: lastListener};

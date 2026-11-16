@@ -8,7 +8,7 @@ import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe}
 import {presets}                                                                                       from '../../../../../../ai/services/fleet/placementPresets.mjs';
 import {EFFECT_ORDER, performEffects, settlePending}                                                   from '../../../../../../ai/services/fleet/setupOrchestration.mjs';
 import {RECEIPT_OUTCOMES, contentDigest, createSetupRecord, findReceipt, setupRecordPath, withReceipt} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
-import {extractReceiverDeclaration, parseLaunchAgentPlist}                                             from '../../../../../../ai/services/fleet/wakeReceiverSetup.mjs';
+import {extractReceiverDeclaration, parseLaunchAgentPlist}                                             from '../../../../../../ai/services/fleet/wakeReceiverPlist.mjs';
 
 // The orchestration over a real temp layout and the checkout's own config and Compose files; the command
 // runner, the clock and every observation are scripted, and each run's file reads are recorded.
@@ -70,7 +70,7 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
         patPath    = path.join(root, 'operator', 'plane-pat'),
         calls      = [],
         reads      = [],
-        launchd    = {loaded: false, running: false, plistPath: null, program: null},
+        launchd    = {loaded: false, running: false, plistPath: null, program: null, workingDirectory: null, arguments: null},
         fsModule   = {...fs, readFile: (file, ...rest) => { reads.push(String(file)); return fs.readFile(file, ...rest) }},
         host       = createHost({
             fsModule,
@@ -94,6 +94,10 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
                                 `\tstate = ${launchd.running ? 'running' : 'not running'}`,
                                 `\tpid = ${launchd.running ? 4242 : 0}`,
                                 ...(launchd.program ? [`\tprogram = ${launchd.program}`] : []),
+                                ...(launchd.workingDirectory ? [`\tworking directory = ${launchd.workingDirectory}`] : []),
+                                ...(Array.isArray(launchd.arguments) && launchd.arguments.length > 0
+                                    ? ['\targuments = {', ...launchd.arguments.map(item => `\t\t${item}`), '\t}']
+                                    : []),
                                 ...(launchd.plistPath ? [`\tpath = ${launchd.plistPath}`] : [])
                             ].join('\n'),
                             stderr: ''
@@ -108,12 +112,16 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
                     }
 
                     if (args[0] === 'bootstrap') {
-                        const decl = extractReceiverDeclaration(parseLaunchAgentPlist(await fs.readFile(args[2], 'utf8'), {allowComments: false}));
+                        const
+                            parsed = parseLaunchAgentPlist(await fs.readFile(args[2], 'utf8'), {allowComments: false}),
+                            decl   = extractReceiverDeclaration(parsed);
 
-                        launchd.loaded    = true;
-                        launchd.running   = true;
-                        launchd.plistPath = args[2];
-                        launchd.program   = decl.executable;
+                        launchd.loaded           = true;
+                        launchd.running          = true;
+                        launchd.plistPath        = args[2];
+                        launchd.program          = decl.executable;
+                        launchd.workingDirectory = parsed.WorkingDirectory ?? decl.runtimeRoot;
+                        launchd.arguments        = parsed.ProgramArguments ?? null;
 
                         return {stdout: '', stderr: ''};
                     }

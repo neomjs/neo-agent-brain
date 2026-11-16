@@ -239,11 +239,105 @@ async function observeEnvCarrier(layout, host, {record = null, supported = true}
     const dirCheck = await inspectWakeRecordsDir(path.dirname(recordsPath), host);
 
     return dirCheck.ok
-        ? {present: true, digest, problem: null}
-        : {present: true, digest, problem: dirCheck.reason};
+        ? {present: true, digest, recordsPath, problem: null}
+        : {present: true, digest, recordsPath, problem: dirCheck.reason};
 }
 
-async function observeRunningCompose({layout, host, record = null, running = false}) {
+/**
+ * @summary Compares two host mount paths semantically, resolving symlinks when available so macOS `/var`
+ * vs `/private/var` aliases do not create false mismatches while distinct directories always fail.
+ * @param {String} left
+ * @param {String} right
+ * @param {Object} fsModule
+ * @returns {Promise<Boolean>}
+ */
+async function hostPathsMatch(left, right, fsModule) {
+    if (path.resolve(left) === path.resolve(right)) {
+        return true;
+    }
+
+    if (typeof fsModule?.realpath === 'function') {
+        try {
+            return await fsModule.realpath(left) === await fsModule.realpath(right);
+        } catch {
+            return false;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @summary Inspects the running `mc-server` container's live `/app/wake-receiver-records` bind mount so stale
+ * container mounts cannot pass setup observation when a `compose-up` receipt is absent or pending.
+ * @param {Object} layout
+ * @param {Object} host
+ * @returns {Promise<{ok: Boolean, present: Boolean, actualMount: String|null, error: Boolean, reason: String|null}>}
+ */
+export async function inspectRunningComposeRecordsMount(layout, host) {
+    try {
+        const ps = await host.run(
+            'docker',
+            [
+                'ps',
+                '-q',
+                '--filter', `label=com.docker.compose.project=${layout.composeProject}`,
+                '--filter', 'label=com.docker.compose.service=mc-server'
+            ],
+            {cwd: layout.composeDir}
+        );
+        const containerId = (ps?.stdout ?? '').split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? null;
+
+        if (!containerId) {
+            return {
+                ok         : false,
+                present    : false,
+                actualMount: null,
+                error      : false,
+                reason     : `compose project '${layout.composeProject}' has no running mc-server container`
+            };
+        }
+
+        const
+            inspected = await host.run('docker', ['inspect', '--format', '{{json .Mounts}}', containerId], {cwd: layout.composeDir}),
+            mounts    = JSON.parse((inspected?.stdout ?? '[]').trim() || '[]'),
+            mount     = Array.isArray(mounts) ? mounts.find(entry => (entry?.Destination ?? entry?.Target) === '/app/wake-receiver-records') : null,
+            rawSource = mount?.Source ?? null;
+
+        if (!rawSource) {
+            return {
+                ok         : false,
+                present    : true,
+                actualMount: null,
+                error      : false,
+                reason     : "running mc-server container has no '/app/wake-receiver-records' bind mount"
+            };
+        }
+
+        return {ok: true, present: true, actualMount: path.resolve(rawSource), error: false, reason: null};
+    } catch (error) {
+        return {
+            ok         : false,
+            present    : true,
+            actualMount: null,
+            error      : true,
+            reason     : `could not inspect running mc-server bind mounts: ${error?.message ?? String(error)}`
+        };
+    }
+}
+
+/**
+ * @summary Observes whether the running Compose stack matches both the env carrier digest and the
+ * live `/app/wake-receiver-records` bind mount inside `mc-server`.
+ * @param {Object}        options
+ * @param {Object}        options.layout
+ * @param {Object}        options.host
+ * @param {Object|null}   [options.record=null]
+ * @param {Boolean}       [options.running=false]
+ * @param {Function|null} [options.inspectRecordsMount=null]
+ * @returns {Promise<Object>}
+ */
+export async function observeRunningCompose({layout, host, record = null, running = false, inspectRecordsMount = null}) {
     if (!running) {
         return {present: false, digest: null, reason: 'the compose project is not running'};
     }
@@ -253,12 +347,38 @@ async function observeRunningCompose({layout, host, record = null, running = fal
         supported = SUPPORTED_WAKE_PLATFORMS.includes(platform),
         envObs    = await observeEnvCarrier(layout, host, {record, supported});
 
-    if (envObs.problem || envObs.inputMismatch) {
+    if (!envObs.present || envObs.problem || envObs.inputMismatch) {
         return {
             present      : true,
             digest       : null,
             inputMismatch: true,
             reason       : envObs.reason ?? envObs.problem ?? 'compose stack env carrier requires update'
+        };
+    }
+
+    const mountCheck = await (inspectRecordsMount
+        ? inspectRecordsMount(layout, host)
+        : inspectRunningComposeRecordsMount(layout, host));
+
+    if (!mountCheck.present) {
+        return {present: false, digest: null, reason: mountCheck.reason};
+    }
+
+    if (mountCheck.error) {
+        return {present: true, digest: null, problem: mountCheck.reason};
+    }
+
+    const expectedRecordsPath = path.resolve(envObs.recordsPath);
+
+    if (!mountCheck.ok || !mountCheck.actualMount || !await hostPathsMatch(mountCheck.actualMount, expectedRecordsPath, host.fsModule)) {
+        return {
+            present          : true,
+            digest           : null,
+            inputMismatch    : true,
+            mountedRecordsDir: mountCheck.actualMount ?? null,
+            reason           : mountCheck.ok && mountCheck.actualMount
+                ? `running mc-server binds '${mountCheck.actualMount}' at /app/wake-receiver-records, expected '${expectedRecordsPath}'`
+                : (mountCheck.reason ?? "running mc-server container has no matching '/app/wake-receiver-records' bind mount")
         };
     }
 
@@ -642,10 +762,19 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         // `fake-launchd.json`), the real file observers over the temp layout, and the fixture's remaining observers
         const
             callsPath      = path.join(options.setupRoot, 'fake-run.json'),
+            composePath    = path.join(options.setupRoot, 'fake-compose.json'),
             launchdPath    = path.join(options.setupRoot, 'fake-launchd.json'),
             defaultUid     = typeof process.getuid === 'function' ? process.getuid() : 501,
             readCalls      = () => fsPromises.readFile(callsPath, 'utf8').then(JSON.parse, () => []),
-            initialLaunchd = () => ({loaded: false, running: false, plistPath: null, program: null, host: null, port: null, readyAt: null, calls: [], ...(fake.launchd ?? {})}),
+            initialCompose = () => ({running: Boolean(fake.compose?.running), mountedRecordsDir: fake.compose?.mountedRecordsDir ?? null}),
+            readCompose    = () => fake.compose?.forceSeed
+                ? Promise.resolve(initialCompose())
+                : fsPromises.readFile(composePath, 'utf8').then(JSON.parse, () => initialCompose()),
+            writeCompose   = async state => {
+                await fsPromises.mkdir(options.setupRoot, {recursive: true, mode: 0o700});
+                await fsPromises.writeFile(composePath, `${JSON.stringify(state, null, 2)}\n`, {mode: 0o600});
+            },
+            initialLaunchd = () => ({loaded: false, running: false, plistPath: null, program: null, workingDirectory: null, arguments: null, host: null, port: null, readyAt: null, calls: [], ...(fake.launchd ?? {})}),
             readLaunchd    = async () => {
                 if (fake.launchd?.forceSeed) {
                     return initialLaunchd();
@@ -698,6 +827,10 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                                 `\tstate = ${state.running ? 'running' : 'not running'}`,
                                 ...(state.running ? [`\tpid = ${state.pid ?? 4242}`] : []),
                                 ...(state.program ? [`\tprogram = ${state.program}`] : []),
+                                ...(state.workingDirectory ? [`\tworking directory = ${state.workingDirectory}`] : []),
+                                ...(Array.isArray(state.arguments) && state.arguments.length > 0
+                                    ? ['\targuments = {', ...state.arguments.map(item => `\t\t${item}`), '\t}']
+                                    : []),
                                 ...(state.plistPath ? [`\tpath = ${state.plistPath}`] : [])
                             ].join('\n'),
                             stderr: ''
@@ -721,22 +854,38 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                         const
                             plistPath = args[2],
                             xml       = await fsPromises.readFile(plistPath, 'utf8'),
-                            decl      = extractReceiverDeclaration(parseLaunchAgentPlist(xml, {allowComments: false}));
+                            parsed    = parseLaunchAgentPlist(xml, {allowComments: false}),
+                            decl      = extractReceiverDeclaration(parsed);
 
-                        state.loaded    = true;
-                        state.running   = true;
-                        state.pid       = 4242;
-                        state.plistPath = plistPath;
-                        state.program   = decl.executable;
-                        state.host      = decl.host;
-                        state.port      = decl.port;
-                        state.readyAt   = Number.isInteger(fake.launchd?.readyDelayMs) && fake.launchd.readyDelayMs > 0
+                        state.loaded           = true;
+                        state.running          = true;
+                        state.pid              = 4242;
+                        state.plistPath        = plistPath;
+                        state.program          = decl.executable;
+                        state.workingDirectory = parsed.WorkingDirectory ?? decl.runtimeRoot;
+                        state.arguments        = parsed.ProgramArguments ?? null;
+                        state.host             = decl.host;
+                        state.port             = decl.port;
+                        state.readyAt          = Number.isInteger(fake.launchd?.readyDelayMs) && fake.launchd.readyDelayMs > 0
                             ? Date.now() + fake.launchd.readyDelayMs
                             : null;
                         await writeLaunchd(state);
 
                         return {stdout: '', stderr: ''};
                     }
+                }
+
+                if (command === 'docker' && args[0] === 'compose' && args.includes('up')) {
+                    const
+                        envFileIndex = args.indexOf('--env-file'),
+                        envFilePath  = envFileIndex >= 0 ? args[envFileIndex + 1] : layout.envFile,
+                        envContent   = await fsPromises.readFile(envFilePath, 'utf8').catch(() => ''),
+                        dirMatch     = envContent.match(/^NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=(.+)$/m);
+
+                    await writeCompose({
+                        running          : true,
+                        mountedRecordsDir: dirMatch ? path.resolve(dirMatch[1].trim()) : null
+                    });
                 }
 
                 const calls = [...await readCalls(), {command, args, cwd: runOptions?.cwd}];
@@ -753,9 +902,19 @@ export async function main(argv = process.argv.slice(2), io = {}) {
             ...productionObservers({layout, host}),
             placement   : async () => { throw new Error('no placement on the fake host') },
             runningPlane: async (t, {record: boundRecord = null} = {}) => {
-                const running = (await readCalls()).some(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up'));
+                const
+                    composeState = await readCompose(),
+                    running      = composeState.running || (await readCalls()).some(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up'));
 
-                return observeRunningCompose({layout, host, record: boundRecord, running});
+                return observeRunningCompose({
+                    layout,
+                    host,
+                    record             : boundRecord,
+                    running,
+                    inspectRecordsMount: async () => composeState.mountedRecordsDir
+                        ? {ok: true, present: true, actualMount: path.resolve(composeState.mountedRecordsDir), error: false, reason: null}
+                        : {ok: false, present: true, actualMount: null, error: false, reason: "running mc-server container has no '/app/wake-receiver-records' bind mount"}
+                });
             },
             forgeConnection: async () => { throw new Error('no forge registry on the fake host') },
             ...fakeHost.observers

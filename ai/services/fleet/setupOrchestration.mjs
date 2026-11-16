@@ -243,7 +243,7 @@ export async function performEffects({record, recordPath, host, layout, target, 
         const canRecoverOwnedWake = effectId === EFFECT_IDS.startWakeReceiver &&
             stepStatus === STEP_STATUSES.reconcileRequired &&
             stepOf('served-plane')?.status === STEP_STATUSES.ok &&
-            step?.observed?.owned === true &&
+            (step?.observed?.owned === true || step?.observed?.cleanAbsent === true) &&
             !step?.observed?.problem;
 
         if (stepStatus === STEP_STATUSES.reconcileRequired && !canRecoverOwnedWake) {
@@ -420,8 +420,18 @@ function unsettledReason({effectId, observed, expectedDigest, planeMatches}) {
             : null;
     }
 
+    if (observed?.inputMismatch === true || observed?.upgradePending === true) {
+        return observed.reason ?? 'the host state still reflects an earlier input; the effect has not been applied';
+    }
+
     if (!HOST_FILE_EFFECTS.includes(effectId)) {
-        return planeMatches && shown ? null : 'the served plane does not match the target yet, or the result is not observable';
+        if (!planeMatches || !shown) {
+            return 'the served plane does not match the target yet, or the result is not observable';
+        }
+
+        return expectedDigest && observed.digest !== expectedDigest
+            ? 'the observed state does not match the expected digest of the interrupted effect'
+            : null;
     }
 
     if (!shown) {

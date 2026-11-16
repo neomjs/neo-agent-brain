@@ -342,6 +342,7 @@ export const hostEffectHandlers = Object.freeze({
     [EFFECT_IDS.composeUp]: Object.freeze({
         id      : EFFECT_IDS.composeUp,
         describe: input => `docker compose -p ${input?.project} up -d --wait`,
+        expects : input => composeInvocationDigest(input),
         /**
          * @param {Object} input `{project, cwd, envFile, composeFiles, envDigest?}` — the compose project, checkout, env carrier, files in order, and optional env content digest.
          * @param {Object} host
