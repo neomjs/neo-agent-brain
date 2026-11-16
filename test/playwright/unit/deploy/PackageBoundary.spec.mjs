@@ -27,7 +27,6 @@ const
 
     CLOUD_DEFINITIONS = [
         'Caddyfile',
-        'Caddyfile.local-agent-os',
         'Dockerfile',
         'Dockerfile.dockerignore',
         'docker-compose.dev.yml',
@@ -36,6 +35,7 @@ const
         'docker-compose.provider-lanes.yml',
         'docker-compose.test.yml',
         'docker-compose.yml',
+        'ingress-local',
         'kb-config.yaml'
     ],
 

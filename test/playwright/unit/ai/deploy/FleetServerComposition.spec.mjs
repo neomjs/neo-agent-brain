@@ -13,7 +13,7 @@ const
     baseSource    = fs.readFileSync(basePath, 'utf8'),
     overlaySource = fs.readFileSync(overlayPath, 'utf8'),
     cloudCaddy    = fs.readFileSync(path.join(deployDir, 'Caddyfile'), 'utf8'),
-    localCaddy    = fs.readFileSync(path.join(deployDir, 'Caddyfile.local-agent-os'), 'utf8'),
+    localCaddy    = fs.readFileSync(path.join(deployDir, 'ingress-local/Caddyfile'), 'utf8'),
     compose       = yamlLoad(baseSource),
     fleet         = compose.services['fleet-server'];
 
