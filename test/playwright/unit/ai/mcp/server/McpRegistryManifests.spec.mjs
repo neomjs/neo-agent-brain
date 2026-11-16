@@ -1,7 +1,9 @@
-import {test, expect} from '@playwright/test';
-import fs             from 'fs-extra';
-import path           from 'path';
-import {load}         from 'js-yaml';
+import {test, expect}  from '@playwright/test';
+import fs              from 'fs-extra';
+import os              from 'node:os';
+import path            from 'path';
+import {load}          from 'js-yaml';
+import {packMcpServer} from '../../../../../../ai/scripts/setup/packMcpServer.mjs';
 
 const MCP_SERVERS = [
     'file-system',
@@ -11,6 +13,11 @@ const MCP_SERVERS = [
     'memory-core',
     'neural-link'
 ];
+
+const STANDALONE_NPM_SERVERS = new Map([
+    ['memory-core', 'neo-memory-core'],
+    ['neural-link', 'neo-neural-link']
+]);
 
 const ALLOWED_SERVER_KEYS = new Set([
     '$schema',
@@ -79,6 +86,42 @@ test.describe('MCP Registry server.json manifests', () => {
             expect(manifest.repository.url).toBe('https://github.com/neomjs/neo-agent-brain');
             expect(manifest.repository.subfolder).toBe(subfolder);
             expect(await fs.pathExists(path.join(repoRoot, manifest.repository.subfolder))).toBe(true);
+
+            const expectedNpmPackage = STANDALONE_NPM_SERVERS.get(serverDir);
+
+            if (expectedNpmPackage) {
+                expect(Array.isArray(manifest.packages)).toBe(true);
+                expect(manifest.packages).toHaveLength(1);
+                expect(manifest.packages[0]).toEqual({
+                    registryType: 'npm',
+                    identifier  : expectedNpmPackage,
+                    version     : manifest.version,
+                    transport   : {type: 'stdio'}
+                });
+
+                const out = await fs.mkdtemp(path.join(os.tmpdir(), `mcp-registry-${serverDir}-`));
+
+                try {
+                    const packed = await packMcpServer({target: serverDir, out});
+
+                    expect(packed.manifest.name).toBe(expectedNpmPackage);
+                    expect(packed.manifest.version).toBe(manifest.version);
+                    expect(packed.manifest.mcpName).toBe(manifest.name);
+                } finally {
+                    await fs.remove(out);
+                }
+            } else {
+                expect(manifest.packages).toBeUndefined();
+            }
         });
     }
+
+    test('publish-mcp-registry workflow exposes only standalone-packaged servers in inputs.server', async () => {
+        const workflowPath = path.join(process.cwd(), '.github/workflows/publish-mcp-registry.yml');
+        const workflow     = load(await fs.readFile(workflowPath, 'utf8'));
+        const options      = workflow.on?.workflow_dispatch?.inputs?.server?.options;
+
+        expect(workflow.on?.workflow_dispatch?.inputs?.server?.default).toBe('neural-link');
+        expect(options).toEqual(['neural-link', 'memory-core', 'all']);
+    });
 });

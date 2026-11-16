@@ -10,5 +10,15 @@
         "source": "github",
         "subfolder": "ai/mcp/server/memory-core",
         "url": "https://github.com/neomjs/neo-agent-brain"
-    }
+    },
+    "packages": [
+        {
+            "registryType": "npm",
+            "identifier": "neo-memory-core",
+            "version": "1.0.0",
+            "transport": {
+                "type": "stdio"
+            }
+        }
+    ]
 }
