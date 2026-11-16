@@ -716,6 +716,71 @@ test.describe('Neo.ai.graph.Database', () => {
         dbEdgeRollback.destroy();
     });
 
+    for (const hydrated of [false, true]) {
+        test(`failed edge removals preserve ${hydrated ? 'hydrated' : 'raw'} indexes and SQLite state`, async () => {
+            const storage = Neo.create(SQLite, {dbPath: ':memory:'});
+            await storage.initAsync();
+
+            const graph = Neo.create(Database, {storage});
+
+            try {
+                graph.transaction(() => {
+                    graph.addNode({id: 'source', label: 'ORDINARY'});
+                    graph.addNode({id: 'target', label: 'ORDINARY'});
+                    graph.addEdge({id: 'edge', source: 'source', target: 'target', type: 'RELATED_TO'});
+                });
+
+                if (hydrated) {
+                    graph.edges.get('edge');
+                }
+
+                expect(Neo.isRecord(graph.edges.map.get('edge'))).toBe(hydrated);
+
+                const snapshot = () => ({
+                    nodes : storage.db.prepare('SELECT * FROM Nodes ORDER BY id').all(),
+                    edges : storage.db.prepare('SELECT * FROM Edges ORDER BY id').all(),
+                    log   : storage.db.prepare('SELECT * FROM GraphLog ORDER BY log_id').all(),
+                    cursor: graph.lastSyncId
+                });
+                const before = snapshot();
+
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    expect(() => graph.transaction(() => {
+                        graph.removeEdge('edge');
+                        throw new Error('abort edge removal');
+                    })).toThrow('abort edge removal');
+
+                    expect(snapshot()).toEqual(before);
+                    expect(graph.edges.getCount()).toBe(1);
+                    expect(graph.edges.getByIndex('source', 'source').map(edge => edge.id)).toEqual(['edge']);
+                    expect(graph.edges.getByIndex('target', 'target').map(edge => edge.id)).toEqual(['edge']);
+                    expect(graph.getAdjacentNodes('source').map(node => node.id)).toEqual(['target']);
+                    expect(graph.getAdjacentNodes('target', 'inbound').map(node => node.id)).toEqual(['source']);
+                }
+
+                storage.addNodes([{id: 'unrelated-writer', label: 'ORDINARY'}]);
+                const afterOtherWriter = snapshot();
+
+                expect(afterOtherWriter.log.at(-1).log_id).toBeGreaterThan(before.cursor);
+                expect(() => graph.transaction(() => {
+                    graph.removeEdge('edge');
+                    throw new Error('abort with an unread writer');
+                })).toThrow('abort with an unread writer');
+                expect(snapshot()).toEqual(afterOtherWriter);
+                expect(graph.lastSyncId).toBe(before.cursor);
+
+                graph.transaction(() => graph.removeEdge('edge'));
+
+                expect(graph.edges.getByIndex('source', 'source')).toEqual([]);
+                expect(graph.edges.getByIndex('target', 'target')).toEqual([]);
+                expect(storage.db.prepare('SELECT COUNT(*) AS count FROM Edges').get().count).toBe(0);
+                expect(graph.lastSyncId).toBeGreaterThan(before.cursor);
+            } finally {
+                graph.destroy();
+            }
+        });
+    }
+
     test('Collection.splice mutate-event removedItems is always object-shaped, regardless of remove-by-key vs remove-by-object input (#11595)', async () => {
         // Direct contract test: the mutate event payload's removedItems must be the locally-built
         // actual-removed-objects array, not the input keys. V-B-A on consumer impact across the
