@@ -43,7 +43,7 @@ function documentHeader(doc, position) {
  * `No Content (File missing or empty)` failure the retrieval path already carries scar tissue for.
  *
  * @param {Object} options
- * @param {Object[]} [options.documents=[]] `{name, source, content}` in rank order.
+ * @param {Object[]} [options.documents=[]] `{name, source, content, shortened?}` in rank order.
  * @param {Number} [options.budgetChars=0] Total character budget; `0` disables the bound, which is
  * what an overlay predating the leaf resolves to — an unmigrated clone keeps today's behaviour rather
  * than acquiring a truncation nobody configured.
@@ -90,6 +90,10 @@ export function assembleAskContext({documents = [], budgetChars = 0, maxCharsPer
                     shortened.push(position)
                 }
             }
+        }
+
+        if (doc.shortened && !shortened.includes(position)) {
+            shortened.push(position)
         }
 
         consumed += overhead + content.length;

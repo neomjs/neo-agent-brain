@@ -878,5 +878,153 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
         expect(assembledPositive.notice).toContain('Document(s) 1 were shortened.');
         expect(assembledPositive.context).toContain('## Layout reset example\n\nThis example is obsolete; do not use it.\n\n```sh\n# layout reset\nprintf \'illustrative only\\n\'\n```');
     });
+
+    test('windows oversized local .mjs source files past character 45,000 in SearchService.ask', async () => {
+        let capturedPrompt = null;
+
+        const fillerMethods = Array.from({length: 140}, (_, index) => [
+            '    /**',
+            `     * @summary Unrelated workflow helper ${index}.`,
+            '     */',
+            `    unrelatedHelper${index}(input) {`,
+            `        return '${'padding-block-'.repeat(24)}' + input;`,
+            '    }'
+        ].join('\n')).join('\n\n');
+
+        const serviceSource = [
+            "import Base from 'neo.mjs/src/core/Base.mjs';",
+            '',
+            'class OversizedIssueService extends Base {',
+            fillerMethods,
+            '',
+            '    /**',
+            '     * @summary Resolves cross-repository parent and child issue links.',
+            '     */',
+            '    async updateIssueRelationship({childIssue, parentIssue, parentRepo}) {',
+            '        const effectiveParentRepo = parentRepo || "neomjs/neo-agent-brain";',
+            '        return {childIssue, parentIssue, effectiveParentRepo};',
+            '    }',
+            '}',
+            '',
+            'export default OversizedIssueService;',
+            ''
+        ].join('\n');
+
+        expect(serviceSource.length).toBeGreaterThan(55000);
+        expect(serviceSource.indexOf('async updateIssueRelationship')).toBeGreaterThan(45000);
+
+        const serviceFile = path.join(path.dirname(tmpFilePath), 'oversized-service.mjs');
+        await fs.writeFile(serviceFile, serviceSource, 'utf8');
+        const serviceRelative = path.relative(aiConfig.neoRootDir, serviceFile);
+
+        QueryService.queryDocuments = async () => ({
+            topResult: serviceRelative,
+            results  : [{
+                source  : serviceRelative,
+                score   : '9055',
+                metadata: {
+                    type    : 'ai-infrastructure',
+                    tenantId: 'neo-shared',
+                    repoSlug: 'neo',
+                    content : 'async updateIssueRelationship({childIssue, parentIssue, parentRepo}) {'
+                }
+            }]
+        });
+
+        SearchService.model = {
+            generateContent: async prompt => {
+                capturedPrompt = prompt;
+                return {response: {text: () => 'Synthesized updateIssueRelationship answer.'}};
+            }
+        };
+
+        try {
+            const hydrated = await SearchService.hydrateReferenceContent({
+                source  : serviceRelative,
+                metadata: {
+                    type   : 'src',
+                    content: 'async updateIssueRelationship({childIssue, parentIssue, parentRepo}) {'
+                }
+            }, {
+                query: 'Where does updateIssueRelationship resolve childIssue and parentRepo?'
+            });
+
+            expect(hydrated.length).toBeLessThanOrEqual(aiConfig.askSynthesis.contextMaxCharsPerDocument);
+            expect(hydrated).toContain('async updateIssueRelationship({childIssue, parentIssue, parentRepo})');
+
+            const result = await SearchService.ask({
+                query: 'Where does updateIssueRelationship resolve childIssue and parentRepo?',
+                type : 'src'
+            });
+
+            expect(capturedPrompt).toContain('async updateIssueRelationship({childIssue, parentIssue, parentRepo})');
+            expect(capturedPrompt).toContain('// ... [lines');
+            expect(result.answer).toContain('Synthesized updateIssueRelationship answer.');
+            expect(result.answer).toContain('Context note:');
+            expect(result.answer).toContain('Document(s) 1 were shortened.');
+        } finally {
+            await fs.remove(serviceFile).catch(() => {});
+        }
+    });
+
+    test('prioritizes distant headings and oversized single-section local Markdown guides in hydrateReferenceContent', async () => {
+        const guideSource = [
+            '# TreeStore Guide',
+            '',
+            'General introduction prose. '.repeat(720),
+            '',
+            '#### Ancestor-Aware Filtering',
+            '',
+            'Filters retain ancestor branches down to kept leaf records.'
+        ].join('\n');
+
+        const guideFile = path.join(path.dirname(tmpFilePath), 'oversized-tree-guide.md');
+        await fs.writeFile(guideFile, guideSource, 'utf8');
+        const guideRelative = path.relative(aiConfig.neoRootDir, guideFile);
+
+        const singleSource = [
+            '# Flat Architecture Note',
+            '',
+            'Introductory architectural details. '.repeat(520),
+            '',
+            'Key invariant: ancestors remain navigable whenever filtered.'
+        ].join('\n');
+
+        const singleFile = path.join(path.dirname(tmpFilePath), 'oversized-single-note.md');
+        await fs.writeFile(singleFile, singleSource, 'utf8');
+        const singleRelative = path.relative(aiConfig.neoRootDir, singleFile);
+
+        try {
+            const hydratedGuide = await SearchService.hydrateReferenceContent({
+                source  : guideRelative,
+                metadata: {
+                    type   : 'guide',
+                    content: 'Filters retain ancestor branches down to kept leaf records.'
+                }
+            }, {
+                query: 'How does ancestor-aware filtering retain ancestor branches?'
+            });
+
+            expect(hydratedGuide.indexOf('#### Ancestor-Aware Filtering')).toBeLessThan(aiConfig.askSynthesis.contextMaxCharsPerDocument);
+
+            const hydratedSingle = await SearchService.hydrateReferenceContent({
+                source  : singleRelative,
+                metadata: {
+                    type   : 'guide',
+                    content: 'Key invariant: ancestors remain navigable whenever filtered.'
+                }
+            }, {
+                query: 'What invariant keeps ancestors navigable when filtered?'
+            });
+
+            expect(hydratedSingle.length).toBeLessThanOrEqual(aiConfig.askSynthesis.contextMaxCharsPerDocument);
+            expect(hydratedSingle).toContain('Key invariant: ancestors remain navigable whenever filtered.');
+        } finally {
+            await Promise.all([
+                fs.remove(guideFile).catch(() => {}),
+                fs.remove(singleFile).catch(() => {})
+            ]);
+        }
+    });
 });
 
