@@ -15,8 +15,10 @@ import {
     convergeAntigravityWorkspaceMcp,
     mergeAntigravityWorkspaceMcpConfig,
     prepareAntigravityArtifacts,
-    prepareManagedAgentWorkspace
+    prepareManagedAgentWorkspace,
+    refreshAntigravityMemoryLoader
 } from '../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs';
+import {renderAntigravityMemoryLoader}                  from '../../../../../../ai/services/fleet/seatMemoryLayerTemplate.mjs';
 import {mcpDeclarationRefusal}                          from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {mintLaunchGrant}                                from '../../../../../../ai/services/fleet/mcpLaunchAdmission.mjs';
 import {MCP_SERVERS}                                    from '../../../../../../src/fleet/contract/mcpServers.mjs';
@@ -2657,6 +2659,33 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
         await fs.writeFile(first.artifacts[0].path, '# resident edit\n');
         await expect(prepareAntigravityArtifacts(options)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+    });
+
+    test('Antigravity memory loader upgrades a Fleet rendering, even the first one, and leaves an edited file to convergence', async () => {
+        const
+            filePath    = path.join(root, 'GEMINI.md'),
+            memoryDir   = path.join(root, 'memory'),
+            desired     = renderAntigravityMemoryLoader({identity: 'neo-example-seat', memoryDir}),
+            loader      = {filePath, desiredContent: desired, ownedLabel: 'Antigravity memory loader', trustedRoot: root, fileSystem: fs},
+            firstLoader = '# Fleet seat memory\n\nOperational identity for this managed workspace: @neo-example-seat.\n' +
+                'Use the current Fleet-issued identity and loaded seat memory when legacy global harness notes differ.\n\n' +
+                `@[Seat memory](${memoryDir}/MEMORY.md)\n@[Bearer identity](${memoryDir}/identity.md)\n`;
+
+        expect(await refreshAntigravityMemoryLoader(loader)).toBeNull();
+
+        await fs.writeFile(filePath, firstLoader);
+        expect(await refreshAntigravityMemoryLoader(loader)).toMatchObject({status: WORKSPACE_ARTIFACT_STATES.UPDATED});
+        expect(await fs.readFile(filePath, 'utf8')).toBe(desired);
+        expect(await refreshAntigravityMemoryLoader(loader)).toBeNull();
+
+        await fs.writeFile(filePath, renderAntigravityMemoryLoader({identity: 'neo-renamed-seat', memoryDir}));
+        expect(await refreshAntigravityMemoryLoader(loader)).toMatchObject({status: WORKSPACE_ARTIFACT_STATES.UPDATED});
+        expect(await fs.readFile(filePath, 'utf8')).toBe(desired);
+
+        const edited = `${desired}A resident's own rule.\n`;
+        await fs.writeFile(filePath, edited);
+        expect(await refreshAntigravityMemoryLoader(loader)).toBeNull();
+        expect(await fs.readFile(filePath, 'utf8')).toBe(edited);
     });
 
     test('Antigravity workspace merge preserves resident entries and refuses unreceipted Neo divergence', () => {

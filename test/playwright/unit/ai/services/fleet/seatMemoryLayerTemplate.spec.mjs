@@ -4,6 +4,8 @@ import fs             from 'node:fs';
 import os             from 'node:os';
 import path           from 'node:path';
 import {
+    isAntigravityMemoryLoader,
+    renderAntigravityMemoryLoader,
     renderCodexMemoryBootSection,
     renderIdentityAnchorHookMjs,
     renderMemoryIndexMd,
@@ -142,5 +144,28 @@ test.describe('seatMemoryLayerTemplate — Antigravity native Markdown memory', 
         expect(about).toContain("detail: 'summary'");
         expect(about).toContain("plus `agentIdentity` when author-scoped");
         expect(`${index}\n${about}`).not.toMatch(/AGENTS\.md|opencode\.jsonc|config\.toml|PostCompact|17KB|24\.6KB|post-compact/i)
+    });
+
+    test('the GEMINI.md loader carries the guard card for its own seat in under 2 KB', () => {
+        const loader = renderAntigravityMemoryLoader({identity: 'neo-example-seat', memoryDir: '/seats/neo-example-seat/memory'});
+
+        expect(loader).toContain('"Subagent helper for @neo-example-seat: a bounded task helper, not @neo-example-seat and never a copy."');
+        expect(loader).toContain('**One writer per checkout.**');
+        expect(loader).toContain('`Model: "flash"`');
+        expect(loader).toContain('`ESCALATE_TO_CARBON: <blocker and files>`');
+        expect(loader).toContain('**No `schedule` polling.**');
+        expect(loader).toMatch(/\n\n@\[Seat memory\]\(\/seats\/neo-example-seat\/memory\/MEMORY\.md\)\n@\[Bearer identity\]\(\/seats\/neo-example-seat\/memory\/identity\.md\)\n$/);
+        expect(new Set(loader.match(/@[\w-]+/g))).toEqual(new Set(['@neo-example-seat']));
+        expect(Buffer.byteLength(loader)).toBeLessThan(2048)
+    });
+
+    test('a GEMINI.md is a Fleet rendering only while nobody has edited it', () => {
+        const loader = renderAntigravityMemoryLoader({identity: 'neo-example-seat', memoryDir: '/seats/neo-example-seat/memory'});
+
+        expect(isAntigravityMemoryLoader(loader)).toBe(true);
+        expect(isAntigravityMemoryLoader(renderAntigravityMemoryLoader({identity: 'neo-other-seat', memoryDir: '/elsewhere/memory'}))).toBe(true);
+        expect(isAntigravityMemoryLoader(`${loader}A resident's own rule.\n`)).toBe(false);
+        expect(isAntigravityMemoryLoader(loader.replace('One writer per checkout', 'Two writers per checkout'))).toBe(false);
+        expect(isAntigravityMemoryLoader('# Project rules\n\nUse tabs.\n')).toBe(false)
     });
 });

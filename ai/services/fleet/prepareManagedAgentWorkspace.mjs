@@ -39,7 +39,13 @@ import {LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR, isLaunchIdentity}          
 import {OPENCODE_SEAT_SERVERS, WAKE_ENVELOPE_PLANT_FILE_NAME, generateOpenCodeSeatConfig, isUnmodifiedGeneration} from './generateOpenCodeSeatConfig.mjs';
 import {SEAT_INSTRUCTION_STATES, projectSeatInstructions}                                                         from './projectSeatInstructions.mjs';
 import {ensureSeatEnvFile}                                                                                        from './seatEnvFile.mjs';
-import {renderAboutThisLayerMd, renderIdentityMd, renderMemoryIndexMd}                                            from './seatMemoryLayerTemplate.mjs';
+import {
+    isAntigravityMemoryLoader,
+    renderAboutThisLayerMd,
+    renderAntigravityMemoryLoader,
+    renderIdentityMd,
+    renderMemoryIndexMd
+} from './seatMemoryLayerTemplate.mjs';
 
 export {createManagedAgentWorkspacePlan} from './managedAgentWorkspacePlan.mjs';
 
@@ -2484,37 +2490,13 @@ async function relocateGeneratedText({filePath, previousContent, desiredContent,
 }
 
 /**
- * The Antigravity memory loader's exact shape, whatever identity and paths it names ({@link
- * renderAntigravityMemoryLoader}).
- * @private
- */
-const ANTIGRAVITY_MEMORY_LOADER_SHAPE = /^# Fleet seat memory\n\nOperational identity for this managed workspace: @\S+\.\nUse the current Fleet-issued identity and loaded seat memory when legacy global harness notes differ\.\n\n@\[Seat memory\]\(\/[^()\n]+\/MEMORY\.md\)\n@\[Bearer identity\]\(\/[^()\n]+\/identity\.md\)\n$/;
-
-/**
- * @summary The Antigravity workspace file that loads a seat's memory, rendered whole by Fleet.
- * @param {Object} options
- * @param {String} options.identity  The seat's launch identity.
- * @param {String} options.memoryDir The seat's memory folder.
- * @returns {String}
- */
-export function renderAntigravityMemoryLoader({identity, memoryDir}) {
-    return '# Fleet seat memory\n\n' +
-        `Operational identity for this managed workspace: @${identity}.\n` +
-        'Use the current Fleet-issued identity and loaded seat memory when legacy global harness notes differ.\n\n' +
-        `@[Seat memory](${path.join(memoryDir, 'MEMORY.md')})\n` +
-        `@[Bearer identity](${path.join(memoryDir, 'identity.md')})\n`
-}
-
-/**
- * @summary Brings an Antigravity memory loader up to date when it still has the loader's exact shape. Its only
- * variable parts are the identity and the memory paths, which a seat move, a rename or a new login changes, so
- * a file of that shape is a Fleet rendering to replace. Any other content is left to the convergence, which
- * refuses it.
+ * @summary Brings an Antigravity memory loader up to date while it is still a Fleet rendering ({@link
+ * isAntigravityMemoryLoader}). A seat move, a rename, a new login or a newer loader text changes what Fleet
+ * renders, so such a file is replaced. Any other content is left to the convergence, which refuses it.
  * @param {Object} loader The convergence's `{filePath, desiredContent, ownedLabel, trustedRoot, fileSystem}`.
  * @returns {Promise<Object|null>} The `updated` artifact, or `null` when the convergence should decide.
- * @private
  */
-async function refreshAntigravityMemoryLoader({filePath, desiredContent, ownedLabel, trustedRoot, fileSystem}) {
+export async function refreshAntigravityMemoryLoader({filePath, desiredContent, ownedLabel, trustedRoot, fileSystem}) {
     let existing;
 
     try {
@@ -2524,7 +2506,7 @@ async function refreshAntigravityMemoryLoader({filePath, desiredContent, ownedLa
         throw error
     }
 
-    if (existing === desiredContent || !ANTIGRAVITY_MEMORY_LOADER_SHAPE.test(existing)) return null;
+    if (existing === desiredContent || !isAntigravityMemoryLoader(existing)) return null;
 
     await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: ownedLabel});
     await publishTextAtomically({filePath, content: desiredContent, fileSystem});
