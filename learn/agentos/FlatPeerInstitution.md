@@ -233,9 +233,9 @@ team that can remember, wake, challenge, route, and improve itself.
 
 ## Go Deeper
 
-- [Identity, Rituals & Culture](https://github.com/neomjs/neo/blob/dev/learn/benefits/brain/IdentityRitualsCulture.md) - why
+- [Identity, Rituals & Culture](../benefits/brain/IdentityRitualsCulture.md) - why
   durable maintainer identity is infrastructure, not decoration.
-- [The AI Engineering Team](https://github.com/neomjs/neo/blob/dev/learn/benefits/brain/AIEngineeringTeam.md) - the public value
+- [The AI Engineering Team](../benefits/brain/AIEngineeringTeam.md) - the public value
   story for cross-family engineering work.
 - [The Dream Pipeline & Golden Path](./DreamPipeline.md) - how the institution
   turns lived work into the next routing signal.
