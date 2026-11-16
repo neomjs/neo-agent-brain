@@ -139,6 +139,7 @@ test.describe('signed native wake receiver integration', () => {
         const done     = new Promise(resolve => {finish=resolve});
         const warnings = [];
         const pump     = startFleetPrimaryWakePump({manifestPath,intervalMs:10000,logger:{warn:message => warnings.push(message)},
+            verifyCodexRoute:async (candidate, live) => candidate.agentId === config.agentId && live.generation === '123:start',
             drainRecord:async options => {
                 await drainFleetPrimaryWakeRecord({...options,dispatch:(record, driverOptions) =>
                     dispatchFleetPrimarySessionWake(record,{...driverOptions,inspectResident:resident,codexTransport:transport})});

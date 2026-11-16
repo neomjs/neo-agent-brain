@@ -12,13 +12,19 @@ function bootSlice({enabled = true, plane = true, start, manifestPath = null}) {
     let wakeOptions, onPulse;
     const events = [], pulses = [], round = state => { pulses.push(['wake', state]) },
         seams    = {
-            startFleetBridgeServer     : async options => { events.push('listen'); return start?.(options) ?? {close() {}} },
-            settleFleetBridge          : async () => ({state: 'ready', port: 1, action: 'verified', publicKeySha256: '0123456789abcdef'}),
-            superviseFleetBridge       : () => ({stop() {}}),
-            FLEET_BRIDGE_STATES        : {READY: 'ready'},
-            neuralLinkConfig           : {port: 1},
-            FleetManager               : {wakeStateOptions:{wakeReceiverManifestPath:manifestPath}},
-            startFleetPrimaryWakePump  : ({manifestPath}) => { events.push(['native-pump',manifestPath]); return {stop() {}} },
+            startFleetBridgeServer: async options => { events.push('listen'); return start?.(options) ?? {close() {}} },
+            settleFleetBridge     : async () => ({state: 'ready', port: 1, action: 'verified', publicKeySha256: '0123456789abcdef'}),
+            superviseFleetBridge  : () => ({stop() {}}),
+            FLEET_BRIDGE_STATES   : {READY: 'ready'},
+            neuralLinkConfig      : {port: 1},
+            FleetManager          : {wakeStateOptions:{wakeReceiverManifestPath:manifestPath},
+                verifyCodexWakeRoute:(route, resident) => route === 'route' && resident === 'resident'},
+            startFleetPrimaryWakePump  : ({manifestPath, verifyCodexRoute}) => {
+                expect(verifyCodexRoute('route','resident')).toBe(true);
+                expect(verifyCodexRoute('route','another')).toBe(false);
+                events.push(['native-pump',manifestPath]);
+                return {stop() {}}
+            },
             AiConfig                   : {fleet: {openWorkWakes: enabled, bearerHandshake: false, harnessGenerations: {checkIntervalHours: 6}}},
             planeClient                : plane ? {addMessage() { events.push('send') }} : null,
             lifecycle                  : {harnessAcquisitionContext: family => ({family, optedIn: false})},
