@@ -336,6 +336,51 @@ test.describe('reconcileRawMemoryGraphIdentities migration', () => {
         expect(second.conflicts).toEqual([])
     })
 
+
+    test('a protected incident edge arriving after planning rolls the whole raw-memory apply back', () => {
+        insertNode(db, {id: 'memory:raw', label: 'MEMORY', properties: {chromaId: 'raw'}});
+        insertNode(db, {id: 'other', label: 'CONCEPT'});
+        const read = readGraphSnapshot(db);
+        const plan = planRawMemoryIdentityReconciliation({
+            chromaRows: [{id: 'raw', metadata: {}}], graphNodes: read.nodes, graphEdges: read.edges
+        });
+        expect(plan.conflicts).toEqual([]);
+        insertEdge(db, {id: 'late', source: 'memory:raw', target: 'other', type: 'IDENTITY_FAMILY_DECLARES'});
+        db.exec("CREATE TABLE GraphLog (id INTEGER PRIMARY KEY, entity_id TEXT); CREATE TRIGGER trace_node AFTER INSERT ON Nodes BEGIN INSERT INTO GraphLog(entity_id) VALUES (NEW.id); END;");
+        const snapshot = () => ['Nodes', 'Edges', 'GraphLog'].map(table => db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all());
+        const before   = snapshot();
+        expect(() => applyRawMemoryIdentityReconciliation(db, plan)).toThrow(/protected identity-publication/i);
+        expect(snapshot()).toEqual(before);
+        expect(db.pragma('foreign_key_check')).toEqual([]);
+    });
+
+    test('a canonical target cannot manufacture a new protected population', () => {
+        const id = 'identity-family-new';
+        insertNode(db, {id: 'memory:' + id, label: 'MEMORY', properties: {chromaId: id}});
+        const read = readGraphSnapshot(db);
+        const plan = planRawMemoryIdentityReconciliation({
+            chromaRows: [{id, metadata: {}}], graphNodes: read.nodes, graphEdges: read.edges
+        });
+        expect(plan.conflicts).toEqual([]);
+        expect(plan.nodeActions).toHaveLength(1);
+        const before = db.prepare('SELECT * FROM Nodes ORDER BY id').all();
+        expect(() => applyRawMemoryIdentityReconciliation(db, plan)).toThrow(/protected identity-publication/i);
+        expect(db.prepare('SELECT * FROM Nodes ORDER BY id').all()).toEqual(before);
+    });
+
+    test('unrelated protected history remains byte-identical while ordinary reconciliation proceeds', () => {
+        insertNode(db, {id: 'identity-family-unrelated', label: 'IDENTITY_FAMILY_FOUNDING', properties: {marker: 'retained'}});
+        insertNode(db, {id: 'memory:raw', label: 'MEMORY', properties: {chromaId: 'raw'}});
+        const read = readGraphSnapshot(db);
+        const plan = planRawMemoryIdentityReconciliation({
+            chromaRows: [{id: 'raw', metadata: {}}], graphNodes: read.nodes, graphEdges: read.edges
+        });
+        const before = db.prepare('SELECT * FROM Nodes WHERE id = ?').get('identity-family-unrelated');
+        expect(applyRawMemoryIdentityReconciliation(db, plan).nodesMerged).toBe(1);
+        expect(db.prepare('SELECT * FROM Nodes WHERE id = ?').get('identity-family-unrelated')).toEqual(before);
+        expect(db.prepare('SELECT id FROM Nodes WHERE id = ?').get('raw')).toBeTruthy();
+    });
+
     test('an apply-time failure rolls the node and edge phases back together', () => {
         insertNode(db, {id: 'source', label: 'CONCEPT', properties: {}});
         insertNode(db, {id: 'memory:raw', label: 'MEMORY', userId: 'u', properties: {chromaId: 'raw', userId: 'u'}});

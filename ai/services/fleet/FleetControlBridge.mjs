@@ -268,7 +268,7 @@ const TASK_REFUSALS = Object.freeze([
     {code: 'task-not-found',     pattern: /^Task not found: /,                                                              reason: () => 'no Task has that id'},
     {code: 'not-a-task',         pattern: /^Message \S+ is not an A2A Task /,                                               reason: () => 'that message carries no Task'},
     {code: 'not-a-participant',  pattern: /^Unauthorized: \S+ is neither originator nor assignee for task /,                reason: () => "only the Task's originator or assignee can move it"},
-    {code: 'transition-refused', pattern: /^Unauthorized: \S+ as (originator|assignee) cannot transition `(\w+) → (\w+)`$/, reason: ([, role, from, to]) => `the ${role} cannot move this Task from ${from} to ${to}`}
+    {code: 'transition-refused', pattern: /^Unauthorized: \S+ as ((?:originator|assignee)(?: and (?:originator|assignee))?) cannot transition `(\w+) → (\w+)`(?:; allowed next states? for (?:originator|assignee)(?: and (?:originator|assignee))?: [\w, ]+)?$/, reason: ([, role, from, to]) => `the ${role} cannot move this Task from ${from} to ${to}`}
 ]);
 
 /**

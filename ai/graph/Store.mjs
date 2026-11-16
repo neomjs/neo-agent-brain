@@ -161,6 +161,24 @@ class Store extends DataStore {
     }
 
     /**
+     * @summary Keeps secondary indexes on the same object as the Store when a raw row is hydrated.
+     * Otherwise removal deletes the record while leaving its former raw reference indexed.
+     * @param {Object} item The raw row, existing record or null
+     * @param {Number} [index] Position in the Store's items
+     * @returns {Neo.data.Record|Object|null} The hydrated record or unchanged input
+     * @protected
+     */
+    hydrateRecord(item, index) {
+        const record = super.hydrateRecord(item, index);
+
+        if (this.indexMaps && record !== item) {
+            this.updateIndexMaps([record], [item]);
+        }
+
+        return record
+    }
+
+    /**
      * Central topological funnel parsing addition mapped data vs removal tracked data for O(1) bindings.
      * @param {Number|null} index
      * @param {Number|Object[]} [removeCountOrToRemoveArray]

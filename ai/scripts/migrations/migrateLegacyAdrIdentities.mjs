@@ -36,6 +36,10 @@ import {
     REVIEWED_41_ADR_MIGRATION_MANIFEST
 } from './adrMigrationManifest.mjs';
 import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
+import {
+    assertIdentityPublicationAbsent,
+    runWithIdentityPublicationPreserved
+} from '../../graph/identityPublicationProtection.mjs';
 
 /**
  * @module ai/scripts/migrations/migrateLegacyAdrIdentities
@@ -1016,7 +1020,7 @@ export function createAdrMigrationBackup({
     return finalizeSnapshot(vectorExportResult, kbExportResult);
 }
 
-/** @summary Restores ADR graph nodes, edges, vectors, and KB entries from a pre-migration backup snapshot. */
+/** @summary Restores ordinary ADR state only when publication history and durable fences are absent. */
 export function restoreAdrMigrationBackup({
     db,
     vectorStore = null,
@@ -1027,6 +1031,9 @@ export function restoreAdrMigrationBackup({
     if (!db) {
         fail('ADR_MIGRATION_DB_REQUIRED', 'restoreAdrMigrationBackup requires a SQLite db handle.');
     }
+    if (db.inTransaction) {
+        fail('ADR_MIGRATION_RESTORE_TRANSACTION_IN_PROGRESS', 'ADR restore requires its own physical transaction.');
+    }
     const resolvedBackup = backup || (
         typeof backupPath === 'string' && backupPath.trim() && fs.existsSync(path.resolve(backupPath))
             ? JSON.parse(fs.readFileSync(path.resolve(backupPath), 'utf-8'))
@@ -1036,7 +1043,6 @@ export function restoreAdrMigrationBackup({
         fail('ADR_MIGRATION_BACKUP_INVALID', 'restoreAdrMigrationBackup requires a valid backup snapshot object or readable backupPath.');
     }
 
-    ensureMigrationTables(db);
     const
         manifestIds   = resolvedBackup.manifestIds || REVIEWED_41_ADR_MIGRATION_MANIFEST.map(e => ({
             legacyId    : e.legacyId,
@@ -1046,6 +1052,8 @@ export function restoreAdrMigrationBackup({
         canonicalKeys = new Set(manifestIds.map(e => e.canonicalKey));
 
     db.transaction(() => {
+        assertIdentityPublicationAbsent(db);
+        ensureMigrationTables(db);
         const deleteEdgeStmt = db.prepare('DELETE FROM Edges WHERE id = ?');
         for (const edge of db.prepare('SELECT id, source, target FROM Edges').all()) {
             if (
@@ -1070,7 +1078,8 @@ export function restoreAdrMigrationBackup({
             upsertEdgeStmt.run(edge.id, edge.source, edge.target, edge.type, edge.data);
         }
         db.prepare('DELETE FROM AdrIdentityMigrationJournal').run();
-    })();
+        assertIdentityPublicationAbsent(db);
+    }).immediate();
 
     let
         restoredVectorsCount = 0,
@@ -1326,7 +1335,7 @@ export async function migrateLegacyAdrIdentities({
                 rewrittenEdgesCount = 0,
                 mergedEdgesCount    = 0;
 
-            db.transaction(() => {
+            runWithIdentityPublicationPreserved(db, () => {
                 const
                     getNodeStmt    = db.prepare('SELECT id, data FROM Nodes WHERE id = ?'),
                     upsertNodeStmt = db.prepare('INSERT OR REPLACE INTO Nodes (id, data) VALUES (?, ?)'),
@@ -1499,7 +1508,7 @@ export async function migrateLegacyAdrIdentities({
                         upsertEdgeStmt.run(newEdgeId, newSource, newTarget, row.type, JSON.stringify(newEdgeData));
                     }
                 }
-            })();
+            });
 
             for (const repo of Object.values(cutRepositories)) registerSharedForgeRepository(repo);
             hydrateAdrAdmissionRecords(admissionRecords, {replaceExisting: true});

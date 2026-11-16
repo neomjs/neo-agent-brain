@@ -14,6 +14,7 @@ import http                  from 'node:http';
 import net                   from 'node:net';
 import path                  from 'node:path';
 import {readFileSync, watch} from 'node:fs';
+import {format}              from 'node:util';
 
 import {WakeReceiverState}                       from './receiverState.mjs';
 import {createReceiverLiveness}                  from './receiverLiveness.mjs';
@@ -159,19 +160,21 @@ const STEP_WATCHDOG_INTERVAL_MS = 5 * 1000;
  * @summary Loads a 0600 route manifest without leaking signing keys into logs or state records.
  *
  * @param {String} manifestPath Absolute JSON manifest path.
+ * @param {Object} [options={}]
+ * @param {Object} [options.fsModule=fs] Filesystem adapter (`stat`, `readFile`).
  * @returns {Promise<Object>}
  */
-export async function loadWakeReceiverManifest(manifestPath) {
+export async function loadWakeReceiverManifest(manifestPath, {fsModule = fs} = {}) {
     if (!path.isAbsolute(manifestPath || '')) {
         throw new Error('Wake receiver requires an absolute manifest path');
     }
 
-    const stat = await fs.stat(manifestPath);
+    const stat = await fsModule.stat(manifestPath);
     if ((stat.mode & 0o077) !== 0) {
         throw new Error(`Wake receiver manifest '${manifestPath}' must be mode 0600`);
     }
 
-    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    const manifest = JSON.parse(await fsModule.readFile(manifestPath, 'utf8'));
     if (manifest?.schemaVersion !== 1 || !manifest.routes || typeof manifest.routes !== 'object') {
         throw new Error('Wake receiver manifest requires schemaVersion=1 and a routes object');
     }
@@ -692,7 +695,8 @@ export function createWakeReceiver({
                             }
                         }
                     }
-                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath}) : dispatch(dispatching, rotationGuard ? {rotationGuard, rotationHolder} : undefined),
+                    // the adapters write their lines through the receiver's logger, so each one carries its time
+                    const result = await track('dispatch', native ? dispatchPrimary(dispatching, {state, stateDir: state.stateDir, manifestPath}) : dispatch(dispatching, {log: logger, ...(rotationGuard ? {rotationGuard, rotationHolder} : {})}),
                         (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch, record.subscriptionId);
 
                     outcome = typeof result === 'string' ? result : native ? result?.status : result?.outcome;
@@ -822,6 +826,13 @@ export function createWakeReceiver({
                     } : {}),
                     dispatchFinishedAt: finishedIso
                 });
+
+                // A rotation decides whether a seat goes dark, so its end is one line beside its record.
+                if (isSessionRotation(dispatching.envelope)) {
+                    logger[outcome === 'delivered' ? 'log' : 'warn']?.(
+                        `[Wake Receiver] rotation ${outcome} ${record.subscriptionId}${outcomeReason ? ` (${outcomeReason})` : ''}`
+                    );
+                }
             }
         }).catch(error => {
             logger.error?.(`[Wake Receiver] drain failed: ${error.message}`);
@@ -1262,9 +1273,31 @@ export function parseWakeReceiverArgs(argv = process.argv.slice(2)) {
     };
 }
 
+/**
+ * @summary The production receiver's logger. Each line carries its time, pid and level in the shape the other
+ * Agent OS daemons write (`[ISO] [PID:n] [LEVEL] message`): under launchd the console is the receiver's only
+ * log, and a line without a time cannot be tied to the record it explains.
+ * @param {Object} [options]
+ * @param {Object} [options.target=console] Where the lines go.
+ * @param {Function} [options.now=Date.now] Clock.
+ * @param {Number} [options.pid=process.pid]
+ * @returns {{log: Function, warn: Function, error: Function}}
+ */
+export function createReceiverLogger({target = console, now = Date.now, pid = process.pid} = {}) {
+    const line = (level, args) => `[${new Date(now()).toISOString()}] [PID:${pid}] [${level}] ${format(...args)}`;
+
+    return {
+        log  : (...args) => target.log(line('INFO', args)),
+        warn : (...args) => target.warn(line('WARN', args)),
+        error: (...args) => target.error(line('ERROR', args))
+    }
+}
+
 if (isEntryModule(import.meta.url)) {
-    startWakeReceiver(parseWakeReceiverArgs()).catch(error => {
-        console.error(`[Wake Receiver] fatal: ${error.message}`);
+    const logger = createReceiverLogger();
+
+    startWakeReceiver({...parseWakeReceiverArgs(), logger}).catch(error => {
+        logger.error(`[Wake Receiver] fatal: ${error.message}`);
         process.exit(1);
     });
 }

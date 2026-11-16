@@ -1,18 +1,23 @@
-import path                                    from 'path';
-import aiConfig                                from '../../mcp/server/memory-core/config.mjs';
-import logger                                  from '../../mcp/server/memory-core/logger.mjs';
-import Base                                    from 'neo.mjs/src/core/Base.mjs';
-import CoreDatabase                            from '../../../ai/graph/Database.mjs';
-import SQLite                                  from '../../../ai/graph/storage/SQLite.mjs';
-import {normalizeAgentIdentityNodeId}          from '../../graph/normalizeAgentIdentityNodeId.mjs';
-import {createGraphBootSeedManifest}           from '../../../ai/graph/bootSeedManifest.mjs';
-import {createGraphBootSeedNodeRecord}         from '../../../ai/graph/bootSeedManifest.mjs';
-import {getGraphBootSeedNodeSpec}              from '../../../ai/graph/bootSeedManifest.mjs';
-import { normalizeUserId }                     from '../../mcp/server/shared/services/RequestContextService.mjs';
-import fsExtra                                 from 'fs-extra';
-import {isDeepStrictEqual}                     from 'node:util';
-import {normalizeNodeDescription, projectNode} from './nodeProjection.mjs';
-import {LEGACY_RAW_MEMORY_NODE_LABEL}          from './helpers/rawMemoryGraphIdentity.mjs';
+import path                                                             from 'path';
+import aiConfig                                                         from '../../mcp/server/memory-core/config.mjs';
+import logger                                                           from '../../mcp/server/memory-core/logger.mjs';
+import Base                                                             from 'neo.mjs/src/core/Base.mjs';
+import CoreDatabase                                                     from '../../../ai/graph/Database.mjs';
+import SQLite                                                           from '../../../ai/graph/storage/SQLite.mjs';
+import {normalizeAgentIdentityNodeId}                                   from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {createGraphBootSeedManifest}                                    from '../../../ai/graph/bootSeedManifest.mjs';
+import {createGraphBootSeedNodeRecord}                                  from '../../../ai/graph/bootSeedManifest.mjs';
+import {getGraphBootSeedNodeSpec}                                       from '../../../ai/graph/bootSeedManifest.mjs';
+import { normalizeUserId }                                              from '../../mcp/server/shared/services/RequestContextService.mjs';
+import fsExtra                                                          from 'fs-extra';
+import {isDeepStrictEqual}                                              from 'node:util';
+import {normalizeNodeDescription, projectNode}                          from './nodeProjection.mjs';
+import {LEGACY_RAW_MEMORY_NODE_LABEL}                                   from './helpers/rawMemoryGraphIdentity.mjs';
+import {assertOrdinaryGraphMutation, IDENTITY_PUBLICATION_EDGE_SQL}     from '../../graph/identityPublicationProtection.mjs';
+import {fenceIdentityPublication}                                       from './helpers/identityPublicationFence.mjs';
+import {consumeIdentityPublicationBoot, readIdentityPublicationLineage} from './helpers/identityPublicationLineage.mjs';
+import {installIdentityFoundingSource}                                  from './helpers/identityFoundingStorage.mjs';
+import {admitIdentityPublication, readIdentityPublicationSnapshot}      from './helpers/identityPublicationAdmission.mjs';
 import {
     ANCHORED_ISSUE_EDGE_TYPES,
     MESSAGE_ID_PREFIX,
@@ -449,6 +454,93 @@ class GraphService extends Base {
     }
 
     /**
+     * @summary Runs a typed physical owner, then invalidates caches from its committed GraphLog.
+     * Logical Store transactions cannot carry publication. A cache-sync failure after commit
+     * propagates; retrying the same logical act reconciles its retained receipt.
+     * @param {Function} operation Trusted operation over the mounted SQLite handle.
+     * @returns {Object} Detached physical result after cache synchronization.
+     * @private
+     */
+    #runIdentityPublicationMutation(operation) {
+        if (this.db?.isExecutingTransaction) {
+            return Object.freeze({state: 'unavailable', code: 'publication-transaction-in-progress'});
+        }
+        const result = operation(this.db?.storage?.db);
+        if (['reserved', 'bound', 'installed', 'accepted', 'idempotent'].includes(result.state)) {
+            this.db.syncCache();
+        }
+        return result;
+    }
+
+    /**
+     * @summary Consumes explicitly trusted reservation/public trust on this service's physical source.
+     * @param {String|null} bootText Trusted resolved boot descriptor.
+     * @param {Object} target Independently resolved plane identity and root.
+     * @returns {Object} Committed lineage witness or refusal.
+     */
+    consumeIdentityPublicationBoot(bootText, target) {
+        return this.#runIdentityPublicationMutation(db => consumeIdentityPublicationBoot(db, bootText, target));
+    }
+
+    /**
+     * @summary Installs reviewed founding input once, retaining original provenance on exact retry.
+     * @param {Object} options Trusted input, target, public boot trust and installation provenance.
+     * @returns {Object} Committed source or explicit refusal.
+     */
+    installIdentityFoundingSource(options) {
+        return this.#runIdentityPublicationMutation(db => installIdentityFoundingSource(db, options));
+    }
+
+    /**
+     * @summary Admits signed bytes through the physical owner before invalidating this service's caches.
+     * @param {String} token Original compact signature carrier.
+     * @param {Object} options Trusted verifier composition; trust and target are never request-selected.
+     * @returns {Object} Retained receipt or explicit conflict/refusal/unavailability.
+     */
+    admitIdentityPublication(token, options) {
+        return this.#runIdentityPublicationMutation(db => admitIdentityPublication(db, token, options));
+    }
+
+    /**
+     * @summary Reads the complete committed founding and admitted populations without Store authority.
+     * @param {Object} options Trusted public boot configuration and independently resolved target.
+     * @returns {Object} Detached physical snapshot or unavailability.
+     */
+    readIdentityPublicationSnapshot(options) {
+        if (this.db?.isExecutingTransaction) {
+            return Object.freeze({state: 'unavailable', code: 'publication-transaction-in-progress'});
+        }
+        return readIdentityPublicationSnapshot(this.db?.storage?.db, options);
+    }
+
+    /**
+     * @summary Reads committed lineage without provisioning missing state or changing its fence.
+     * @param {String|null} bootText Trusted resolved boot descriptor.
+     * @param {Object} target Independently resolved plane identity and root.
+     * @returns {Object} Detached lineage observation.
+     */
+    readIdentityPublicationLineage(bootText, target) {
+        if (this.db?.isExecutingTransaction) {
+            return Object.freeze({state: 'unavailable', code: 'publication-transaction-in-progress'});
+        }
+        return readIdentityPublicationLineage(this.db?.storage?.db, bootText, target);
+    }
+
+    /**
+     * @summary Fences publication on this service's exact live mutation handle and resolved target.
+     * @param {Object} options Source-owned {db, operation, source}; db must already be in its transaction.
+     * @returns {Object} Durable fenced disposition; this method cannot clear it.
+     */
+    fenceIdentityPublication({db, operation, source}) {
+        if (db !== this.requireDb('IdentityPublicationFence').storage.db) {
+            throw new Error('Identity publication fence requires the live GraphService connection.');
+        }
+        return fenceIdentityPublication(db, {
+            planeId: aiConfig.plane.id, dataRoot: aiConfig.plane.dataRoot, operation, source
+        });
+    }
+
+    /**
      * Upserts a Node representation into the graph securely linking the ID.
      *
      * @summary Enforces the ADR authority boundary at the graph-write seam: once a node is
@@ -472,6 +564,10 @@ class GraphService extends Base {
         if (!isValidGraphNodeId(id)) {
             throw new Error(`[GraphService] Cannot upsert graph node without a non-empty string id. Received: ${String(id)}`);
         }
+
+        assertOrdinaryGraphMutation(this.db?.storage?.db, {
+            table: 'Nodes', id, record: {id, label: type}, current: this.db?.nodes.get(id)
+        });
 
         // Lazy-load from SQLite before in-memory check — prevents cold-cache stubs from
         // overwriting rich SQLite rows via addNodes' ON CONFLICT DO UPDATE semantics.
@@ -925,6 +1021,9 @@ class GraphService extends Base {
      * @description
      * **Transaction Overhead:** Future callers should be aware that invoking `linkNodes` rapidly
      * in a hot path incurs SQLite transaction overhead.
+     * **Commit Boundary:** Existing-edge reinforcement publishes its cache patch and GraphLog cursor
+     * only after its owned physical transaction commits. Logical graph transactions remain supported;
+     * an already-active physical SQLite transaction is refused before mutation.
      * **WAL Snapshot Lag:** If a peer process writes a node, the current connection's snapshot
      * might lack it temporarily. This method automatically attempts to warm the cache and retry
      * the FK verification before culling the edge.
@@ -934,6 +1033,7 @@ class GraphService extends Base {
      * @param {String} relationship
      * @param {Number} weight
      * @param {Object} [properties={}] Additional edge metadata (e.g. justification, context_source).
+     * @throws {Error} When a caller already owns the physical SQLite transaction.
      * @see {@link GraphService#ensureStructuralEdge} for asserted topology that must not reinforce
      *     an equivalent existing relation.
      */
@@ -942,7 +1042,14 @@ class GraphService extends Base {
             return;
         } // Safe guard for SQLite backend
 
-        const executeLink = () => {
+        if (this.db.storage.db.inTransaction) {
+            throw new Error('GraphService.linkNodes requires its own physical transaction.');
+        }
+
+        const persistLink = this.db.storage.db.transaction(() => {
+            assertOrdinaryGraphMutation(this.db.storage.db, {
+                table: 'Edges', id: null, record: {source, target, type: relationship}
+            });
             // Enforce Foreign Key constraints preemptively to prevent SQLite crash from hallucinated paths
             const verifyStmt = this.db.storage.db.prepare('SELECT count(*) as count FROM Nodes WHERE id IN (?, ?)');
             let   count      = verifyStmt.get(source, target).count;
@@ -975,6 +1082,8 @@ class GraphService extends Base {
                                                            AND type = ?`);
             const existing = stmt.get(source, target, relationship);
 
+            if (existing) assertOrdinaryGraphMutation(this.db.storage.db, {table: 'Edges', id: existing.id});
+
             // Stamp the canonical normalized isolation key (mirrors the RLS read boundary) — never the @-form node id.
             let currentUserId  = resolveRlsUserId(this.db.storage?.RequestContextService) ?? undefined;
             let edgeProperties = {weight, ...properties};
@@ -1005,13 +1114,14 @@ class GraphService extends Base {
                     updateStmt.run(JSON.stringify(parsed), existing.id);
                 }
 
-                // Keep RAM cache functionally coherent if edge actively exists
-                syncCachedEdgeProperties(
-                    this.db,
-                    {id: existing.id, source, target},
-                    {...edgeProperties, weight: newWeight}
-                );
+                return {id: existing.id, properties: {...edgeProperties, weight: newWeight}};
+            }
+        });
+        const executeLink = () => {
+            const reinforced = persistLink.immediate();
 
+            if (reinforced) {
+                syncCachedEdgeProperties(this.db, {id: reinforced.id, source, target}, reinforced.properties);
                 if (typeof this.db.acknowledgeLocalMutations === 'function') {
                     this.db.acknowledgeLocalMutations();
                 }
@@ -1182,6 +1292,7 @@ class GraphService extends Base {
      * Beside {@link PROTECTED_EDGE_TYPES}, every edge a MESSAGE node sources is exempt from decay and
      * pruning (`isMessageRecordEdge`): the sender's record, never scent.
      *
+     * @summary Decays eligible topology while preserving durable and identity-publication records.
      * @param {Number} decayFactor
      * @param {Number} pruningThreshold
      * @param {Boolean} force Bypass the 24-hour lock (used strictly for manual forcing/tuning)
@@ -1215,6 +1326,7 @@ class GraphService extends Base {
                                 MAX(COALESCE(CAST(json_extract(data, '$.properties.weight') AS REAL), 1.0) * ?, 0.1))
             WHERE type NOT IN (${protectedEdgePlaceholders})
               AND substr(source, 1, ${MESSAGE_ID_PREFIX.length}) <> '${MESSAGE_ID_PREFIX}'
+              AND NOT ${IDENTITY_PUBLICATION_EDGE_SQL}
         `);
         decayStmt.run(decayFactor, ...PROTECTED_EDGE_TYPES);
 
@@ -1224,6 +1336,7 @@ class GraphService extends Base {
             FROM Edges
             WHERE type NOT IN (${protectedEdgePlaceholders})
               AND substr(source, 1, ${MESSAGE_ID_PREFIX.length}) <> '${MESSAGE_ID_PREFIX}'
+              AND NOT ${IDENTITY_PUBLICATION_EDGE_SQL}
               AND COALESCE(CAST(json_extract(data, '$.properties.weight') AS REAL), 1.0) < ?
         `);
         const info = pruneStmt.run(...PROTECTED_EDGE_TYPES, pruningThreshold);
@@ -2181,7 +2294,7 @@ class GraphService extends Base {
     }
 
     /**
-     * Actively mutates the relationships originating from the frontier node.
+     * @summary Updates ordinary frontier weights and relationships without changing protected history.
      * Upserts the frontier node if necessary, establishes the new relationship, and safely
      * decays older strategic neighbors to prevent context saturation.
      * @param {Object} args
@@ -2190,6 +2303,15 @@ class GraphService extends Base {
      * @param {String} [args.relationship='STRATEGIC_PIVOT'] The semantic edge type.
      */
     mutateFrontier({targetNodeId, weight = 1.0, relationship = 'STRATEGIC_PIVOT'}) {
+        assertOrdinaryGraphMutation(this.db.storage?.db, {
+            table: 'Nodes', id: targetNodeId, current: this.db.nodes.get(targetNodeId)
+        });
+        assertOrdinaryGraphMutation(this.db.storage?.db, {
+            table: 'Edges', id: null, record: {source: 'frontier', target: targetNodeId, type: relationship}
+        });
+        for (const edge of this.db.edges.getByIndex('source', 'frontier')) {
+            assertOrdinaryGraphMutation(this.db.storage?.db, {table: 'Edges', id: edge.id, record: edge});
+        }
         let frontierNode = this.db.nodes.get('frontier');
         if (!frontierNode) {
             this.upsertGlobalNode({
@@ -2212,10 +2334,7 @@ class GraphService extends Base {
             }
         });
         if (edgesToUpdate.length > 0 && this.db.autoSave && this.db.storage) {
-            this.db.storage.addEdges(edgesToUpdate);
-            if (typeof this.db.acknowledgeLocalMutations === 'function') {
-                this.db.acknowledgeLocalMutations();
-            }
+            this.#persistFrontierEdges(edgesToUpdate);
         }
 
         // Upsert target node placeholder if it doesn't exist, to prevent getContextFrontier filtering it out
@@ -2233,10 +2352,7 @@ class GraphService extends Base {
         if (existingEdge) {
             existingEdge.properties.weight = weight;
             if (this.db.autoSave && this.db.storage) {
-                this.db.storage.addEdges([existingEdge]);
-                if (typeof this.db.acknowledgeLocalMutations === 'function') {
-                    this.db.acknowledgeLocalMutations();
-                }
+                this.#persistFrontierEdges([existingEdge]);
             }
         } else {
             this.db.addEdge({
@@ -2251,6 +2367,25 @@ class GraphService extends Base {
         logger.info(`[GraphService] Mutated [Frontier] -> ${targetNodeId} w/ weight ${weight}`);
 
         return {success: true, targetNodeId, newWeight: weight};
+    }
+
+    /**
+     * @summary Persists frontier weights and evicts speculative cache state if physical protection refuses.
+     * @param {Object[]} edges Updated cached edges; SQLite rechecks persisted protection under its lock.
+     * @private
+     */
+    #persistFrontierEdges(edges) {
+        try {
+            this.db.storage.addEdges(edges);
+        } catch (error) {
+            if (error.code === 'IDENTITY_PUBLICATION_WRITE_PROTECTED') {
+                this.db.invalidateRejectedMutations([{type: 'edges', mutation: {addedItems: edges}}]);
+            }
+            throw error;
+        }
+        if (typeof this.db.acknowledgeLocalMutations === 'function') {
+            this.db.acknowledgeLocalMutations();
+        }
     }
 
     /**

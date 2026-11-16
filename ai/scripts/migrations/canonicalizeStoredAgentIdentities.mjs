@@ -14,14 +14,15 @@
  *   node ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs --apply
  *   node ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs --db <path>
  *
- * The default is a read-only dry run. `--apply` executes the exact plan inside
- * one SQLite transaction. Quiesce graph writers and back up the database before
+ * The default is a read-only dry run. `--apply` replans inside the protected-history
+ * preservation transaction. Quiesce graph writers and back up the database before
  * applying; restart all graph caches afterward. Read-side storage variants may
  * retire only after the applied migration reports a clean census.
  */
 
-import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
-import {isEntryModule}                from '../../services/shared/isEntryModule.mjs';
+import {normalizeAgentIdentityNodeId}                                             from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {isEntryModule}                                                            from '../../services/shared/isEntryModule.mjs';
+import {readIdentityPublicationPreservation, runWithIdentityPublicationPreserved} from '../../graph/identityPublicationProtection.mjs';
 
 export const MAILBOX_IDENTITY_EDGE_TYPES = new Set(['DELIVERED_TO', 'SENT_BY', 'SENT_TO']);
 export const PERMISSION_IDENTITY_EDGE_TYPES = new Set([
@@ -104,9 +105,10 @@ function indexNodes(rows) {
  * @summary Resolves a legacy direct spelling only when its canonical destination is an AgentIdentity.
  * @param {*} value Stored identity-shaped value.
  * @param {Map} nodesById Parsed node index.
+ * @param {Object} protection Captured row-ID classification predicates.
  * @returns {{value: *, changed: Boolean, reason: String|null}}
  */
-function resolveStoredDirectIdentity(value, nodesById) {
+function resolveStoredDirectIdentity(value, nodesById, protection) {
     const candidate = getCanonicalDirectIdentityCandidate(value);
     if (value === '@me') {
         return {value, changed: false, reason: 'stored-@me-is-unresolvable'};
@@ -122,6 +124,9 @@ function resolveStoredDirectIdentity(value, nodesById) {
     }
     if (getLabel(target.data) !== 'AgentIdentity') {
         return {value, changed: false, reason: `canonical-target-wrong-type:${String(value)}->${candidate}`};
+    }
+    if (protection.isProtectedNode(candidate)) {
+        return {value, changed: false, reason: `protected-canonical-target:${String(value)}`};
     }
 
     return {value: candidate, changed: true, reason: null};
@@ -203,6 +208,21 @@ function addSkip(skipped, reason) {
  * @returns {Object} Deterministic migration plan.
  */
 export function planCanonicalStorageMigration(db) {
+    return buildCanonicalStoragePlan(db, readPlanningProtection(db));
+}
+
+/** @summary Supplies classification for a read-only preview; apply uses the transaction owner's closures. */
+function readPlanningProtection(db) {
+    const {nodes, edges, endpoints} = readIdentityPublicationPreservation(db);
+    return {
+        isProtectedNode     : id => nodes.has(id),
+        isProtectedEdge     : id => edges.has(id),
+        isHistoricalEndpoint: id => endpoints.has(id)
+    };
+}
+
+/** @summary Plans ordinary convergence against the preservation owner's captured classification. */
+function buildCanonicalStoragePlan(db, protection) {
     const nodeRows = db.prepare('SELECT id, user_id, data FROM Nodes ORDER BY id').all(),
         edgeRows   = db.prepare('SELECT id, user_id, source, target, type, data FROM Edges ORDER BY id').all(),
         nodesById  = indexNodes(nodeRows),
@@ -214,9 +234,9 @@ export function planCanonicalStorageMigration(db) {
     // nodes. Wrong-type lookalikes remain intact; identity-semantic edges around
     // them are handled separately below.
     for (const row of nodesById.values()) {
-        if (getLabel(row.data) !== 'AgentIdentity') continue;
+        if (getLabel(row.data) !== 'AgentIdentity' || protection.isProtectedNode(row.id)) continue;
 
-        const resolved = resolveStoredDirectIdentity(row.id, nodesById);
+        const resolved = resolveStoredDirectIdentity(row.id, nodesById, protection);
         addSkip(skipped, resolved.reason);
         if (resolved.changed) {
             const canonical = nodesById.get(resolved.value);
@@ -224,22 +244,28 @@ export function planCanonicalStorageMigration(db) {
                 blockers.push(`node-user-id-disagreement:${row.id}->${resolved.value}`);
             }
             aliasMap.set(row.id, resolved.value);
+            if (protection.isHistoricalEndpoint(row.id)) {
+                addSkip(skipped, `historical-endpoint-retained:${row.id}`);
+            }
         }
     }
 
     const plannedEdges = edgeRows.map(row => {
         const data       = parseGraphData(row.data, row.id);
+        if (protection.isProtectedEdge(row.id)) {
+            return {...row, data, nextSource: row.source, nextTarget: row.target};
+        }
         let   nextSource = aliasMap.get(row.source) || row.source,
             nextTarget = aliasMap.get(row.target) || row.target;
 
         if (MAILBOX_IDENTITY_EDGE_TYPES.has(row.type)) {
             // Current MailboxService contract: MESSAGE is the source; identity is the target.
-            const resolved = resolveStoredDirectIdentity(nextTarget, nodesById);
+            const resolved = resolveStoredDirectIdentity(nextTarget, nodesById, protection);
             addSkip(skipped, resolved.reason);
             nextTarget = resolved.value;
         } else if (isPermissionIdentityEdge({source: nextSource, target: nextTarget, type: row.type}, nodesById)) {
-            const source = resolveStoredDirectIdentity(nextSource, nodesById),
-                target   = resolveStoredDirectIdentity(nextTarget, nodesById);
+            const source = resolveStoredDirectIdentity(nextSource, nodesById, protection),
+                target   = resolveStoredDirectIdentity(nextTarget, nodesById, protection);
             addSkip(skipped, source.reason);
             addSkip(skipped, target.reason);
             nextSource = source.value;
@@ -249,14 +275,18 @@ export function planCanonicalStorageMigration(db) {
         return {...row, data, nextSource, nextTarget};
     });
 
-    const groups = new Map();
+    const groups = new Map(), finalEdges = [];
     for (const edge of plannedEdges) {
+        if (protection.isProtectedEdge(edge.id)) {
+            finalEdges.push(edge);
+            continue;
+        }
         const key = getEdgeKey(edge);
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(edge);
     }
 
-    const edgeUpdates = [], edgeDeletes = [], finalEdges = [];
+    const edgeUpdates = [], edgeDeletes = [];
     for (const rows of groups.values()) {
         const changed = rows.some(row => row.source !== row.nextSource || row.target !== row.nextTarget);
         if (!changed) {
@@ -286,7 +316,8 @@ export function planCanonicalStorageMigration(db) {
 
     const messageNodeUpdates = [];
     for (const row of nodesById.values()) {
-        if (getLabel(row.data) !== 'MESSAGE') continue;
+        if (getLabel(row.data) !== 'MESSAGE' || protection.isProtectedNode(row.id) ||
+            protection.isHistoricalEndpoint(row.id)) continue;
 
         const sentByTargets = [...new Set(finalEdges
             .filter(edge => edge.source === row.id && edge.type === 'SENT_BY')
@@ -305,7 +336,7 @@ export function planCanonicalStorageMigration(db) {
 
         for (const [property, targets] of [['from', sentByTargets], ['to', sentToTargets]]) {
             const current = properties[property],
-                resolved  = resolveStoredDirectIdentity(current, nodesById);
+                resolved  = resolveStoredDirectIdentity(current, nodesById, protection);
 
             addSkip(skipped, resolved.reason);
             if (targets.length === 0) {
@@ -335,7 +366,8 @@ export function planCanonicalStorageMigration(db) {
     }
 
     return {
-        aliasNodes        : [...aliasMap].sort(([left], [right]) => left.localeCompare(right)),
+        aliasNodes        : [...aliasMap].filter(([id]) => !protection.isHistoricalEndpoint(id))
+            .sort(([left], [right]) => left.localeCompare(right)),
         blockers          : [...new Set(blockers)].sort(),
         edgeDeletes       : edgeDeletes.sort((left, right) => left.id.localeCompare(right.id)),
         edgeUpdates       : edgeUpdates.sort((left, right) => left.id.localeCompare(right.id)),
@@ -387,29 +419,34 @@ export function auditCanonicalStorage(db) {
  * @returns {Object} Plan-derived statistics and before/after census.
  */
 export function runCanonicalStorageMigration(db, apply = false) {
+    return apply
+        ? runWithIdentityPublicationPreserved(db, protection => executeCanonicalStorageMigration(db, true, protection))
+        : executeCanonicalStorageMigration(db, false, readPlanningProtection(db));
+}
+
+/** @summary Replans, applies and audits inside the caller-owned preservation transaction, or previews read-only. */
+function executeCanonicalStorageMigration(db, apply, protection) {
     const before = auditCanonicalStorage(db),
-        plan     = planCanonicalStorageMigration(db);
+        plan     = buildCanonicalStoragePlan(db, protection);
 
     if (apply && plan.blockers.length) {
         throw new Error(`Canonical identity migration blocked: ${plan.blockers.join(', ')}`);
     }
 
     if (apply) {
-        db.transaction(() => {
-            for (const edge of plan.edgeDeletes) {
-                db.prepare('DELETE FROM Edges WHERE id = ?').run(edge.id);
-            }
-            for (const edge of plan.edgeUpdates) {
-                db.prepare('UPDATE Edges SET source = ?, target = ?, data = ? WHERE id = ?')
-                    .run(edge.source, edge.target, JSON.stringify(edge.data), edge.id);
-            }
-            for (const node of plan.messageNodeUpdates) {
-                db.prepare('UPDATE Nodes SET data = ? WHERE id = ?').run(JSON.stringify(node.data), node.id);
-            }
-            for (const [alias] of plan.aliasNodes) {
-                db.prepare('DELETE FROM Nodes WHERE id = ?').run(alias);
-            }
-        })();
+        for (const edge of plan.edgeDeletes) {
+            db.prepare('DELETE FROM Edges WHERE id = ?').run(edge.id);
+        }
+        for (const edge of plan.edgeUpdates) {
+            db.prepare('UPDATE Edges SET source = ?, target = ?, data = ? WHERE id = ?')
+                .run(edge.source, edge.target, JSON.stringify(edge.data), edge.id);
+        }
+        for (const node of plan.messageNodeUpdates) {
+            db.prepare('UPDATE Nodes SET data = ? WHERE id = ?').run(JSON.stringify(node.data), node.id);
+        }
+        for (const [alias] of plan.aliasNodes) {
+            db.prepare('DELETE FROM Nodes WHERE id = ?').run(alias);
+        }
     }
 
     const after = apply ? auditCanonicalStorage(db) : before,
@@ -457,6 +494,7 @@ function printUsage() {
     console.log(`Usage: node ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs [options]\n\nOptions:\n  (no flags)   Dry-run only\n  --apply      Apply atomically\n  --db <path>  Override the SQLite graph path\n  --help       Show this help`);
 }
 
+/** @summary Runs an explicit graph preview or protected transactional canonicalization. */
 async function main() {
     const args = parseArgs(process.argv);
     if (args.help) {
@@ -475,7 +513,7 @@ async function main() {
     }
 
     const {default: Database} = await import('better-sqlite3'),
-        db                    = new Database(dbPath, {verbose: null});
+        db                    = new Database(dbPath, {verbose: null, readonly: !args.apply, fileMustExist: true});
 
     try {
         const result = runCanonicalStorageMigration(db, args.apply);

@@ -1,13 +1,14 @@
-import {expect, test}                 from '@playwright/test';
-import fs                             from 'fs';
-import {createHash}                   from 'node:crypto';
-import {createFleetOpenWorkSource}    from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
-import {createOpenWorkProducer}       from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
-import {normalizeCiRepair}            from '../../../../../../ai/services/fleet/openWorkCiRepair.mjs';
-import {activeCiRepairClassification} from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
-import {normalizeUnblocked}           from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
-import {planOpenWorkWakes}            from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
-import * as queryDocuments            from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
+import {expect, test}                                 from '@playwright/test';
+import fs                                             from 'fs';
+import {createHash}                                   from 'node:crypto';
+import {createFleetOpenWorkSource}                    from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
+import {createOpenWorkProducer}                       from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
+import {normalizeCiRepair}                            from '../../../../../../ai/services/fleet/openWorkCiRepair.mjs';
+import {activeCiRepairClassification}                 from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
+import {normalizePullRequest, normalizeUnblocked}     from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
+import {planOpenWorkWakes}                            from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {createPrTransitionEvents, withProducerPrLane} from '../../../../../../ai/services/fleet/producerPrLaneEvents.mjs';
+import * as queryDocuments                            from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 import {
     OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
 } from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
@@ -1138,5 +1139,219 @@ test.describe('openWorkProducer — what a merge unblocked (#1619)', () => {
         await late.producer.pulse();
         expect(late.reads).toHaveLength(1);
         expect(late.producer.getState().transitions[0].unblock).toEqual({failures: 1})
+    });
+});
+
+test.describe('openWorkProducer — organization-login PRs keep coverage across outside misses (#1779)', () => {
+    const
+        seatIdentities = {
+            byLogin: login => ({'login-a': '@neo-opus-ada', 'login-e': '@neo-gpt', 'org-b': '@neo-opus-ada'})[login] ?? null,
+            byName : name  => ({Ada: '@neo-opus-ada', Euclid: '@neo-gpt'})[name] ?? null
+        },
+        openNode = ({number, author = 'org-b', body = 'Authored by Ada (Model, Harness).', head = 'h1', rollup = 'SUCCESS', verdict = 'REVIEW_REQUIRED', reviewers = []} = {}) => ({
+            ...pr({number, author, verdict, rollup}),
+            headRefOid    : head,
+            body,
+            reviewRequests: {pageInfo: {hasNextPage: false}, nodes: reviewers.map(login => ({requestedReviewer: {__typename: 'User', login}}))},
+            commits       : {nodes: [{commit: {oid: head, statusCheckRollup: {state: rollup}}}]}
+        });
+
+    /**
+     * @summary Harness modeling registered seat `login-a` alongside recognized org login `org-b` without a seat reader.
+     * @param {Object} [options]
+     * @param {Object|null} [options.store=null]
+     * @param {Number} [options.pageBudget=4]
+     * @param {String} [options.start='2026-11-16T02:55:00Z']
+     * @returns {Object}
+     */
+    function harness({store = null, pageBudget = 4, start = '2026-11-16T02:55:00Z'} = {}) {
+        const
+            state = {authored: [], held: [], terminal: [], outsidePages: [[]], failOutside: false},
+            query = async (text, {query: search, cursor}) => {
+                const kind = kindOf(search);
+
+                if (kind === 'outside') {
+                    if (state.failOutside) throw new Error('outside search failed');
+                    const index = cursor ? Number(cursor) : 0;
+
+                    return {
+                        rateLimit: {cost: 1},
+                        search   : {nodes: state.outsidePages[index] ?? [], pageInfo: {hasNextPage: index < state.outsidePages.length - 1, endCursor: String(index + 1)}}
+                    }
+                }
+
+                const nodes = kind === 'open' ? state.authored : kind === 'held' ? state.held : state.terminal;
+
+                return {rateLimit: {cost: 1}, search: {nodes, pageInfo: {hasNextPage: false}}}
+            };
+
+        let ms = Date.parse(start);
+
+        const producer = createOpenWorkProducer({
+            readers   : async () => [{seat: '@neo-opus-ada', login: 'login-a', query}],
+            repos     : async () => ['acme/app'],
+            identities: seatIdentities,
+            store,
+            pageBudget,
+            now       : () => new Date(ms += 60000)
+        });
+
+        return {state, producer, source: createFleetOpenWorkSource({producer, now: () => ms + 1000})}
+    }
+
+    test('AC-1: attributable and unattributable org-login PRs retain genuine timestamps, holder and attribution across repeated outside misses without reopening', async () => {
+        const
+            env   = harness(),
+            org50 = openNode({number: 50, author: 'org-b', body: 'Authored by Ada (Model, Harness).'}),
+            org51 = openNode({number: 51, author: 'org-b', body: 'Release note without footer.'}),
+            feed  = () => createPrTransitionEvents(env.producer.getState().transitions);
+
+        env.state.outsidePages = [[org50, org51]];
+        const base = await env.producer.pulse();
+
+        for (let round = 0; round < 2; round++) {
+            const lastSeenAt = env.producer.getState().observedAt;
+
+            env.state.failOutside = true;
+            const missed = await env.producer.pulse();
+
+            expect(missed.coverage).toBe('partial');
+            expect(missed.snapshot.rows['acme/app#50'].observedAt).toBe(lastSeenAt);
+            expect(missed.snapshot.rows['acme/app#51'].observedAt).toBe(lastSeenAt);
+            expect(missed.pulses.at(-1).vanished).toEqual([]);
+            expect(missed.transitions).toEqual([]);
+
+            // Seat attribution and next-action holder remain intact on missed polls
+            expect(missed.snapshot.rows['acme/app#50'].owner).toEqual({kind: 'seat', seat: '@neo-opus-ada', login: 'org-b'});
+            expect(missed.snapshot.rows['acme/app#51'].owner).toEqual({kind: 'unowned', seat: null, login: 'org-b'});
+            expect(env.source.readOpenWork().seats['@neo-opus-ada'].authored.map(item => ({number: item.number, holder: item.holder}))).toEqual([
+                {number: 50, holder: {role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']}}
+            ]);
+
+            env.state.failOutside = false;
+            const recovered = await env.producer.pulse();
+
+            expect(recovered.coverage).toBe('complete');
+            expect(recovered.transitions).toEqual([]);
+            expect(recovered.snapshot.rows['acme/app#50'].observedAt).toBe(recovered.observedAt);
+            expect(recovered.snapshot.rows['acme/app#51'].observedAt).toBe(recovered.observedAt);
+        }
+
+        expect(base.transitions).toEqual([]);
+        expect(feed().filter(event => event.payload.transition.kind === 'opened')).toEqual([]);
+
+        // Control: once outside succeeds with the PR absent, it vanishes cleanly
+        env.state.outsidePages = [[]];
+        const ended = await env.producer.pulse();
+        expect(ended.pulses.at(-1).vanished.sort()).toEqual(['acme/app#50', 'acme/app#51'])
+    });
+
+    test('AC-2: initial incomplete outside read, prior-schema saved snapshot on restart, and body/attribution edits manufacture zero openings', async () => {
+        // 1. First observation after an incomplete outside read (page budget cut)
+        const truncated = harness({pageBudget: 1});
+        truncated.state.outsidePages = [[openNode({number: 49})], [openNode({number: 52})]];
+        await truncated.producer.pulse();
+        truncated.state.outsidePages = [[openNode({number: 49}), openNode({number: 52})]];
+        const observedAfterPartial = await truncated.producer.pulse();
+        expect(observedAfterPartial.transitions).toEqual([]);
+
+        // 2. Restart with a saved snapshot from the prior schema (absent PR after missed outside, and carried row before miss)
+        const store = memoryStore();
+        store.saved = {
+            snapshot   : {rows: {'acme/app#50': normalizePullRequest(openNode({number: 50}), seatIdentities)}, closed: {}, complete: true, missed: ['outside']},
+            observedAt : '2026-11-16T02:56:00.000Z',
+            coverage   : 'partial',
+            watermark  : '2026-11-16T02:46:00.000Z',
+            window     : null,
+            reason     : null,
+            detail     : null,
+            readers    : {'login-a': {watermark: '2026-11-16T02:46:00.000Z', window: null}},
+            seatReads  : {},
+            transitions: [],
+            pulses     : []
+        };
+
+        const restarted = harness({store, start: '2026-11-16T02:57:00Z'});
+        restarted.state.outsidePages = [[openNode({number: 50}), openNode({number: 53})]];
+        const postUpgrade = await restarted.producer.pulse();
+        expect(postUpgrade.transitions).toEqual([]);
+
+        // If outside fails on the pulse right after restart, carried org-B row is retained and still emits no opening on recovery
+        restarted.state.failOutside = true;
+        const missAfterRestart = await restarted.producer.pulse();
+        expect(missAfterRestart.pulses.at(-1).vanished).toEqual([]);
+        restarted.state.failOutside = false;
+        const recoverAfterRestart = await restarted.producer.pulse();
+        expect(recoverAfterRestart.transitions).toEqual([]);
+
+        // 3. Ordinary description edit and changed attribution footer while continuously visible
+        restarted.state.outsidePages = [[
+            openNode({number: 50, body: 'Refined description.\n\nAuthored by Euclid (Model, Harness).'}),
+            openNode({number: 53, body: 'Footer removed completely.'})
+        ]];
+        const edited = await restarted.producer.pulse();
+        expect(edited.transitions).toEqual([]);
+        expect(edited.snapshot.rows['acme/app#50'].owner).toEqual({kind: 'seat', seat: '@neo-gpt', login: 'org-b'});
+        expect(edited.snapshot.rows['acme/app#53'].owner).toEqual({kind: 'unowned', seat: null, login: 'org-b'})
+    });
+
+    test('AC-3: positive controls — genuinely new PRs, terminal close/reopen, held/authored changes and PR-lane feed remain live', async () => {
+        const
+            env  = harness(),
+            feed = withProducerPrLane(async () => ({
+                capability: {state: 'wired'},
+                counts    : [],
+                events    : []
+            }), {producer: env.producer, now: () => Date.parse(env.producer.getState().observedAt) + 1000});
+
+        env.state.authored     = [openNode({number: 10, author: 'login-a', body: 'Authored by Ada (Model).'})];
+        env.state.outsidePages = [[openNode({number: 50, author: 'org-b', reviewers: ['login-a']})]];
+        await env.producer.pulse();
+
+        // New PRs after complete coverage still emit opened
+        env.state.authored.push(openNode({number: 12, author: 'login-a', body: 'Authored by Ada (Model).'}));
+        env.state.outsidePages = [[
+            openNode({number: 50, author: 'org-b', reviewers: ['login-a']}),
+            openNode({number: 54, author: 'org-b', body: 'Authored by Ada (Model).'})
+        ]];
+        const afterOpen = await env.producer.pulse();
+        expect(afterOpen.transitions.filter(({kind}) => kind === 'opened').map(({key}) => key).sort())
+            .toEqual(['acme/app#12', 'acme/app#54']);
+
+        // Changes observed through a valid held/authored search still fire even while outside fails
+        env.state.failOutside = true;
+        env.state.authored[0] = openNode({number: 10, author: 'login-a', verdict: 'CHANGES_REQUESTED', body: 'Authored by Ada (Model).'});
+        env.state.held        = [openNode({number: 50, author: 'org-b', verdict: 'APPROVED', reviewers: ['login-a']})];
+        const viaSeatReads = await env.producer.pulse();
+        expect(viaSeatReads.transitions.filter(({kind, pulse}) => kind === 'verdict' && pulse === viaSeatReads.observedAt)
+            .map(({key, to}) => [key, to]).sort()).toEqual([
+            ['acme/app#10', 'CHANGES_REQUESTED'],
+            ['acme/app#50', 'APPROVED']
+        ]);
+
+        // Terminal close then reopen still emits closed and opened
+        env.state.failOutside  = false;
+        env.state.held         = [];
+        env.state.authored     = [openNode({number: 10, author: 'login-a', verdict: 'CHANGES_REQUESTED', body: 'Authored by Ada (Model).'})];
+        env.state.outsidePages = [[openNode({number: 50, author: 'org-b', verdict: 'APPROVED', reviewers: ['login-a']}), openNode({number: 54, author: 'org-b'})]];
+        env.state.terminal     = [{
+            number: 12, headRefOid: 'h1', state: 'CLOSED', closedAt: '2026-11-16T02:58:30Z', mergedAt: null,
+            body  : 'Authored by Ada (Model).', author: {login: 'login-a'}, repository: {nameWithOwner: 'acme/app'}
+        }];
+        await env.producer.pulse();
+
+        env.state.terminal = [];
+        env.state.authored.push(openNode({number: 12, author: 'login-a', body: 'Authored by Ada (Model).'}));
+        await env.producer.pulse();
+
+        const lane = await feed({limit: 20});
+        expect(lane.events.map(event => [event.payload.number, event.payload.transition.kind, event.payload.transition.to])).toEqual([
+            [12, 'opened',  'open'],
+            [12, 'closed',  'closed'],
+            [10, 'verdict', 'CHANGES_REQUESTED'],
+            [50, 'verdict', 'APPROVED'],
+            [12, 'opened',  'open'],
+            [54, 'opened',  'open']
+        ])
     });
 });

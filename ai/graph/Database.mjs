@@ -7,7 +7,7 @@ import RequestScopedVicinitySet from './RequestScopedVicinitySet.mjs';
 import StorageBase              from './storage/Base.mjs';
 
 /**
- * The Database class serves as the core coordinator for the Native Edge Graph Database engine.
+ * @summary Coordinates Native Edge Graph stores, physical transactions and cache invalidation.
  * Operating in headless MCP server environments (Sandman, memory-core), it orchestrates local
  * Native Node embeddings tracking alongside Semantic vectors natively inside ChromaDB (GraphRAG).
  * When backed by SQLite storage, persisted edges must reference existing node IDs for both
@@ -104,11 +104,11 @@ class Database extends Base {
     }
 
     /**
-     * Executes strict cache synchronization polling Native SQLite triggers for identical cross-worker coherence cleanly natively.
+     * @summary Invalidates committed graph deltas and acknowledges them only after both cache populations succeed.
      * Evaluates hardware SQLite `GraphLog` boundaries securely identifying structural mutations dynamically created by concurrent Nodes/AppWorkers.
      * Splices identified cache diffs executing perfectly accurately guaranteeing perfect isolated thread execution topologies.
      *
-     * Cache-coherence invariants (ADR 0001; ticket-ref-ok: file-owned decision record):
+     * Cache-coherence invariants:
      * 1. A fresh boot (`lastSyncId === 0`) is a legitimate "catch me up" trigger, not a short-circuit skip.
      * 2. This method INVALIDATES stale cache entries; it does not upsert new ones (lazy-load handles that).
      *
@@ -121,63 +121,58 @@ class Database extends Base {
 
         // Fresh boot (`lastSyncId === 0`) is a legitimate "catch me up" signal, not a
         // short-circuit; replay the delta log so cold caches observe prior writes.
-        let delta = this.storage.getDeltaLog(this.lastSyncId);
-        this.lastSyncId = delta.lastLogId;
+        const delta        = this.storage.getDeltaLog(this.lastSyncId),
+            wasTransacting = this.isExecutingTransaction,
+            wasAutoSave    = this.autoSave;
 
-        if (delta.invalidNodes.length > 0) {
-            let wasTransacting = this.isExecutingTransaction;
-            let wasAutoSave    = this.autoSave;
-            this.isExecutingTransaction = false;
-            this.autoSave               = false;
+        try {
+            if (delta.invalidNodes.length > 0 || delta.invalidEdges.length > 0) {
+                this.isExecutingTransaction = false;
+                this.autoSave = false;
+            }
+            if (delta.invalidNodes.length > 0) {
+                this.nodes.remove(delta.invalidNodes);
+                delta.invalidNodes.forEach(id => {
+                    this.vicinityLoadedNodes.delete(id);
+                    this.lastAccessMap.delete(id);
+                });
+            }
 
-            this.nodes.remove(delta.invalidNodes);
-            delta.invalidNodes.forEach(id => {
-                this.vicinityLoadedNodes.delete(id);
-                this.lastAccessMap.delete(id);
-            });
+            if (delta.invalidEdges.length > 0) {
+                let edgeIdsToRemove = [],
+                    indexedEdgeRefs = new Set();
+                delta.invalidEdges.forEach(edgeRef => {
+                    let edgeId = typeof edgeRef === 'string' ? edgeRef : edgeRef.id;
+                    let edge   = this.edges.get(edgeId);
 
-            this.autoSave               = wasAutoSave;
-            this.isExecutingTransaction = wasTransacting;
-        }
+                    let source = edge ? edge.source : (edgeRef.source || null);
+                    let target = edge ? edge.target : (edgeRef.target || null);
 
-        if (delta.invalidEdges.length > 0) {
-            let wasTransacting = this.isExecutingTransaction;
-            let wasAutoSave    = this.autoSave;
-            this.isExecutingTransaction = false;
-            this.autoSave               = false;
+                    if (source) this.vicinityLoadedNodes.delete(source);
+                    if (target) this.vicinityLoadedNodes.delete(target);
 
-            let edgeIdsToRemove = [],
-                indexedEdgeRefs = new Set();
-            delta.invalidEdges.forEach(edgeRef => {
-                let edgeId = typeof edgeRef === 'string' ? edgeRef : edgeRef.id;
-                let edge   = this.edges.get(edgeId);
+                    edgeIdsToRemove.push(edgeId);
+                    if (edge) indexedEdgeRefs.add(edge);
 
-                let source = edge ? edge.source : (edgeRef.source || null);
-                let target = edge ? edge.target : (edgeRef.target || null);
+                    // The Store map owns only one object per id, but a prior refresh can leave an older
+                    // same-id object reachable exclusively from an index Set. Collect every indexed copy.
+                    for (const [property, value] of [['source', source], ['target', target]]) {
+                        if (!value) continue;
 
-                if (source) this.vicinityLoadedNodes.delete(source);
-                if (target) this.vicinityLoadedNodes.delete(target);
+                        this.edges.getByIndex(property, value)
+                            .filter(indexedEdge => indexedEdge.id === edgeId)
+                            .forEach(indexedEdge => indexedEdgeRefs.add(indexedEdge))
+                    }
+                });
 
-                edgeIdsToRemove.push(edgeId);
-                if (edge) indexedEdgeRefs.add(edge);
-
-                // The Store map owns only one object per id, but a prior refresh can leave an older
-                // same-id object reachable exclusively from an index Set. Collect every indexed copy.
-                for (const [property, value] of [['source', source], ['target', target]]) {
-                    if (!value) continue;
-
-                    this.edges.getByIndex(property, value)
-                        .filter(indexedEdge => indexedEdge.id === edgeId)
-                        .forEach(indexedEdge => indexedEdgeRefs.add(indexedEdge))
-                }
-            });
-
-            this.edges.remove(edgeIdsToRemove);
-            // Drop the exact references observed before removal as well. A refreshed Store map can
-            // point at a newer object while a secondary index still retains the prior object; without
-            // this cleanup the subsequent lazy reload double-counts the same persisted edge.
-            this.edges.updateIndexMaps?.(null, [...indexedEdgeRefs]);
-
+                this.edges.remove(edgeIdsToRemove);
+                // Drop the exact references observed before removal as well. A refreshed Store map can
+                // point at a newer object while a secondary index still retains the prior object; without
+                // this cleanup the subsequent lazy reload double-counts the same persisted edge.
+                this.edges.updateIndexMaps?.(null, [...indexedEdgeRefs]);
+            }
+            this.lastSyncId = delta.lastLogId;
+        } finally {
             this.autoSave               = wasAutoSave;
             this.isExecutingTransaction = wasTransacting;
         }
@@ -422,7 +417,7 @@ class Database extends Base {
     }
 
     /**
-     * Triggered on edges Store mutations to sync storage
+     * @summary Persists edge Store mutations and invalidates cache entries after protected-write refusal.
      * @param {Object} mutation
      */
     onEdgesMutate(mutation) {
@@ -431,18 +426,25 @@ class Database extends Base {
             return;
         }
         if (this.autoSave && this.storage) {
-            if (mutation.addedItems?.length > 0) {
-                this.storage.addEdges(mutation.addedItems);
-            }
-            if (mutation.removedItems?.length > 0) {
-                this.storage.removeEdges(mutation.removedItems);
+            try {
+                if (mutation.addedItems?.length > 0 && mutation.removedItems?.length > 0) {
+                    this.storage.executeTransaction([{type: 'edges', mutation}]);
+                } else {
+                    if (mutation.addedItems?.length > 0) this.storage.addEdges(mutation.addedItems);
+                    if (mutation.removedItems?.length > 0) this.storage.removeEdges(mutation.removedItems);
+                }
+            } catch (error) {
+                if (error.code === 'IDENTITY_PUBLICATION_WRITE_PROTECTED') {
+                    this.invalidateRejectedMutations([{type: 'edges', mutation}]);
+                }
+                throw error;
             }
             this.acknowledgeLocalMutations();
         }
     }
 
     /**
-     * Triggered on nodes Store mutations to sync storage
+     * @summary Persists node Store mutations and invalidates cache entries after protected-write refusal.
      * @param {Object} mutation
      */
     onNodesMutate(mutation) {
@@ -452,11 +454,18 @@ class Database extends Base {
             return;
         }
         if (this.autoSave && this.storage) {
-            if (mutation.addedItems?.length > 0) {
-                this.storage.addNodes(mutation.addedItems);
-            }
-            if (mutation.removedItems?.length > 0) {
-                this.storage.removeNodes(mutation.removedItems);
+            try {
+                if (mutation.addedItems?.length > 0 && mutation.removedItems?.length > 0) {
+                    this.storage.executeTransaction([{type: 'nodes', mutation}]);
+                } else {
+                    if (mutation.addedItems?.length > 0) this.storage.addNodes(mutation.addedItems);
+                    if (mutation.removedItems?.length > 0) this.storage.removeNodes(mutation.removedItems);
+                }
+            } catch (error) {
+                if (error.code === 'IDENTITY_PUBLICATION_WRITE_PROTECTED') {
+                    this.invalidateRejectedMutations([{type: 'nodes', mutation}]);
+                }
+                throw error;
             }
             this.acknowledgeLocalMutations();
         }
@@ -578,6 +587,58 @@ class Database extends Base {
     }
 
     /**
+     * @summary Evicts affected cache entries after SQLite refuses a protected publication write.
+     * Collection events include no-op duplicate additions, so their input lists are not an inverse.
+     * Persisted state and the GraphLog cursor stay unchanged; ordinary scoped reads reload the rows.
+     * @param {Object[]} diffLog The complete refused mutation batch.
+     * @protected
+     */
+    invalidateRejectedMutations(diffLog) {
+        const nodeIds = new Set(), edgeIds = new Set(), affectedNodes = new Set(), indexed = new Set();
+        for (const {type, mutation} of diffLog) {
+            for (const item of [...(mutation.addedItems || []), ...(mutation.removedItems || [])]) {
+                (type === 'nodes' ? nodeIds : edgeIds).add(item.id);
+                if (type === 'edges') {
+                    affectedNodes.add(item.source);
+                    affectedNodes.add(item.target);
+                }
+            }
+        }
+        // Include index-only raw objects as well as any lazily hydrated map replacements.
+        const cachedEdges = new Set(this.edges.map.values());
+        for (const map of this.edges.indexMaps.values()) {
+            for (const references of map.values()) {
+                for (const edge of references) cachedEdges.add(edge);
+            }
+        }
+        for (const edge of cachedEdges) {
+            if (nodeIds.has(edge.source) || nodeIds.has(edge.target)) edgeIds.add(edge.id);
+        }
+        for (const edge of cachedEdges) {
+            if (edgeIds.has(edge.id)) {
+                indexed.add(edge);
+                affectedNodes.add(edge.source);
+                affectedNodes.add(edge.target);
+            }
+        }
+        const wasAutoSave = this.autoSave, wasTransacting = this.isExecutingTransaction;
+        this.autoSave = this.isExecutingTransaction = false;
+        try {
+            this.edges.remove([...edgeIds]);
+            this.edges.updateIndexMaps(null, [...indexed]);
+            this.nodes.remove([...nodeIds]);
+            for (const id of new Set([...nodeIds, ...affectedNodes])) {
+                if (id == null) continue;
+                this.vicinityLoadedNodes.delete(id);
+                this.lastAccessMap.delete(id);
+            }
+        } finally {
+            this.autoSave = wasAutoSave;
+            this.isExecutingTransaction = wasTransacting;
+        }
+    }
+
+    /**
      * Parses the identical mutation buffer inversely mapping strict `.splice()` limits natively resolving failures.
      * @param {Object[]} diffLog
      * @protected
@@ -608,7 +669,7 @@ class Database extends Base {
     }
 
     /**
-     * Executes purely synchronous atomic closures securely mirroring standard database parameters effectively.
+     * @summary Runs one synchronous logical transaction, invalidating refused protected writes without inverse replay.
      * Utilizes a rollback buffer erasing local V8 mapped instances correctly if backend SQLite queries detonate cleanly.
      *
      * @param {Function} fn Synchronous logical closure interacting via standard `Database.addNode/removeNode`.
@@ -629,8 +690,11 @@ class Database extends Base {
                 this.acknowledgeLocalMutations();
             }
         } catch (error) {
-            // Intercept internal throw commands seamlessly rendering perfect state erasures instantly
-            this.rollbackTransaction(this.transactionDiff);
+            if (error.code === 'IDENTITY_PUBLICATION_WRITE_PROTECTED') {
+                this.invalidateRejectedMutations(this.transactionDiff);
+            } else {
+                this.rollbackTransaction(this.transactionDiff);
+            }
             throw error;
         } finally {
             this.isExecutingTransaction = false;

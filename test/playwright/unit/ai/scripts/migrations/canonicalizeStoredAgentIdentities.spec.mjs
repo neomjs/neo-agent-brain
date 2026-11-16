@@ -16,6 +16,8 @@ setup({
 import {test, expect} from '@playwright/test';
 import Database       from 'better-sqlite3';
 import {spawnSync}    from 'node:child_process';
+import fs             from 'node:fs';
+import os             from 'node:os';
 import path           from 'node:path';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
@@ -58,7 +60,15 @@ function createGraphSchema(db) {
             FOREIGN KEY (source) REFERENCES Nodes(id) ON DELETE CASCADE,
             FOREIGN KEY (target) REFERENCES Nodes(id) ON DELETE CASCADE
         );
+        CREATE TABLE GraphLog (log_id INTEGER PRIMARY KEY AUTOINCREMENT, entity_id TEXT, operation TEXT);
     `);
+    for (const table of ['Nodes', 'Edges']) {
+        for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+            const row = operation === 'DELETE' ? 'OLD' : 'NEW';
+            db.exec(`CREATE TRIGGER ${table}_${operation} AFTER ${operation} ON ${table}
+                BEGIN INSERT INTO GraphLog(entity_id, operation) VALUES (${row}.id, '${operation}'); END;`);
+        }
+    }
 }
 
 /**
@@ -136,16 +146,107 @@ function getEdge(db, id) {
 /**
  * @summary Captures deterministic raw storage truth for mutation and rollback assertions.
  * @param {Object} db Open better-sqlite3 connection.
- * @returns {{nodes: Object[], edges: Object[]}}
+ * @returns {{nodes: Object[], edges: Object[], log: Object[]}}
  */
 function snapshotGraph(db) {
     return {
         nodes: db.prepare('SELECT id, user_id, data FROM Nodes ORDER BY id').all(),
-        edges: db.prepare('SELECT id, user_id, source, target, type, data FROM Edges ORDER BY id').all()
+        edges: db.prepare('SELECT id, user_id, source, target, type, data FROM Edges ORDER BY id').all(),
+        log  : db.prepare('SELECT * FROM GraphLog ORDER BY log_id').all()
     };
 }
 
+/** @summary Seeds protected history with a cascading alias endpoint and separate ordinary message routing. */
+function seedProtectedAliasRouting(db) {
+    createGraphSchema(db);
+    insertIdentity(db, '@alice');
+    insertIdentity(db, 'alice');
+    insertNode(db, {id: 'history', label: 'IDENTITY_FAMILY_RECEIPT', properties: {exact: 'retain'}});
+    insertNode(db, {id: 'MESSAGE:ordinary', label: 'MESSAGE', properties: {to: 'alice'}});
+    insertEdge(db, {id: 'history-link', source: 'history', target: 'alice', type: 'RECORDED_AS'});
+    insertEdge(db, {id: 'ordinary-route', source: 'MESSAGE:ordinary', target: 'alice', type: 'SENT_TO'});
+}
+
 test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
+    test('protected history retains its alias endpoint while ordinary routing converges', () => {
+        const db = new Database(':memory:');
+        try {
+            seedProtectedAliasRouting(db);
+            const history = db.prepare('SELECT * FROM Nodes WHERE id = ?').get('history'),
+                  alias   = db.prepare('SELECT * FROM Nodes WHERE id = ?').get('alice'),
+                  link    = db.prepare('SELECT * FROM Edges WHERE id = ?').get('history-link');
+            const before = snapshotGraph(db), preview = runCanonicalStorageMigration(db, false);
+            expect(preview).toMatchObject({applied: false, clean: false, aliasNodes: 0, edgesUpdated: 1});
+            expect(snapshotGraph(db)).toEqual(before);
+            const result = runCanonicalStorageMigration(db, true);
+            expect(db.prepare('SELECT * FROM Edges WHERE id = ?').get('history-link')).toEqual(link);
+            expect(db.prepare('SELECT * FROM Nodes WHERE id = ?').get('history')).toEqual(history);
+            expect(db.prepare('SELECT * FROM Nodes WHERE id = ?').get('alice')).toEqual(alias);
+            expect(getEdge(db, 'ordinary-route').target).toBe('@alice');
+            expect(getNodeData(db, 'MESSAGE:ordinary').properties.to).toBe('@alice');
+            expect(result).toMatchObject({clean: false, after: {aliasNodes: 1}});
+            expect(db.pragma('foreign_key_check')).toEqual([]);
+            const settled = snapshotGraph(db);
+            expect(runCanonicalStorageMigration(db, true).clean).toBe(false);
+            expect(snapshotGraph(db)).toEqual(settled);
+        } finally {db.close();}
+    });
+
+    test('apply planning and audit run under the owned transaction and reject a nested caller', () => {
+        const db = new Database(':memory:');
+        try {
+            seedProtectedAliasRouting(db);
+            const prepare = db.prepare, reads = [];
+            db.prepare = function (sql) {
+                if (/^\s*SELECT/i.test(sql)) reads.push(this.inTransaction);
+                return prepare.call(this, sql);
+            };
+            try { runCanonicalStorageMigration(db, true); }
+            finally { db.prepare = prepare; }
+            expect(reads.length).toBeGreaterThan(0);
+            expect(reads.every(Boolean)).toBe(true);
+            const before = snapshotGraph(db);
+            db.exec('BEGIN IMMEDIATE');
+            try {
+                expect(() => runCanonicalStorageMigration(db, true))
+                    .toThrow(expect.objectContaining({code: 'IDENTITY_PUBLICATION_WRITE_PROTECTED'}));
+                expect(snapshotGraph(db)).toEqual(before);
+            } finally {db.exec('ROLLBACK');}
+        } finally {db.close();}
+    });
+
+    for (const mutation of [
+        "UPDATE Nodes SET data = ' ' || data WHERE id = 'history';",
+        "INSERT INTO Nodes (id, data) VALUES ('identity-family-forged', '{\"id\":\"identity-family-forged\",\"label\":\"ORDINARY\"}');"
+    ]) {
+        test(`protected postcondition rolls back ordinary effects and GraphLog: ${mutation}`, () => {
+            const db = new Database(':memory:');
+            try {
+                seedProtectedAliasRouting(db);
+                db.exec(`CREATE TRIGGER corrupt_after_route AFTER UPDATE ON Edges WHEN NEW.id = 'ordinary-route'
+                    BEGIN ${mutation} END;`);
+                const before = snapshotGraph(db);
+                expect(() => runCanonicalStorageMigration(db, true))
+                    .toThrow(expect.objectContaining({code: 'IDENTITY_PUBLICATION_WRITE_PROTECTED'}));
+                expect(snapshotGraph(db)).toEqual(before);
+                expect(db.pragma('foreign_key_check')).toEqual([]);
+            } finally {db.close();}
+        });
+    }
+
+    for (const data of ['null', '[]', '{invalid']) {
+        test(`unknown or malformed protected history refuses before writes: ${data}`, () => {
+            const db = new Database(':memory:');
+            try {
+                seedProtectedAliasRouting(db);
+                db.prepare('UPDATE Edges SET data = ? WHERE id = ?').run(data, 'history-link');
+                const before = snapshotGraph(db);
+                expect(() => runCanonicalStorageMigration(db, true)).toThrow();
+                expect(snapshotGraph(db)).toEqual(before);
+            } finally {db.close();}
+        });
+    }
+
     test('CLI help stays bootstrap-free and malformed --db overrides fail closed (#15038)', () => {
         const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../../..'),
             result     = spawnSync(process.execPath, ['ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs', '--help'], {
@@ -158,6 +259,17 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         expect(result.stdout).toContain('Usage:');
         expect(() => parseArgs(['node', 'script', '--apply', '--db'])).toThrow(/non-flag path/);
         expect(() => parseArgs(['node', 'script', '--db', '--apply'])).toThrow(/non-flag path/);
+    });
+
+    test('CLI dry-run cannot create an absent explicit database', () => {
+        const root   = fs.mkdtempSync(path.join(os.tmpdir(), 'canonical-identity-cli-')),
+              dbPath = path.join(root, 'missing.sqlite');
+        try {
+            const result = spawnSync(process.execPath, ['ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs', '--db', dbPath],
+                {encoding: 'utf8', timeout: 15000});
+            expect(result.status).toBe(1);
+            expect(fs.existsSync(dbPath)).toBe(false);
+        } finally {fs.rmSync(root, {recursive: true, force: true});}
     });
 
     test('permission-edge inventory remains executable against PermissionService.validScopes (#15038)', async () => {

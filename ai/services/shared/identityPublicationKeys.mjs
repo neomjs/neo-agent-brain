@@ -87,6 +87,11 @@ export function familyPlaneStateKey({planeId} = {}) {
     return recordKey('plane-state', [identityPart(planeId, 'planeId')]);
 }
 
+/** @summary Names the plane's immutable founding source separately from C7 admission counters. */
+export function familyFoundingKey({planeId} = {}) {
+    return recordKey('founding', [identityPart(planeId, 'planeId')]);
+}
+
 /** @summary Names one stable subject's MC revision counters without using its mutable login or seat key. */
 export function familySubjectStateKey({planeId, subject} = {}) {
     return recordKey('subject-state', [identityPart(planeId, 'planeId'), subjectTuple(subject)]);

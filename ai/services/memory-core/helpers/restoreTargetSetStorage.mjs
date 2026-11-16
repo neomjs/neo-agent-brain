@@ -50,6 +50,7 @@ const ELECTION_KEY_BY_ROLE = Object.freeze({memories: 'mc.memory', summaries: 'm
  * @param {Object} options.chromaClient Raw Chroma client.
  * @param {Object} options.dummyEmbeddingFunction Provider-free EF.
  * @param {Object} options.graphDb Open production better-sqlite3 graph DB.
+ * @param {Function} options.beforeGraphMutation Synchronous source-owned fence on the live graph handle.
  * @param {Object} options.expectedDestinations `{memories,summaries,graph}`.
  * @param {String} options.stagingRoot Gitignored run-owned staging directory.
  * @param {String} [options.electionDir=null] Shared vector-generation election directory (resolved
@@ -65,6 +66,7 @@ export function createRestoreTargetSetStorage({
     chromaClient,
     dummyEmbeddingFunction,
     graphDb,
+    beforeGraphMutation,
     expectedDestinations,
     stagingRoot,
     electionDir = null,
@@ -82,6 +84,10 @@ export function createRestoreTargetSetStorage({
         syncGraphCache,
         onPhase
     });
+    if (typeof beforeGraphMutation !== 'function' ||
+        Object.prototype.toString.call(beforeGraphMutation) === '[object AsyncFunction]') {
+        throw new TypeError('restoreTargetSetStorage: a synchronous live graph mutation fence is required');
+    }
 
     // One captured view per restore ATTEMPT, taken at STAGING start: every role's promote inside
     // one attempt validates against the SAME view captured when the attempt's content generation
@@ -547,7 +553,9 @@ export function createRestoreTargetSetStorage({
         })
     }
 
+    /** @summary Builds or validates disposable graph staging, refusing live-file aliases. */
     async function ensureGraphStaging({graphPath, component}) {
+        await assertDisposableGraphPath(graphPath);
         try {
             return await validateGraphFile({graphPath, component})
         } catch {
@@ -564,8 +572,13 @@ export function createRestoreTargetSetStorage({
 
             const receipt = await importGraphJsonl({
                 db,
-                filePath: component.filePath,
-                mode    : 'replace'
+                filePath      : component.filePath,
+                mode          : 'replace',
+                beforeMutation: info => {
+                    if (info.db !== db || db === graphDb) {
+                        throw new Error('restoreTargetSetStorage: disposable staging handle mismatch');
+                    }
+                }
             });
 
             if (receipt.counts.nodes.failed !== 0 ||
@@ -577,6 +590,21 @@ export function createRestoreTargetSetStorage({
         }
 
         return validateGraphFile({graphPath, component})
+    }
+
+    /** @summary Refuses a run-owned staging path that aliases the live database before opening it. */
+    async function assertDisposableGraphPath(graphPath) {
+        if (graphDb.memory) return;
+        const live = await fs.stat(graphDb.name);
+        let staged;
+        try { staged = await fs.stat(graphPath); }
+        catch (error) {
+            if (error.code === 'ENOENT') return;
+            throw error;
+        }
+        if (live.dev === staged.dev && live.ino === staged.ino) {
+            throw new Error('restoreTargetSetStorage: staging path aliases the live graph database');
+        }
     }
 
     async function validateGraphFile({graphPath, component}) {
@@ -636,7 +664,9 @@ export function createRestoreTargetSetStorage({
         }
     }
 
+    /** @summary Fences and replaces the live graph from validated staging in its write transaction. */
     async function promoteGraph({graphPath, component}) {
+        await assertDisposableGraphPath(graphPath);
         await withGraphStagingDb(
             graphPath,
             db => validateGraphDatabase({db, component})
@@ -646,10 +676,18 @@ export function createRestoreTargetSetStorage({
         if (!fresh.fresh) {
             throw new Error(`restore graph live database changed before promotion: ${fresh.reason}`)
         }
+        if (graphDb.inTransaction) {
+            throw new Error('restoreTargetSetStorage: graph promotion cannot join an existing transaction');
+        }
 
         graphDb.prepare('ATTACH DATABASE ? AS restore_stage').run(graphPath);
         try {
             graphDb.transaction(() => {
+                const fence = beforeGraphMutation({db: graphDb, operation: 'graph-target-set-promotion', source: component.fileFingerprint});
+                if (fence && typeof fence.then === 'function') {
+                    Promise.resolve(fence).catch(() => {});
+                    throw new TypeError('restoreTargetSetStorage: graph mutation fence must be synchronous');
+                }
                 graphDb.prepare('DELETE FROM restore_stage.PriorEdges').run();
                 graphDb.prepare('DELETE FROM restore_stage.PriorNodes').run();
                 graphDb.prepare(`

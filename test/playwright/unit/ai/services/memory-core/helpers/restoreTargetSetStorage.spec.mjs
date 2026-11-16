@@ -7,6 +7,9 @@ import {test, expect} from '@playwright/test';
 import Database       from 'better-sqlite3';
 
 import 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
+import {fenceIdentityPublication, readIdentityPublicationFence} from '../../../../../../../ai/services/memory-core/helpers/identityPublicationFence.mjs';
+import {stringifyCanonicalJson}                                 from '../../../../../../../ai/services/shared/canonicalJson.mjs';
 
 import {
     createGraphBootSeedEdgeRecord,
@@ -148,6 +151,78 @@ test.describe('restoreTargetSetStorage — fake Chroma + disposable SQLite targe
         expect(proof.reason).toContain('persisted graph differs from boot seed')
     });
 
+    test('staging leaves live eligibility clear and promotion fences without copying staged eligibility', async () => {
+        const storage  = createStorage(fixture),
+              identity = deriveRestoreTargetSetIdentity(fixture.targetSet),
+              context  = {targetSet: fixture.targetSet, descriptor: identity.descriptor, ...identity},
+              staging  = await storage.stageTargetSet(context);
+        expect(readIdentityPublicationFence(fixture.graphDb, fixture.fenceTarget).state).toBe('clear');
+
+        const stagedDb = new Database(staging.graphPath);
+        try { seedClearFence(stagedDb, fixture.fenceTarget); }
+        finally { stagedDb.close(); }
+
+        await storage.promoteComponent({...context, staging, role: 'graph'});
+        expect(readIdentityPublicationFence(fixture.graphDb, fixture.fenceTarget)).toMatchObject({
+            state: 'fenced', cause: {operation: 'graph-target-set-promotion'}
+        });
+        expect(fixture.graphCacheSyncs).toBe(1);
+    });
+
+    test('missing or async live promotion callbacks are refused at construction', () => {
+        for (const beforeGraphMutation of [undefined, async () => {}]) {
+            expect(() => createStorage(fixture, () => {}, {beforeGraphMutation})).toThrow(/synchronous.*fence/);
+        }
+    });
+
+    test('promotion callback and graph writes roll back together on refusal', async () => {
+        const before  = fixture.graphDb.prepare('SELECT data FROM Nodes ORDER BY id').all(),
+              storage = createStorage(fixture, () => {}, {beforeGraphMutation: info => {
+                  fenceFixture(fixture, info);
+                  throw new Error('fixture promotion refusal');
+              }}),
+              identity = deriveRestoreTargetSetIdentity(fixture.targetSet),
+              context = {targetSet: fixture.targetSet, descriptor: identity.descriptor, ...identity},
+              staging = await storage.stageTargetSet(context);
+
+        await expect(storage.promoteComponent({...context, staging, role: 'graph'})).rejects.toThrow('fixture promotion refusal');
+        expect(fixture.graphDb.prepare('SELECT data FROM Nodes ORDER BY id').all()).toEqual(before);
+        expect(readIdentityPublicationFence(fixture.graphDb, fixture.fenceTarget).state).toBe('clear');
+        expect(fixture.graphCacheSyncs).toBe(0);
+    });
+
+    test('a staging symlink to the live database is refused before any staging write', async () => {
+        const storage  = createStorage(fixture),
+              identity = deriveRestoreTargetSetIdentity(fixture.targetSet),
+              context  = {targetSet: fixture.targetSet, descriptor: identity.descriptor, ...identity},
+              before   = fixture.graphDb.prepare('SELECT data FROM Nodes ORDER BY id').all(),
+              suffix   = identity.attemptFingerprint.replace('sha256:', '').slice(0, 20);
+        await fs.mkdir(fixture.stagingRoot);
+        await fs.symlink(fixture.graphDb.name, path.join(fixture.stagingRoot, `${suffix}.sqlite`));
+        await expect(storage.stageTargetSet(context)).rejects.toThrow('staging path aliases the live graph');
+        expect(fixture.graphDb.prepare('SELECT data FROM Nodes ORDER BY id').all()).toEqual(before);
+        expect(fixture.graphDb.prepare("SELECT name FROM sqlite_master WHERE name = 'PriorNodes'").get()).toBeUndefined();
+        expect(readIdentityPublicationFence(fixture.graphDb, fixture.fenceTarget).state).toBe('clear');
+    });
+
+    test('promotion refuses an outer transaction and rolls back its fence when a graph delete fails', async () => {
+        const storage  = createStorage(fixture),
+              identity = deriveRestoreTargetSetIdentity(fixture.targetSet),
+              context  = {targetSet: fixture.targetSet, descriptor: identity.descriptor, ...identity},
+              staging  = await storage.stageTargetSet(context),
+              before   = fixture.graphDb.prepare('SELECT data FROM Nodes ORDER BY id').all();
+        fixture.graphDb.exec('BEGIN IMMEDIATE');
+        try {
+            await expect(storage.promoteComponent({...context, staging, role: 'graph'}))
+                .rejects.toThrow('existing transaction');
+        } finally { fixture.graphDb.exec('ROLLBACK'); }
+        fixture.graphDb.exec("CREATE TRIGGER refuse_promotion BEFORE DELETE ON Nodes BEGIN SELECT RAISE(ABORT, 'fixture delete refusal'); END;");
+        await expect(storage.promoteComponent({...context, staging, role: 'graph'})).rejects.toThrow('fixture delete refusal');
+        expect(fixture.graphDb.prepare('SELECT data FROM Nodes ORDER BY id').all()).toEqual(before);
+        expect(readIdentityPublicationFence(fixture.graphDb, fixture.fenceTarget).state).toBe('clear');
+        expect(fixture.graphCacheSyncs).toBe(0);
+    });
+
     test('an election landing during staging fences every vector promote of that attempt (#17035)', async () => {
         const {
             VECTOR_PLANE_COLLECTION_KEYS,
@@ -179,6 +254,7 @@ test.describe('restoreTargetSetStorage — fake Chroma + disposable SQLite targe
                 chromaClient          : fixture.client,
                 dummyEmbeddingFunction: fixture.dummyEmbeddingFunction,
                 graphDb               : fixture.graphDb,
+                beforeGraphMutation   : info => fenceFixture(fixture, info),
                 expectedDestinations  : fixture.destinations,
                 stagingRoot           : fixture.stagingRoot,
                 electionDir
@@ -545,6 +621,8 @@ async function createFixture({
     ]);
 
     seedBootGraph(graphDb);
+    const fenceTarget = {planeId: 'fixture-plane', dataRoot: root};
+    seedClearFence(graphDb, fenceTarget);
     await client.createCollection({
         name             : destinations.memories,
         embeddingFunction: guardedEmbeddingFunction
@@ -578,6 +656,7 @@ async function createFixture({
         stagingRoot,
         client,
         graphDb,
+        fenceTarget,
         destinations,
         dummyEmbeddingFunction: guardedEmbeddingFunction,
         targetSet,
@@ -609,11 +688,12 @@ async function deleteFixtureCollections(fixture) {
     }
 }
 
-function createStorage(fixture, onPhase = () => {}) {
+function createStorage(fixture, onPhase = () => {}, overrides = {}) {
     return createRestoreTargetSetStorage({
         chromaClient          : fixture.client,
         dummyEmbeddingFunction: fixture.dummyEmbeddingFunction,
         graphDb               : fixture.graphDb,
+        beforeGraphMutation   : info => fenceFixture(fixture, info),
         expectedDestinations  : fixture.destinations,
         stagingRoot           : fixture.stagingRoot,
         invalidateCollectionCache(type) {
@@ -622,8 +702,23 @@ function createStorage(fixture, onPhase = () => {}) {
         syncGraphCache() {
             fixture.graphCacheSyncs++
         },
-        onPhase
+        onPhase,
+        ...overrides
     })
+}
+
+/** @summary Establishes disposable clear eligibility without exposing a production recovery operation. */
+function seedClearFence(db, target) {
+    db.transaction(() => fenceIdentityPublication(db, {...target, operation: 'fixture', source: 'fixture'})).immediate();
+    db.prepare('UPDATE IdentityPublicationFence SET data = ?').run(stringifyCanonicalJson({
+        version: 1, ...target, state: 'clear', cause: null
+    }));
+}
+
+/** @summary Binds the live callback to this fixture's physical handle and independent target. */
+function fenceFixture(fixture, info) {
+    expect(info.db).toBe(fixture.graphDb);
+    return fenceIdentityPublication(info.db, {...fixture.fenceTarget, operation: info.operation, source: info.source});
 }
 
 function createFakeChromaClient() {

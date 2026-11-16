@@ -6,6 +6,7 @@ import os             from 'node:os';
 import path           from 'node:path';
 
 import {
+    createReceiverLogger,
     createWakeReceiver,
     loadWakeReceiverManifest,
     parseWakeReceiverArgs,
@@ -401,6 +402,23 @@ test.describe('ai/daemons/wake/receiver', () => {
             host        : '0.0.0.0',
             port        : 3199
         });
+    });
+
+    // Under launchd the console is the receiver's only log; an untimed line cannot be tied to its record.
+    test('the production logger stamps each line with its time, pid and level', () => {
+        const lines  = [],
+              target = {log: line => lines.push(line), warn: line => lines.push(line), error: line => lines.push(line)},
+              logger = createReceiverLogger({target, now: () => Date.parse('2026-11-16T03:00:00.000Z'), pid: 42});
+
+        logger.log('[Wake Receiver] listening');
+        logger.warn('[Wake Receiver] dialog gate could not probe %s; delivering fail-open', 'WAKE_SUB:x');
+        logger.error('[Wake Receiver] fatal:', 'boom');
+
+        expect(lines).toEqual([
+            '[2026-11-16T03:00:00.000Z] [PID:42] [INFO] [Wake Receiver] listening',
+            '[2026-11-16T03:00:00.000Z] [PID:42] [WARN] [Wake Receiver] dialog gate could not probe WAKE_SUB:x; delivering fail-open',
+            '[2026-11-16T03:00:00.000Z] [PID:42] [ERROR] [Wake Receiver] fatal: boom'
+        ]);
     });
 });
 

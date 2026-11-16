@@ -621,3 +621,78 @@ test.describe('openWorkReducer — the conversation a row carries (#1630)', () =
         expect(normalizePullRequest(node(), identities).turns).toEqual([])
     });
 });
+
+test.describe('openWorkReducer — login search coverage prevents org-PR churn on outside misses (#1779)', () => {
+    const
+        seatIdentities = {
+            byLogin: login => ({'login-a': '@neo-opus-ada', 'login-e': '@neo-gpt', 'org-b': '@neo-opus-ada'})[login] ?? null,
+            byName : name  => ({Ada: '@neo-opus-ada', Euclid: '@neo-gpt'})[name] ?? null
+        },
+        searchesFor    = ({authoredLogins = ['login-a'], outsideComplete = true, missedReviewers = []} = {}) => ({
+            seatLogins: ['login-a'],
+            authoredLogins,
+            outsideComplete,
+            missedReviewers
+        }),
+        pulseWith      = (previous, items, {outsideComplete = true, authoredLogins = ['login-a'], missed = outsideComplete ? [] : ['outside'], id}) => reduceOpenWork({
+            previous,
+            observed: {
+                rows    : items.map(item => normalizePullRequest(item, seatIdentities)),
+                complete: true,
+                missed,
+                searches: searchesFor({authoredLogins, outsideComplete})
+            },
+            terminal: {rows: [], complete: true},
+            since   : null,
+            id
+        });
+
+    test('organization-login PRs (attributable and unattributable) survive repeated outside misses without vanishing or reopening', () => {
+        const
+            orgAttributable   = node({number: 50, login: 'org-b', reviewers: [], body: 'Authored by Ada (Gemini 4 Carbon, Antigravity).'}),
+            orgUnattributable = node({number: 51, login: 'org-b', reviewers: [], body: 'Release sync without author footer.'}),
+            seatPr            = node({number: 10, login: 'login-a', reviewers: []}),
+            p0                = pulseWith(null, [seatPr, orgAttributable, orgUnattributable], {id: 'p0'}),
+            m1                = pulseWith(p0, [seatPr], {outsideComplete: false, id: 'm1'}),
+            r1                = pulseWith(m1, [seatPr, orgAttributable, orgUnattributable], {id: 'r1'}),
+            m2                = pulseWith(r1, [seatPr], {outsideComplete: false, id: 'm2'}),
+            r2                = pulseWith(m2, [seatPr, orgAttributable, orgUnattributable], {id: 'r2'});
+
+        for (const miss of [m1, m2]) {
+            expect(miss.vanished).toEqual([]);
+            expect(miss.transitions).toEqual([]);
+            expect(miss.rows['acme/app#50'].owner).toEqual({kind: 'seat', seat: '@neo-opus-ada', login: 'org-b'});
+            expect(miss.rows['acme/app#51'].owner).toEqual({kind: 'unowned', seat: null, login: 'org-b'})
+        }
+        expect(m1.rows['acme/app#50'].observedAt).toBe('p0');
+        expect(m1.rows['acme/app#51'].observedAt).toBe('p0');
+        expect(m2.rows['acme/app#50'].observedAt).toBe('r1');
+        expect(m2.rows['acme/app#51'].observedAt).toBe('r1');
+        expect(r1.transitions).toEqual([]);
+        expect(r2.transitions).toEqual([])
+    });
+
+    test('first observation after an incomplete outside search, a prior-schema snapshot, or an attribution edit manufactures no opened transition', () => {
+        const
+            orgPr      = (body = 'Authored by Ada (Model).') => node({number: 50, login: 'org-b', reviewers: [], body}),
+            seatPr     = node({number: 11, login: 'login-a', reviewers: []}),
+            incomplete = pulseWith(null, [], {outsideComplete: false, id: 'p0'}),
+            firstSeen  = pulseWith(incomplete, [orgPr(), seatPr], {id: 'p1'});
+
+        expect(firstSeen.transitions.map(({key, kind}) => [key, kind])).toEqual([['acme/app#11', 'opened']]);
+
+        // a saved snapshot from before `searches` were persisted lacks coverage proof on upgrade
+        const priorSchema = {rows: {}, closed: {}, complete: true, missed: ['outside']};
+        expect(pulseWith(priorSchema, [orgPr()], {id: 'p2'}).transitions).toEqual([]);
+
+        // continuous visibility across description & attribution-footer edits emits zero opened transitions
+        const
+            edited1 = pulseWith(firstSeen, [orgPr('Updated prose.\n\nAuthored by Ada (Model).')], {id: 'p3'}),
+            edited2 = pulseWith(edited1, [orgPr('Updated prose.\n\nAuthored by Euclid (Model).')], {id: 'p4'}),
+            edited3 = pulseWith(edited2, [orgPr('Footer removed.')], {id: 'p5'});
+
+        expect([edited1, edited2, edited3].flatMap(state => state.transitions)).toEqual([]);
+        expect(edited2.rows['acme/app#50'].owner).toEqual({kind: 'seat', seat: '@neo-gpt', login: 'org-b'});
+        expect(edited3.rows['acme/app#50'].owner).toEqual({kind: 'unowned', seat: null, login: 'org-b'})
+    });
+});

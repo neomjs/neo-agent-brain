@@ -1,15 +1,27 @@
-import {expect, test}                                                                                      from '@playwright/test';
-import {execFile}                                                                                          from 'node:child_process';
-import fs                                                                                                  from 'node:fs/promises';
-import os                                                                                                  from 'node:os';
-import path                                                                                                from 'node:path';
-import {fileURLToPath}                                                                                     from 'node:url';
-import {promisify}                                                                                         from 'node:util';
-import {PLANE_MEMORY_CORE_PATH, fakeHostObservers, hostLayout, parseArgs, productionObservers, renderText} from '../../../../../../ai/scripts/setup/firstRun.mjs';
-import {RECIPE_VERSION, evaluateRecipe}                                                                    from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
-import {createHost}                                                                                        from '../../../../../../ai/services/fleet/hostEffects.mjs';
-import {presets}                                                                                           from '../../../../../../ai/services/fleet/placementPresets.mjs';
-import {contentDigest, createSetupRecord, runTarget, withConsent}                                          from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {expect, test}  from '@playwright/test';
+import {execFile}      from 'node:child_process';
+import fs              from 'node:fs/promises';
+import os              from 'node:os';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {promisify}     from 'node:util';
+import {
+    PLANE_MEMORY_CORE_PATH,
+    fakeHostObservers,
+    hostLayout,
+    inspectRunningComposeRecordsMount,
+    observeRunningCompose,
+    parseArgs,
+    productionObservers,
+    renderText
+} from '../../../../../../ai/scripts/setup/firstRun.mjs';
+import {RECIPE_VERSION, evaluateRecipe}                                                                       from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
+import {composeInvocationDigest, createHost, persistSetupRecord}                                              from '../../../../../../ai/services/fleet/hostEffects.mjs';
+import {presets}                                                                                              from '../../../../../../ai/services/fleet/placementPresets.mjs';
+import {RUNTIME_GENERATION_PAYLOAD}                                                                           from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
+import {composeContextOf}                                                                                     from '../../../../../../ai/services/fleet/setupOrchestration.mjs';
+import {RECEIPT_OUTCOMES, contentDigest, createSetupRecord, findReceipt, runTarget, withConsent, withReceipt} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {WAKE_RECEIVER_ENTRYPOINT, WAKE_RECEIVER_PLIST_NAME}                                                   from '../../../../../../ai/services/fleet/wakeReceiverSetup.mjs';
 
 // The CLI on a fake host: a child process per arm, stdin closed (never a TTY), the record under a temp setup root.
 
@@ -24,13 +36,15 @@ const
 async function scratch() {
     const
         root      = await fs.mkdtemp(path.join(os.tmpdir(), 'first-run-cli-')),
+        homeDir   = path.join(root, 'home'),
         setupRoot = path.join(root, 'state', 'setup'),
         patPath   = path.join(root, 'operator', 'plane-pat');
 
+    await fs.mkdir(homeDir, {recursive: true, mode: 0o700});
     await fs.mkdir(path.dirname(patPath), {recursive: true});
     await fs.writeFile(patPath, `${PAT}\n`, {mode: 0o600});
 
-    return {root, setupRoot, patPath, stateRoot: path.join(root, 'state')};
+    return {root, homeDir, setupRoot, patPath, stateRoot: path.join(root, 'state')};
 }
 
 /**
@@ -49,7 +63,7 @@ function greenFake({patPath, planeId = 'plane-a', dataRoot = '/srv/plane-a', ser
             verification: {present: true, digest: null, problem: null},
             done
         },
-        answers: answers ? {preset: 'local-small', 'plane-credential': patPath} : {}
+        answers: answers ? {preset: 'local-small', 'plane-credential': patPath, 'desktop-wake': 'enabled'} : {}
     };
 }
 
@@ -57,9 +71,10 @@ function greenFake({patPath, planeId = 'plane-a', dataRoot = '/srv/plane-a', ser
  * One CLI run; `dataRoot: null` omits `--data-root` (the resume that names only the identity), and
  * `named: false` omits all three target flags (the run that names no plane).
  */
-async function runCli({setupRoot, stateRoot, fake, extra = [], dataRoot = '/srv/plane-a', named = true}) {
+async function runCli({setupRoot, stateRoot, homeDir = path.join(path.dirname(stateRoot), 'home'), fake, extra = [], dataRoot = '/srv/plane-a', named = true}) {
     const fakePath = path.join(stateRoot, 'fake-host.json');
 
+    await fs.mkdir(homeDir, {recursive: true});
     await fs.mkdir(stateRoot, {recursive: true});
     await fs.writeFile(fakePath, JSON.stringify(fake));
 
@@ -68,7 +83,7 @@ async function runCli({setupRoot, stateRoot, fake, extra = [], dataRoot = '/srv/
         args   = [script, '--json', '--setup-root', setupRoot, '--state-root', stateRoot, '--run-id', RUN_ID, ...target, '--fake-host', fakePath, ...extra];
 
     try {
-        const {stdout, stderr} = await execFileAsync(process.execPath, args, {cwd: brainRoot, encoding: 'utf8', env: {...process.env, NEO_HOST_SETUP_RECORD_ROOT: ''}});
+        const {stdout, stderr} = await execFileAsync(process.execPath, args, {cwd: brainRoot, encoding: 'utf8', env: {...process.env, HOME: homeDir, NEO_HOST_SETUP_RECORD_ROOT: ''}});
 
         return {code: 0, stdout, stderr};
     } catch (error) {
@@ -79,14 +94,14 @@ async function runCli({setupRoot, stateRoot, fake, extra = [], dataRoot = '/srv/
 test.describe('firstRun CLI', () => {
     test('AC-5: a cold run on a fake host answers the questions, performs the effects, lists every step with status and reason, and exits 0 on a green terminal step', async () => {
         const
-            {setupRoot, stateRoot, patPath} = await scratch(),
-            result                          = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
-            output                          = JSON.parse(result.stdout);
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            result                                   = await runCli({homeDir, setupRoot, stateRoot, fake: greenFake({patPath})}),
+            output                                   = JSON.parse(result.stdout);
 
         expect(result.code, result.stderr).toBe(0);
         expect(output.runId).toBe(RUN_ID);
         expect(output.binding).toBe('bound');
-        expect(output.steps).toHaveLength(13);
+        expect(output.steps).toHaveLength(15);
 
         for (const step of output.steps) {
             expect(typeof step.status, step.id).toBe('string');
@@ -95,25 +110,33 @@ test.describe('firstRun CLI', () => {
         }
         expect(output.steps.find(step => step.id === 'preset').answer).toBe('local-small');
         expect(output.steps.find(step => step.id === 'plane-credential').answer).toBe(patPath);
+        expect(output.steps.find(step => step.id === 'desktop-wake').answer).toBe('enabled');
 
         // the record: consents and accepted receipts, owner-only, secret-free; the carrier and the secret file, owner-only
         const
             recordText = await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8'),
             record     = JSON.parse(recordText),
-            layout     = hostLayout({stateRoot});
+            layout     = hostLayout({stateRoot, homeDir});
 
         expect(recordText).not.toContain(PAT);
-        expect(record.consents.map(consent => consent.stepId).sort()).toEqual(['plane-credential', 'preset']);
-        expect(record.receipts.map(receipt => [receipt.effectId, receipt.outcome])).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted']]);
+        expect(record.consents.map(consent => consent.stepId).sort()).toEqual(['desktop-wake', 'plane-credential', 'preset']);
+        expect(record.receipts.map(receipt => [receipt.effectId, receipt.outcome])).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted'], ['start-wake-receiver', 'accepted']]);
         expect((await fs.stat(path.join(setupRoot, `${RUN_ID}.json`))).mode & 0o777).toBe(0o600);
         expect(output.steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'ok', reason: "not needed: the 'local-small' preset requires no providerKey"});
 
         const env = await fs.readFile(layout.envFile, 'utf8');
 
-        // the carrier holds paths, never a value: the admission token and the minted Fleet bearer by file
+        // the carrier holds paths, never a value: the admission token, the minted Fleet bearer, and the 0700 wake records dir
         expect(env).not.toContain(PAT);
         expect(env).toContain(`NEO_MCP_AUTH_TOKEN_FILE=${layout.secretsDir}/mcp-auth-token\n`);
         expect(env).toContain(`NEO_FLEET_PLANE_TOKEN_FILE=${layout.secretsDir}/fleet-plane-token\n`);
+        expect(env).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(layout.wakeStateDir, 'records')}\n`);
+        expect((await fs.stat(path.join(layout.wakeStateDir, 'records'))).mode & 0o777).toBe(0o700);
+        expect((await fs.stat(layout.wakeManifestPath)).mode & 0o777).toBe(0o600);
+        expect(JSON.parse(await fs.readFile(layout.wakeManifestPath, 'utf8'))).toEqual({schemaVersion: 1, routes: {}});
+        expect(await fs.readFile(layout.wakePlistPath, 'utf8')).not.toContain('<!--');
+        expect(await fs.readFile(layout.wakePlistPath, 'utf8')).not.toMatch(/__[A-Z0-9_]+__/);
+        expect((await fs.stat(layout.wakePlistPath)).mode & 0o777).toBe(0o600);
         expect(env).not.toContain('GEMINI_API_KEY_FILE');
         expect(env).toContain('NEO_PLANE_ID=plane-a\n');
         expect(env).toContain('NEO_PLANE_DATA_ROOT=/srv/plane-a\n');
@@ -132,12 +155,16 @@ test.describe('firstRun CLI', () => {
 
         expect(calls).toEqual([{command: 'docker', args: ['compose', '-p', 'neo-local-agent-os', '--env-file', layout.envFile, '-f', 'docker-compose.yml', '-f', 'docker-compose.local-agent-os.yml', '--profile', 'cloud', '--profile', 'fleet', '--profile', 'ingress', 'up', '-d', '--wait'], cwd: path.join(brainRoot, 'deploy', 'cloud')}]);
 
-        // a resumed run performs nothing again and exits 0
-        const resumed = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
+        // a resumed run discovers the receiver cleanly, bootstraps zero extra listeners, and exits 0
+        const
+            resumed        = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
+            launchdHistory = JSON.parse(await fs.readFile(path.join(setupRoot, 'fake-launchd.json'), 'utf8')).calls;
 
         expect(resumed.code).toBe(0);
         expect(JSON.parse(await fs.readFile(path.join(setupRoot, 'fake-run.json'), 'utf8'))).toHaveLength(1);
+        expect(launchdHistory.filter(entry => entry.args[0] === 'bootstrap')).toHaveLength(1);
         expect(JSON.parse(resumed.stdout).steps.find(step => step.id === 'write-env').reason).toBe('observed; matches the accepted receipt');
+        expect(JSON.parse(resumed.stdout).steps.find(step => step.id === 'start-wake-receiver').reason).toBe('observed; matches the accepted receipt');
     });
 
     test('the exit code reflects the terminal step: a failed terminal observation exits 1; unanswered questions without a TTY exit 2 and never prompt', async () => {
@@ -290,15 +317,15 @@ test.describe('firstRun CLI', () => {
 
     test('an interrupted hosted secret write that left one of its three files stays unsettled and names the missing files; the complete set settles it', async () => {
         const
-            {root, setupRoot, stateRoot, patPath} = await scratch(),
-            keyPath                               = path.join(root, 'operator', 'gemini-key'),
-            recordPath                            = path.join(setupRoot, `${RUN_ID}.json`),
-            layout                                = hostLayout({stateRoot}),
-            fake                                  = greenFake({patPath}),
-            hosted                                = servedPlane => ({...fake, observers: {...fake.observers, servedPlane, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath}}),
-            cold                                  = {throw: 'connect ECONNREFUSED 127.0.0.1:3102'},
-            secrets                               = async () => (await fs.readdir(layout.secretsDir)).sort(),
-            stepOf                                = run => JSON.parse(run.stdout).steps.find(step => step.id === 'write-secrets');
+            {root, homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            keyPath                                        = path.join(root, 'operator', 'gemini-key'),
+            recordPath                                     = path.join(setupRoot, `${RUN_ID}.json`),
+            layout                                         = hostLayout({stateRoot, homeDir}),
+            fake                                           = greenFake({patPath}),
+            hosted                                         = servedPlane => ({...fake, observers: {...fake.observers, servedPlane, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}),
+            cold                                           = {throw: 'connect ECONNREFUSED 127.0.0.1:3102'},
+            secrets                                        = async () => (await fs.readdir(layout.secretsDir)).sort(),
+            stepOf                                         = run => JSON.parse(run.stdout).steps.find(step => step.id === 'write-secrets');
 
         await fs.writeFile(keyPath, 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh\n', {mode: 0o600});
 
@@ -378,17 +405,17 @@ test.describe('firstRun CLI', () => {
 
     test('AC-2 end to end: a hosted preset writes the provider key as an owner-only secret and points the leaf at the mount; the key is in no record, carrier or log', async () => {
         const
-            {root, setupRoot, stateRoot, patPath} = await scratch(),
-            KEY                                   = 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh',
-            keyPath                               = path.join(root, 'operator', 'gemini-key');
+            {root, homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            KEY                                            = 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh',
+            keyPath                                        = path.join(root, 'operator', 'gemini-key');
 
         await fs.writeFile(keyPath, `${KEY}\n`, {mode: 0o600});
 
         const
             fake   = greenFake({patPath}),
-            hosted = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath}}}),
+            hosted = await runCli({homeDir, setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}}),
             output = JSON.parse(hosted.stdout),
-            layout = hostLayout({stateRoot}),
+            layout = hostLayout({stateRoot, homeDir}),
             env    = await fs.readFile(layout.envFile, 'utf8');
 
         expect(hosted.code, hosted.stderr).toBe(0);
@@ -416,10 +443,10 @@ test.describe('firstRun CLI', () => {
         // a hosted answer without a provider key on a host where nothing serves yet: the credential step
         // refuses, no secret and no carrier appear, the run stays pending
         const
-            {setupRoot, stateRoot, patPath} = await scratch(),
-            fake                            = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
-            result                          = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {throw: 'no plane to ask'}}, answers: {preset: 'hosted', 'plane-credential': patPath}}}),
-            layout                          = hostLayout({stateRoot});
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            fake                                     = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
+            result                                   = await runCli({homeDir, setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {throw: 'no plane to ask'}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'desktop-wake': 'enabled'}}}),
+            layout                                   = hostLayout({stateRoot, homeDir});
 
         expect(result.code).toBe(2);
         expect(result.stderr).toMatch(/credentials refused before any write:\n\s+the 'hosted' preset requires a provider key and none was given/);
@@ -437,11 +464,11 @@ test.describe('firstRun CLI', () => {
 
         const
             fake   = greenFake({patPath}),
-            local  = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {preset: 'local-small', 'plane-credential': patPath, 'provider-key': keyPath}}}),
+            local  = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {preset: 'local-small', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}}),
             record = JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8'));
 
         expect(local.code, local.stderr).toBe(0);
-        expect(record.consents.map(consent => consent.stepId)).toEqual(['preset', 'plane-credential']);
+        expect(record.consents.map(consent => consent.stepId)).toEqual(['preset', 'plane-credential', 'desktop-wake']);
         expect(JSON.parse(local.stdout).steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'ok', reason: "not needed: the 'local-small' preset requires no providerKey", answer: null});
     });
 
@@ -449,10 +476,14 @@ test.describe('firstRun CLI', () => {
         const defaults = parseArgs([], {});
 
         expect(defaults.setupRoot).toBe(path.join(os.homedir(), '.neo-ai', 'setup'));
+        expect(defaults.homeDir).toBe(os.homedir());
         expect(defaults.endpoint).toBe('http://127.0.0.1:3102');
         expect(parseArgs(['--setup-root', '/x/setup'], {NEO_HOST_SETUP_RECORD_ROOT: '/env/setup'}).setupRoot).toBe('/x/setup');
         expect(parseArgs([], {NEO_HOST_SETUP_RECORD_ROOT: '/env/setup'}).setupRoot).toBe('/env/setup');
         expect(parseArgs([], {NEO_HOST_STATE_ROOT: '/srv/state'}).setupRoot).toBe('/srv/state/setup');
+        expect(parseArgs(['--state-root', '/fixture/volume/data/fleet'], {HOME: '/fixture/users/op'}).homeDir).toBe('/fixture/users/op');
+        expect(hostLayout({stateRoot: '/fixture/volume/data/fleet'}).wakePlistPath)
+            .toBe(path.join(os.homedir(), 'Library', 'LaunchAgents', WAKE_RECEIVER_PLIST_NAME));
         expect(() => parseArgs(['--bogus'], {})).toThrow(/unknown flag '--bogus'/);
         expect(() => parseArgs(['--plane-id'], {})).toThrow(/needs a value/);
         expect(hostLayout({stateRoot: '/srv/state'}).envFile).toBe('/srv/state/config/local-agent-os.env');
@@ -666,12 +697,12 @@ test.describe('firstRun CLI', () => {
 
     test('a cold run that names no plane binds the profile\'s target and gets past write-env; the flags still override it', async () => {
         const
-            {setupRoot, stateRoot, patPath} = await scratch(),
-            profile                         = hostLayout({stateRoot}).target,
-            cold                            = await runCli({setupRoot, stateRoot, named: false, fake: greenFake({patPath, planeId: profile.planeId, dataRoot: profile.dataRoot})}),
-            output                          = JSON.parse(cold.stdout),
-            record                          = JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8')),
-            env                             = await fs.readFile(hostLayout({stateRoot}).envFile, 'utf8');
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            profile                                  = hostLayout({stateRoot, homeDir}).target,
+            cold                                     = await runCli({homeDir, setupRoot, stateRoot, named: false, fake: greenFake({patPath, planeId: profile.planeId, dataRoot: profile.dataRoot})}),
+            output                                   = JSON.parse(cold.stdout),
+            record                                   = JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8')),
+            env                                      = await fs.readFile(hostLayout({stateRoot, homeDir}).envFile, 'utf8');
 
         expect(output.target).toEqual(profile);
         expect(record.target).toEqual(profile);
@@ -687,5 +718,506 @@ test.describe('firstRun CLI', () => {
 
         expect(JSON.parse((await runCli({setupRoot: other.setupRoot, stateRoot: other.stateRoot, fake: greenFake({patPath: other.patPath})})).stdout).target)
             .toEqual({planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'});
+    });
+
+    test('AC-1 / desktop-wake: declining or running on unsupported OS provisions an empty receiver-less 0700 records dir without LaunchAgent, reports wake unavailable, and retires v1 records cleanly', async () => {
+        const
+            declinedRun = await scratch(),
+            declined    = await runCli({
+                homeDir  : declinedRun.homeDir,
+                setupRoot: declinedRun.setupRoot,
+                stateRoot: declinedRun.stateRoot,
+                fake     : {...greenFake({patPath: declinedRun.patPath}), answers: {preset: 'local-small', 'plane-credential': declinedRun.patPath, 'desktop-wake': 'declined'}}
+            }),
+            declinedOut    = JSON.parse(declined.stdout),
+            declinedLayout = hostLayout({stateRoot: declinedRun.stateRoot, homeDir: declinedRun.homeDir});
+
+        expect(declined.code, declined.stderr).toBe(0);
+        expect(declinedOut.steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false, answer: 'declined'});
+        expect(declinedOut.steps.find(step => step.id === 'start-wake-receiver')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false});
+        expect(await fs.readFile(declinedLayout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(declinedLayout.receiverlessWakeStateDir, 'records')}\n`);
+        expect((await fs.stat(path.join(declinedLayout.receiverlessWakeStateDir, 'records'))).mode & 0o777).toBe(0o700);
+        await expect(fs.access(declinedLayout.wakePlistPath)).rejects.toThrow();
+
+        // unsupported host OS (linux): skips desktop-wake without requiring consent and exits 0
+        const
+            linuxRun = await scratch(),
+            linux    = await runCli({
+                homeDir  : linuxRun.homeDir,
+                setupRoot: linuxRun.setupRoot,
+                stateRoot: linuxRun.stateRoot,
+                fake     : {...greenFake({patPath: linuxRun.patPath, answers: false}), platform: 'linux', answers: {preset: 'local-small', 'plane-credential': linuxRun.patPath}}
+            }),
+            linuxOut    = JSON.parse(linux.stdout),
+            linuxLayout = hostLayout({stateRoot: linuxRun.stateRoot, homeDir: linuxRun.homeDir});
+
+        expect(linux.code, linux.stderr).toBe(0);
+        expect(linuxOut.steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false});
+        expect(linuxOut.steps.find(step => step.id === 'start-wake-receiver')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false});
+        expect(await fs.readFile(linuxLayout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(linuxLayout.receiverlessWakeStateDir, 'records')}\n`);
+        await expect(fs.access(linuxLayout.wakePlistPath)).rejects.toThrow();
+
+        // v1 record on disk is retired as version-mismatch without conferring desktop-wake install consent
+        const legacyRun = await scratch();
+
+        let legacyRec = {...createSetupRecord({runId: RUN_ID, target: {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'}, recipeVersion: 1}), createdAt: '2026-10-01T00:00:00.000Z'};
+        legacyRec = withConsent(legacyRec, {stepId: 'preset', answer: 'local-small', consentedAt: 't'});
+        legacyRec = withConsent(legacyRec, {stepId: 'plane-credential', answer: legacyRun.patPath, consentedAt: 't'});
+        legacyRec = withReceipt(legacyRec, {effectId: 'compose-up', outcome: 'accepted', inputDigest: 'x', acceptedAt: 't', references: []});
+
+        await fs.mkdir(legacyRun.setupRoot, {recursive: true});
+        await fs.writeFile(path.join(legacyRun.setupRoot, `${RUN_ID}.json`), `${JSON.stringify(legacyRec, null, 2)}\n`, {mode: 0o600});
+
+        const
+            migrated    = await runCli({homeDir: legacyRun.homeDir, setupRoot: legacyRun.setupRoot, stateRoot: legacyRun.stateRoot, fake: greenFake({patPath: legacyRun.patPath, answers: false, done: {persisted: false, queryAnswered: false}})}),
+            migratedOut = JSON.parse(migrated.stdout),
+            savedRec    = JSON.parse(await fs.readFile(path.join(legacyRun.setupRoot, `${RUN_ID}.json`), 'utf8'));
+
+        expect(migrated.code).toBe(2);
+        expect(migrated.stderr).toMatch(/version-mismatch; prior consents and receipts retired into history/);
+        expect(migratedOut.steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'pending', answer: null});
+        expect(savedRec.recipeVersion).toBe(RECIPE_VERSION);
+        expect(savedRec.history).toHaveLength(1);
+    });
+
+    test('consent changes (decline -> enable, enable -> decline, unchanged resume) validate and rebind the running Compose stack, while incomplete wake evidence blocks exit 0', async () => {
+        const
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            layout                                   = hostLayout({stateRoot, homeDir}),
+            callsPath                                = path.join(setupRoot, 'fake-run.json'),
+            launchdPath                              = path.join(setupRoot, 'fake-launchd.json'),
+            enabledRecords                           = path.join(layout.wakeStateDir, 'records'),
+            disabledRecords                          = path.join(layout.receiverlessWakeStateDir, 'records');
+
+        // 1. Start declined -> disabled bind, 1 compose call, 0 bootstraps
+        const declined = await runCli({
+            homeDir,
+            setupRoot,
+            stateRoot,
+            fake: {...greenFake({patPath}), answers: {preset: 'local-small', 'plane-credential': patPath, 'desktop-wake': 'declined'}}
+        });
+
+        expect(declined.code, declined.stderr).toBe(0);
+        expect(await fs.readFile(layout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${disabledRecords}\n`);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+
+        // 2. Unchanged declined resume -> compose count stays 1, bootstrap count 0
+        const pausedResume = await runCli({homeDir, setupRoot, stateRoot, fake: greenFake({patPath, answers: false})});
+
+        expect(pausedResume.code, pausedResume.stderr).toBe(0);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+
+        // 3. Flip declined -> enabled on the same run -> .env switches to wake-receiver/records, Compose re-applies, receiver bootstraps
+        const enabled = await runCli({
+            homeDir,
+            setupRoot,
+            stateRoot,
+            extra: ['--desktop-wake', 'enabled'],
+            fake : greenFake({patPath, answers: false})
+        });
+
+        expect(enabled.code, enabled.stderr).toBe(0);
+        expect(await fs.readFile(layout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${enabledRecords}\n`);
+        expect((await fs.stat(enabledRecords)).mode & 0o777).toBe(0o700);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(2);
+        expect(JSON.parse(await fs.readFile(launchdPath, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap')).toHaveLength(1);
+
+        // 4. Unchanged enabled resume -> compose stays 2, bootstrap stays 1
+        const enabledResume = await runCli({homeDir, setupRoot, stateRoot, fake: greenFake({patPath, answers: false})});
+
+        expect(enabledResume.code, enabledResume.stderr).toBe(0);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(2);
+        expect(JSON.parse(await fs.readFile(launchdPath, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap')).toHaveLength(1);
+
+        // 5. While enabled, absent, pending-upgrade, or unknown receiver evidence prevents exit 0 even with green witness
+        for (const [overrideObs, expectedCode, expectedStatus] of [
+            [{present: false, running: false, reason: 'stopped after start'}, 1, 'failed'],
+            [{present: true, running: true, upgradePending: true, reason: 'upgrade still pending'}, 2, 'pending'],
+            [{throw: 'launchd unavailable'}, 2, 'unknown']
+        ]) {
+            const blocked = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: {
+                    ...greenFake({patPath, answers: false}),
+                    observers: {...greenFake({patPath}).observers, wakeReceiver: overrideObs}
+                }
+            });
+
+            expect(blocked.code).toBe(expectedCode);
+            expect(JSON.parse(blocked.stdout).terminal.status).toBe(expectedStatus);
+        }
+
+        // 6. Reverse change: enabled -> declined -> .env switches back to wake-receiver-disabled/records and Compose re-applies
+        const reversed = await runCli({
+            homeDir,
+            setupRoot,
+            stateRoot,
+            extra: ['--desktop-wake', 'declined'],
+            fake : greenFake({patPath, answers: false})
+        });
+
+        expect(reversed.code, reversed.stderr).toBe(0);
+        expect(JSON.parse(reversed.stdout).steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'ok', skipped: true, answer: 'declined'});
+        expect(JSON.parse(reversed.stdout).steps.find(step => step.id === 'start-wake-receiver')).toMatchObject({status: 'ok', skipped: true});
+        expect(await fs.readFile(layout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${disabledRecords}\n`);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(3);
+    });
+
+    test('CLI recovers interrupted install, waits through 250ms delayed readiness, restarts stopped receiver, upgrades runtime generation, preserves queued records, and places LaunchAgent under user HOME independently of --state-root', async () => {
+        const
+            root        = await fs.mkdtemp(path.join(os.tmpdir(), 'first-run-recovery-')),
+            userHome    = path.join(root, 'user-home'),
+            external    = path.join(root, 'external-volume', 'data', 'fleet'),
+            setupRoot   = path.join(external, 'setup'),
+            patPath     = path.join(root, 'operator', 'plane-pat'),
+            layout      = hostLayout({stateRoot: external, homeDir: userHome}),
+            queuedFile  = path.join(layout.wakeStateDir, 'records', 'queued-wake-1.json'),
+            launchdPath = path.join(setupRoot, 'fake-launchd.json');
+
+        try {
+            await fs.mkdir(userHome, {recursive: true, mode: 0o700});
+            await fs.mkdir(path.dirname(patPath), {recursive: true});
+            await fs.writeFile(patPath, `${PAT}\n`, {mode: 0o600});
+            await fs.mkdir(path.dirname(queuedFile), {recursive: true, mode: 0o700});
+            await fs.writeFile(queuedFile, '{"id":"queued-wake-1"}\n', {mode: 0o600});
+
+            // 1. Interrupt first install right before bootstrap -> pre-mutation custody persisted, exits 1
+            const interrupted = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {
+                    ...greenFake({patPath}),
+                    launchd: {interruptBeforeBootstrap: true}
+                }
+            });
+
+            expect(interrupted.code).toBe(1);
+            expect(await fs.access(layout.wakePlistPath).then(() => true, () => false)).toBe(true);
+            expect(layout.wakePlistPath).toBe(path.join(userHome, 'Library', 'LaunchAgents', WAKE_RECEIVER_PLIST_NAME));
+            expect(layout.wakePlistPath.startsWith(external)).toBe(false);
+            expect(JSON.parse(await fs.readFile(path.join(layout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('installing');
+
+            // 2. Resume through ordinary CLI with 250ms delayed listener readiness (exceeds old 2-attempt cap)
+            const recovered = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {
+                    ...greenFake({patPath, answers: false}),
+                    launchd: {readyDelayMs: 250}
+                }
+            });
+
+            expect(recovered.code, recovered.stderr).toBe(0);
+            expect(JSON.parse(await fs.readFile(path.join(layout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('active');
+            expect(await fs.readFile(queuedFile, 'utf8')).toBe('{"id":"queued-wake-1"}\n');
+
+            // 3. Stop the previously accepted service -> ordinary CLI restarts it and preserves queued records
+            const stoppedState = JSON.parse(await fs.readFile(launchdPath, 'utf8'));
+
+            stoppedState.loaded  = false;
+            stoppedState.running = false;
+            await fs.writeFile(launchdPath, `${JSON.stringify(stoppedState, null, 2)}\n`, {mode: 0o600});
+
+            const restarted = await runCli({homeDir: userHome, setupRoot, stateRoot: external, fake: greenFake({patPath, answers: false})});
+
+            expect(restarted.code, restarted.stderr).toBe(0);
+            expect(await fs.readFile(queuedFile, 'utf8')).toBe('{"id":"queued-wake-1"}\n');
+
+            const bootstrapsAfterRestart = JSON.parse(await fs.readFile(launchdPath, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap').length;
+
+            // 4. Interrupted runtime generation upgrade -> pre-mutation custody preserves previousOwned and ordinary CLI recovers cleanly
+            const
+                gen2Id      = 'd'.repeat(64),
+                gen2Dir     = path.join(root, 'gen2', gen2Id),
+                gen2Root    = path.join(gen2Dir, RUNTIME_GENERATION_PAYLOAD, 'brain'),
+                gen2Exec    = path.join(gen2Dir, RUNTIME_GENERATION_PAYLOAD, 'bin', 'node'),
+                runtimeSpec = {generation: {id: gen2Id, directory: gen2Dir, runtimeRoot: gen2Root, executable: gen2Exec, payloadDigest: 'e'.repeat(64)}};
+
+            await fs.mkdir(path.join(gen2Root, 'ai', 'daemons', 'wake'), {recursive: true});
+            await fs.writeFile(path.join(gen2Root, WAKE_RECEIVER_ENTRYPOINT), '// gen2 receiver\n');
+
+            const interruptedUpgrade = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {
+                    ...greenFake({patPath, answers: false}),
+                    runtime: runtimeSpec,
+                    launchd: {interruptBeforeBootstrap: true}
+                }
+            });
+
+            expect(interruptedUpgrade.code).toBe(1);
+            expect(JSON.parse(await fs.readFile(path.join(layout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('installing');
+
+            const upgraded = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {...greenFake({patPath, answers: false}), runtime: runtimeSpec}
+            });
+
+            expect(upgraded.code, upgraded.stderr).toBe(0);
+            expect(JSON.parse(await fs.readFile(path.join(layout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('active');
+            expect(await fs.readFile(queuedFile, 'utf8')).toBe('{"id":"queued-wake-1"}\n');
+
+            const
+                launchdAfterUpgrade    = JSON.parse(await fs.readFile(launchdPath, 'utf8')),
+                bootstrapsAfterUpgrade = launchdAfterUpgrade.calls.filter(c => c.args[0] === 'bootstrap').length;
+
+            expect(bootstrapsAfterUpgrade).toBe(bootstrapsAfterRestart + 2);
+            expect(launchdAfterUpgrade).toMatchObject({loaded: true, running: true, program: gen2Exec});
+
+            // 5. Second unchanged resume -> 0 duplicate bootstraps, 1 listener, queued records intact
+            const secondResume = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {...greenFake({patPath, answers: false}), runtime: runtimeSpec}
+            });
+
+            expect(secondResume.code, secondResume.stderr).toBe(0);
+            expect(JSON.parse(await fs.readFile(launchdPath, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap')).toHaveLength(bootstrapsAfterUpgrade);
+            expect(await fs.readFile(queuedFile, 'utf8')).toBe('{"id":"queued-wake-1"}\n');
+        } finally {
+            await fs.rm(root, {recursive: true, force: true});
+        }
+    });
+
+    test('live Compose mount drift with absent or pending receipts blocks premature finish, and pre-custody interrupted start-wake-receiver recovers only on a clean host', async () => {
+        const
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            layout                                   = hostLayout({stateRoot, homeDir}),
+            disabledRecords                          = path.join(layout.receiverlessWakeStateDir, 'records'),
+            enabledRecords                           = path.join(layout.wakeStateDir, 'records'),
+            recordPath                               = path.join(setupRoot, `${RUN_ID}.json`),
+            callsPath                                = path.join(setupRoot, 'fake-run.json'),
+            composePath                              = path.join(setupRoot, 'fake-compose.json');
+
+        try {
+            // A. Direct production Docker inspection observer (`docker ps` + `docker inspect` mounts)
+            await fs.mkdir(layout.secretsDir, {recursive: true, mode: 0o700});
+            await fs.mkdir(path.dirname(layout.envFile), {recursive: true, mode: 0o700});
+            await fs.mkdir(disabledRecords, {recursive: true, mode: 0o700});
+            await fs.mkdir(enabledRecords, {recursive: true, mode: 0o700});
+            await fs.writeFile(
+                layout.envFile,
+                `NEO_MCP_AUTH_TOKEN_FILE=${layout.secretsDir}/mcp-auth-token\nNEO_FLEET_PLANE_TOKEN_FILE=${layout.secretsDir}/fleet-plane-token\nNEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${enabledRecords}\n`,
+                {mode: 0o600}
+            );
+
+            let   inspectedSource = disabledRecords;
+            const dockerHost      = createHost({
+                fsModule: fs,
+                platform: () => 'darwin',
+                run     : async (command, args) => {
+                    expect(command).toBe('docker');
+                    if (args[0] === 'ps') {
+                        return {stdout: 'cid-mc-server-1\n', stderr: ''};
+                    }
+                    if (args[0] === 'inspect') {
+                        return {
+                            stdout: JSON.stringify([{
+                                Type       : 'bind',
+                                Source     : inspectedSource,
+                                Destination: '/app/wake-receiver-records',
+                                RW         : false
+                            }]),
+                            stderr: ''
+                        };
+                    }
+
+                    throw new Error(`Unexpected docker command: ${args.join(' ')}`);
+                }
+            });
+
+            const
+                consentEnabled = withConsent(createSetupRecord({runId: RUN_ID, target: {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'}, recipeVersion: RECIPE_VERSION}), {
+                    stepId     : 'desktop-wake',
+                    answer     : 'enabled',
+                    consentedAt: '2026-11-16T00:00:00.000Z'
+                }),
+                staleMountObs  = await observeRunningCompose({layout, host: dockerHost, record: consentEnabled, running: true});
+
+            expect(staleMountObs).toMatchObject({
+                present          : true,
+                digest           : null,
+                inputMismatch    : true,
+                mountedRecordsDir: path.resolve(disabledRecords)
+            });
+
+            inspectedSource = enabledRecords;
+            const matchedMountObs = await observeRunningCompose({layout, host: dockerHost, record: consentEnabled, running: true});
+
+            expect(matchedMountObs).toMatchObject({present: true, problem: null});
+            expect(matchedMountObs.digest).toBeTruthy();
+            expect(await inspectRunningComposeRecordsMount(layout, dockerHost)).toMatchObject({
+                ok         : true,
+                present    : true,
+                actualMount: path.resolve(enabledRecords)
+            });
+
+            // Clean workspace for end-to-end CLI replays
+            await fs.rm(stateRoot, {recursive: true, force: true});
+
+            // B1. Consent switch declined -> enabled with new .env on disk, running container still holding old mount, and NO compose-up receipt
+            const initialDeclined = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: {...greenFake({patPath}), answers: {preset: 'local-small', 'plane-credential': patPath, 'desktop-wake': 'declined'}}
+            });
+
+            expect(initialDeclined.code, initialDeclined.stderr).toBe(0);
+
+            const
+                oldEnv            = await fs.readFile(layout.envFile, 'utf8'),
+                updatedEnv        = oldEnv.replace(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${disabledRecords}`, `NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${enabledRecords}`),
+                baseRecord        = JSON.parse(await fs.readFile(recordPath, 'utf8')),
+                strippedNoCompose = withConsent(
+                    {...baseRecord, receipts: baseRecord.receipts.filter(entry => !['compose-up', 'start-wake-receiver'].includes(entry.effectId))},
+                    {stepId: 'desktop-wake', answer: 'enabled', consentedAt: '2026-11-16T01:00:00.000Z'}
+                );
+
+            await fs.mkdir(enabledRecords, {recursive: true, mode: 0o700});
+            await fs.writeFile(layout.envFile, updatedEnv, {mode: 0o600});
+            await persistSetupRecord(recordPath, strippedNoCompose, createHost({now: () => Date.UTC(2026, 10, 16, 1, 0, 0)}));
+
+            const replayNoReceipt = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: greenFake({patPath, answers: false})
+            });
+
+            expect(replayNoReceipt.code, replayNoReceipt.stderr).toBe(0);
+            expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(2);
+            expect(JSON.parse(await fs.readFile(composePath, 'utf8')).mountedRecordsDir).toBe(path.resolve(enabledRecords));
+
+            // B2. Pending compose-up receipt written before Docker ran while container still holds old mount -> refuses settlement and exits non-0
+            await fs.writeFile(composePath, `${JSON.stringify({running: true, mountedRecordsDir: disabledRecords}, null, 2)}\n`, {mode: 0o600});
+            const
+                expectedComposeDigest = composeInvocationDigest({...composeContextOf(layout), envDigest: contentDigest(updatedEnv)}),
+                afterReplay1Record    = JSON.parse(await fs.readFile(recordPath, 'utf8')),
+                pendingComposeRecord  = withReceipt(afterReplay1Record, {
+                    effectId      : 'compose-up',
+                    outcome       : RECEIPT_OUTCOMES.pending,
+                    inputDigest   : 'pending-compose-input',
+                    expectedDigest: expectedComposeDigest,
+                    startedAt     : '2026-11-16T01:05:00.000Z'
+                });
+
+            await persistSetupRecord(recordPath, pendingComposeRecord, createHost({now: () => Date.UTC(2026, 10, 16, 1, 5, 0)}));
+
+            const blockedPendingCompose = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: greenFake({patPath, answers: false})
+            });
+
+            expect(blockedPendingCompose.code).toBe(1);
+            expect(blockedPendingCompose.stderr).toContain("'compose-up' was interrupted and is not settled");
+            expect(findReceipt(JSON.parse(await fs.readFile(recordPath, 'utf8')), 'compose-up').outcome).toBe(RECEIPT_OUTCOMES.reconcileRequired);
+            expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(2);
+
+            // Positive control: once live container holds the updated mount matching env + expectedDigest, ordinary resume settles to ok
+            await fs.writeFile(composePath, `${JSON.stringify({running: true, mountedRecordsDir: enabledRecords}, null, 2)}\n`, {mode: 0o600});
+            const settledCompose = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: greenFake({patPath, answers: false})
+            });
+
+            expect(settledCompose.code, settledCompose.stderr).toBe(0);
+            expect(findReceipt(JSON.parse(await fs.readFile(recordPath, 'utf8')), 'compose-up')).toMatchObject({
+                outcome  : RECEIPT_OUTCOMES.accepted,
+                settledBy: 'observation'
+            });
+
+            // C. Crash after outer start-wake-receiver pending receipt BEFORE custody file exists -> clean host recovers via ordinary CLI
+            const freshRecovery = await scratch();
+
+            try {
+                const
+                    recLayout  = hostLayout({stateRoot: freshRecovery.stateRoot, homeDir: freshRecovery.homeDir}),
+                    recRecordP = path.join(freshRecovery.setupRoot, `${RUN_ID}.json`),
+                    recLaunchP = path.join(freshRecovery.setupRoot, 'fake-launchd.json'),
+                    primed     = await runCli({
+                        homeDir  : freshRecovery.homeDir,
+                        setupRoot: freshRecovery.setupRoot,
+                        stateRoot: freshRecovery.stateRoot,
+                        fake     : {
+                            ...greenFake({patPath: freshRecovery.patPath}),
+                            answers: {preset: 'local-small', 'plane-credential': freshRecovery.patPath, 'desktop-wake': 'declined'}
+                        }
+                    });
+
+                expect(primed.code, primed.stderr).toBe(0);
+
+                const
+                    primedRec     = JSON.parse(await fs.readFile(recRecordP, 'utf8')),
+                    preCustodyEnv = (await fs.readFile(recLayout.envFile, 'utf8')).replace(
+                        `NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(recLayout.receiverlessWakeStateDir, 'records')}`,
+                        `NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(recLayout.wakeStateDir, 'records')}`
+                    );
+
+                await fs.mkdir(path.join(recLayout.wakeStateDir, 'records'), {recursive: true, mode: 0o700});
+                await fs.writeFile(recLayout.envFile, preCustodyEnv, {mode: 0o600});
+                await fs.writeFile(path.join(freshRecovery.setupRoot, 'fake-compose.json'), `${JSON.stringify({
+                    running          : true,
+                    mountedRecordsDir: path.join(recLayout.wakeStateDir, 'records')
+                }, null, 2)}\n`, {mode: 0o600});
+
+                const pendingPreCustody = withReceipt(
+                    withConsent(primedRec, {stepId: 'desktop-wake', answer: 'enabled', consentedAt: '2026-11-16T02:00:00.000Z'}),
+                    {
+                        effectId   : 'start-wake-receiver',
+                        outcome    : RECEIPT_OUTCOMES.pending,
+                        inputDigest: 'pre-custody-pending',
+                        startedAt  : '2026-11-16T02:00:01.000Z'
+                    }
+                );
+
+                await persistSetupRecord(recRecordP, pendingPreCustody, createHost({now: () => Date.UTC(2026, 10, 16, 2, 0, 1)}));
+
+                // Negative control first: occupied foreign port on the same pre-custody pending state stays blocked (reconcile-required, zero bootstraps)
+                const blockedConflict = await runCli({
+                    homeDir  : freshRecovery.homeDir,
+                    setupRoot: freshRecovery.setupRoot,
+                    stateRoot: freshRecovery.stateRoot,
+                    fake     : {
+                        ...greenFake({patPath: freshRecovery.patPath, answers: false}),
+                        foreignPorts: [3199]
+                    }
+                });
+
+                expect(blockedConflict.code).toBe(1);
+                expect(findReceipt(JSON.parse(await fs.readFile(recRecordP, 'utf8')), 'start-wake-receiver').outcome).toBe(RECEIPT_OUTCOMES.reconcileRequired);
+                expect(JSON.parse(await fs.readFile(recLaunchP, 'utf8')).calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
+
+                // Clean host recovery: ordinary CLI installs, starts, finalizes custody, and exits 0
+                const recoveredClean = await runCli({
+                    homeDir  : freshRecovery.homeDir,
+                    setupRoot: freshRecovery.setupRoot,
+                    stateRoot: freshRecovery.stateRoot,
+                    fake     : greenFake({patPath: freshRecovery.patPath, answers: false})
+                });
+
+                expect(recoveredClean.code, recoveredClean.stderr).toBe(0);
+                expect(findReceipt(JSON.parse(await fs.readFile(recRecordP, 'utf8')), 'start-wake-receiver').outcome).toBe(RECEIPT_OUTCOMES.accepted);
+                expect(JSON.parse(await fs.readFile(path.join(recLayout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('active');
+                expect(JSON.parse(await fs.readFile(recLaunchP, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap')).toHaveLength(1);
+            } finally {
+                await fs.rm(freshRecovery.root, {recursive: true, force: true});
+            }
+        } finally {
+            await fs.rm(path.dirname(stateRoot), {recursive: true, force: true});
+        }
     });
 });

@@ -37,9 +37,10 @@
  * preserved on the canonical node.
  */
 
-import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
+import path                                                                       from 'node:path';
+import {fileURLToPath}                                                            from 'node:url';
+import {isEntryModule}                                                            from '../../services/shared/isEntryModule.mjs';
+import {readIdentityPublicationPreservation, runWithIdentityPublicationPreserved} from '../../graph/identityPublicationProtection.mjs';
 import {
     createDynamicTextEmbeddingFunction,
     registerNeoChromaEmbeddingFunctions
@@ -431,14 +432,28 @@ function mergeIdentityNodeData(oldData, targetData) {
  * @param {Object} rename Rename descriptor.
  * @param {Boolean} apply True to write, false for dry-run.
  * @param {Object} stats Mutable stats object.
+ * @param {Object} preservation Transaction-owned protection predicates.
+ * @returns {Boolean} Whether this rename pair may continue to edge rewrites and source deletion.
  */
-function ensureTargetIdentityNode(db, rename, apply, stats) {
-    const oldRow    = db.prepare('SELECT id, user_id, data FROM Nodes WHERE id = ?').get(rename.fromNodeId);
-    const targetRow = db.prepare('SELECT id, user_id, data FROM Nodes WHERE id = ?').get(rename.toNodeId);
+function ensureTargetIdentityNode(db, rename, apply, stats, preservation) {
+    const oldRow               = db.prepare('SELECT id, user_id, data FROM Nodes WHERE id = ?').get(rename.fromNodeId);
+    const targetRow            = db.prepare('SELECT id, user_id, data FROM Nodes WHERE id = ?').get(rename.toNodeId);
+    const protectedDestination = preservation.isProtectedNode(rename.toNodeId);
+
+    if (apply && oldRow && protectedDestination) {
+        const error = new Error('Identity rename destination requires protected-source reconciliation.');
+        error.code = 'IDENTITY_PUBLICATION_WRITE_PROTECTED';
+        throw error;
+    }
+    if (preservation.isProtectedNode(rename.fromNodeId) || protectedDestination ||
+        !oldRow && preservation.isHistoricalEndpoint(rename.toNodeId)) {
+        stats.graph.skipped.push(`protected:${rename.fromNodeId}→${rename.toNodeId}`);
+        return false;
+    }
 
     if (!oldRow && !targetRow) {
         stats.graph.skipped.push(`missing:${rename.fromNodeId}`);
-        return;
+        return false;
     }
 
     if (!oldRow && targetRow) {
@@ -453,7 +468,7 @@ function ensureTargetIdentityNode(db, rename, apply, stats) {
             }
             stats.graph.nodeMetadataRowsUpdated++;
         }
-        return;
+        return true;
     }
 
     const oldData   = parseGraphData(oldRow.data);
@@ -475,6 +490,7 @@ function ensureTargetIdentityNode(db, rename, apply, stats) {
         }
         stats.graph.nodesInserted++;
     }
+    return true;
 }
 
 /**
@@ -483,13 +499,15 @@ function ensureTargetIdentityNode(db, rename, apply, stats) {
  * @param {Object} rename Rename descriptor.
  * @param {Boolean} apply True to write, false for dry-run.
  * @param {Object} stats Mutable stats object.
+ * @param {Object} preservation Transaction-owned protection predicates.
  */
-function rewriteIdentityEdges(db, rename, apply, stats) {
+function rewriteIdentityEdges(db, rename, apply, stats, preservation) {
     const edges = db.prepare(
         'SELECT id, user_id, source, target, type, data FROM Edges WHERE source = ? OR target = ?'
     ).all(rename.fromNodeId, rename.fromNodeId);
 
     for (const edge of edges) {
+        if (preservation.isProtectedEdge(edge.id)) continue;
         const nextSource = edge.source === rename.fromNodeId ? rename.toNodeId : edge.source;
         const nextTarget = edge.target === rename.fromNodeId ? rename.toNodeId : edge.target;
         const duplicate  = db.prepare(
@@ -530,9 +548,11 @@ const STRUCTURAL_NODE_IDS = new Set(IDENTITY_RENAMES.map(rename => rename.fromNo
  * @param {String} toId The surviving row id.
  * @param {Boolean} apply True to write, false for dry-run.
  * @param {Object} stats Mutable stats object.
+ * @param {Object} preservation Transaction-owned protection predicates.
  */
-function moveEdges(db, fromId, toId, apply, stats) {
+function moveEdges(db, fromId, toId, apply, stats, preservation) {
     for (const edge of db.prepare('SELECT id, source, target, type FROM Edges WHERE source = ? OR target = ?').all(fromId, fromId)) {
+        if (preservation.isProtectedEdge(edge.id)) continue;
         const nextSource = edge.source === fromId ? toId : edge.source;
         const nextTarget = edge.target === fromId ? toId : edge.target;
         const duplicate  = db.prepare('SELECT id FROM Edges WHERE source = ? AND target = ? AND type = ? AND id != ?')
@@ -565,22 +585,26 @@ function moveEdges(db, fromId, toId, apply, stats) {
  * @param {Object} db Open better-sqlite3 connection.
  * @param {Boolean} apply True to write, false for dry-run.
  * @param {Object} stats Mutable stats object.
+ * @param {Object} preservation Transaction-owned protection predicates.
  */
-function rewriteGraphMetadataRows(db, apply, stats) {
+function rewriteGraphMetadataRows(db, apply, stats, preservation) {
     const moved = new Map(); // old row id → surviving row id
 
     for (const snapshot of db.prepare('SELECT id FROM Nodes').all()) {
-        if (STRUCTURAL_NODE_IDS.has(snapshot.id)) continue;
+        if (STRUCTURAL_NODE_IDS.has(snapshot.id) || preservation.isProtectedNode(snapshot.id)) continue;
 
         // Re-read before deciding: a merge earlier in this pass may have rewritten or removed this row,
         // and the snapshot taken before the pass is no authority over merged data.
         const row = db.prepare('SELECT id, user_id, data FROM Nodes WHERE id = ?').get(snapshot.id);
         if (!row) continue;
 
-        const data       = parseGraphData(row.data);
-        const nextData   = rewriteIdentityFields(data);
-        const nextUserId = rewriteUserIdColumn(row.user_id);
-        const nextId     = rewriteNodeId(row.id);
+        const data           = parseGraphData(row.data);
+        const nextData       = rewriteIdentityFields(data);
+        const nextUserId     = rewriteUserIdColumn(row.user_id);
+        const nextId         = rewriteNodeId(row.id);
+        const retainEndpoint = preservation.isHistoricalEndpoint(row.id);
+
+        if (nextId === row.id && retainEndpoint) continue;
 
         if (nextId !== row.id) {
             const survivor = db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get(nextId);
@@ -593,11 +617,11 @@ function rewriteGraphMetadataRows(db, apply, stats) {
                     continue;
                 }
                 moved.set(row.id, nextId);
-                moveEdges(db, row.id, nextId, apply, stats);
+                moveEdges(db, row.id, nextId, apply, stats, preservation);
                 if (apply) {
                     db.prepare('UPDATE Nodes SET user_id = ?, data = ? WHERE id = ?')
                         .run(rewriteUserIdColumn(survivor.user_id) ?? nextUserId, JSON.stringify(merged), nextId);
-                    db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
+                    if (!retainEndpoint) db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
                 }
                 stats.graph.nodesMerged++;
                 continue;
@@ -609,8 +633,8 @@ function rewriteGraphMetadataRows(db, apply, stats) {
                 db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)')
                     .run(nextId, nextUserId, JSON.stringify(nextData));
             }
-            moveEdges(db, row.id, nextId, apply, stats);
-            if (apply) {
+            moveEdges(db, row.id, nextId, apply, stats, preservation);
+            if (apply && !retainEndpoint) {
                 db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
             }
             stats.graph.nodesRekeyed++;
@@ -627,6 +651,7 @@ function rewriteGraphMetadataRows(db, apply, stats) {
     }
 
     for (const snapshot of db.prepare('SELECT id FROM Edges').all()) {
+        if (preservation.isProtectedEdge(snapshot.id)) continue;
         // Re-read: the node moves above rewrote endpoints and dropped duplicates.
         const row = db.prepare('SELECT id, user_id, source, target, data FROM Edges WHERE id = ?').get(snapshot.id);
         if (!row) continue;
@@ -701,10 +726,15 @@ function mergeCompoundNodeData(oldData, survivingData) {
  * @param {Object} rename Rename descriptor.
  * @param {Boolean} apply True to write, false for dry-run.
  * @param {Object} stats Mutable stats object.
+ * @param {Object} preservation Transaction-owned protection predicates.
  */
-function deleteOldIdentityNode(db, rename, apply, stats) {
+function deleteOldIdentityNode(db, rename, apply, stats, preservation) {
     const oldRow = db.prepare('SELECT id FROM Nodes WHERE id = ?').get(rename.fromNodeId);
     if (!oldRow) return;
+    if (preservation.isProtectedNode(rename.fromNodeId) || preservation.isHistoricalEndpoint(rename.fromNodeId)) {
+        stats.graph.skipped.push(`historical-endpoint:${rename.fromNodeId}`);
+        return;
+    }
 
     if (apply) {
         db.prepare('DELETE FROM Nodes WHERE id = ?').run(rename.fromNodeId);
@@ -713,7 +743,9 @@ function deleteOldIdentityNode(db, rename, apply, stats) {
 }
 
 /**
- * @summary Runs the SQLite graph portion of the identity rename migration.
+ * @summary Runs ordinary identity renames under a physical protected-history preservation check.
+ * Apply captures and verifies protected bytes/endpoints inside one immediate transaction; a missed
+ * filter or unexpected trigger refuses the whole graph mutation before commit.
  * @param {Object} db Open better-sqlite3 connection.
  * @param {Boolean} apply True to write, false for dry-run.
  * @returns {Object}
@@ -735,19 +767,24 @@ export function runGraphMigration(db, apply) {
         }
     };
 
-    const work = () => {
+    const work = preservation => {
         for (const rename of IDENTITY_RENAMES) {
-            ensureTargetIdentityNode(db, rename, apply, stats);
-            rewriteIdentityEdges(db, rename, apply, stats);
-            deleteOldIdentityNode(db, rename, apply, stats);
+            if (!ensureTargetIdentityNode(db, rename, apply, stats, preservation)) continue;
+            rewriteIdentityEdges(db, rename, apply, stats, preservation);
+            deleteOldIdentityNode(db, rename, apply, stats, preservation);
         }
-        rewriteGraphMetadataRows(db, apply, stats);
+        rewriteGraphMetadataRows(db, apply, stats, preservation);
     };
 
     if (apply) {
-        db.transaction(work)();
+        runWithIdentityPublicationPreserved(db, work);
     } else {
-        work();
+        const retained = readIdentityPublicationPreservation(db);
+        work({
+            isProtectedNode     : id => retained.nodes.has(id),
+            isProtectedEdge     : id => retained.edges.has(id),
+            isHistoricalEndpoint: id => retained.endpoints.has(id)
+        });
     }
 
     return stats.graph;
@@ -907,7 +944,7 @@ async function main() {
 
     if (!args.chromaOnly) {
         const Database = (await import('better-sqlite3')).default;
-        const db       = new Database(dbPath, {verbose: null});
+        const db       = new Database(dbPath, {verbose: null, readonly: !args.apply, fileMustExist: true});
         try {
             const graphStats = runGraphMigration(db, args.apply);
             console.log('\n[SQLite graph]');
