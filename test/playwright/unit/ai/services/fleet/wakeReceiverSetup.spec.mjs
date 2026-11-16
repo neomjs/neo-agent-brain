@@ -238,6 +238,67 @@ test.describe('wakeReceiverSetup', () => {
         });
     });
 
+    test('tokenizes XML comments without pre-stripping, rejecting tag-splitting, scalar-embedded, nested, and unclosed comments in both template and strict modes', async () => {
+        const templateXml = await fs.readFile(templatePath, 'utf8');
+
+        const betweenElements = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+            '<!-- prolog comment -->',
+            '<plist version="1.0">',
+            '<dict>',
+            '    <!-- dict comment -->',
+            '    <key>Label</key>',
+            '    <string>test</string>',
+            '    <key>EmptyArray</key>',
+            '    <array/>',
+            '    <key>EmptyDict</key>',
+            '    <dict/>',
+            '    <key>EmptyString</key>',
+            '    <string/>',
+            '</dict>',
+            '<!-- trailing comment -->',
+            '</plist>'
+        ].join('\n');
+
+        expect(parseLaunchAgentPlist(betweenElements, {allowComments: true})).toEqual({
+            Label      : 'test',
+            EmptyArray : [],
+            EmptyDict  : {},
+            EmptyString: ''
+        });
+        expect(() => parseLaunchAgentPlist(betweenElements, {allowComments: false})).toThrow(/must not contain XML comments/);
+
+        const malformedCases = [
+            '<plist version="1.0"><dict><ke<!-- fixture -->y>Label</key><string>test</string></dict></plist>',
+            '<plist version="1.0"><dict><key>Label</ke<!-- fixture -->y><string>test</string></dict></plist>',
+            '<?xm<!-- fixture -->l version="1.0"?><plist version="1.0"><dict/></plist>',
+            '<!DOCTYP<!-- fixture -->E plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict/></plist>',
+            '<!<!-- fixture -->-- sneaky --><plist version="1.0"><dict/></plist>',
+            '<plist version="1.0"><dict><!-- a -- b --></dict></plist>',
+            '<plist version="1.0"><dict><!-- unclosed</dict></plist>',
+            '<plist version="1.0"><dict><key>La<!-- c -->bel</key><string>test</string></dict></plist>',
+            '<plist version="1.0"><dict><key>Label</key><string>te<!-- c -->st</string></dict></plist>',
+            '<plist version="1.0"><dict><key>Count</key><integer><!-- c -->42</integer></dict></plist>'
+        ];
+
+        for (const payload of malformedCases) {
+            expect(() => parseLaunchAgentPlist(payload, {allowComments: true}), payload).toThrow();
+            expect(() => parseLaunchAgentPlist(payload, {allowComments: false}), payload).toThrow();
+        }
+
+        // positive control: canonical commented template still parses cleanly and round-trips through strict reader
+        const materialized = serializeWakeReceiverPlist({
+            templateXml,
+            executable  : process.execPath,
+            runtimeRoot : brainRoot,
+            manifestPath: '/srv/state/wake-receiver/manifest.json',
+            stateDir    : '/srv/state/wake-receiver'
+        });
+
+        expect(parseLaunchAgentPlist(materialized, {allowComments: false}).Label).toBe(WAKE_RECEIVER_LABEL);
+    });
+
     test('prepares 0700 <stateDir>/records for enabled and receiver-less planes, preserves existing records and sibling modes, refuses unsafe symlinks/UIDs, and renders the real Compose overlay', async () => {
         const
             {root, layout} = await setupWorkspace(),

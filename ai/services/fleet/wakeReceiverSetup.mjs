@@ -384,40 +384,13 @@ export function parseLaunchAgentPlist(xml, {allowComments = false} = {}) {
         throw new Error('wakeReceiverSetup: binary property lists are unsupported; expected XML plist.');
     }
 
-    let source = xml.trim();
-
-    if (source.startsWith('<?xml')) {
-        const declEnd = source.indexOf('?>');
-
-        if (declEnd < 0) {
-            throw new Error('wakeReceiverSetup: unclosed XML declaration in property list.');
-        }
-
-        source = source.slice(declEnd + 2).trimStart();
-    }
-
-    if (source.startsWith('<!DOCTYPE')) {
-        const doctypeEnd = source.indexOf('>');
-
-        if (doctypeEnd < 0) {
-            throw new Error('wakeReceiverSetup: unclosed DOCTYPE declaration in property list.');
-        }
-
-        source = source.slice(doctypeEnd + 1).trimStart();
-    }
-
-    if (allowComments) {
-        source = source.replace(/<!--[\s\S]*?-->/g, '');
-    } else if (source.includes('<!--')) {
-        throw new Error('wakeReceiverSetup: materialized LaunchAgent plist must not contain XML comments.');
-    }
-
-    if (source.includes('<?')) {
-        throw new Error('wakeReceiverSetup: unexpected processing instruction inside property list.');
-    }
-
-    const tokens = [];
-    let cursor = 0;
+    const
+        source = xml.trim(),
+        tokens = [];
+    let cursor      = 0,
+        seenXmlDecl = false,
+        seenDoctype = false,
+        seenRoot    = false;
 
     while (cursor < source.length) {
         const lt = source.indexOf('<', cursor);
@@ -430,14 +403,81 @@ export function parseLaunchAgentPlist(xml, {allowComments = false} = {}) {
             break;
         }
 
+        const inLeaf = tokens.at(-1)?.type === 'open' && ['key', 'string', 'integer'].includes(tokens.at(-1).name);
+
         if (lt > cursor) {
             const text = source.slice(cursor, lt);
 
-            if (tokens.at(-1)?.type === 'open' && ['key', 'string', 'integer'].includes(tokens.at(-1).name)) {
+            if (inLeaf) {
                 tokens.push({type: 'text', value: text});
             } else if (text.trim().length > 0) {
                 throw new Error(`wakeReceiverSetup: unexpected text '${text.trim()}' between tags.`);
             }
+        }
+
+        if (source.startsWith('<!--', lt)) {
+            if (!allowComments) {
+                throw new Error('wakeReceiverSetup: materialized LaunchAgent plist must not contain XML comments.');
+            }
+
+            if (inLeaf) {
+                throw new Error('wakeReceiverSetup: XML comments are not permitted inside scalar plist values.');
+            }
+
+            const commentEnd = source.indexOf('-->', lt + 4);
+
+            if (commentEnd < 0) {
+                throw new Error('wakeReceiverSetup: unclosed XML comment in property list.');
+            }
+
+            const commentBody = source.slice(lt + 4, commentEnd);
+
+            if (commentBody.includes('--') || commentBody.endsWith('-')) {
+                throw new Error('wakeReceiverSetup: invalid "--" inside XML comment in property list.');
+            }
+
+            cursor = commentEnd + 3;
+            continue;
+        }
+
+        if (source.startsWith('<?', lt)) {
+            if (lt !== 0 || seenXmlDecl || seenDoctype || seenRoot || !/^<\?xml[\s]/.test(source)) {
+                throw new Error('wakeReceiverSetup: unexpected processing instruction inside property list.');
+            }
+
+            const declEnd = source.indexOf('?>', lt + 5);
+
+            if (declEnd < 0) {
+                throw new Error('wakeReceiverSetup: unclosed XML declaration in property list.');
+            }
+
+            if (source.slice(lt + 5, declEnd).includes('<')) {
+                throw new Error('wakeReceiverSetup: malformed XML declaration in property list.');
+            }
+
+            seenXmlDecl = true;
+            cursor      = declEnd + 2;
+            continue;
+        }
+
+        if (source.startsWith('<!', lt)) {
+            if (seenDoctype || seenRoot || !/^<!DOCTYPE[\s]+plist\b/.test(source.slice(lt))) {
+                throw new Error('wakeReceiverSetup: unexpected declaration inside property list.');
+            }
+
+            const doctypeEnd = source.indexOf('>', lt + 9);
+
+            if (doctypeEnd < 0) {
+                throw new Error('wakeReceiverSetup: unclosed DOCTYPE declaration in property list.');
+            }
+
+            if (source.slice(lt + 9, doctypeEnd).includes('<')) {
+                throw new Error('wakeReceiverSetup: malformed DOCTYPE declaration in property list.');
+            }
+
+            seenDoctype = true;
+            cursor      = doctypeEnd + 1;
+            continue;
         }
 
         const gt = source.indexOf('>', lt + 1);
@@ -448,12 +488,25 @@ export function parseLaunchAgentPlist(xml, {allowComments = false} = {}) {
 
         const rawTag = source.slice(lt + 1, gt).trim();
 
-        if (rawTag.startsWith('/') ) {
-            tokens.push({type: 'close', name: rawTag.slice(1).trim()});
-        } else if (rawTag.endsWith('/')) {
-            tokens.push({type: 'self', name: rawTag.slice(0, -1).trim().split(/\s+/)[0]});
+        if (rawTag.includes('<')) {
+            throw new Error('wakeReceiverSetup: malformed XML tag in property list.');
+        }
+
+        seenRoot = true;
+
+        const
+            closeMatch = /^\/([A-Za-z]+)$/.exec(rawTag),
+            selfMatch  = !closeMatch && /^([A-Za-z]+)\s*\/$/.exec(rawTag),
+            openMatch  = !closeMatch && !selfMatch && /^(?:(plist)(?:\s+version="1\.0")?|([A-Za-z]+))$/.exec(rawTag);
+
+        if (closeMatch) {
+            tokens.push({type: 'close', name: closeMatch[1]});
+        } else if (selfMatch) {
+            tokens.push({type: 'self', name: selfMatch[1]});
+        } else if (openMatch) {
+            tokens.push({type: 'open', name: openMatch[1] || openMatch[2]});
         } else {
-            tokens.push({type: 'open', name: rawTag.split(/\s+/)[0]});
+            throw new Error(`wakeReceiverSetup: malformed XML tag '<${rawTag}>'.`);
         }
 
         cursor = gt + 1;
@@ -542,6 +595,18 @@ export function parseLaunchAgentPlist(xml, {allowComments = false} = {}) {
 
             if (token.name === 'false') {
                 return false;
+            }
+
+            if (token.name === 'string') {
+                return '';
+            }
+
+            if (token.name === 'array') {
+                return [];
+            }
+
+            if (token.name === 'dict') {
+                return {};
             }
 
             throw new Error(`wakeReceiverSetup: unsupported self-closing tag <${token.name}/>.`);
