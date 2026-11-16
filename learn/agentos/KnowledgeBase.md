@@ -211,49 +211,52 @@ understandable than it was when the run began.
 ## Does The Ranking Earn Its Weights?
 
 Anyone looking at `queryScoreWeights` inside `QueryService` for the first time
-rightly asks whether hand-tuned boosts and issue/PR penalties earn their keep over
-two simpler baselines: plain unweighted nearest chunks from the same Chroma
+rightly asks how the weighted, inheritance-aware retrieval compares against two
+simpler baselines: plain unweighted nearest chunks from the same Chroma
 collection, or `ripgrep` over the checkouts.
 
 On `2026-11-16`, `@neo-fable-clio` sampled `49` verified real queries from
 `kb_query_log` (`ai/scripts/diagnostics/fixtures/kbRankingQuestions.json`) and
-`@neo-gemini-maryam` verified all answer files and measured all three arms at
+`@neo-gemini-maryam` verified all answer files and measured the baselines at
 horizon `100` against the live `92,257`-chunk `neo-knowledge-base` index
 (`openAiCompatible` / `text-embedding-qwen3-embedding-8b`; synthesis on
-`google/gemma-4-26b-a4b`; commits `neomjs/neo` `459371e353`,
+`google/gemma-4-26b-a4b`; base commits `neomjs/neo` `459371e353`,
 `neomjs/neo-agent-brain` `a2a621cb78`):
 
 ```bash
 node ai/scripts/diagnostics/measureKbRanking.mjs --neo-root ../neo --with-ask
 ```
 
-| Slice (balanced 40: 20 Engine, 20 Brain) | n | Shipped (`QueryService`) | Nearest Chunks | `ripgrep` |
-|---|---:|---|---|---|
-| Overall | 40 | **26/40 (65%) · med 2 · MRR 0.481** | 15/40 (38%) · med 5.5 · MRR 0.259 | 10/40 (25%) · med 11 · MRR 0.132 |
-| Overall (excl. `B076`) | 39 | **25/39 (64%) · med 2 · MRR 0.485** | 15/39 (38%) · med 5 · MRR 0.261 | 10/39 (26%) · med 11 · MRR 0.133 |
-| Style: `question` | 22 | **13/22 (59%) · med 2 · MRR 0.517** | 6/22 (27%) · med 8 · MRR 0.238 | 5/22 (23%) · med 10.5 · MRR 0.112 |
-| Style: `keywords` | 18 | **13/18 (72%) · med 2 · MRR 0.437** | 9/18 (50%) · med 3 · MRR 0.284 | 5/18 (28%) · med 11.5 · MRR 0.157 |
-| Class: `parent-class` (all 5) | 5 | **4/5 (80%) · med 5 · MRR 0.495** | 1/5 (20%) · med 9 · MRR 0.101 | 2/5 (40%) · med 21 · MRR 0.166 |
-| Class: `parent-class` (strict 3) | 3 | **3/3 (100%) · med 1 · MRR 0.733** | 1/3 (33%) · med 10 · MRR 0.131 | 0/3 (0%) · med 46 · MRR 0.027 |
-| Class: `source-only` | 11 | **4/11 (36%) · med 6 · MRR 0.300** | 2/11 (18%) · med 7 · MRR 0.120 | 2/11 (18%) · med 13 · MRR 0.117 |
-| Class: `source-with-guide-mention` | 12 | **9/12 (75%) · med 2 · MRR 0.525** | 9/12 (75%) · med 2 · MRR 0.490 | 3/12 (25%) · med 12 · MRR 0.147 |
-| Class: `guide-covered` | 12 | **9/12 (75%) · med 1 · MRR 0.597** | 3/12 (25%) · med 8 · MRR 0.219 | 3/12 (25%) · med 10 · MRR 0.118 |
-| Index: >=1 answer file in Chroma | 34 | **26/34 (76%) · med 2 · MRR 0.564** | 15/34 (44%) · med 5.5 · MRR 0.304 | 9/34 (26%) · med 11.5 · MRR 0.137 |
-| Index: 0 answer files in Chroma | 6 | 0/6 (0%) · med 13 · MRR 0.013 | 0/6 (0%) · med miss · MRR 0.000 | **1/6 (17%) · med 10.5 · MRR 0.106** |
+| Slice | n | Shipped (`QueryService`) | Nearest Chunks | `ripgrep` (distinct words, count) | `ripgrep` (summed count, pre-reg) |
+|---|---:|---|---|---|---|
+| Balanced-40: Overall | 40 | 26/40 (65%) · med 2 · MRR 0.481 | 15/40 (38%) · med 5.5 · MRR 0.259 | **30/40 (75%) · med 3 · MRR 0.497** | 10/40 (25%) · med 11 · MRR 0.132 |
+| Index: >=1 answer file in Chroma | 34 | **26/34 (76%) · med 2 · MRR 0.564** | 15/34 (44%) · med 5.5 · MRR 0.304 | 25/34 (74%) · med 2.5 · MRR 0.539 | 9/34 (26%) · med 11.5 · MRR 0.137 |
+| Index: 0 answer files in Chroma | 6 | 0/6 (0%) · med 13 · MRR 0.013 | 0/6 (0%) · med miss · MRR 0.000 | **5/6 (83%) · med 4.5 · MRR 0.254** | 1/6 (17%) · med 10.5 · MRR 0.106 |
+| All-49 sensitivity: Overall | 49 | 28/49 (57%) · med 2.5 · MRR 0.438 | 19/49 (39%) · med 5.5 · MRR 0.256 | **36/49 (73%) · med 3 · MRR 0.499** | 13/49 (27%) · med 11 · MRR 0.152 |
 
-The pools, inheritance walk, and historical penalties double retrieval Hit@5
-compared with plain nearest chunks (`65%` vs `38%`, rising to `76%` on questions
-whose answer files have been synced into Chroma; `4/5` and `3/3` strict on
-inherited `parent-class` questions). The full `49`-question sensitivity run
-(`28/49 = 57%` shipped vs `19/49 = 39%` nearest chunks vs `13/49 = 27%` `ripgrep`)
-and `10`-question second-seat `ask_knowledge_base` audit (`5/10` right, `5/10`
-wrong with `0/10` fabricated) also exposed two concrete regressions now ticketed
-for repair: unconditional per-word guide boosts and unbounded `src/core/Base.mjs`
-accumulation cause `QueryService` to lose `source-with-guide-mention` on the
-49-question set (`10/18` vs `11/18` nearest chunks, `#1806`), and blind
-`12,000`-character head truncation in `ask_knowledge_base` drops `#1`-ranked
-source methods that sit deep in a file (`#1807`). Full per-slice numbers,
-synthesis verdicts, and declared limits live in
+Measured findings across both subsets and the `10`-question second-seat
+`ask_knowledge_base` audit (`5/10` right, `5/10` wrong with `0/10` fabricated):
+
+- Shipped `QueryService` outperforms unweighted `nearestChunks` across balanced-40
+  (`65%` vs `38%`) and all-49 (`57%` vs `39%`), and roughly ties distinct-word
+  `ripgrep` when at least one answer file is indexed in Chroma (`26/34 = 76%`,
+  MRR `0.564` vs `25/34 = 74%`, MRR `0.539`) while ranking `guide-covered`
+  (`MRR 0.597` vs `0.374`) and strict inherited `parent-class` (`3/3`, MRR `0.733`
+  vs `2/3`, MRR `0.492`) higher.
+- Distinct-word `ripgrep` leads overall (`30/40` vs `26/40`; `36/49` vs `28/49`),
+  driven by three ticketed gaps: unconditional per-word `guideMatch` boosts,
+  unbounded `src/core/Base.mjs` inheritance accumulation, and `neoRootDir`-only
+  lexical rescue causing `QueryService` to trail on `source-only` (`4/11` vs
+  `8/11`) and all-49 `source-with-guide-mention` (`10/18` vs `11/18` nearest
+  chunks and `13/18` distinct-word `ripgrep`, **`#1806`**); the absence of a
+  canonical profile manifest or `repoSlug: neo-agent-brain` rows in
+  `neo-knowledge-base` (`0/6` balanced-40 and `0/7` all-49 on post-`2026-08-21`
+  unindexed files vs `5/6` and `6/7` for distinct-word `ripgrep`, **`#419`** /
+  `#1507`); and blind `12,000`-character head truncation in `ask_knowledge_base`
+  dropping `#1`-ranked source methods deep in a file (**`#1807`**).
+
+Full per-slice numbers (`13` slices across balanced-40 and all-49), synthesis
+verdicts, and declared limits live in
 [Knowledge Base Ranking Measurement](./measurements/kb-ranking-2026-11-16.md).
 
 ## Tooling Reference

@@ -70,7 +70,13 @@ const RIPGREP_EXCLUDE_GLOBS = [
     '!node_modules/**',
     '!.neo-ai-data/**',
     '!.git/**',
-    '!*.{svg,png,jpg,jpeg,webp,woff,woff2,ttf,ico}'
+    '!*.{svg,png,jpg,jpeg,webp,woff,woff2,ttf,ico}',
+    // Exclude benchmark fixture, runner, unit suite, and measurements report so ripgrep
+    // measures actual repo source/docs rather than matching the question fixture against itself.
+    '!ai/scripts/diagnostics/fixtures/kbRankingQuestions.json',
+    '!ai/scripts/diagnostics/measureKbRanking.mjs',
+    '!test/playwright/unit/ai/scripts/diagnostics/measureKbRanking.spec.mjs',
+    '!learn/agentos/measurements/**'
 ];
 
 /**
@@ -150,12 +156,36 @@ export function parseRipgrepCountOutput(stdout, repo) {
 }
 
 /**
- * @summary Orders ripgrep hits descending by match count, tie-breaking ascending by `repo/source`.
+ * @summary Orders ripgrep hits descending by summed match count, tie-breaking ascending by `repo/source`.
  * @param {Array<{repo: String, source: String, count: Number}>} hits Combined hits across checkouts.
  * @returns {Array<{repo: String, source: String, count: Number}>} Sorted hits.
  */
 export function rankRipgrepHits(hits) {
     return [...(hits || [])].sort((a, b) => {
+        if (b.count !== a.count) {
+            return b.count - a.count;
+        }
+
+        const keyA = `${a.repo || ''}/${a.source || ''}`;
+        const keyB = `${b.repo || ''}/${b.source || ''}`;
+
+        return keyA < keyB ? -1 : keyA > keyB ? 1 : 0;
+    });
+}
+
+/**
+ * @summary Orders ripgrep hits descending by distinct content words matched, then summed count, then `repo/source`.
+ * @param {Array<{repo: String, source: String, distinctWords?: Number, count: Number}>} hits Combined hits across checkouts.
+ * @returns {Array<{repo: String, source: String, distinctWords: Number, count: Number}>} Sorted hits.
+ */
+export function rankRipgrepDistinctHits(hits) {
+    return [...(hits || [])].sort((a, b) => {
+        const distinctA = a.distinctWords || 0;
+        const distinctB = b.distinctWords || 0;
+        if (distinctB !== distinctA) {
+            return distinctB - distinctA;
+        }
+
         if (b.count !== a.count) {
             return b.count - a.count;
         }
@@ -326,21 +356,22 @@ export function summarizeArmMetrics(questionEvaluations) {
 }
 
 /**
- * @summary Summarizes all three arms across a subset of per-question evaluation records.
+ * @summary Summarizes all baseline arms across a subset of per-question evaluation records.
  * @param {Array<Object>} questionResults Combined per-question records.
- * @returns {{shipped: Object, nearestChunks: Object, ripgrep: Object}} Three-arm summaries.
+ * @returns {{shipped: Object, nearestChunks: Object, ripgrep: Object, ripgrepSummed: Object}} Arm summaries.
  */
 function summarizeSlice(questionResults) {
     return {
         shipped      : summarizeArmMetrics(questionResults.map(row => row.arms.shipped)),
         nearestChunks: summarizeArmMetrics(questionResults.map(row => row.arms.nearestChunks)),
-        ripgrep      : summarizeArmMetrics(questionResults.map(row => row.arms.ripgrep))
+        ripgrep      : summarizeArmMetrics(questionResults.map(row => row.arms.ripgrep)),
+        ripgrepSummed: summarizeArmMetrics(questionResults.map(row => row.arms.ripgrepSummed))
     };
 }
 
 /**
  * @summary Identifies canonical question classes where the shipped ranking is not the best arm.
- * @param {Object<String, {shipped: Object, nearestChunks: Object, ripgrep: Object}>} byClassSummary Slice summaries keyed by class.
+ * @param {Object<String, {shipped: Object, nearestChunks: Object, ripgrep: Object, ripgrepSummed?: Object}>} byClassSummary Slice summaries keyed by class.
  * @returns {Array<Object>} Underperforming class records for AC-4 ticket filing.
  */
 export function findUnderperformingClasses(byClassSummary) {
@@ -355,7 +386,8 @@ export function findUnderperformingClasses(byClassSummary) {
         const shipped        = entry.shipped;
         const candidates     = [
             {arm: 'nearestChunks', metrics: entry.nearestChunks},
-            {arm: 'ripgrep', metrics: entry.ripgrep}
+            {arm: 'ripgrep', metrics: entry.ripgrep},
+            {arm: 'ripgrepSummed', metrics: entry.ripgrepSummed}
         ].filter(item => item.metrics && item.metrics.n > 0);
 
         const bestCompetitor = candidates.sort((a, b) => {
@@ -472,12 +504,12 @@ export function childSource(root) {
         const {isolatedUnder}     = await import(${JSON.stringify(file('ai/scripts/diagnostics/measureKbRanking.mjs'))});
 
         const isolation = {
-            dataRoot               : mcConfig.plane?.dataRoot ?? null,
-            mcGraphPath            : mcConfig.storagePaths?.graph ?? null,
-            memoryCoreDbPath       : kbConfig.memoryCoreDbPath ?? null,
-            logPath                : kbConfig.logPath ?? null,
-            embeddingResumeStateDir: kbConfig.embeddingResumeStateDir ?? null,
-            chromaDatabase         : kbConfig.chromaDatabase ?? null
+            dataRoot               : mcConfig.plane.dataRoot,
+            mcGraphPath            : mcConfig.storagePaths.graph,
+            memoryCoreDbPath       : kbConfig.memoryCoreDbPath,
+            logPath                : kbConfig.logPath,
+            embeddingResumeStateDir: kbConfig.embeddingResumeStateDir,
+            chromaDatabase         : kbConfig.chromaDatabase
         };
 
         const refusal = isolatedUnder(isolation, process.env.NEO_KB_RANKING_SCRATCH_ROOT);
@@ -489,22 +521,18 @@ export function childSource(root) {
         const payload = JSON.parse(await fs.readFile(process.env.NEO_KB_RANKING_INPUT, 'utf8'));
         const horizon = Number(payload.horizon) || 100;
 
-        const {default: ChromaManager}        = await import(${JSON.stringify(file('ai/services/knowledge-base/ChromaManager.mjs'))});
-        const {default: QueryService}         = await import(${JSON.stringify(file('ai/services/knowledge-base/QueryService.mjs'))});
-        const {default: SearchService}        = await import(${JSON.stringify(file('ai/services/knowledge-base/SearchService.mjs'))});
-        const {default: TextEmbeddingService} = await import(${JSON.stringify(file('ai/services/memory-core/TextEmbeddingService.mjs'))});
+        const {default: ChromaManager}                          = await import(${JSON.stringify(file('ai/services/knowledge-base/ChromaManager.mjs'))});
+        const {default: QueryService}                           = await import(${JSON.stringify(file('ai/services/knowledge-base/QueryService.mjs'))});
+        const {default: SearchService}                          = await import(${JSON.stringify(file('ai/services/knowledge-base/SearchService.mjs'))});
+        const {default: TextEmbeddingService, getEmbeddingModel} = await import(${JSON.stringify(file('ai/services/memory-core/TextEmbeddingService.mjs'))});
 
         await ChromaManager.ready();
         await QueryService.ready();
         await SearchService.ready();
 
-        const collection = await ChromaManager.getKnowledgeBaseCollection();
-        const indexCount = await collection.count();
-        const embeddingModel = mcConfig.embeddingProvider === 'ollama'
-            ? mcConfig.ollama?.embeddingModel
-            : mcConfig.embeddingProvider === 'openAiCompatible'
-                ? mcConfig.openAiCompatible?.embeddingModel
-                : mcConfig.gemini?.embeddingModel;
+        const collection     = await ChromaManager.getKnowledgeBaseCollection();
+        const indexCount     = await collection.count();
+        const embeddingModel = getEmbeddingModel(mcConfig.embeddingProvider);
 
         const indexedSources = {};
         for (const item of payload.uniqueAnswerPaths || []) {
@@ -515,7 +543,7 @@ export function childSource(root) {
                 where  : variants.length === 1 ? {source: variants[0]} : {source: {$in: variants}},
                 limit  : 1,
                 include: ['metadatas']
-            }).catch(() => null);
+            });
             indexedSources[item.path] = Boolean(found?.metadatas?.length);
         }
 
@@ -591,9 +619,9 @@ export function childSource(root) {
             isolation,
             indexCount,
             embeddingProvider: mcConfig.embeddingProvider,
-            embeddingModel   : embeddingModel || null,
-            askProvider      : kbConfig.askSynthesis?.provider ?? null,
-            askModel         : kbConfig.askSynthesis?.model ?? null,
+            embeddingModel,
+            askProvider      : kbConfig.askSynthesis.provider,
+            askModel         : kbConfig.askSynthesis.model,
             indexedSources,
             perQuestion,
             askResults
@@ -667,14 +695,15 @@ export async function runChildChromaArms({
 }
 
 /**
- * @summary Runs `ripgrep` for one question across both repository checkouts and returns ranked hits.
+ * @summary Runs `ripgrep` for one question across both repository checkouts, ranking hits both by distinct words
+ * matched (then total count) and by pre-registered summed match count alone.
  * @param {Object} options
  * @param {String} options.question Question text.
  * @param {String} options.neoRoot Absolute path to `neomjs/neo` checkout.
  * @param {String} options.brainRoot Absolute path to `neomjs/neo-agent-brain` checkout.
  * @param {Number} [options.horizon=100] Max ranked entries retained.
  * @param {Function} [options.exec=execFileAsync] Spawn seam for unit tests.
- * @returns {Promise<{words: String[], pattern: String|null, hits: Array<{repo: String, source: String, count: Number}>}>}
+ * @returns {Promise<{words: String[], pattern: String|null, hits: Array<{repo: String, source: String, distinctWords: Number, count: Number}>, summedHits: Array<{repo: String, source: String, distinctWords: Number, count: Number}>}>}
  */
 export async function runRipgrepArm({
     question,
@@ -687,13 +716,15 @@ export async function runRipgrepArm({
     const pattern = buildRipgrepPattern(words);
 
     if (!pattern) {
-        return {words, pattern: null, hits: []};
+        return {words, pattern: null, hits: [], summedHits: []};
     }
 
     const globArgs = RIPGREP_EXCLUDE_GLOBS.flatMap(glob => ['-g', glob]);
-    const rgArgs   = ['--count-matches', '-i', '--no-messages', ...globArgs, '-e', pattern, '.'];
 
-    const scanRepo = async (cwd, repo) => {
+    const scanWordInRepo = async (cwd, repo, word) => {
+        const wordPattern = `\\b${escapeRegex(word)}\\b`;
+        const rgArgs      = ['--count-matches', '-i', '--no-messages', ...globArgs, '-e', wordPattern, '.'];
+
         try {
             const {stdout} = await exec('rg', rgArgs, {
                 cwd,
@@ -709,14 +740,35 @@ export async function runRipgrepArm({
         }
     };
 
+    const scanRepo = async (cwd, repo) => {
+        const wordHitLists = await Promise.all(words.map(word => scanWordInRepo(cwd, repo, word)));
+        const bySource     = new Map();
+
+        for (const hitList of wordHitLists) {
+            for (const hit of hitList) {
+                const prev = bySource.get(hit.source) || {repo, source: hit.source, distinctWords: 0, count: 0};
+                prev.distinctWords += 1;
+                prev.count         += hit.count;
+                bySource.set(hit.source, prev);
+            }
+        }
+
+        return [...bySource.values()];
+    };
+
     const [neoHits, brainHits] = await Promise.all([
         scanRepo(neoRoot, 'neomjs/neo'),
         scanRepo(brainCheckout, 'neomjs/neo-agent-brain')
     ]);
 
-    const ranked = rankRipgrepHits([...neoHits, ...brainHits]).slice(0, horizon);
+    const combined = [...neoHits, ...brainHits];
 
-    return {words, pattern, hits: ranked};
+    return {
+        words,
+        pattern,
+        hits      : rankRipgrepDistinctHits(combined).slice(0, horizon),
+        summedHits: rankRipgrepHits(combined).slice(0, horizon)
+    };
 }
 
 /**
@@ -735,9 +787,9 @@ async function readGitHead(repoDir, exec = execFileAsync) {
 }
 
 /**
- * @summary Formats one numeric table row across all three arms.
+ * @summary Formats one numeric table row across shipped, nearestChunks, and both ripgrep orderings.
  * @param {String} label Row label.
- * @param {{shipped: Object, nearestChunks: Object, ripgrep: Object}} slice Summary triple.
+ * @param {{shipped: Object, nearestChunks: Object, ripgrep: Object, ripgrepSummed?: Object}} slice Summary arms.
  * @returns {String} Markdown table line.
  */
 function formatSliceRow(label, slice) {
@@ -747,7 +799,9 @@ function formatSliceRow(label, slice) {
         return `${m.hitsAt5}/${m.n} (${pct}%) · med ${med} · MRR ${m.meanReciprocalRank.toFixed(3)}`;
     };
 
-    return `| ${label} | ${slice.shipped.n} | ${fmt(slice.shipped)} | ${fmt(slice.nearestChunks)} | ${fmt(slice.ripgrep)} |`;
+    const summedCell = slice.ripgrepSummed ? fmt(slice.ripgrepSummed) : 'n/a';
+
+    return `| ${label} | ${slice.shipped.n} | ${fmt(slice.shipped)} | ${fmt(slice.nearestChunks)} | ${fmt(slice.ripgrep)} | ${summedCell} |`;
 }
 
 /**
@@ -772,8 +826,8 @@ export function formatMarkdownReport(report) {
         '',
         '## Summary (Hit@5 · Median Found Rank · MRR @ Top-100)',
         '',
-        '| Slice | n | Arm A: Shipped (`QueryService`) | Arm B: Nearest Chunks (unweighted) | Arm C: `ripgrep` (content words) |',
-        '|---|---:|---|---|---|',
+        '| Slice | n | Arm A: Shipped (`QueryService`) | Arm B: Nearest Chunks (unweighted) | Arm C: `ripgrep` (distinct words, count) | Arm C (pre-reg): `ripgrep` (summed count) |',
+        '|---|---:|---|---|---|---|',
         formatSliceRow('Overall', report.summary.overall),
         formatSliceRow('Overall (excl. B076)', report.summary.overallExcludingB076),
         formatSliceRow('Style: question', report.summary.byStyle.question),
@@ -793,7 +847,7 @@ export function formatMarkdownReport(report) {
     ];
 
     if (report.underperformingClasses.length === 0) {
-        lines.push('None — `shipped` matched or led both baseline arms in every canonical class.');
+        lines.push('None — `shipped` matched or led every baseline arm in every canonical class.');
     } else {
         lines.push('| Class | Loss Axis | Best Arm | Shipped | Best Baseline |');
         lines.push('|---|---|---|---|---|');
@@ -910,7 +964,8 @@ export async function measureKbRanking({
             arms                  : {
                 shipped      : evaluateArmQuestion(chromaEntry.shippedSources, q),
                 nearestChunks: evaluateArmQuestion(chromaEntry.nearestSources, q),
-                ripgrep      : evaluateArmQuestion(rgEntry.hits, q)
+                ripgrep      : evaluateArmQuestion(rgEntry.hits, q),
+                ripgrepSummed: evaluateArmQuestion(rgEntry.summedHits, q)
             }
         });
     }

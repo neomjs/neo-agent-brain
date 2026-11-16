@@ -13,6 +13,7 @@ import {fileURLToPath} from 'node:url';
 import {
     DEFAULT_FIXTURE_PATH,
     buildRipgrepPattern,
+    childSource,
     evaluateArmQuestion,
     extractGrepWords,
     findUnderperformingClasses,
@@ -24,6 +25,7 @@ import {
     measureKbRanking,
     normalizeCorpusSourcePath,
     parseRipgrepCountOutput,
+    rankRipgrepDistinctHits,
     rankRipgrepHits,
     selectQuestions,
     summarizeArmMetrics
@@ -95,6 +97,16 @@ test.describe('measureKbRanking', () => {
             {repo: 'neomjs/neo', source: 'src/A.mjs', count: 5},
             {repo: 'neomjs/neo', source: 'src/B.mjs', count: 2},
             {repo: 'neomjs/neo', source: 'src/C.mjs', count: 2}
+        ]);
+
+        expect(rankRipgrepDistinctHits([
+            {repo: 'neomjs/neo', source: 'src/Verbose.mjs', distinctWords: 1, count: 40},
+            {repo: 'neomjs/neo', source: 'src/PreciseB.mjs', distinctWords: 3, count: 3},
+            {repo: 'neomjs/neo', source: 'src/PreciseA.mjs', distinctWords: 3, count: 5}
+        ])).toEqual([
+            {repo: 'neomjs/neo', source: 'src/PreciseA.mjs', distinctWords: 3, count: 5},
+            {repo: 'neomjs/neo', source: 'src/PreciseB.mjs', distinctWords: 3, count: 3},
+            {repo: 'neomjs/neo', source: 'src/Verbose.mjs', distinctWords: 1, count: 40}
         ]);
     });
 
@@ -228,6 +240,12 @@ test.describe('measureKbRanking', () => {
         expect(isolatedUnder(validIsolation, scratch)).toBeNull();
         expect(isolatedUnder({...validIsolation, chromaDatabase: 'neo-kb-unit-test-1'}, scratch)).toContain('chromaDatabase=default_database');
         expect(isolatedUnder({...validIsolation, memoryCoreDbPath: '/var/live/memory-core-graph.sqlite'}, scratch)).toContain('outside scratch root');
+
+        // childSource reads config leaves directly and delegates model lookup
+        const generated = childSource(brainRoot);
+        expect(generated).toContain('getEmbeddingModel(mcConfig.embeddingProvider)');
+        expect(generated).not.toMatch(/\b(?:mcConfig|kbConfig)\.[A-Za-z0-9_.]*\?\./);
+        expect(generated).not.toMatch(/\b(?:mcConfig|kbConfig)\.[A-Za-z0-9_.]*\s*\?\?\s*null/);
     });
 
     test('runs end-to-end CLI over injected Chroma child and real ripgrep checkouts', async () => {
@@ -371,6 +389,7 @@ test.describe('measureKbRanking', () => {
             expect(written.indexCoverage.questionsNoneIndexed).toBe(1);
             expect(written.summary.overall.shipped.hitsAt5).toBe(1);
             expect(written.summary.overall.ripgrep.hitsAt5).toBe(2);
+            expect(written.summary.overall.ripgrepSummed.hitsAt5).toBe(2);
             expect(written.underperformingClasses.map(row => row.class)).toEqual([
                 'parent-class',
                 'source-only'
