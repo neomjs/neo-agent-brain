@@ -45,6 +45,7 @@ import {
     resolveResidentFamilyById
 } from '../graph/agentFamilyResolution.mjs';
 import {getMissingMemoryWalLeaves}    from './helpers/memoryWalStore.mjs';
+import {readSubjectBindingActivation} from './helpers/subjectBinding.mjs';
 import {writerStamp}                  from '../../daemons/wake/sunsetReceipt.mjs';
 import {
     classifyMailboxReadState,
@@ -732,6 +733,40 @@ function getMailboxIdentityStorageVariants(identity) {
 }
 
 /**
+ * @summary Tests whether a graph node id exists, warming the cache once, so a node that reached the
+ * WAL but not this connection's cache still counts.
+ * @param {Object} db The graph database.
+ * @param {String} id The node id.
+ * @returns {Boolean}
+ * @private
+ */
+function hasGraphNode(db, id) {
+    let exists = db?.nodes?.has(id);
+    if (!exists && db?.getAdjacentNodes) {
+        db.getAdjacentNodes(id, 'both');
+        exists = db.nodes.has(id);
+    }
+    return Boolean(exists);
+}
+
+/**
+ * @summary True once the cutover's activation record exists on the graph's physical connection.
+ * A connection that cannot answer keeps the dormant, alias-first behavior.
+ * @param {Object} db The graph database.
+ * @returns {Boolean}
+ * @private
+ */
+function isSubjectSelectionActive(db) {
+    const sqlite = db?.storage?.db;
+    if (!sqlite?.open) return false;
+    try {
+        return Boolean(readSubjectBindingActivation(sqlite));
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Validates the canonical mailbox target after `normalizeMailboxTarget`.
  * Resolves unambiguous `AGENT:<family>/<model>` aliases against registered AgentIdentity
  * graph nodes and rejects unresolvable targets before edge creation, so invalid addresses
@@ -739,6 +774,9 @@ function getMailboxIdentityStorageVariants(identity) {
  *
  * Resolution policy:
  * - `'AGENT:*'` and `role:` / `human:` prefixes pass through unchanged.
+ * - Once the cutover has activated selection by subject, an exact canonical id addresses its own
+ *   node before any former-login alias: a reclaimed login's new identity keeps its own mail.
+ *   Before that, a former-login alias resolves first, as it always has.
  * - Targets that already match a registered graph node ID pass through.
  * - `AGENT:<family>/<model>` patterns resolve to the single AgentIdentity node whose model
  *   family matches `'<family>'` and `accountType === 'agent'` when the match is unambiguous;
@@ -767,6 +805,8 @@ function validateMailboxTarget(normalizedTo, originalTo, db = GraphService.requi
     // target turns out to be orphan, the FK guard will surface that separately — this
     // validator focuses on the @<identity> + AGENT:<family>/<model> failure surface.
     if (normalizedTo.startsWith('role:') || normalizedTo.startsWith('human:')) return normalizedTo;
+
+    if (isSubjectSelectionActive(db) && hasGraphNode(db, normalizedTo)) return normalizedTo;
 
     const formerAlias = resolveAgentIdentityAlias(originalTo) ?? resolveAgentIdentityAlias(normalizedTo);
     if (formerAlias) {
@@ -6767,7 +6807,7 @@ class MailboxService extends Base {
         });
 
         if (!allowedStates.has(newState)) {
-            const role = [isOriginator && 'originator', isAssignee && 'assignee'].filter(Boolean).join(' and '),
+            const role        = [isOriginator && 'originator', isAssignee && 'assignee'].filter(Boolean).join(' and '),
                   allowedHint = allowedStates.size
                       ? `; allowed next state${allowedStates.size === 1 ? '' : 's'} for ${role}: ${[...allowedStates].join(', ')}`
                       : '';

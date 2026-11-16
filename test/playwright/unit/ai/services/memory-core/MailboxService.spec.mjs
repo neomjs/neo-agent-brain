@@ -31,6 +31,11 @@ import {buildOutputZodSchema, toOpenApiJsonSchema} from '../../../../../../ai/mc
 import {collisionPreventionTag} from '../../../../../../ai/services/shared/a2aCollisionTags.mjs';
 // Pure as well: identity normalization only.
 import {admissionWhere}         from '../../../../../../ai/services/memory-core/helpers/messageAdmission.mjs';
+// Pure as well: SQL over the connection it is handed.
+import {
+    SUBJECT_BINDING_ACTIVATION_TABLE,
+    activateSubjectBinding
+} from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -2815,6 +2820,40 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         });
     });
 
+    test('once activated, an exact canonical id keeps its own mail before a former-login alias', async () => {
+        const sqlite = GraphService.db.storage.db;
+
+        GraphService.upsertNode({id: '@neo-fable-mnemosyne', type: 'AgentIdentity', name: 'Mnemosyne',
+            properties: {accountType: 'agent', githubLogin: '@neo-fable-mnemosyne', formerLogins: ['@neo-fable']}});
+        // A newcomer whose login reclaimed the former spelling
+        GraphService.upsertNode({id: '@neo-fable', type: 'AgentIdentity', name: 'Newcomer', properties: {accountType: 'agent'}});
+
+        for (const [grantor, grantee] of [['@neo-fable', '@alice'], ['@alice', '@neo-fable'], ['@neo-fable-mnemosyne', '@alice'], ['@alice', '@neo-fable-mnemosyne']]) {
+            await RequestContextService.run({agentIdentityNodeId: grantor}, () => PermissionService.grantPermission({to: grantee, scope: 'CAN_REPLY_TO'}));
+        }
+
+        const send = () => RequestContextService.run({agentIdentityNodeId: '@alice'},
+            () => MailboxService.addMessage({to: '@neo-fable', subject: 'exact or alias', body: 'routing probe'}));
+
+        try {
+            // Dormant: the former-login alias still resolves first
+            expect((await send()).resolvedRecipientAlias?.id).toBe('@neo-fable-mnemosyne');
+
+            sqlite.transaction(() => activateSubjectBinding(sqlite, {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+            // Active: the exact id addresses the newcomer, with no alias rewriting
+            const active = await send();
+            expect(active.status).toBe('sent');
+            expect(active.resolvedRecipientAlias).toBeUndefined();
+
+            const newcomerInbox = await RequestContextService.run({agentIdentityNodeId: '@neo-fable'},
+                () => MailboxService.listMessages({box: 'inbox', status: 'all'}));
+            expect(newcomerInbox.messages.map(message => message.to)).toContain('@neo-fable');
+        } finally {
+            sqlite.exec(`DROP TABLE IF EXISTS ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
+        }
+    });
+
     test('markRead updates the readAt property', async () => {
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
             await PermissionService.grantPermission({ to: '@alice', scope: 'CAN_REPLY_TO' });
@@ -4497,11 +4536,11 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
 
         await RequestContextService.run({ agentIdentityNodeId: '@alice' }, async () => {
             stampedId = (await MailboxService.addMessage({
-                to: '@alice', subject: 'Sunset handover', body: 'handover payload',
+                to            : '@alice', subject: 'Sunset handover', body: 'handover payload',
                 taggedConcepts: ['sunset-protocol-handover'], wakeSuppressed: true, ...stamp
             })).messageId;
             malformedId = (await MailboxService.addMessage({
-                to: '@alice', subject: 'A note', body: 'note', wakeSuppressed: true,
+                to       : '@alice', subject: 'A note', body: 'note', wakeSuppressed: true,
                 writerKey: 'k'.repeat(WRITER_STAMP_MAX_CHARS + 1), writerTurn: ''
             })).messageId;
         });
