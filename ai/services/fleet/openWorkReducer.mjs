@@ -359,19 +359,48 @@ function arrivalOf(row, previousComplete, pulse) {
 }
 
 /**
- * @summary Whether one of the seats could have read a row: its author, a seat holding a review request on it, or
- * any of them while its request list is incomplete, since an unseen request may be theirs.
+ * @summary Canonical lowercase GitHub login key for search coverage matching.
+ * @param {*} login
+ * @returns {String|null}
+ * @private
+ */
+const loginKey = login => typeof login === 'string' && login ? login.toLowerCase() : null;
+
+/**
+ * @summary Whether an incomplete pulse read could have covered a row through its author-login query
+ * (seat-author or outside) or through a missed reviewer's held-work query.
  * @param {Object} row
- * @param {String[]} seats
+ * @param {Object} [coverage]
+ * @param {Object|null} [coverage.searches]
+ * @param {String[]} [coverage.missed]
  * @returns {Boolean}
  * @private
  */
-function readBy(row, seats) {
-    return seats.length > 0 && (
-        row.owner?.kind === 'outside' && seats.includes('outside') ||
-        !row.requestsComplete ||
-        seats.includes(`@${row.owner?.login}`) ||
-        row.requested.some(seat => seats.includes(seat))
+function missedBy(row, {searches = null, missed = []} = {}) {
+    if (searches && typeof searches === 'object') {
+        const
+            seatLogins     = (searches.seatLogins ?? []).map(loginKey).filter(Boolean),
+            authoredLogins = (searches.authoredLogins ?? []).map(loginKey).filter(Boolean),
+            authorLogin    = loginKey(row.owner?.login),
+            authorMissed   = authorLogin && seatLogins.includes(authorLogin)
+                ? !authoredLogins.includes(authorLogin)
+                : searches.outsideComplete !== true,
+            missedReviewers = Array.isArray(searches.missedReviewers) ? searches.missedReviewers : [],
+            reviewerMissed  = missedReviewers.length > 0 && (
+                !row.requestsComplete ||
+                row.requested.some(reviewer => missedReviewers.includes(reviewer))
+            );
+
+        return authorMissed || reviewerMissed
+    }
+
+    const missedSeats = missed.filter(seat => seat !== 'outside');
+
+    return missed.length > 0 && (
+        row.owner?.kind === 'outside' && missed.includes('outside') ||
+        missedSeats.length > 0 && !row.requestsComplete ||
+        missed.includes(`@${row.owner?.login}`) ||
+        row.requested.some(seat => missed.includes(seat))
     )
 }
 
@@ -382,25 +411,28 @@ function readBy(row, seats) {
  * PR to the close it last recorded, so a re-read of that close records nothing, while a PR observed
  * open again retires its marker and its next close is a new episode. A PR absent from an open read
  * that covered every page leaves the snapshot when the terminal read was complete too, as `vanished`
- * unless that read closed it; while either was partial, or a seat that could have read it missed, it is
+ * unless that read closed it; while either was partial, or a search that could have read it missed, it is
  * carried forward with its own `observedAt`, because missing evidence is not a close.
  * @param {Object} pulse
- * @param {Object|null} pulse.previous `{rows: {[key]: row}, closed: {[key]: at}, complete, missed}`, or null on the first pulse.
- * @param {{rows: Object[], complete: Boolean, missed: String[]}} pulse.observed The open rows this pulse read;
- *     `complete` when the seats that owe coverage read every page, `missed` the other seats whose read did not.
+ * @param {Object|null} pulse.previous `{rows: {[key]: row}, closed: {[key]: at}, complete, missed, searches?}`, or null on the first pulse.
+ * @param {{rows: Object[], complete: Boolean, missed?: String[], searches?: Object}} pulse.observed The open rows this pulse read;
+ *     `complete` when the seats that owe coverage read every page, `missed` the other seats whose read did not,
+ *     `searches` the actual GitHub author-login and held-reviewer search coverage.
  * @param {{rows: Object[], complete: Boolean}} pulse.terminal Terminal rows ({@link normalizeTerminal}) read since `since`.
  * @param {String|null} pulse.since The watermark: where the terminal read began, ISO.
  * @param {String} pulse.id This pulse's identity, its time.
- * @returns {{rows: Object, closed: Object, complete: Boolean, missed: String[], transitions: Object[], vanished: String[]}}
+ * @returns {{rows: Object, closed: Object, complete: Boolean, missed: String[], searches?: Object, transitions: Object[], vanished: String[]}}
  */
 export function reduceOpenWork({previous, observed, terminal, since, id}) {
     const
-        rows        = {},
-        closed      = Object.fromEntries(Object.entries(previous?.closed ?? {}).filter(([, at]) => !since || at >= since)),
-        complete    = observed.complete,
-        missed      = observed.missed ?? [],
-        transitions = [],
-        vanished    = [];
+        rows                = {},
+        closed              = Object.fromEntries(Object.entries(previous?.closed ?? {}).filter(([, at]) => !since || at >= since)),
+        complete            = observed.complete,
+        missed              = observed.missed ?? [],
+        searches            = observed.searches ?? null,
+        hasPreviousCoverage = Boolean(previous) && (!searches || Boolean(previous.searches)),
+        transitions         = [],
+        vanished            = [];
 
     for (const row of observed.rows) {
         const
@@ -410,10 +442,12 @@ export function reduceOpenWork({previous, observed, terminal, since, id}) {
         rows[row.key] = {...merged, reviewRecords: retainReviewWitnesses(row.reviewRecords, before?.reviewRecords), observedAt: id};
         delete closed[row.key];
 
-        previous && transitions.push(...before ? changesOf(before, merged, id) : arrivalOf(merged, previous.complete !== false && !readBy(merged, previous.missed ?? []), id))
+        previous && transitions.push(...before
+            ? changesOf(before, merged, id)
+            : arrivalOf(merged, hasPreviousCoverage && previous.complete !== false && !missedBy(merged, previous), id))
     }
 
-    if (!previous) return {rows, closed, complete, missed, transitions, vanished};
+    if (!previous) return {rows, closed, complete, missed, ...(searches ? {searches} : {}), transitions, vanished};
 
     for (const row of terminal.rows) {
         if (!rows[row.key] && closed[row.key] !== row.at && (!since || row.at >= since)) {
@@ -426,9 +460,10 @@ export function reduceOpenWork({previous, observed, terminal, since, id}) {
 
     for (const [key, before] of Object.entries(previous.rows)) {
         if (!rows[key] && !closed[key]) {
-            complete && terminal.complete && !readBy(before, missed) ? vanished.push(key) : rows[key] = before
+            const terminalIncomplete = Boolean(searches?.terminalIncompleteLogins?.some(login => loginKey(login) === loginKey(before.owner?.login)));
+            complete && terminal.complete && !terminalIncomplete && !missedBy(before, {searches, missed}) ? vanished.push(key) : rows[key] = before
         }
     }
 
-    return {rows, closed, complete, missed, transitions, vanished}
+    return {rows, closed, complete, missed, ...(searches ? {searches} : {}), transitions, vanished}
 }
