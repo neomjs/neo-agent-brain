@@ -26,6 +26,10 @@
     "own store and may hold that id, so its tools stay off the matcher. It is anchored because Claude tests",
     "a matcher regex against the tool name unanchored. The hook must stay sync, because a pre-tool",
     "decision cannot run in the background; the 2 s timeout bounds it.",
+    "PreToolUse -> writerStampHook is ours: on add_memory and add_message it adds writerKey (a hash of the seat and",
+    "its harness session id) and writerTurn (the session's stored turn id) through updatedInput, so the plane can",
+    "attribute a sunset receipt's close to its writer. It is sync for the guard's reason and decides no permission;",
+    "a timeout leaves the call unstamped.",
     "seatModelGuardHook is ours: on a Desktop seat whose account picked another model family, prompt blocks",
     "(exit 2) and stop records the family the seat ran. Both arms are local file reads, so 2 s and",
     "5 s bound them; a timeout lets the prompt run.",
@@ -42,6 +46,16 @@
           {
             "type": "command",
             "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/harnessIdGuardHook.mjs\"",
+            "timeout": 2
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__neo-mjs-memory-core__(add_memory|add_message)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/writerStampHook.mjs\"",
             "timeout": 2
           }
         ]
