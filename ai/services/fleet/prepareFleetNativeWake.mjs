@@ -17,7 +17,7 @@ import {writeFileAtomic}                                                        
 import {assertUntrackedManagedWorkspaceFile, excludeManagedNativeWakeHook}                         from './excludeManagedWorkspaceFiles.mjs';
 import {isRuntimeGenerationPin, readRuntimeGeneration, runtimeGenerationPin}                       from './runtimeGeneration.mjs';
 import {readCodexWakeArtifact}                                                                     from './readCodexWakeArtifact.mjs';
-import {CODEX_WAKE_WIRE}                                                                           from './codexWakeArtifact.mjs';
+import {CODEX_WAKE_ARTIFACT_DECLARATION, CODEX_WAKE_WIRE}                                          from './codexWakeArtifact.mjs';
 
 const wakeModule = name => fileURLToPath(new URL(`../../daemons/wake/${name}.mjs`, import.meta.url));
 const absolute   = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root;
@@ -44,16 +44,22 @@ export async function resolveCodexWakeRuntime({agentId, instanceHome, workspaceR
     const expected = {version:1, family:'codex-desktop', agentId, instanceHome, workspaceRoot, manifestPath, stateDir, configDir:null};
     const previous = await readPrivateWakeJson(path.join(stateDir, 'native-wake-preparation', agentId + '.json'));
     if (previous && !matchesReceipt(previous, expected, 'codex-desktop')) throw new Error('Mismatched seat preparation record');
-    if (runtime?.pin === 'held') {
+    if (runtime?.id || runtime?.pin === 'held') {
         const {pin, ...claimed} = runtime;
         if (!isRuntimeGenerationPin(claimed)) throw new Error('Codex wake Start runtime is unproven');
         const artifact = await readCodexWakeArtifact(claimed, retainArtifact);
         if (artifact) {
+            if (pin !== 'held') throw new Error('Codex wake artifact is not retained');
             if (previous && (previous.nodePath !== artifact.nodePath || previous.modulePath !== artifact.hookModulePath)) {
                 throw new Error('Codex wake migration is not retained')
             }
             return artifact
         }
+    } else {
+        // A packaged artifact cannot authorize the current-process shortcut for a seat with no original Start.
+        const packaged = new URL('../../../' + CODEX_WAKE_ARTIFACT_DECLARATION, import.meta.url);
+        const present  = await fs.lstat(packaged).catch(error => { if (error.code !== 'ENOENT') throw error });
+        if (present) throw new Error('Codex wake artifact has no retained Start')
     }
     if (!enrolled && !previous) return current;
     // Explicit pilot migration stays on the host-owned tuple when that same host is still live.

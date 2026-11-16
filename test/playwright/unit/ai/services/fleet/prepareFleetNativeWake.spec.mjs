@@ -40,6 +40,9 @@ test.describe('Fleet native wake preparation', () => {
             const a      = await sealRuntimeGeneration(generations,{revision:'a',artifactConsumer:'consumer 1'});
             const b      = await sealRuntimeGeneration(generations,{revision:'b',artifactConsumer:'consumer 1'});
             const c      = await sealRuntimeGeneration(generations,{revision:'c',artifactConsumer:'consumer 2'});
+            const unheld = {...runtimeGenerationPin(await readRuntimeGenerationRecord({directory:a.directory})),pin:'unknown'};
+            await expect(resolveCodexWakeRuntime({...options,agentId:agent.id,enrolled:false,runtime:unheld})).rejects.toThrow('not retained');
+            await expect(fs.stat(hooks)).rejects.toMatchObject({code:'ENOENT'});
             const before = await assertStart(a);
             expect(await assertStart(b)).toBe(before);
             expect(await assertStart(c)).not.toBe(before);
