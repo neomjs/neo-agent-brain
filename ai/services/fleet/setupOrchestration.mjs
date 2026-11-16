@@ -16,14 +16,18 @@
  * preset is checked against arrives as `configSourcePath`, from the entrypoint.
  */
 
-import path                                                          from 'node:path';
-import {composeCredentialEffects, presetEnvRefusals}                 from './credentialStep.mjs';
-import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}                     from './firstRunRecipe.mjs';
-import {EFFECT_IDS, applyEffect, readForgeStatus, settleReceipt} from './hostEffects.mjs';
-import {presets}                                                     from './placementPresets.mjs';
-import {createPlaneWitnessClient}                                    from './planeWitnessClient.mjs';
-import {RECEIPT_OUTCOMES, findReceipt}                               from './setupRunRecord.mjs';
-import {performVerify, verifyExits}                                  from './verifyEffect.mjs';
+import path                                                                     from 'node:path';
+import {composeCredentialEffects, presetEnvRefusals}                            from './credentialStep.mjs';
+import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}                                from './firstRunRecipe.mjs';
+import {EFFECT_IDS, applyEffect, readForgeStatus, renderEnvFile, settleReceipt} from './hostEffects.mjs';
+import {presets}                                                                from './placementPresets.mjs';
+import {createPlaneWitnessClient}                                               from './planeWitnessClient.mjs';
+import {RECEIPT_OUTCOMES, contentDigest, findReceipt}                           from './setupRunRecord.mjs';
+import {performVerify, verifyExits}                                             from './verifyEffect.mjs';
+import {
+    resolveWakeSetupPaths,
+    selectWakeRecordsStateDir
+} from './wakeReceiverSetup.mjs';
 
 /**
  * The order the effects run in, whichever renderer runs them: the recipe's effect steps as it lists them,
@@ -91,10 +95,11 @@ export function composeContextOf(layout) {
  * @param {String}   options.configSourcePath The Brain's `ai/configBase.mjs`, which a preset's env set is checked against.
  * @param {String[]} [options.effectIds] The effects to run now; every effect when absent.
  * @param {Boolean}  [options.newAttempt=false] The operator's explicit consent to write the witness again.
+ * @param {Function} [options.evaluate=null] Optional `(record) → Promise<evaluation>` to refresh gated observations after preceding effects apply.
  * @param {Function} [options.createPlaneClient=createPlaneWitnessClient] `({endpoint, credential}) → {addMemory, recentTurns, recall, close}`; a renderer without a plane (a fake host) passes `null` and `verify` is reported, not run.
  * @returns {Promise<Object>} The record after the run.
  */
-export async function performEffects({record, recordPath, host, layout, target, evaluation, report, configSourcePath, effectIds, newAttempt = false, createPlaneClient = createPlaneWitnessClient}) {
+export async function performEffects({record, recordPath, host, layout, target, evaluation, report, configSourcePath, effectIds, newAttempt = false, evaluate = null, createPlaneClient = createPlaneWitnessClient}) {
     const selected = effectIds ? new Set(effectIds) : null;
 
     if (selected) {
@@ -111,9 +116,11 @@ export async function performEffects({record, recordPath, host, layout, target, 
         }
     }
 
+    let current = record, activeEvaluation = evaluation, mutated = false;
+
     const
-        consent = stepId => record.consents.find(row => row.stepId === stepId)?.answer ?? null,
-        stepOf  = id => evaluation.steps.find(step => step.id === id),
+        consent = stepId => current.consents.find(row => row.stepId === stepId)?.answer ?? null,
+        stepOf  = id => activeEvaluation.steps.find(step => step.id === id),
         // due: an effect this call would run — its row is not ok, or it is `verify` under the consent to write it again
         due     = effectId => (!selected || selected.has(effectId)) && (stepOf(effectId)?.status !== STEP_STATUSES.ok || (effectId === EFFECT_IDS.verify && newAttempt)),
         chosen  = consent('preset'),
@@ -129,6 +136,31 @@ export async function performEffects({record, recordPath, host, layout, target, 
                 ? `the consented preset '${chosen}' is not in the preset table: no effect runs`
                 : waitReport(waiting, {id: missing, status: stepOf(missing)?.status ?? STEP_STATUSES.pending, reason: stepOf(missing)?.reason ?? 'unanswered'}));
         }
+
+        return record;
+    }
+
+    const desktopWakeStep = stepOf('desktop-wake');
+
+    if (desktopWakeStep && desktopWakeStep.status !== STEP_STATUSES.ok) {
+        const waiting = EFFECT_ORDER.find(due);
+
+        if (waiting) {
+            report(waitReport(waiting, {id: 'desktop-wake', status: desktopWakeStep.status, reason: desktopWakeStep.reason ?? 'unanswered'}));
+        }
+
+        return record;
+    }
+
+    let recordsStateDir = null;
+
+    try {
+        recordsStateDir = selectWakeRecordsStateDir(layout, {
+            consentAnswer: consent('desktop-wake'),
+            supported    : desktopWakeStep?.capability?.supported !== false
+        });
+    } catch (error) {
+        report(`wake records directory refused before any write: ${error.message}`);
 
         return record;
     }
@@ -158,18 +190,37 @@ export async function performEffects({record, recordPath, host, layout, target, 
         return record;
     }
 
-    const inputs = {
-        [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
-        [EFFECT_IDS.writeEnv]    : {path: layout.envFile, entries: {...preset.env, ...credentials.envEntries, NEO_PLANE_ID: target.planeId, NEO_PLANE_DATA_ROOT: target.dataRoot}},
-        [EFFECT_IDS.composeUp]   : composeContextOf(layout)
-    };
+    const
+        writeEnvInput = {
+            path   : layout.envFile,
+            entries: {
+                ...preset.env,
+                ...credentials.envEntries,
+                NEO_PLANE_ID       : target.planeId,
+                NEO_PLANE_DATA_ROOT: target.dataRoot,
+                ...(recordsStateDir ? {NEO_WAKE_RECEIVER_RECORDS_HOST_DIR: path.join(recordsStateDir, 'records')} : {})
+            },
+            ...(recordsStateDir ? {recordsStateDir} : {})
+        },
+        inputs        = {
+            [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
+            [EFFECT_IDS.writeEnv]    : writeEnvInput,
+            [EFFECT_IDS.composeUp]   : {...composeContextOf(layout), envDigest: contentDigest(renderEnvFile(writeEnvInput.entries))}
+        };
 
-    let current = record;
+    let envMutated = false;
 
     for (const effectId of EFFECT_ORDER) {
+        const stepDef = RECIPE_STEPS.find(row => row.effectId === effectId);
+
+        if (mutated && typeof evaluate === 'function' && stepDef?.gates?.length > 0) {
+            activeEvaluation = await evaluate(current);
+            mutated          = false;
+        }
+
         const step = stepOf(effectId), stepStatus = step?.status;
 
-        if (stepStatus === STEP_STATUSES.ok && !(effectId === EFFECT_IDS.verify && newAttempt)) {
+        if (stepStatus === STEP_STATUSES.ok && !(effectId === EFFECT_IDS.verify && newAttempt) && !(effectId === EFFECT_IDS.composeUp && envMutated)) {
             continue;
         }
 
@@ -185,11 +236,17 @@ export async function performEffects({record, recordPath, host, layout, target, 
         }
 
         if (effectId === EFFECT_IDS.verify) {
-            current = await runVerify({record: current, recordPath, host, target, evaluation, report, patPath, newAttempt, createPlaneClient});
+            current = await runVerify({record: current, recordPath, host, target, evaluation: activeEvaluation, report, patPath, newAttempt, createPlaneClient});
             break;
         }
 
-        if (stepStatus === STEP_STATUSES.reconcileRequired) {
+        const canRecoverOwnedWake = effectId === EFFECT_IDS.startWakeReceiver &&
+            stepStatus === STEP_STATUSES.reconcileRequired &&
+            stepOf('served-plane')?.status === STEP_STATUSES.ok &&
+            (step?.observed?.owned === true || step?.observed?.cleanAbsent === true) &&
+            !step?.observed?.problem;
+
+        if (stepStatus === STEP_STATUSES.reconcileRequired && !canRecoverOwnedWake) {
             const reason = unsettledReason({
                 effectId,
                 observed      : step.observed,
@@ -201,20 +258,54 @@ export async function performEffects({record, recordPath, host, layout, target, 
             break;
         }
 
-        // the forge the plane declares is read from the plane itself, so only once it is up
-        const input = effectId === EFFECT_IDS.registerForge ? await registerForgeInput(layout, host, report) : inputs[effectId];
+        if (effectId === EFFECT_IDS.startWakeReceiver) {
+            const staleGate = (stepDef?.gates ?? []).map(id => stepOf(id)).find(gate => gate?.status !== STEP_STATUSES.ok);
+
+            if (staleGate) {
+                report(waitReport(effectId, staleGate));
+                break;
+            }
+        }
+
+        // the forge declaration and wake LaunchAgent template are read lazily, only when their step runs
+        const input = effectId === EFFECT_IDS.registerForge
+            ? await registerForgeInput(layout, host, report)
+            : effectId === EFFECT_IDS.startWakeReceiver
+                ? await startWakeReceiverInput(layout, target, host, report)
+                : inputs[effectId];
 
         if (!input) {
             break;
         }
 
-        const result = await applyEffect({effectId, input, record: current, recordPath, host});
+        const reapplyAccepted = [
+            EFFECT_IDS.writeSecrets,
+            EFFECT_IDS.writeEnv,
+            EFFECT_IDS.composeUp,
+            EFFECT_IDS.startWakeReceiver
+        ].includes(effectId);
+
+        const result = await applyEffect({
+            effectId,
+            input,
+            record                : current,
+            recordPath,
+            host,
+            reapplyAccepted,
+            allowReconcileRecovery: canRecoverOwnedWake
+        });
 
         current = result.record;
 
         if (result.receipt.outcome !== RECEIPT_OUTCOMES.accepted) {
             break;
         }
+
+        if (effectId === EFFECT_IDS.writeEnv && result.applied) {
+            envMutated = true;
+        }
+
+        mutated = true;
     }
 
     return current;
@@ -239,6 +330,51 @@ async function registerForgeInput(layout, host, report) {
         return {...context, declared, declaredReason};
     } catch (error) {
         report(`'register-forge' could not read which connection the plane declares: ${error.message}`);
+
+        return null;
+    }
+}
+
+/**
+ * @summary Builds the `start-wake-receiver` input lazily from the host layout and bound target, reading the
+ * LaunchAgent template only when the service effect actually executes.
+ * @param {Object}   layout
+ * @param {Object}   target
+ * @param {Object}   host
+ * @param {Function} report
+ * @returns {Promise<Object|null>}
+ */
+async function startWakeReceiverInput(layout, target, host, report) {
+    const paths = resolveWakeSetupPaths(layout);
+
+    if (!paths.templatePath || !paths.plistPath || !paths.manifestPath || !paths.wakeStateDir || !paths.runtimeRoot || !paths.executable) {
+        report("'start-wake-receiver' is missing required LaunchAgent layout or runtime coordinates");
+
+        return null;
+    }
+
+    try {
+        const templateXml = await host.fsModule.readFile(paths.templatePath, 'utf8');
+
+        return {
+            stateRoot        : paths.stateRoot,
+            homeDir          : paths.homeDir,
+            envFile          : paths.envFile,
+            plistPath        : paths.plistPath,
+            manifestPath     : paths.manifestPath,
+            custodyPath      : paths.custodyPath,
+            stateDir         : paths.wakeStateDir,
+            host             : paths.host,
+            port             : paths.port,
+            executable       : paths.executable,
+            runtimeRoot      : paths.runtimeRoot,
+            runtimeGeneration: paths.runtimeGeneration,
+            extraEnv         : paths.extraEnv,
+            templateXml,
+            target
+        };
+    } catch (error) {
+        report(`'start-wake-receiver' could not read LaunchAgent template '${paths.templatePath}': ${error.message}`);
 
         return null;
     }
@@ -270,8 +406,32 @@ function waitReport(effectId, blocker) {
 function unsettledReason({effectId, observed, expectedDigest, planeMatches}) {
     const shown = observed?.present === true && !observed.problem;
 
+    if (effectId === EFFECT_IDS.startWakeReceiver) {
+        if (!planeMatches) {
+            return 'the served plane does not match the target yet, or the result is not observable';
+        }
+
+        if (!shown || observed?.running !== true) {
+            return observed?.problem ?? observed?.reason ?? 'the wake receiver service is not running';
+        }
+
+        return expectedDigest && observed.digest && observed.digest !== expectedDigest
+            ? 'the wake receiver plist on the host does not match the expected declaration'
+            : null;
+    }
+
+    if (observed?.inputMismatch === true || observed?.upgradePending === true) {
+        return observed.reason ?? 'the host state still reflects an earlier input; the effect has not been applied';
+    }
+
     if (!HOST_FILE_EFFECTS.includes(effectId)) {
-        return planeMatches && shown ? null : 'the served plane does not match the target yet, or the result is not observable';
+        if (!planeMatches || !shown) {
+            return 'the served plane does not match the target yet, or the result is not observable';
+        }
+
+        return expectedDigest && observed.digest !== expectedDigest
+            ? 'the observed state does not match the expected digest of the interrupted effect'
+            : null;
     }
 
     if (!shown) {

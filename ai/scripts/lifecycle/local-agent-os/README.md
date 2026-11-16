@@ -145,6 +145,19 @@ host (no wake delivery, see the [platform matrix](#platform-matrix)) — declare
 the same variable and creates the same empty directory on purpose: its delivery
 leg then reads `no-records`, which is true for it.
 
+> **Automated first-run CLI (`node ai/scripts/setup/firstRun.mjs`).** Running the
+> shared first-run recipe handles this automatically during `write-env`: it creates
+> an owner-private (`0700`) `<stateDir>/records` directory (using
+> `<stateRoot>/wake-receiver/records` when `desktop-wake` is consented `enabled`, or
+> its own empty `<stateRoot>/wake-receiver-disabled/records` directory on `declined`
+> or unsupported host OS) and writes `NEO_WAKE_RECEIVER_RECORDS_HOST_DIR` into
+> `local-agent-os.env`. Behind `served-plane`, `start-wake-receiver` creates an
+> owner-private (`0600`) cold `{schemaVersion: 1, routes: {}}` manifest only when
+> the owned manifest path does not exist yet, materializes
+> `deploy/host/com.neomjs.agent-os-wake.plist` without comments or placeholders, and
+> installs or adopts `com.neomjs.agent-os-wake` under custody checks (leaving
+> foreign services and existing manifests or queued records untouched).
+
 **Resolve the channel to a commit first.** Compose maps one operator pin to both
 internal Docker arguments, and the source stage refuses a mutable ref (#16635) —
 a branch name makes the fetch layer cache-stable, so the build would package

@@ -12,12 +12,12 @@
  * runner, the clock — is injected through `createHost`, so every arm runs against a fake host.
  */
 
-import {execFile}        from 'node:child_process';
-import fsPromises        from 'node:fs/promises';
-import net               from 'node:net';
-import path              from 'node:path';
-import {promisify}       from 'node:util';
-import {writeFileAtomic} from '../shared/atomicFileWrite.mjs';
+import {execFile}                          from 'node:child_process';
+import fsPromises                          from 'node:fs/promises';
+import net                                 from 'node:net';
+import path                                from 'node:path';
+import {promisify}                         from 'node:util';
+import {writeFileAtomic}                   from '../shared/atomicFileWrite.mjs';
 import {ANY_FORGE_NAME, forgeProviderName} from './forgeProviders.mjs';
 import {
     RECEIPT_OUTCOMES,
@@ -28,20 +28,28 @@ import {
     withReceipt,
     withVerification
 } from './setupRunRecord.mjs';
+import {
+    DESKTOP_WAKE_CHOICES,
+    WAKE_RECEIVER_LABEL,
+    prepareWakeRecordsDir,
+    probeWakeReceiverHttp,
+    reconcileWakeReceiverService
+} from './wakeReceiverSetup.mjs';
 
 const execFileAsync = promisify(execFile);
 
 /**
- * The v1 effects, in recipe order. `verify` has no handler here: it is performed through the served plane
+ * The v2 recipe effects, in recipe order. `verify` has no handler here: it is performed through the served plane
  * by `verifyEffect.mjs`, which persists its sub-step receipts through {@link recordVerification}.
  * @type {Object}
  */
 export const EFFECT_IDS = Object.freeze({
-    writeEnv     : 'write-env',
-    writeSecrets : 'write-secrets',
-    composeUp    : 'compose-up',
-    registerForge: 'register-forge',
-    verify       : 'verify'
+    writeEnv         : 'write-env',
+    writeSecrets     : 'write-secrets',
+    composeUp        : 'compose-up',
+    registerForge    : 'register-forge',
+    startWakeReceiver: 'start-wake-receiver',
+    verify           : 'verify'
 });
 
 const
@@ -246,6 +254,34 @@ async function writeOwnerOnly(filePath, content, host) {
 }
 
 /**
+ * @summary Builds the canonical `docker compose ... up -d --wait` argument vector from compose context input.
+ * @param {Object} input
+ * @returns {String[]}
+ */
+export function composeInvocationArgs(input) {
+    const {project, cwd, envFile, composeFiles} = input ?? {};
+
+    if (!project || !cwd || !envFile || !Array.isArray(composeFiles) || composeFiles.length === 0) {
+        throw new Error('compose-up: input needs project, cwd, envFile and composeFiles.');
+    }
+
+    return ['compose', '-p', project, '--env-file', envFile, ...composeFiles.flatMap(file => ['-f', file]), ...(input.profiles ?? []).flatMap(profile => ['--profile', profile]), 'up', '-d', '--wait'];
+}
+
+/**
+ * @summary Computes the deterministic digest of a compose invocation plus the bound env carrier digest when supplied.
+ * @param {Object} input
+ * @returns {String}
+ */
+export function composeInvocationDigest(input) {
+    const args = composeInvocationArgs(input);
+
+    return input?.envDigest
+        ? contentDigest(`${args.join(' ')}\n${input.envDigest}`)
+        : contentDigest(args.join(' '));
+}
+
+/**
  * The v1 handlers. Each is `{id, describe(input), handler(input, host) | null}`; a `null` handler is an
  * operator action by construction (`applyEffect` records the instruction and touches nothing). An effect
  * whose result is one file its input fully determines also declares `expects(input)`: the digest of the
@@ -258,14 +294,23 @@ export const hostEffectHandlers = Object.freeze({
         describe: input => `write the plane's env carrier at ${input?.path}`,
         expects : input => contentDigest(renderEnvFile(input?.entries)),
         /**
-         * @param {Object} input `{path, entries}` — the carrier path and the preset's env set plus the plane's own bindings.
+         * @param {Object} input `{path, entries, recordsStateDir?}` — the carrier path, env entries, and optional wake records state dir (`0700`).
          * @param {Object} host
          * @returns {Promise<{digest: String, references: String[]}>}
          */
         async handler(input, host) {
-            const digest = await writeOwnerOnly(input.path, renderEnvFile(input.entries), host);
+            const rendered   = renderEnvFile(input.entries);
+            let   references = [input.path];
 
-            return {digest, references: [input.path]};
+            if (input.recordsStateDir) {
+                const prepared = await prepareWakeRecordsDir(input.recordsStateDir, host);
+
+                references = [input.path, prepared.recordsDir];
+            }
+
+            const digest = await writeOwnerOnly(input.path, rendered, host);
+
+            return {digest, references};
         }
     }),
     [EFFECT_IDS.writeSecrets]: Object.freeze({
@@ -297,23 +342,18 @@ export const hostEffectHandlers = Object.freeze({
     [EFFECT_IDS.composeUp]: Object.freeze({
         id      : EFFECT_IDS.composeUp,
         describe: input => `docker compose -p ${input?.project} up -d --wait`,
+        expects : input => composeInvocationDigest(input),
         /**
-         * @param {Object} input `{project, cwd, envFile, composeFiles}` — the compose project, the checkout holding the compose files, the carrier, the files in order.
+         * @param {Object} input `{project, cwd, envFile, composeFiles, envDigest?}` — the compose project, checkout, env carrier, files in order, and optional env content digest.
          * @param {Object} host
          * @returns {Promise<{digest: String, references: String[]}>}
          */
         async handler(input, host) {
-            const {project, cwd, envFile, composeFiles} = input ?? {};
+            const args = composeInvocationArgs(input);
 
-            if (!project || !cwd || !envFile || !Array.isArray(composeFiles) || composeFiles.length === 0) {
-                throw new Error('compose-up: input needs project, cwd, envFile and composeFiles.');
-            }
+            await host.run('docker', args, {cwd: input.cwd});
 
-            const args = ['compose', '-p', project, '--env-file', envFile, ...composeFiles.flatMap(file => ['-f', file]), ...(input.profiles ?? []).flatMap(profile => ['--profile', profile]), 'up', '-d', '--wait'];
-
-            await host.run('docker', args, {cwd});
-
-            return {digest: contentDigest(args.join(' ')), references: [`compose:${project}`]};
+            return {digest: composeInvocationDigest(input), references: [`compose:${input.project}`]};
         }
     }),
     [EFFECT_IDS.registerForge]: Object.freeze({
@@ -364,20 +404,53 @@ export const hostEffectHandlers = Object.freeze({
 
             return {digest: observed.digest, references: [`forge-connection:${status.binding.connectionId}`]};
         }
+    }),
+    [EFFECT_IDS.startWakeReceiver]: Object.freeze({
+        id      : EFFECT_IDS.startWakeReceiver,
+        describe: input => `install, upgrade, or adopt LaunchAgent ${WAKE_RECEIVER_LABEL} at ${input?.plistPath ?? '<default>'}`,
+        /**
+         * @param {Object} input
+         * @param {Object} host
+         * @returns {Promise<{digest: String, references: String[], action: String}>}
+         */
+        handler(input, host) {
+            return reconcileWakeReceiverService(input, host);
+        }
     })
 });
 
 /**
  * @summary The host the effects run against. Production defaults; a spec injects a fake filesystem, a
- * recording command runner and a fixed clock.
+ * recording command runner, platform/UID probes, listener probe, and a fixed clock.
  * @param {Object} [options]
  * @param {Object}   [options.fsModule=node:fs/promises]
  * @param {Function} [options.run] `(command, args, {cwd}) → Promise<{stdout, stderr}>`
  * @param {Function} [options.now=Date.now]
- * @returns {{fsModule: Object, run: Function, now: Function}}
+ * @param {Function} [options.platform]
+ * @param {Function} [options.uid]
+ * @param {Function} [options.probeWakeListener]
+ * @returns {{fsModule: Object, run: Function, now: Function, platform: Function, uid: Function, probeWakeListener: Function}}
  */
-export function createHost({fsModule = fsPromises, run = (command, args, options) => execFileAsync(command, args, {...options, encoding: 'utf8'}), now = Date.now} = {}) {
-    return {fsModule, run, now};
+export function createHost({
+    fsModule = fsPromises,
+    run = (command, args, options) => execFileAsync(command, args, {...options, encoding: 'utf8'}),
+    now = Date.now,
+    platform = () => process.platform,
+    uid = () => (typeof process.getuid === 'function' ? process.getuid() : null),
+    probeWakeListener = probeWakeReceiverHttp,
+    wakeReadinessAttempts = null,
+    wakeReadinessDelayMs = null
+} = {}) {
+    return {
+        fsModule,
+        run,
+        now,
+        platform,
+        uid,
+        probeWakeListener,
+        ...(Number.isInteger(wakeReadinessAttempts) ? {wakeReadinessAttempts} : {}),
+        ...(Number.isInteger(wakeReadinessDelayMs) ? {wakeReadinessDelayMs} : {})
+    };
 }
 
 /**
@@ -407,10 +480,21 @@ export async function persistSetupRecord(recordPath, record, host) {
  * @param {Object} options.record
  * @param {String} options.recordPath
  * @param {Object} options.host From {@link createHost}.
- * @param {Object} [options.effects=hostEffectHandlers]
+ * @param {Object}  [options.effects=hostEffectHandlers]
+ * @param {Boolean} [options.reapplyAccepted=false] Allow re-running when live observation proved an accepted result gone or unhealthy.
+ * @param {Boolean} [options.allowReconcileRecovery=false] Allow an explicitly corroborated idempotent effect to recover past `pending`/`reconcile-required`.
  * @returns {Promise<{record: Object, receipt: Object, applied: Boolean}>} `applied` is true only when the handler ran now.
  */
-export async function applyEffect({effectId, input, record, recordPath, host, effects = hostEffectHandlers}) {
+export async function applyEffect({
+    effectId,
+    input,
+    record,
+    recordPath,
+    host,
+    effects = hostEffectHandlers,
+    reapplyAccepted = false,
+    allowReconcileRecovery = false
+}) {
     const effect = effects[effectId];
 
     if (!effect) {
@@ -423,11 +507,11 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
         stamp       = () => new Date(host.now()).toISOString();
 
     if (existing) {
-        if (existing.outcome === RECEIPT_OUTCOMES.accepted && existing.inputDigest === inputDigest) {
+        if (existing.outcome === RECEIPT_OUTCOMES.accepted && existing.inputDigest === inputDigest && !reapplyAccepted) {
             return {record, receipt: existing, applied: false};
         }
 
-        if (existing.outcome === RECEIPT_OUTCOMES.pending) {
+        if (existing.outcome === RECEIPT_OUTCOMES.pending && !allowReconcileRecovery) {
             const receipt = reconcileRequiredReceipt(existing, host), next = withReceipt(record, receipt);
 
             await persistSetupRecord(recordPath, next, host);
@@ -435,7 +519,7 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
             return {record: next, receipt, applied: false};
         }
 
-        if (existing.outcome === RECEIPT_OUTCOMES.reconcileRequired) {
+        if (existing.outcome === RECEIPT_OUTCOMES.reconcileRequired && !allowReconcileRecovery) {
             return {record, receipt: existing, applied: false};
         }
     }
@@ -629,6 +713,10 @@ export async function admitCredentialReference({answer, fsModule = fsPromises}) 
 export async function recordConsent({stepId, answer, record, recordPath, host}) {
     if (!['string', 'number', 'boolean'].includes(typeof answer) || (typeof answer === 'string' && answer.length > 256)) {
         throw new Error(`recordConsent: the answer for '${stepId}' must be a choice or a reference (a short scalar).`);
+    }
+
+    if (stepId === 'desktop-wake' && !Object.values(DESKTOP_WAKE_CHOICES).includes(answer)) {
+        throw new Error(`recordConsent: the answer for 'desktop-wake' must be '${DESKTOP_WAKE_CHOICES.enabled}' or '${DESKTOP_WAKE_CHOICES.declined}'.`);
     }
 
     const
