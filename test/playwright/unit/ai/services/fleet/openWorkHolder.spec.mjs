@@ -47,7 +47,7 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
         expect(holderOf(row({owner: outside, reviews: [bot, review('COMMENTED')]}))).toEqual({role: 'none', kind: null, ids: []})
     });
 
-    test('red CI takes precedence over every verdict and keeps the same action kind', () => {
+    test('red CI on a mergeable head keeps the repair action across verdicts', () => {
         const repair = {role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']};
 
         expect(holderOf(row({ci: 'red'}))).toEqual(repair);
@@ -88,11 +88,21 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
             .toEqual({role: 'reviewer', kind: 'review', ids: ['@neo-gpt']})
     });
 
-    test('an approved green conflicting head needs the author to rebase before a requested review', () => {
+    test('a current approval and a confirmed conflict route integration before a requested review', () => {
         const conflict = {...judged('APPROVED'), mergeable: 'CONFLICTING', requested: ['@neo-gpt']};
 
         expect(holderOf(row(conflict))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
-        expect(holderOf(row({...conflict, ci: 'red'}))).toEqual({role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']});
+        const red = {...conflict, ci: 'red'}, repair = {role: 'author', kind: 'repair-ci', ids: [seat.seat]};
+        expect(holderOf(row(red))).toEqual({role: 'author', kind: 'rebase', ids: [seat.seat]});
+        expect(holderOf(row({...red, owner: {kind: 'unowned', seat: null, login: 'org-user'}})))
+            .toEqual({role: 'author', kind: 'rebase', ids: []});
+        for (const reviewer of [{bot: true}, {reviewer: seat.seat}, {reviewer: 'login:outside'}]) {
+            expect(holderOf(row({...red, opinions: [{...red.opinions[0], ...reviewer}]}))).toEqual(repair)
+        }
+        for (const overrides of [{draft: true}, {partial: true}, judged('APPROVED', false),
+            {opinions: [...red.opinions, {...review('CHANGES_REQUESTED'), reviewer: '@peer'}]}]) {
+            expect(holderOf(row({...red, ...overrides}))).toEqual(repair)
+        }
         expect(holderOf(row({...conflict, ...judged('CHANGES_REQUESTED')})))
             .toEqual({role: 'author', kind: 'address-changes', ids: ['@neo-opus-ada']});
         expect(holderOf(row({...conflict, ...judged('APPROVED', false)})))
@@ -405,7 +415,16 @@ test.describe('openWorkHolder — scoped outside CI ownership', () => {
 
     test('approved outside conflicts use the rotation without changing native, incomplete or review gates', () => {
         const approved = {...judged('APPROVED'), ci: 'green', mergeable: 'CONFLICTING'};
-        expect(holderOf(outsideRed(approved))).toEqual({role: 'rotation', kind: 'rebase', ids: []});
+        const red      = {...approved, ci: 'red'};
+        for (const conflict of [approved, red]) {
+            expect(holderOf(outsideRed(conflict))).toEqual({role: 'rotation', kind: 'rebase', ids: []})
+        }
+        // Integration changes the head. Any real failing check that survives it still needs repair.
+        expect(holderOf(outsideRed({...red, mergeable: 'MERGEABLE'}))).toEqual(rotation);
+        expect(holderOf(outsideRed({...red, runApproval: 'action_required'}))).toEqual({role: 'rotation', kind: 'approve-runs', ids: []});
+        expect(holderOf(outsideRed({...red, disclosedFamilies: ['gpt']}), {seatFamilies: {'@neo-gpt': 'gpt'}})).toEqual(rotation);
+        expect(holderOf(outsideRed({...red, opinions: [...red.opinions, {...review('CHANGES_REQUESTED'), reviewer: '@peer'}]})))
+            .toEqual({role: 'author', kind: 'address-changes', ids: []});
         expect(holderOf(row(approved))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
         expect(holderOf(outsideRed({...approved, partial: true}))).toEqual({role: 'unknown', kind: null, ids: []});
         expect(holderOf(outsideRed({...approved, ...judged('APPROVED', false)}))).toEqual({role: 'reviewer', kind: 'review', ids: ['@neo-gpt']});

@@ -36,7 +36,7 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         const
             approval = {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},
             routing  = {...row(1), ci: 'green', verdict: null, requested: [], reviews: [], opinions: [], partial: false},
-            rebase   = {...row(2), ci: 'green', verdict: 'APPROVED', mergeable: 'CONFLICTING', requested: ['@neo-gpt'], reviews: [approval], opinions: [approval], partial: false},
+            rebase   = {...row(2), ci: 'red', verdict: 'APPROVED', mergeable: 'CONFLICTING', requested: ['@neo-gpt'], reviews: [approval], opinions: [approval], partial: false},
             read     = source(state({coverage: 'partial'}, [routing, rebase])).readOpenWork();
 
         expect(read.coverage).toBe('partial');
@@ -44,7 +44,7 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
             {number: 1, holder: {role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']}},
             {number: 2, holder: {role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']}}
         ]);
-        expect(read.seats['@neo-gpt'].reviewing[0].holder).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
+        expect(read.seats['@neo-gpt'].reviewing[0]).toMatchObject({ci: 'red', holder: {role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']}});
         expect(read.awaitingMerge).toEqual([])
     });
 
