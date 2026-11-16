@@ -1,5 +1,7 @@
-import {expect, test} from '@playwright/test';
-import {holderOf}     from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
+import {expect, test}        from '@playwright/test';
+import {holderOf}            from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
+import {planOpenWorkWakes}   from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {composeOpenWorkWake} from '../../../../../../ai/services/fleet/openWorkWakeMessage.mjs';
 import {
     normalizePullRequest,
     normalizeTerminal,
@@ -60,6 +62,163 @@ function run(pulses) {
 
     return {transitions: states.map(state => state.transitions), states}
 }
+
+/**
+ * @summary Original provider facts for an outside red head already seen by a native reviewer.
+ * @param {Object} [options]
+ * @returns {Object}
+ */
+function repairNode({runId = 'CR_1', comments = [], commentsPartial = false, checksRead = true, head = '1'.repeat(40), reviewed = true} = {}) {
+    const value = node({head, rollup: 'FAILURE', login: 'contributor', body: 'Resolves #1', reviewers: [],
+        reviews: reviewed ? [{state: 'COMMENTED', author: {__typename: 'User', login: 'neo-opus-ada'}, commit: {oid: head}}] : []});
+
+    return {...value, id: 'PR_7', authorAssociation: 'CONTRIBUTOR', author: {__typename: 'User', login: 'contributor'},
+        closingIssuesReferences: {nodes: [], pageInfo: {hasNextPage: false}},
+        comments               : {nodes: comments, pageInfo: {hasPreviousPage: commentsPartial}},
+        commits                : {nodes: [{commit: {oid: head, statusCheckRollup: {state: 'FAILURE', ...(checksRead ? {
+            contexts: {pageInfo: {hasNextPage: false}, nodes: [{
+                __typename: 'CheckRun', id: runId, name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE',
+                startedAt : '2026-11-16T07:58:00Z', completedAt: '2026-11-16T07:59:00Z',
+                checkSuite: {app: {id: 'APP_1', slug: 'github-actions'}, workflowRun: {workflow: {id: 'WF_1', name: 'Unit'}}}
+            }]}
+        } : {})}}}]}}
+}
+
+/**
+ * @summary A maintainer's public, scoped decision using evidence copied from the producer's wake.
+ * @param {String} evidenceKey
+ * @param {'mechanical'|'content'} [kind]
+ * @returns {Object}
+ */
+function repairComment(evidenceKey, kind = 'content') {
+    return {id: 'IC_12', url: 'https://github.com/acme/app/pull/7#issuecomment-12',
+        createdAt        : '2026-11-16T08:01:00Z', updatedAt: '2026-11-16T08:01:00Z',
+        authorAssociation: 'MEMBER', author: {__typename: 'User', id: 'U_ada', login: 'neo-opus-ada'},
+        body             : (kind === 'content' ? 'Next owner: the contributor. Correct the described behavior.\n\n' :
+            'Next owner: the maintainer. Repair the described test infrastructure.\n\n') +
+            `<!-- neo-ci-repair-classification:v1 ${JSON.stringify({head: '1'.repeat(40), evidenceKey, kind})} -->`}
+}
+
+/** @summary Crosses the saved producer and wake-ledger boundaries on each original provider observation. */
+function repairJourney() {
+    let previous = null, ledger = {pulse: '2026-11-16T07:59:00Z', holding: {}, pendingMerges: {}, baselines: {}};
+    return (minute, input) => {
+        const at      = `2026-11-16T08:${String(minute).padStart(2, '0')}:00Z`,
+              row     = normalizePullRequest(input, identities, {apiBase: 'https://api.github.com'}),
+              reduced = reduceOpenWork({previous, observed: {rows: [row], complete: true, missed: []},
+                  terminal: {rows: [], complete: true}, since: null, id: at, identities}),
+              plan = planOpenWorkWakes({state: {observedAt: at, coverage: 'complete', snapshot: reduced, transitions: []},
+                  ledger, now: Date.parse(at), rotationSeats: ['@neo-opus-ada'], routeOf: () => 'reachable'});
+        previous = JSON.parse(JSON.stringify(reduced));
+        ledger = JSON.parse(JSON.stringify(plan.ledger));
+        return {row: reduced.rows['acme/app#7'], wakes: plan.wakes}
+    }
+}
+
+test.describe('openWorkReducer — original CI evidence reaches the holder and wake episode', () => {
+    test('a public handback survives the comment window, stays dormant unread, and invalidates on a same-head rerun', () => {
+        const step  = repairJourney();
+        const first = step(0, repairNode());
+        expect(first.wakes).toHaveLength(1);
+        expect(first.wakes[0]).toMatchObject({role: 'rotation', kind: 'repair-ci', to: '@neo-opus-ada',
+            ciRepair: {kind: 'unclassified', evidenceKey: first.row.ciRepairEvidence.key}});
+        const key      = first.wakes[0].ciRepair.evidenceKey,
+              rendered = composeOpenWorkWake({...first.wakes[0], failedChecks: first.row.ciRepairEvidence.failedChecks}),
+              marker   = rendered.body.split('\n').find(line => line.startsWith('<!-- neo-ci-repair-classification:v1 ')),
+              comment  = repairComment(key);
+        expect(marker).toContain(key);
+        comment.body = 'Next owner: the contributor. Correct the failing behavior.\n\n' +
+            marker.replace('"kind":"mechanical|content"', '"kind":"content"');
+        const handback = step(1, repairNode({comments: [comment]}));
+        expect(holderOf(handback.row)).toMatchObject({role: 'author', kind: 'repair-ci', ids: []});
+        expect(handback.wakes).toEqual([]);
+
+        const scrolled = step(2, repairNode({commentsPartial: true}));
+        expect(scrolled.row.ciRepairClassification).toMatchObject({kind: 'content', evidenceKey: key});
+        expect(scrolled.wakes).toEqual([]);
+        const unread = step(3, repairNode({commentsPartial: true, checksRead: false}));
+        expect(unread.row.ciRepairEvidence).toBeNull();
+        expect(holderOf(unread.row)).toMatchObject({role: 'rotation', kind: 'repair-ci'});
+        const recovered = step(4, repairNode({commentsPartial: true}));
+        expect(recovered.row.ciRepairClassification).toMatchObject({kind: 'content', evidenceKey: key});
+        expect(recovered.wakes).toEqual([]);
+
+        const rerun = step(5, repairNode({runId: 'CR_2', commentsPartial: true}));
+        expect(rerun.row.head).toBe(first.row.head);
+        expect(rerun.row.ci).toBe('red');
+        expect(rerun.row.ciRepairEvidence.key).not.toBe(key);
+        expect(rerun.row.ciRepairClassification).toBeNull();
+        expect(rerun.wakes).toHaveLength(1);
+        expect(rerun.wakes[0].episode).not.toBe(first.wakes[0].episode);
+        expect(step(6, repairNode({runId: 'CR_2', commentsPartial: true})).wakes).toEqual([])
+    });
+
+    test('comment-only repair stays engaged through unread evidence and routes a green rerun back to review triage', () => {
+        const step = repairJourney(), first = step(0, repairNode({reviewed: false}));
+        expect(first.wakes.map(wake => wake.kind)).toEqual(['triage-outside']);
+        const key      = first.row.ciRepairEvidence.key,
+              admitted = step(1, repairNode({reviewed: false, comments: [repairComment(key, 'mechanical')]}));
+        expect(admitted.row.ciRepairRead.touch).toMatchObject({head: first.row.head, maintainer: '@neo-opus-ada'});
+        expect(admitted.wakes.map(wake => wake.kind)).toEqual(['repair-ci']);
+        expect(step(2, repairNode({reviewed: false, commentsPartial: true, checksRead: false})).wakes).toEqual([]);
+        expect(step(3, repairNode({reviewed: false, commentsPartial: true})).wakes).toEqual([]);
+        const changed = step(4, repairNode({reviewed: false, runId: 'CR_2', commentsPartial: true}));
+        expect(changed.row.ciRepairClassification).toBeNull();
+        expect(changed.wakes.map(wake => wake.kind)).toEqual(['repair-ci']);
+        expect(changed.wakes[0].ciRepair.evidenceKey).not.toBe(key);
+        const green = repairNode({reviewed: false, runId: 'CR_2', commentsPartial: true});
+        green.commits.nodes[0].commit.statusCheckRollup.state = 'SUCCESS';
+        green.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].conclusion = 'SUCCESS';
+        expect(step(5, green).wakes.map(wake => wake.kind)).toEqual(['triage-outside'])
+    });
+
+    test('a positive red partial read reaches investigation with its missing window named', () => {
+        const step = repairJourney(), raw = repairNode();
+        raw.reviewRequests.pageInfo.hasNextPage = true;
+        const observed = step(0, raw);
+        expect(observed.row.partial).toBe(true);
+        expect(observed.row.ciRepairIncompleteReads).toEqual(['review-requests']);
+        expect(observed.wakes).toHaveLength(1);
+        expect(observed.wakes[0]).toMatchObject({role: 'rotation', kind: 'repair-ci',
+            ciRepair: {kind: 'unclassified', incompleteReads: ['review-requests']}})
+    });
+
+    test('partial review coverage does not override a carried decision or a positive native change request', () => {
+        const step = repairJourney(), first = step(0, repairNode()),
+              key  = first.row.ciRepairEvidence.key;
+        step(1, repairNode({comments: [repairComment(key)]}));
+        const raw = repairNode({commentsPartial: true});
+        raw.reviewRequests.pageInfo.hasNextPage = true;
+        const carried = step(2, raw);
+        expect(carried.row.partial).toBe(true);
+        expect(carried.row.ciRepairClassification).toMatchObject({kind: 'content', evidenceKey: key});
+        expect(holderOf(carried.row)).toMatchObject({role: 'author', kind: 'repair-ci'});
+        expect(carried.wakes).toEqual([]);
+        raw.latestOpinionatedReviews.nodes = [{state: 'CHANGES_REQUESTED', author: {__typename: 'User', login: 'neo-opus-ada'}, commit: {oid: raw.headRefOid}}];
+        const requested = step(3, raw);
+        expect(holderOf(requested.row)).toMatchObject({role: 'author', kind: 'address-changes'});
+        expect(requested.wakes).toEqual([]);
+        raw.latestOpinionatedReviews.nodes = [];
+        raw.commits.nodes[0].commit.statusCheckRollup.state = 'SUCCESS';
+        expect(holderOf(step(4, raw).row)).toEqual({role: 'unknown', kind: null, ids: []})
+    });
+
+    test('a normalized approved conflicting outside head reaches the native integration rotation', () => {
+        const raw = repairNode();
+        raw.mergeable = 'CONFLICTING';
+        raw.commits.nodes[0].commit.statusCheckRollup.state = 'SUCCESS';
+        raw.latestOpinionatedReviews.nodes = [{state: 'APPROVED', author: {__typename: 'User', login: 'neo-opus-ada'}, commit: {oid: raw.headRefOid}}];
+        const row    = normalizePullRequest(raw, identities, {apiBase: 'https://api.github.com'}),
+              at     = '2026-11-16T08:00:00Z',
+              result = planOpenWorkWakes({state: {observedAt: at, coverage: 'complete', transitions: [],
+                  snapshot: {rows: {[row.key]: {...row, observedAt: at}}, closed: {}, complete: true}},
+                  ledger  : {pulse: '2026-11-16T07:59:00Z', holding: {}, pendingMerges: {}, baselines: {}},
+                  now     : Date.parse(at), rotationSeats: ['@neo-opus-ada'], routeOf: () => 'reachable'});
+
+        expect(result.wakes).toHaveLength(1);
+        expect(result.wakes[0]).toMatchObject({role: 'rotation', kind: 'rebase', to: '@neo-opus-ada'})
+    })
+});
 
 test.describe('openWorkReducer — a row names its pull request by title', () => {
     test('the title is carried with its whitespace collapsed, a missing or blank one is null, and a retitled PR is no transition', () => {

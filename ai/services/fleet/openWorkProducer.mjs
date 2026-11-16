@@ -516,7 +516,7 @@ export function createOpenWorkProducer({
         const
             // the earliest seat's watermark bounds what is still closing, and seeds a seat that joins later
             watermark = Object.values(marks).map(mark => mark.watermark).filter(Boolean).sort()[0] ?? null,
-            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed}, terminal, since: state.watermark ?? null, id: at}),
+            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed}, terminal, since: state.watermark ?? null, id: at, identities}),
             coverage  = complete && outside.complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial',
             readerOf  = new Map(seats.filter(seat => seat.query && answered.some(read => read.seat === seat.seat)).map(seat => [seat.seat, seat])),
             retained  = await readUnblocked({

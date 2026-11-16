@@ -48,17 +48,51 @@ const ESCALATION_ASKS = Object.freeze({
  */
 export const OPEN_WORK_HOLDER_KINDS = new Set(['holder-unreachable', 'holder-silent']);
 
+/** @summary Closed diagnostic vocabulary for the producer reads that did not establish complete coverage. */
+export const OPEN_WORK_CI_INCOMPLETE_READS = Object.freeze([
+    'comments', 'reviews', 'review-requests', 'commits', 'check-suites', 'checks', 'legacy-coverage'
+]);
+
 const
     // GitHub's own limits: an owner of at most 39 characters, a name of at most 100
     REPO          = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/,
     ISSUE         = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}#[1-9]\d{0,9}$/,
     OID           = /^[0-9a-f]{40}$/,
+    EVIDENCE_KEY  = /^[0-9a-f]{64}$/,
     INSTANT       = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/,
     IDENTITY      = /^@[A-Za-z0-9._-]{1,100}$/,
     // One printable line: no control character, line breaks and tabs included
     PRINTABLE     = /^[^\p{Cc}\p{Zl}\p{Zp}]+$/u,
     MAX_CHECKS    = 50,
     MAX_CHECK_LEN = 120;
+
+/**
+ * @summary Validates the bounded outside-repair state; a mechanical classification requires exact evidence.
+ * @param {*} value Optional observation metadata when present.
+ * @returns {Boolean}
+ */
+export function isOpenWorkCiRepair(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value) &&
+        Object.keys(value).every(key => ['evidenceKey', 'kind', 'incompleteReads'].includes(key)) &&
+        Object.hasOwn(value, 'evidenceKey') && Object.hasOwn(value, 'kind') &&
+        (!Object.hasOwn(value, 'incompleteReads') || isOpenWorkCiIncompleteReads(value.incompleteReads)) &&
+        ['unclassified', 'mechanical'].includes(value.kind) &&
+        (value.evidenceKey === null ? value.kind === 'unclassified' :
+            typeof value.evidenceKey === 'string' && EVIDENCE_KEY.test(value.evidenceKey));
+}
+
+/** @summary Validates nonempty, unique diagnostic tokens, including direct-call sparse-array refusal. */
+export function isOpenWorkCiIncompleteReads(reads) {
+    return Array.isArray(reads) && reads.length > 0 && reads.length <= OPEN_WORK_CI_INCOMPLETE_READS.length &&
+        Object.keys(reads).length === reads.length && new Set(reads).size === reads.length &&
+        Array.from(reads).every(token => OPEN_WORK_CI_INCOMPLETE_READS.includes(token));
+}
+
+/** @summary Checks the existing wake display bounds without truncating or changing CI evidence. */
+export function isOpenWorkFailedChecks(names) {
+    return Array.isArray(names) && names.length <= MAX_CHECKS &&
+        !names.some(name => typeof name !== 'string' || name.length > MAX_CHECK_LEN || !PRINTABLE.test(name));
+}
 
 /**
  * @summary The episode a merge is observed as: the producer's transition id for this pull request and head.
@@ -107,12 +141,12 @@ function validEpisode({repo, number, head, kind, episode, unblocks}) {
 /**
  * @summary Validates the observation a producer submits, and answers it normalized, or every reason it is refused.
  * Unknown fields are the tool schema's to refuse; this checks the fields the message is composed from.
- * @param {Object} args `{repo, number, head, kind, episode, to, failedChecks, unblocks, holder}`
+ * @param {Object} args `{repo, number, head, kind, episode, to, failedChecks, ciRepair, unblocks, holder}`
  * @returns {{observation: Object|null, errors: String[]}}
  */
 export function validateOpenWorkObservation(args) {
     const
-        {repo, number, head, kind, episode, to, failedChecks = null, unblocks = null, holder = null} = args ?? {},
+        {repo, number, head, kind, episode, to, failedChecks = null, ciRepair, unblocks = null, holder = null} = args ?? {},
         errors = [];
 
     if (typeof repo !== 'string' || !REPO.test(repo)) errors.push('repo must be owner/name');
@@ -142,27 +176,54 @@ export function validateOpenWorkObservation(args) {
     if (failedChecks !== null) {
         if (kind !== 'repair-ci') {
             errors.push('failedChecks belongs to repair-ci only')
-        } else if (!Array.isArray(failedChecks) || failedChecks.length > MAX_CHECKS ||
-            failedChecks.some(name => typeof name !== 'string' || name.length > MAX_CHECK_LEN || !PRINTABLE.test(name))) {
+        } else if (!isOpenWorkFailedChecks(failedChecks)) {
             errors.push(`failedChecks must be at most ${MAX_CHECKS} check names, each one printable line of 1 to ${MAX_CHECK_LEN} characters`)
+        }
+    }
+    if (Object.hasOwn(args ?? {}, 'ciRepair')) {
+        if (kind !== 'repair-ci') errors.push('ciRepair belongs to repair-ci only');
+        else if (ciRepair && Object.hasOwn(ciRepair, 'incompleteReads') && !isOpenWorkCiIncompleteReads(ciRepair.incompleteReads)) {
+            errors.push('ciRepair.incompleteReads must be 1 to 7 unique closed diagnostic tokens in a dense array');
+        } else if (!isOpenWorkCiRepair(ciRepair)) {
+            errors.push('ciRepair must contain evidenceKey (64 lowercase hex or null) and kind (unclassified or mechanical); mechanical requires a known key');
         }
     }
 
     return errors.length
         ? {observation: null, errors}
         : {observation: {repo, number, head, kind, episode, to, failedChecks: kind === 'repair-ci' ? failedChecks : null,
+            ...(ciRepair ? {ciRepair: {...ciRepair,
+                ...(ciRepair.incompleteReads ? {incompleteReads: [...ciRepair.incompleteReads]} : {})}} : {}),
             ...(kind === 'unblocked' ? {unblocks} : {}), ...(OPEN_WORK_HOLDER_KINDS.has(kind) ? {holder} : {})}, errors}
+}
+
+/** @summary Gives the outside repair owner bounded, evidence-specific classification and handback instructions. */
+function outsideRepairAsk({head, ciRepair}) {
+    if (!ciRepair) return '';
+    const {evidenceKey, kind, incompleteReads} = ciRepair;
+    return `Evidence key: ${evidenceKey ?? 'unknown'}\nObserved classification: ${kind}\n` +
+        (incompleteReads ? `Incomplete reads: ${incompleteReads.join(', ')}.\n` +
+            'Inspect beyond the reported read windows before another classification.\n' : '') +
+        (evidenceKey
+            ? 'As the maintainer, investigate this exact evidence; retain mechanical repair ownership, or publish an actionable content handback.\n' +
+                'Maintainer-only classification record (replace mechanical|content with the investigated kind):\n' +
+                `<!-- neo-ci-repair-classification:v1 ${JSON.stringify({head, evidenceKey, kind: 'mechanical|content'})} -->\n`
+            : 'As the maintainer, investigate incomplete evidence before classifying; retain mechanical repair ownership until the cause is known, or publish an actionable content handback once evidenced.\n') +
+        'No content changes without scoped consent; no automatic alternate acceptance or new author deadline. ' +
+        'Mechanical classification is not task completion; operation or handback completion remains separate.\n\n';
 }
 
 /**
  * @summary What a `repair-ci` wake says failed: the first three names in its subject, all of them in its body.
- * @param {String[]|null} names The failing checks read at the send; null when they could not be read.
+ * @param {String[]|null} names Failing checks from the producer snapshot or native send-time read; null when unread.
+ * @param {Boolean} [snapshot=false] Whether these names belong to the producer's evidence snapshot.
  * @returns {{subject: String, body: String}}
  * @private
  */
-function failingOf(names) {
-    if (!names) return {subject: 'unknown', body: 'unknown; the names could not be read'};
-    if (!names.length) return {subject: 'none at send time', body: 'none when this wake was sent'};
+function failingOf(names, snapshot = false) {
+    if (!names) return {subject: 'unknown', body: snapshot ? 'unknown; producer-snapshot check names are unavailable for this wake' : 'unknown; the names could not be read'};
+    if (!names.length) return snapshot ? {subject: 'none in the producer snapshot', body: 'none in the producer snapshot'}
+        : {subject: 'none at send time', body: 'none when this wake was sent'};
 
     return {subject: names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : ''), body: names.join(', ')}
 }
@@ -178,10 +239,10 @@ function failingOf(names) {
  */
 export function composeOpenWorkWake(observation) {
     const
-        {repo, number, head, kind, episode, to, failedChecks, unblocks, holder = null} = observation,
+        {repo, number, head, kind, episode, to, failedChecks, ciRepair, unblocks, holder = null} = observation,
         pr                                                                             = `${repo}#${number}`,
-        reason                                                                         = OPEN_WORK_WAKE_REASONS[kind],
-        failing                                                                        = kind === 'repair-ci' ? failingOf(failedChecks) : null,
+        reason                                                                         = ciRepair ? 'CI is red on an outside contributor head' : OPEN_WORK_WAKE_REASONS[kind],
+        failing                                                                        = kind === 'repair-ci' ? failingOf(failedChecks, !!ciRepair) : null,
         issue                                                                          = kind === 'unblocked' ? unblocks.split('#') : null,
         ask                                                                            = ESCALATION_ASKS[kind] ? `${ESCALATION_ASKS[kind]} ` : '',
         lead                                                                           = issue
@@ -193,7 +254,7 @@ export function composeOpenWorkWake(observation) {
         subject: `[open-work:${kind}] ${issue ? unblocks : pr}: observed ${reason}${failing ? ` — failing: ${failing.subject}` : ''}`,
         body   : lead +
             `Observed action: ${kind} — ${reason}.\n${failing ? `Failing checks: ${failing.body}.\n` : ''}` +
-            `${holder ? `Holder: ${holder}\n` : ''}Episode: ${episode}\n\n` + ask +
+            `${holder ? `Holder: ${holder}\n` : ''}Episode: ${episode}\n\n` + outsideRepairAsk(observation) + ask +
             (issue
                 ? 'Re-check the live issue and its remaining blockers before acting. '
                 : 'Re-check the live pull request, head, checks and review state before acting. ') +

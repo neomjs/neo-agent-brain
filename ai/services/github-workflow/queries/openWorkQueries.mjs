@@ -12,8 +12,8 @@
  * Variables: `$query` (a search string with `is:pr` and the `repo:` qualifiers), `$cursor`.
  *
  * A merged pull request adds one read, once: what its merge unblocked ({@link OPEN_WORK_UNBLOCKED}).
- * A `repair-ci` wake's read belongs to the wake, not to the pulse: its head's checks, read once at the
- * wake's send (`ai/services/fleet/wireFleetOpenWorkWakes.mjs`).
+ * The current head's bounded check facts also bind outside CI classification before holder planning.
+ * Legacy native-seat `repair-ci` wakes retain their send-time check-name read.
  */
 import {createHash} from 'node:crypto';
 
@@ -143,10 +143,15 @@ export const OPEN_WORK_SNAPSHOT = `
               hasPreviousPage
             }
             nodes {
+              id
+              url
+              body
               createdAt
+              updatedAt
               authorAssociation
               author {
                 __typename
+                ... on Node { id }
                 login
               }
             }
@@ -211,6 +216,36 @@ export const OPEN_WORK_SNAPSHOT = `
                 oid
                 statusCheckRollup {
                   state
+                  contexts(first: 100) {
+                    pageInfo {
+                      hasNextPage
+                    }
+                    nodes {
+                      __typename
+                      ... on CheckRun {
+                        id
+                        name
+                        status
+                        conclusion
+                        startedAt
+                        completedAt
+                        checkSuite {
+                          app { id slug }
+                          workflowRun {
+                            workflow { id name }
+                          }
+                        }
+                      }
+                      ... on StatusContext {
+                        id
+                        context
+                        state
+                        createdAt
+                        updatedAt
+                        targetUrl
+                      }
+                    }
+                  }
                 }
                 checkSuites(last: 100) {
                   pageInfo {
@@ -373,8 +408,9 @@ export const OPEN_WORK_FAILED_CHECKS = `
 
 /**
  * @summary Published GraphQL formula estimates for the static pulse documents, not timeout-cost bounds.
- * Snapshot has the search plus ten connections for up to 50 PRs, the head commit's `checkSuites` and the
- * closing issues among them: round((1 + 50 * 10) / 100) = 5, which a live read measured too. Terminal has one connection; the published minimum is one. Unblocked reads 10 closing issues, 50
+ * Snapshot has the search plus eleven connections for up to 50 PRs, including head checks and closing
+ * issues: round((1 + 50 * 11) / 100) = 6, also measured on the live query. Terminal has one connection;
+ * the published minimum is one. Unblocked reads 10 closing issues, 50
  * blocked issues each, and two lists on each of those: round((1 + 10 + 500 + 500) / 100) = 10, which a
  * live read measured too. The gate also uses measured maxima.
  *
@@ -386,9 +422,9 @@ export const OPEN_WORK_FAILED_CHECKS = `
  * @type {Object[]}
  */
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
-    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 5}),
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 6}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
-    Object.freeze({queryHash: '0654027aa1541607ef385264e256240c5eed24d0f3233da40d7ce2f89b367989', formulaCost: 5}),
+    Object.freeze({queryHash: 'd42cc876db17c72098c97f2e53a7e96a2b15ba10fafa159e1bad9c6789860524', formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10})
 ]);
 

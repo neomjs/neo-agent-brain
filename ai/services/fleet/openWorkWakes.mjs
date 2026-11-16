@@ -10,6 +10,9 @@
  * A rotation action is the exception: no seat holds it, so nobody already knows of it. Outside a quiet
  * round it wakes one seat even on a first observation, and a slot stored as a baseline retries.
  * The external gate decides quiet; this module neither polls nor sends.
+ * Outside repair episodes also bind the last verified CI evidence key and disposition. Changed verified
+ * evidence or a positive content-to-mechanical decision renews the action; unread evidence retains the
+ * prior episode without claiming it is current. Other rotation kinds retain their existing identities.
  *
  * A skipped merge keeps its original observation and payload until its route answers, even after the
  * transition leaves the producer's bounded history. Admitted merges need no permanent seen set: the
@@ -32,11 +35,11 @@
  * 2026-11-14); a seat whose family is unknown stays eligible. When no other seat answers, the whole roster picks, so
  * the PR is never left unrouted; that seat's arrival check sees the lab and hands the approval on.
  */
-import {createHash}                                            from 'node:crypto';
-import {openWorkFreshness}                                     from './openWorkFreshness.mjs';
-import {holderOf, responderOf}                                 from './openWorkHolder.mjs';
-import {OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf} from './openWorkWakeMessage.mjs';
-import {OPEN_WORK_QUERY_COSTS}                                 from '../github-workflow/queries/openWorkQueries.mjs';
+import {createHash}                                                                                            from 'node:crypto';
+import {openWorkFreshness}                                                                                     from './openWorkFreshness.mjs';
+import {activeCiRepairClassification, ciRepairEvidenceOf, holderOf, isEligibleOutsidePullRequest, responderOf} from './openWorkHolder.mjs';
+import {isOpenWorkCiIncompleteReads, OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf}                    from './openWorkWakeMessage.mjs';
+import {OPEN_WORK_QUERY_COSTS}                                                                                 from '../github-workflow/queries/openWorkQueries.mjs';
 
 /** @summary How long a holder's delivered wake may stay unanswered before its holder reads silent. */
 export const HOLDER_SILENT_MS = 4 * 60 * 60 * 1000;
@@ -95,6 +98,18 @@ function labsOf(row) {
         ? row.disclosedFamilies : null
 }
 
+/** @summary Missing list coverage cannot certify review, reply, integration or merge absence. */
+const incompleteRow = row => row.partial !== false || !Array.isArray(row.requested) ||
+    !Array.isArray(row.reviews) || !Array.isArray(row.opinions);
+
+/** @summary Copies normalized coverage diagnostics; legacy rows get no invented specific missing read. */
+function ciIncompleteReadsOf(row) {
+    const reads = row.ciRepairIncompleteReads;
+    if (isOpenWorkCiIncompleteReads(reads)) return [...reads];
+    if (Array.isArray(reads) && reads.length === 0) return [];
+    return incompleteRow(row) ? ['legacy-coverage'] : [];
+}
+
 /**
  * @summary One stable task identity and its action-specific payload.
  * @param {Object} row
@@ -103,14 +118,15 @@ function labsOf(row) {
  * @param {String} kind
  * @param {String} episode The first observation of the open action, or the terminal observation id.
  * @param {String|null} [holder=null] An escalation's holder, part of its identity: two holders are two tasks.
+ * @param {Object|null} [ciRepair=null] Outside repair's current evidence and actionable classification.
  * @returns {Object}
  * @private
  */
-function wakeOf(row, seat, role, kind, episode, holder = null) {
+function wakeOf(row, seat, role, kind, episode, holder = null, ciRepair = null) {
     return {
         key: JSON.stringify([row.repo, row.number, row.head, seat, kind, episode, ...(holder ? [holder] : [])]),
         to : seat, pr: row.key, repo: row.repo, number: row.number, head: row.head,
-        role, kind, episode, reason: REASONS[kind], ...(holder ? {holder} : {})
+        role, kind, episode, reason: REASONS[kind], ...(holder ? {holder} : {}), ...(ciRepair ? {ciRepair} : {})
     }
 }
 
@@ -176,20 +192,43 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
      */
     const rotate = (row, kind, holder = null) => {
         const
-            slot    = rotationSlot(row, kind, holder),
-            prior   = holding[slot],
+            slot            = rotationSlot(row, kind, holder),
+            previous        = holding[slot],
+            outsideRepair   = kind === 'repair-ci' && row.owner?.kind === 'outside',
+            evidence        = outsideRepair ? ciRepairEvidenceOf(row) : null,
+            classification  = outsideRepair ? activeCiRepairClassification(row) : null,
+            knownKey        = evidence?.key ?? null,
+            previousKey     = previous?.ciRepairEvidenceKey ?? previous?.wake?.ciRepair?.evidenceKey ?? null,
+            hasRepairRecord = previous && (Object.hasOwn(previous, 'ciRepairEvidenceKey') || Object.hasOwn(previous.wake, 'ciRepair')),
+            renewed         = outsideRepair && previous && knownKey &&
+                (hasRepairRecord && knownKey !== previousKey || knownKey === previousKey &&
+                    previous.ciRepairDisposition === 'content' && classification?.kind === 'mechanical'),
+            prior   = renewed ? undefined : previous,
             episode = prior?.wake?.episode ?? state.observedAt,
+            lastKey = outsideRepair ? knownKey ?? previousKey : null,
+            disposition = classification?.kind ?? (knownKey && knownKey !== previousKey ? null : prior?.ciRepairDisposition),
+            repairRecord = outsideRepair ? {
+                ...(lastKey ? {ciRepairEvidenceKey: lastKey} : {}),
+                ...(lastKey && disposition ? {ciRepairDisposition: disposition} : {})
+            } : {},
+            incompleteReads = outsideRepair ? ciIncompleteReadsOf(row) : [],
+            ciRepair = outsideRepair ? {evidenceKey: knownKey, kind: classification?.kind === 'mechanical' ? 'mechanical' : 'unclassified',
+                ...(incompleteReads.length ? {incompleteReads} : {})} : null,
             labs    = labsOf(row),
             // A seat of a lab the PR names never picks it while another seat answers
             sameLab = labs && seatFamilies ? roster.filter(seat => labs.includes(seatFamilies[seat])) : [],
             route   = quiet ? () => 'unknown' : rotationRoute,
             keep    = holder ? [holder] : [],
             // A re-pick keeps the slot's failed submissions counted, so a failing escalation stays bounded
-            hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder), status,
+            hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder, ciRepair), status,
+                ...repairRecord,
                 ...(prior?.attempts ? {attempts: prior.attempts} : {})};
 
         current.add(slot);
-        if (prior?.status === 'admitted') return;
+        if (prior?.status === 'admitted') {
+            if (outsideRepair) holding[slot] = {...prior, ...repairRecord};
+            return;
+        }
 
         // Nobody of another lab answers: the whole roster picks, so the PR is never left unrouted
         const seat = pickRotationSeat(row, kind, roster, route, [...keep, ...sameLab]) ??
@@ -269,13 +308,14 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
     for (const row of Object.values(state.snapshot.rows)) {
         if (!hasIdentity(row)) continue;
 
-        if (row.partial !== false || openWorkFreshness(row.observedAt, {now}) !== 'ok' ||
-            !Array.isArray(row.requested) || !Array.isArray(row.reviews) || !Array.isArray(row.opinions)) {
+        const incomplete = incompleteRow(row);
+        if (openWorkFreshness(row.observedAt, {now}) !== 'ok' ||
+            incomplete && !(row.ci === 'red' && isEligibleOutsidePullRequest(row))) {
             if (baseline) baselines[row.key] = row.head;
             continue
         }
 
-        const holder = holderOf(row, {seatFamilies});
+        const holder = holderOf(incomplete ? {...row, partial: true} : row, {seatFamilies});
 
         if (holder.role === 'unknown') {
             if (baseline) baselines[row.key] = row.head;
@@ -287,7 +327,25 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         delete baselines[row.key];
         decided.add(row.key);
 
-        respond(row, rowBaseline);
+        if (incomplete) {
+            for (const [slot, entry] of Object.entries(holding)) {
+                if (entry.wake.pr === row.key && entry.wake.kind !== 'repair-ci') current.add(slot);
+            }
+        }
+
+        // An admitted classifier's episode survives its content handback and unread evidence gaps.
+        // Pending unsent work still retires; no Task state or automatic re-pick is invented here.
+        const repairSlot = rotationSlot(row, 'repair-ci'), priorRepair = holding[repairSlot];
+        if (row.ci === 'red' && isEligibleOutsidePullRequest(row) &&
+            holder.role === 'author' && priorRepair?.status === 'admitted') {
+            current.add(repairSlot);
+            const classification = activeCiRepairClassification(row);
+            if (classification?.kind === 'content') {
+                holding[repairSlot] = {...priorRepair, ciRepairEvidenceKey: classification.evidenceKey, ciRepairDisposition: 'content'};
+            }
+        }
+
+        if (!incomplete) respond(row, rowBaseline);
 
         if (holder.role === 'rotation' && REASONS[holder.kind]) {
             rotate(row, holder.kind);

@@ -1,6 +1,11 @@
 import {expect, test}          from '@playwright/test';
 import {holderOf, responderOf} from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
 
+const CI_HEAD          = 'a'.repeat(40), CI_KEY = '1'.repeat(64);
+const ciEvidence       = (extra = {}) => ({head: CI_HEAD, key: CI_KEY, failedChecks: ['unit'], ...extra});
+const ciClassification = (kind, extra = {}) => ({head: CI_HEAD, evidenceKey: CI_KEY, kind,
+    maintainer: '@neo-opus-grace', receiptUrl: 'https://github.com/acme/app/pull/7#issuecomment-101', ...extra});
+
 const
     seat    = {kind: 'seat', seat: '@neo-opus-ada', login: 'neo-opus-ada'},
     outside = {kind: 'outside', seat: null, login: 'contributor'},
@@ -174,7 +179,7 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
         expect(holderOf(row({requested: ['@neo-gpt'], partial: true}))).toEqual(unknown);
         expect(holderOf(row({partial: true}))).toEqual(unknown);
         expect(holderOf(row({ci: 'red', partial: true}))).toEqual({role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']});
-        expect(holderOf(row({owner: outside, ci: 'red', partial: true}))).toEqual({role: 'author', kind: 'repair-ci', ids: []});
+        expect(holderOf(row({owner: outside, ci: 'red', partial: true}))).toEqual({role: 'rotation', kind: 'repair-ci', ids: []});
         expect(holderOf(row({...judged('CHANGES_REQUESTED'), partial: true})))
             .toEqual({role: 'author', kind: 'address-changes', ids: ['@neo-opus-ada']})
     });
@@ -189,10 +194,10 @@ test.describe('openWorkHolder — an outside PR pushed past a seat\'s review is 
         pushed = overrides => row({owner: outside, ...overrides}),
         past   = (reviewer, state) => ({reviews: [by(reviewer, state)], opinions: [by(reviewer, state)]});
 
-    test('past a seat\'s change request or approval, the new head waits on its CI, a red one is the author\'s and a green one the seat\'s (AC-1)', () => {
+    test('past a seat\'s review, a red outside head needs maintainer classification and a green one returns to its reviewer (AC-1)', () => {
         for (const state of ['CHANGES_REQUESTED', 'APPROVED']) {
             expect(holderOf(pushed({ci: 'pending', ...past(B, state)})), state).toEqual({role: 'none', kind: null, ids: []});
-            expect(holderOf(pushed({ci: 'red', ...past(B, state)})), state).toEqual({role: 'author', kind: 'repair-ci', ids: []});
+            expect(holderOf(pushed({ci: 'red', ...past(B, state)})), state).toEqual({role: 'rotation', kind: 'repair-ci', ids: []});
             expect(holderOf(pushed({...past(B, state)})), state).toEqual({role: 'reviewer', kind: 'review', ids: [B]})
         }
     });
@@ -300,6 +305,117 @@ test.describe('openWorkHolder — a close target still blocked holds the merge f
         expect(holderOf(approved({...blocked, mergeable: 'CONFLICTING'}))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
         expect(holderOf(approved({...blocked, draft: true}))).toEqual({role: 'none', kind: null, ids: []})
     })
+});
+
+test.describe('openWorkHolder — scoped outside CI ownership', () => {
+    const outsideRed = (extra = {}) => row({repo: 'acme/app', number: 7, head: CI_HEAD, owner: outside,
+        ci: 'red', reviews: [review('COMMENTED')], ciRepairEvidence: ciEvidence(), ...extra});
+    const rotation = {role: 'rotation', kind: 'repair-ci', ids: []};
+
+    test('an engaged outside red head stays with maintainers until a current content decision', () => {
+        expect(holderOf(outsideRed())).toEqual(rotation);
+        expect(holderOf(outsideRed({ciRepairClassification: ciClassification('mechanical')}))).toEqual(rotation);
+        expect(holderOf(outsideRed({ciRepairClassification: ciClassification('content')})))
+            .toEqual({role: 'author', kind: 'repair-ci', ids: []});
+    });
+
+    test('partial outside CI investigation uses positive red evidence while preserving visible author packets', () => {
+        expect(holderOf(outsideRed({partial: true, ciRepairEvidence: null, opinions: undefined}))).toEqual(rotation);
+        expect(holderOf(outsideRed({partial: true, reviews: null, requested: null, opinions: undefined}))).toEqual(rotation);
+        expect(holderOf(outsideRed({partial: true, opinions: undefined, ciRepairClassification: ciClassification('content')})))
+            .toEqual({role: 'author', kind: 'repair-ci', ids: []});
+        expect(holderOf(outsideRed({partial: true, opinions: undefined, ciRepairClassification: ciClassification('mechanical')}))).toEqual(rotation);
+        expect(holderOf(outsideRed({partial: true, reviews: undefined, opinions: [review('CHANGES_REQUESTED')],
+            ciRepairClassification: ciClassification('mechanical')})))
+            .toEqual({role: 'author', kind: 'address-changes', ids: []});
+        expect(holderOf(outsideRed({ci: 'green', partial: true, ...judged('APPROVED'), mergeable: 'CONFLICTING'})))
+            .toEqual({role: 'unknown', kind: null, ids: []});
+    });
+
+    test('malformed, foreign and stale classification or unread evidence remains unclassified', () => {
+        for (const patch of [
+            {head: 'b'.repeat(40)}, {evidenceKey: '2'.repeat(64)}, {kind: 'unknown'},
+            {maintainer: 'login:maintainer'}, {maintainer: '@with space'},
+            {receiptUrl: 'https://github.com/other/app/pull/7#issuecomment-101'},
+            {receiptUrl: 'https://user:secret@github.com/acme/app/pull/7#issuecomment-101'},
+            {receiptUrl: 'https://github.com/acme/app/pull/7#pullrequestreview-101'}
+        ]) {
+            expect(holderOf(outsideRed({ciRepairClassification: ciClassification('content', patch)}))).toEqual(rotation);
+        }
+        for (const ciRepairEvidence of [null, ciEvidence({head: 'other'}), ciEvidence({key: 'bad'}),
+            ciEvidence({failedChecks: []}), ciEvidence({failedChecks: [null]}), ciEvidence({failedChecks: new Array(1)})]) {
+            expect(holderOf(outsideRed({ciRepairEvidence, ciRepairClassification: ciClassification('content')}))).toEqual(rotation);
+        }
+    });
+
+    test('only a resolved non-bot on-head change request preserves the existing author packet ahead of CI', () => {
+        for (const ciRepairClassification of [null, ciClassification('mechanical')]) {
+            expect(holderOf(outsideRed({...judged('CHANGES_REQUESTED'), ciRepairClassification})))
+                .toEqual({role: 'author', kind: 'address-changes', ids: []});
+        }
+        for (const opinion of [review('CHANGES_REQUESTED', false),
+            {...review('CHANGES_REQUESTED'), bot: true}, {...review('CHANGES_REQUESTED'), reviewer: 'login:outside'}]) {
+            expect(holderOf(outsideRed({opinions: [opinion]}))).toEqual(rotation);
+        }
+        expect(holderOf(outsideRed({...judged('CHANGES_REQUESTED'), partial: true})))
+            .toEqual({role: 'author', kind: 'address-changes', ids: []});
+    });
+
+    test('a verified active classification is a maintainer touch, while initial triage and run approval remain first', () => {
+        expect(holderOf(outsideRed({reviews: []}))).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(holderOf(outsideRed({reviews: [], ciRepairClassification: ciClassification('mechanical')}))).toEqual(rotation);
+        expect(holderOf(outsideRed({reviews: [], ciRepairClassification: ciClassification('content')})))
+            .toEqual({role: 'author', kind: 'repair-ci', ids: []});
+        expect(holderOf(outsideRed({runApproval: 'action_required', ciRepairClassification: ciClassification('content')})))
+            .toEqual({role: 'rotation', kind: 'approve-runs', ids: []});
+        expect(holderOf(outsideRed({ci: 'green', reviews: [], ciRepairClassification: ciClassification('mechanical')})))
+            .toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+    });
+
+    test('an admitted current-head touch survives unread or changed evidence without authorizing stale content', () => {
+        const source = {provider: 'github', apiBase: 'https://api.github.com', repo: 'acme/app', prId: 'PR_7', number: 7};
+        const touch  = {head: CI_HEAD, commentId: 'COMMENT_101', maintainer: '@neo-opus-grace',
+            receiptUrl: 'https://github.com/acme/app/pull/7#issuecomment-101', source,
+            author    : {id: 'USER_GRACE', kind: 'User', login: 'neo-opus-grace'}};
+        const ciRepairRead = {head: CI_HEAD, source, touch};
+        for (const ciRepairEvidence of [null, ciEvidence({key: '2'.repeat(64)})]) {
+            expect(holderOf(outsideRed({reviews: [], ciRepairEvidence, ciRepairRead,
+                ciRepairClassification: ciClassification('content')}))).toEqual(rotation);
+        }
+        expect(holderOf(outsideRed({ci: 'green', reviews: [], ciRepairRead, ciRepairClassification: ciClassification('mechanical')})))
+            .toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(holderOf(outsideRed({head: undefined, reviews: [], ciRepairEvidence: null,
+            ciRepairRead: {...ciRepairRead, head: undefined, touch: {...touch, head: undefined}}})))
+            .toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        for (const patch of [{head: 'stale'}, {maintainer: 'login:outside'}, {source: {...source, prId: 'FOREIGN'}},
+            {author: {...touch.author, kind: 'Bot'}}]) {
+            expect(holderOf(outsideRed({reviews: [], ciRepairEvidence: null,
+                ciRepairRead: {...ciRepairRead, touch: {...touch, ...patch}}})))
+                .toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        }
+    });
+
+    test('native spelling and display-only limits do not invalidate an admitted classification', () => {
+        expect(holderOf(outsideRed({ciRepairClassification: ciClassification('content', {maintainer: '@Maintainer.one_two'})})))
+            .toEqual({role: 'author', kind: 'repair-ci', ids: []});
+        expect(holderOf(outsideRed({ciRepairEvidence: ciEvidence({failedChecks: ['   ', 'unit\noriginal', 'x'.repeat(121)]}),
+            ciRepairClassification: ciClassification('content')})))
+            .toEqual({role: 'author', kind: 'repair-ci', ids: []});
+    });
+
+    test('approved outside conflicts use the rotation without changing native, incomplete or review gates', () => {
+        const approved = {...judged('APPROVED'), ci: 'green', mergeable: 'CONFLICTING'};
+        expect(holderOf(outsideRed(approved))).toEqual({role: 'rotation', kind: 'rebase', ids: []});
+        expect(holderOf(row(approved))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
+        expect(holderOf(outsideRed({...approved, partial: true}))).toEqual({role: 'unknown', kind: null, ids: []});
+        expect(holderOf(outsideRed({...approved, ...judged('APPROVED', false)}))).toEqual({role: 'reviewer', kind: 'review', ids: ['@neo-gpt']});
+        expect(holderOf(row({ci: 'red', ...judged('CHANGES_REQUESTED'), ciRepairEvidence: ciEvidence(),
+            ciRepairClassification: ciClassification('content')})))
+            .toEqual({role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']});
+        for (const extra of [{draft: true}, {bot: true}, {authorType: 'Bot'}, {authorAssociation: 'MEMBER'}]) {
+            expect(holderOf(outsideRed(extra)).role).not.toBe('rotation');
+        }
+    });
 });
 
 test.describe('openWorkHolder — an outside comment owes a reply, beside the holder (#1630)', () => {

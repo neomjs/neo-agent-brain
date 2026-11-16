@@ -69,7 +69,7 @@ function operatorOf(surface, action, admitted = 'open-work wakes are') {
  * `@system`. The caller, the observation and the recipient are all checked before anything is written. The caller
  * is recorded as `task.observedBy`, read from the verified request identity, never from the arguments. A repeat of
  * the same wake answers the first receipt.
- * @param {Object} args `{repo, number, head, kind, episode, to, failedChecks, unblocks, holder}`, per `validateOpenWorkObservation`.
+ * @param {Object} args `{repo, number, head, kind, episode, to, failedChecks, ciRepair, unblocks, holder}`, per `validateOpenWorkObservation`.
  * @returns {Promise<Object>} The `addMessage` receipt; its `messageId` is what {@link readOpenWorkWakeDelivery} answers for.
  */
 export async function admitOpenWorkWake(args) {

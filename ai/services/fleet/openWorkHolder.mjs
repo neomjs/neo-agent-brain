@@ -17,11 +17,15 @@
  *
  * The kind distinguishes successive actions held by the same seat: fixing CI, addressing changes,
  * rebasing and routing a review are different episodes even though the author holds each one.
+ * After initial triage, outside CI repair stays with the maintainer rotation until a current verified
+ * content decision hands it to the author; approved outside conflicts also use the rotation. A resolved
+ * native reviewer's on-head change request preserves the author's existing packet ahead of classification.
+ * That packet does not itself classify CI, and a stale or bot opinion cannot establish the exception.
  *
- * A partial read (a review, opinion or request list truncated or unresolved, or no opinion list at
- * all) decides only on positive evidence: a red head, or a change request on the head, is the
- * author's. Every other rule reads an absence a missing page could hold, so the holder is `unknown`,
- * never `none`.
+ * A partial read decides only on positive evidence. A native author's red head stays theirs; an eligible
+ * outside red head reaches maintainer investigation unless a current content decision or native on-head
+ * change request preserves the author's action. Green review, rebase and merge rules still require
+ * complete coverage: an unread page cannot certify an absence.
  *
  * A head that reports no CI (`ci: null`) never turns green, so its merge chip reads GitHub's `CLEAN`
  * instead, still beside the approval on the head: a repository that requires no review is CLEAN without one.
@@ -47,6 +51,77 @@
  */
 const isSeat = id => typeof id === 'string' && id.startsWith('@') && id.length > 1;
 
+/** @summary Canonical native identity spelling; producer admission owns maintainer authorization. */
+const canonicalSeat = id => typeof id === 'string' && /^@[A-Za-z0-9._-]{1,100}$/.test(id);
+
+/**
+ * @summary Reuses the outside-action boundary without assigning bots, drafts or organization members to it.
+ * @param {Object} row Normalized producer row.
+ * @returns {Boolean} Whether an outside action can belong to the maintainer rotation.
+ */
+export function isEligibleOutsidePullRequest({owner, draft, bot = false, authorType = null, authorAssociation = null} = {}) {
+    return owner?.kind === 'outside' && !draft && !bot && authorType !== 'Bot' &&
+        !['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation);
+}
+
+/** @summary Preserves original source identifiers without interpreting them as display strings. */
+const originalText = value => typeof value === 'string' && value.length > 0 && value.trim() === value;
+
+/** @summary Checks a public IssueComment receipt against its PR and, when supplied, its provider origin. */
+function publicCiRepairReceipt(row, value, apiBase = null) {
+    if (!originalText(value) || typeof row?.repo !== 'string' || !Number.isSafeInteger(row.number) || row.number < 1) return false;
+    try {
+        const url = new URL(value);
+        if (url.protocol !== 'https:' || url.username || url.password || url.search ||
+            url.pathname.toLowerCase() !== `/${row.repo}/pull/${row.number}`.toLowerCase() || !/^#issuecomment-[1-9]\d*$/.test(url.hash)) return false;
+        if (apiBase === null) return true;
+        const api = new URL(apiBase);
+        return api.protocol === 'https:' && !api.username && !api.password && !api.search && !api.hash &&
+            url.origin === (api.hostname === 'api.github.com' ? 'https://github.com' : api.origin);
+    } catch {return false;}
+}
+
+/** @summary Recognizes producer-admitted engagement without granting the old decision any CI-classification authority. */
+function ciRepairTouchOf(row) {
+    const read = row?.ciRepairRead, touch = read?.touch, source = touch?.source, author = touch?.author;
+    return touch && !Array.isArray(touch) && originalText(row.head) && read.head === row.head && touch.head === row.head &&
+        originalText(touch.commentId) && canonicalSeat(touch.maintainer) && source?.provider === 'github' &&
+        source.repo === row.repo && source.number === row.number && originalText(source.prId) && originalText(source.apiBase) &&
+        ['provider', 'apiBase', 'repo', 'prId', 'number'].every(key => source[key] === read.source?.[key]) &&
+        author?.kind === 'User' && originalText(author.id) && originalText(author.login) &&
+        publicCiRepairReceipt(row, touch.receiptUrl, source.apiBase) ? touch : null;
+}
+
+/**
+ * @summary Returns structurally complete CI evidence for this exact head, including a verified empty failure set.
+ * This browser-safe consumer does not derive or replace the producer's evidence digest.
+ * @param {Object} row Normalized producer row.
+ * @returns {Object|null} Current verified evidence, or null for unread/malformed/stale input.
+ */
+export function ciRepairEvidenceOf(row) {
+    const evidence = row?.ciRepairEvidence;
+    return evidence && !Array.isArray(evidence) && typeof row.head === 'string' && row.head.length > 0 &&
+        evidence.head === row.head && typeof evidence.key === 'string' && /^[a-f\d]{64}$/.test(evidence.key) &&
+        Array.isArray(evidence.failedChecks) && Array.from(evidence.failedChecks)
+            .every(name => typeof name === 'string' && name.length > 0)
+        ? evidence : null;
+}
+
+/**
+ * @summary Consumes an admitted maintainer decision only while its head, verified failure evidence and receipt agree.
+ * Original comment/maintainer verification belongs to producer admission, not a client-side text inference.
+ * @param {Object} row Normalized producer row.
+ * @returns {Object|null} Active mechanical/content classification, or null.
+ */
+export function activeCiRepairClassification(row) {
+    const evidence = ciRepairEvidenceOf(row), classification = row?.ciRepairClassification;
+    if (!evidence?.failedChecks.length || !classification || Array.isArray(classification) ||
+        classification.head !== row.head || classification.evidenceKey !== evidence.key ||
+        !['mechanical', 'content'].includes(classification.kind) || !canonicalSeat(classification.maintainer) ||
+        !publicCiRepairReceipt(row, classification.receiptUrl)) return null;
+    return classification;
+}
+
 /**
  * @summary The holder of one open snapshot row; the first rule below that matches wins.
  * @param {Object} row An open row of the producer's snapshot.
@@ -57,12 +132,18 @@ const isSeat = id => typeof id === 'string' && id.startsWith('@') && id.length >
  *     kind: 'approve-runs'|'triage-outside'|'repair-ci'|'address-changes'|'rebase'|'review'|'route-review'|'await-prerequisite'|'merge'|null,
  *     ids: String[], targets?: String[]}} `targets` names the still-blocked issues an `await-prerequisite` PR closes.
  */
-export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions, disclosedFamilies = [], blockedTargets = [], targetsComplete = false}, {seatFamilies = null} = {}) {
+export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions, disclosedFamilies = [], blockedTargets = [], targetsComplete = false,
+    repo, number, head, ciRepairEvidence = null, ciRepairClassification = null, ciRepairRead = null}, {seatFamilies = null} = {}) {
+    const incomplete = partial || !Array.isArray(requested) || !Array.isArray(reviews) || !Array.isArray(opinions);
+    requested = Array.isArray(requested) ? requested : [];
+    reviews = Array.isArray(reviews) ? reviews : [];
+    opinions = Array.isArray(opinions) ? opinions : [];
     const
-        incomplete   = partial || !Array.isArray(opinions),
-        onHead       = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
-        finished     = ci === 'red' || ci === 'green',
-        reviewedHere = new Set(reviews.filter(review => review.onHead).map(review => review.reviewer)),
+        classification = activeCiRepairClassification({repo, number, head, ciRepairEvidence, ciRepairClassification}),
+        admittedTouch  = ciRepairTouchOf({repo, number, head, ciRepairRead}),
+        onHead         = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
+        finished       = ci === 'red' || ci === 'green',
+        reviewedHere   = new Set(reviews.filter(review => review.onHead).map(review => review.reviewer)),
         // The seats that judged or reviewed an earlier head and have not reviewed this one, in their list order
         earlier      = list => [...new Set(list.filter(item => !item.onHead && !item.bot && isSeat(item.reviewer) &&
             !reviewedHere.has(item.reviewer)).map(item => item.reviewer))],
@@ -70,9 +151,9 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         // A judgment standing on an earlier head outranks a comment even after its seat reviewed this one
         stands       = (opinions ?? []).some(opinion => !opinion.onHead && !opinion.bot && isSeat(opinion.reviewer)),
         engaged      = stands ? judges : earlier(reviews),
-        untouched    = !requested.length && !reviews.some(review => review.onHead && !review.bot) && !engaged.length,
-        maintainer   = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation),
-        eligible     = owner?.kind === 'outside' && !draft && !bot && authorType !== 'Bot' && !maintainer,
+        untouched    = !(ci === 'red' && (classification || admittedTouch)) && !requested.length &&
+            !reviews.some(review => review.onHead && !review.bot) && !engaged.length,
+        eligible     = isEligibleOutsidePullRequest({owner, draft, bot, authorType, authorAssociation}),
         named        = eligible && Array.isArray(disclosedFamilies) && disclosedFamilies.length > 0,
         // On a named outside PR an approval counts only from a seat of a known family the PR does not name
         counts       = reviewer => !named || typeof seatFamilies?.[reviewer] === 'string' && !disclosedFamilies.includes(seatFamilies[reviewer]),
@@ -86,6 +167,16 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         return {role: 'rotation', kind: runApproval === 'action_required' ? 'approve-runs' : 'triage-outside', ids: []}
     }
 
+    // Preserve the author's established action packet; this does not classify the CI failure itself.
+    if (eligible && (opinions ?? []).some(opinion => opinion.onHead && opinion.state === 'CHANGES_REQUESTED' &&
+        !opinion.bot && canonicalSeat(opinion.reviewer))) {
+        return {role: 'author', kind: 'address-changes', ids: []}
+    }
+
+    if (eligible && ci === 'red' && classification?.kind !== 'content') {
+        return {role: 'rotation', kind: 'repair-ci', ids: []}
+    }
+
     if (ci === 'red' || onHead('CHANGES_REQUESTED')) {
         return {role: 'author', kind: ci === 'red' ? 'repair-ci' : 'address-changes', ids: owner?.seat ? [owner.seat] : []}
     }
@@ -95,7 +186,8 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
     }
 
     if (ci === 'green' && approved && mergeable === 'CONFLICTING') {
-        return {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
+        return eligible ? {role: 'rotation', kind: 'rebase', ids: []}
+            : {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
     }
 
     // A green outside head pushed past a seat's review is that seat's Round 2; a seat's standing change request joins

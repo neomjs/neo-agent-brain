@@ -19,8 +19,9 @@
  * would have read carry, and a row first seen after that miss is no `opened`.
  */
 
-import {disclosedFamiliesOf}                           from '../graph/disclosedModelFamilies.mjs';
-import {normalizeReviewRecords, retainReviewWitnesses} from './openWorkReviewRecords.mjs';
+import {disclosedFamiliesOf}                                                  from '../graph/disclosedModelFamilies.mjs';
+import {normalizeReviewRecords, retainReviewWitnesses}                        from './openWorkReviewRecords.mjs';
+import {normalizeCiRepair, retainCiRepairClassification, retainCiRepairTouch} from './openWorkCiRepair.mjs';
 
 /**
  * The mandatory PR-body line naming the authoring seat: `Authored by <Social Name> (…)`.
@@ -124,7 +125,8 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  * @param {Object} [source] Acquisition identity; absent for legacy inputs.
  * @param {String} [source.apiBase] Provider API identity from the existing reader.
  * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner,
- *     disclosedFamilies, requested, reviews, opinions, reviewRecords, turns, blockedTargets, targetsComplete,
+ *     disclosedFamilies, requested, reviews, opinions, reviewRecords, ciRepairEvidence, ciRepairClassification,
+ *     ciRepairRead, ciRepairIncompleteReads, turns, blockedTargets, targetsComplete,
  *     requestsComplete, opinionsComplete, partial}`. `blockedTargets` are the issues it closes that GitHub counts an
  *     open blocker for; `targetsComplete` is false when that list or a count went unread, a node without the list
  *     included, so no merge is certified.
@@ -132,7 +134,8 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  *     transition. `disclosedFamilies` are the model families an outside PR names in its body or in any commit's
  *     trailer, and empty for every other PR; an outside PR with commits past the read is `partial`, since an unread
  *     commit may name another family. Optional original review records keep their own history coverage, and `turns`
- *     holds only the conversation's latest page; neither changes current-work completeness.
+ *     holds only the conversation's latest page; neither changes current-work completeness. CI repair records
+ *     retain original comment and current-head check facts independently; unread checks cannot authorize content ownership.
  */
 export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
     const
@@ -167,7 +170,8 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         targetsComplete  = targets.complete && targets.nodes.every(targetOf),
         blockedTargets   = targets.nodes.filter(issue => targetOf(issue) && issue.issueDependenciesSummary.blockedBy > 0).map(targetOf).sort(),
         runApproval      = suites.nodes.some(suite => suite?.conclusion === 'ACTION_REQUIRED' && suite.workflowRun?.event !== 'pull_request_review')
-            ? 'action_required' : null;
+            ? 'action_required' : null,
+        ciRepair         = outside ? normalizeCiRepair(node, identities, {apiBase}) : null;
 
     return {
         key              : `${repo}#${node.number}`,
@@ -192,6 +196,14 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         reviews      : reviewed.filter(review => review.reviewer),
         opinions     : opined.filter(opinion => opinion.reviewer),
         reviewRecords: normalizeReviewRecords(node, apiBase),
+        ...(outside ? {...ciRepair, ciRepairIncompleteReads: [
+            ciRepair.ciRepairRead?.coverage !== 'complete' && 'comments',
+            (!reviewsComplete || !opinionsComplete) && 'reviews',
+            !requestsComplete && 'review-requests',
+            !messages.complete && 'commits',
+            !suites.complete && 'check-suites',
+            !ciRepair.ciRepairEvidence && 'checks'
+        ].filter(Boolean)} : {}),
         turns,
         blockedTargets,
         targetsComplete,
@@ -391,9 +403,10 @@ function readBy(row, seats) {
  * @param {{rows: Object[], complete: Boolean}} pulse.terminal Terminal rows ({@link normalizeTerminal}) read since `since`.
  * @param {String|null} pulse.since The watermark: where the terminal read began, ISO.
  * @param {String} pulse.id This pulse's identity, its time.
+ * @param {{byLogin: Function}} [pulse.identities] Current identity resolver for retained maintainer decisions.
  * @returns {{rows: Object, closed: Object, complete: Boolean, missed: String[], transitions: Object[], vanished: String[]}}
  */
-export function reduceOpenWork({previous, observed, terminal, since, id}) {
+export function reduceOpenWork({previous, observed, terminal, since, id, identities}) {
     const
         rows        = {},
         closed      = Object.fromEntries(Object.entries(previous?.closed ?? {}).filter(([, at]) => !since || at >= since)),
@@ -407,7 +420,14 @@ export function reduceOpenWork({previous, observed, terminal, since, id}) {
             before = previous?.rows[row.key],
             merged = before && !row.requestsComplete ? {...row, requested: [...new Set([...before.requested, ...row.requested])].sort()} : row;
 
-        rows[row.key] = {...merged, reviewRecords: retainReviewWitnesses(row.reviewRecords, before?.reviewRecords), observedAt: id};
+        rows[row.key] = {...merged,
+            reviewRecords: retainReviewWitnesses(row.reviewRecords, before?.reviewRecords),
+            ...(merged.owner?.kind === 'outside' ? {
+                ciRepairClassification: retainCiRepairClassification(merged, before, identities),
+                ciRepairRead          : merged.ciRepairRead ? {...merged.ciRepairRead,
+                    touch: retainCiRepairTouch(merged, before, identities)} : null
+            } : {}),
+            observedAt: id};
         delete closed[row.key];
 
         previous && transitions.push(...before ? changesOf(before, merged, id) : arrivalOf(merged, previous.complete !== false && !readBy(merged, previous.missed ?? []), id))
