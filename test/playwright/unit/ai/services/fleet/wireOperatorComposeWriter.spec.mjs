@@ -374,6 +374,16 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             expect(await move()).toMatchObject({ok: true, state: 'ok', result: {success: false, code: 'transition-refused', reason: 'the assignee cannot move this Task from Completed to Working'}})
         }
 
+        // the refusal's allowed-state hint and a caller who holds both roles are still the same refusal shape
+        for (const message of [
+            'Unauthorized: @tobiu as assignee cannot transition `Completed → Working`; allowed next states for assignee: Canceled, Failed',
+            'Unauthorized: @tobiu as originator and assignee cannot transition `Completed → Working`; allowed next states for originator and assignee: Canceled'
+        ]) {
+            wireOperatorComposeWriter({addMessage: () => ({}), transitionTask: throwing(message)});
+
+            expect((await move()).result, message).toMatchObject({success: false, code: 'transition-refused'})
+        }
+
         wireOperatorComposeWriter({addMessage: () => ({}), transitionTask: throwing('Unauthorized: @tobiu is neither originator nor assignee for task MESSAGE:t')});
         expect((await move()).result).toEqual({success: false, rowsAffected: 0, code: 'not-a-participant', reason: "only the Task's originator or assignee can move it"});
 
@@ -397,7 +407,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             'Task not found: ${taskId}',
             'Message ${taskId} is not an A2A Task (missing task.state)',
             'Unauthorized: ${me} is neither originator nor assignee for task ${taskId}',
-            'Unauthorized: ${me} as ${role} cannot transition \\`${currentState} → ${newState}\\`'
+            '`Unauthorized: ${me} as ${role} cannot transition \\`${currentState} → ${newState}\\`${allowedHint}`'
         ]) {
             expect(source, template).toContain(template)
         }
