@@ -283,6 +283,35 @@ export function bindAtFirstAdmission(db, {subject, identityId, at = Date.now()} 
 }
 
 /**
+ * @summary Decides what an administrative bind would do, without writing: its dry run and its write share
+ * this decision. An endpoint move (same account, new API endpoint) is the one conflict a bind resolves.
+ * @param {Object} db The graph's physical SQLite connection; a read-only one suffices.
+ * @param {Object} options
+ * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`.
+ * @param {String} options.identityId The identity to bind.
+ * @returns {{state: 'bound'|'matching'|'moved', binding?: Object, previous?: Object}} A match carries the stored
+ * binding; a move carries the binding it replaces.
+ * @throws {Error} A named refusal for an invalid input or a conflicting claim.
+ */
+export function planAdministrativeBind(db, {subject, identityId} = {}) {
+    checkSubject(subject);
+    if (!text(identityId)) throw refusal('SUBJECT_BINDING_INVALID', 'A binding needs the identity it binds.');
+
+    return read(() => {
+        if (!hasTable(db, SUBJECT_BINDING_TABLE)) return Object.freeze({state: 'bound'});
+
+        const previous = rowBySubject(db, subject) ? null : rowByIdentity(db, identityId);
+
+        if (previous && previous.authProvider === subject.authProvider && previous.providerUserId === subject.providerUserId) {
+            return Object.freeze({state: 'moved', previous});
+        }
+
+        const binding = existingClaim(db, subject, identityId);
+        return Object.freeze(binding ? {state: 'matching', binding} : {state: 'bound'});
+    });
+}
+
+/**
  * @summary Binds a subject to an existing identity, or moves an identity to its subject's new endpoint.
  * Only the plane-local administrative path calls this. An endpoint move keeps the identity, so its
  * history stays reachable; any other conflict refuses by name.
@@ -303,17 +332,15 @@ export function bindAdministratively(db, {subject, identityId, foundingRevision,
     db.exec(SCHEMA);
 
     const
-        row      = {...subject, identityId, writer: 'administrative', foundingRevision, boundAt: at},
-        previous = rowBySubject(db, subject) ? null : rowByIdentity(db, identityId);
+        plan = planAdministrativeBind(db, {subject, identityId}),
+        row  = {...subject, identityId, writer: 'administrative', foundingRevision, boundAt: at};
 
-    // Same forge account at a new API endpoint: the one conflict an administrative bind resolves.
-    if (previous && previous.authProvider === subject.authProvider && previous.providerUserId === subject.providerUserId) {
+    if (plan.state === 'matching') return plan;
+
+    if (plan.state === 'moved') {
         db.prepare(`DELETE FROM ${SUBJECT_BINDING_TABLE} WHERE identityId = ?`).run(identityId);
-        return Object.freeze({state: 'moved', binding: insert(db, row), previous});
+        return Object.freeze({state: 'moved', binding: insert(db, row), previous: plan.previous});
     }
-
-    const matching = existingClaim(db, subject, identityId);
-    if (matching) return Object.freeze({state: 'matching', binding: matching});
 
     return Object.freeze({state: 'bound', binding: insert(db, row)});
 }
