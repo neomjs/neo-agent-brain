@@ -131,7 +131,7 @@ const rotationOf = (db, id) => JSON.parse(db.prepare('SELECT data FROM Nodes WHE
  * @summary One lane pass over `db` with a recording sender and defect-note publisher.
  * @returns {Promise<{outcome: Object, sent: Object[], logs: Object[], notes: Object[]}>}
  */
-async function runLane(db, {now = NOW, delivery = 'delivered', operatorPresence = {mode: 'present', until: null}, publishDefectNote} = {}) {
+async function runLane(db, {now = NOW, delivery = 'delivered', operatorPresence = {mode: 'present', until: null}, publishDefectNote, waitsLogged} = {}) {
     const sent    = [], logs = [], notes = [];
     const outcome = await runSessionRotation({
         db,
@@ -141,6 +141,7 @@ async function runLane(db, {now = NOW, delivery = 'delivered', operatorPresence 
         minIntervalMs    : MIN_GAP_MS,
         writeLog         : (level, message) => logs.push({level, message}),
         publishDefectNote: publishDefectNote || (async note => { notes.push(note) }),
+        waitsLogged,
         now
     });
 
@@ -990,5 +991,48 @@ test.describe('session-rotation lane: an amendment is not a new receipt, and the
 
         expect((await runLane(stamped)).sent).toHaveLength(1);
         expect(rotationOf(stamped, 'MESSAGE:receipt')).toMatchObject({state: 'requested', oldSessionId: 'session-writer'})
+    });
+
+    test('each wait reason logs once per receipt across passes, and again when the receipt waits for another reason', async () => {
+        const db          = createGraph(),
+              waitsLogged = new Map(),
+              waits       = ({logs}) => logs.map(log => log.message).filter(message => message.includes('session-rotation: waiting'));
+
+        insertRoute(db);
+        insertSelfMessage(db, 'MESSAGE:receipt', 2);
+        insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:sunset-turn`, 'AGENT_TURN_PRESENCE', {
+            agentIdentity: SEAT, turnId: 'sunset-turn', startedAt: at(15), status: 'active', expiresAt: at(-20)
+        });
+
+        expect(waits(await runLane(db, {waitsLogged}))).toEqual([`[Orchestrator] session-rotation: waiting for ${SEAT} (live-turn), receipt MESSAGE:receipt`]);
+        expect(waits(await runLane(db, {waitsLogged, now: NOW + MIN}))).toEqual([]);
+
+        // the turn expires, the request goes, and the receipt then waits on its receiver
+        expect((await runLane(db, {waitsLogged, now: NOW + 21 * MIN})).sent).toHaveLength(1);
+        expect(waits(await runLane(db, {waitsLogged, now: NOW + 22 * MIN}))).toEqual([`[Orchestrator] session-rotation: waiting for ${SEAT} (receiver-has-request), receipt MESSAGE:receipt`]);
+        expect(waits(await runLane(db, {waitsLogged, now: NOW + 23 * MIN}))).toEqual([]);
+
+        // the successor answers: nothing waits any more, so nothing stays remembered
+        insertSuccessor(db, 'MESSAGE:successor', -24, 'MESSAGE:receipt');
+        expect((await runLane(db, {waitsLogged, now: NOW + 25 * MIN})).outcome.completed).toBe(1);
+        expect(waitsLogged.size).toBe(0)
+    });
+
+    test('a receipt waiting for its writer\'s close logs that reason once', async () => {
+        const db          = createGraph(),
+              waitsLogged = new Map(),
+              waits       = ({logs}) => logs.map(log => log.message).filter(message => message.includes('session-rotation: waiting'));
+
+        insertRoute(db);
+        insertMemory(db, 'mem-old', 50, 'session-old');
+        insertSelfMessage(db, 'MESSAGE:receipt', 46, {sessionRotation: {...OPEN, requestedAt: at(45), deliveredAt: at(45)}});
+        insertSuccessor(db, 'MESSAGE:successor', 44, 'MESSAGE:receipt');
+        insertNode(db, 'MESSAGE:next', 'MESSAGE', {
+            from: SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(2), taggedConcepts: ['sunset-protocol-handover']
+        });
+
+        expect((await runLane(db, {waitsLogged})).outcome.completed).toBe(1);
+        expect(waits(await runLane(db, {waitsLogged, now: NOW + MIN}))).toEqual([`[Orchestrator] session-rotation: waiting for ${SEAT} (writer-close-pending), receipt MESSAGE:next`]);
+        expect(waits(await runLane(db, {waitsLogged, now: NOW + 2 * MIN}))).toEqual([])
     });
 });
