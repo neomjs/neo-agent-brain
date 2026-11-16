@@ -804,6 +804,10 @@ class DatabaseService extends Base {
             let truncated              = [],
                 preservedDeliveryState = [];
 
+            // A vector drop is irreversible, so every refusal the graph step can make is decided first:
+            // a refusal after the drops would leave the vectors gone and the graph intact.
+            const graph = include.includes('graph') ? await this.#admitGraphTruncation(confirmation) : null;
+
             if (include.includes('memories')) {
                 const proxy = Neo.create('Neo.ai.services.memory-core.managers.CollectionProxy', { collectionType: 'memory' });
                 await proxy.drop({confirmation});
@@ -828,50 +832,38 @@ class DatabaseService extends Base {
                 truncated.push('messages');
             }
 
-            if (include.includes('graph')) {
-                await this.#assertGraphDestructiveTargetAllowed({
-                    operation: 'memory-core.graph.truncate',
-                    mode     : 'truncate',
-                    confirmation
-                });
+            if (graph) {
+                const {GraphService, graphDb} = graph;
 
-                const GraphService = (await import('./GraphService.mjs')).default;
-                if (GraphService.db?.storage?.db) {
-                    const graphDb = GraphService.db.storage.db;
-                    if (graphDb.inTransaction) {
-                        throw new Error('Graph truncation cannot join an existing transaction.');
-                    }
+                // Capture-and-truncate in ONE transaction when the caller opts in. A separate SELECT
+                // followed by the DELETE leaves a window in which an acknowledged `mark_read` commits
+                // and is then wiped without ever having been captured — the same lost-acknowledged-write
+                // class this preservation exists to prevent, reintroduced inside the operation.
+                // better-sqlite3 transactions are synchronous and serialized, so nothing interleaves.
+                preservedDeliveryState = graphDb.transaction(() => {
+                    GraphService.fenceIdentityPublication({
+                        db: graphDb, operation: 'graph-truncate', source: 'DatabaseService.truncateDatabase'
+                    });
+                    const captured = preserveDeliveryReadState
+                        ? graphDb.prepare(
+                            `SELECT source,
+                                    target,
+                                    json_extract(data, '$.properties.readAt')     AS readAt,
+                                    json_extract(data, '$.properties.archivedAt') AS archivedAt
+                             FROM Edges
+                             WHERE type = 'DELIVERED_TO'
+                               AND (json_extract(data, '$.properties.readAt')     IS NOT NULL
+                                    OR json_extract(data, '$.properties.archivedAt') IS NOT NULL)`
+                        ).all()
+                        : [];
 
-                    // Capture-and-truncate in ONE transaction when the caller opts in. A separate SELECT
-                    // followed by the DELETE leaves a window in which an acknowledged `mark_read` commits
-                    // and is then wiped without ever having been captured — the same lost-acknowledged-write
-                    // class this preservation exists to prevent, reintroduced inside the operation.
-                    // better-sqlite3 transactions are synchronous and serialized, so nothing interleaves.
-                    preservedDeliveryState = graphDb.transaction(() => {
-                        GraphService.fenceIdentityPublication({
-                            db: graphDb, operation: 'graph-truncate', source: 'DatabaseService.truncateDatabase'
-                        });
-                        const captured = preserveDeliveryReadState
-                            ? graphDb.prepare(
-                                `SELECT source,
-                                        target,
-                                        json_extract(data, '$.properties.readAt')     AS readAt,
-                                        json_extract(data, '$.properties.archivedAt') AS archivedAt
-                                 FROM Edges
-                                 WHERE type = 'DELIVERED_TO'
-                                   AND (json_extract(data, '$.properties.readAt')     IS NOT NULL
-                                        OR json_extract(data, '$.properties.archivedAt') IS NOT NULL)`
-                            ).all()
-                            : [];
+                    graphDb.prepare('DELETE FROM Nodes').run();
+                    graphDb.prepare('DELETE FROM Edges').run();
 
-                        graphDb.prepare('DELETE FROM Nodes').run();
-                        graphDb.prepare('DELETE FROM Edges').run();
+                    return captured
+                }).immediate();
 
-                        return captured
-                    }).immediate();
-
-                    truncated.push('graph');
-                }
+                truncated.push('graph');
             }
 
             return {message: `Truncation complete. Cleared: ${truncated.join(', ')}`, preservedDeliveryState};
@@ -900,6 +892,54 @@ class DatabaseService extends Base {
         } else {
             throw new Error(`Unknown action: ${action}`);
         }
+    }
+
+    /**
+     * @summary Decides every refusal of a graph truncation before any store is touched.
+     *
+     * The destructive-target assertion reads configuration and the open-transaction check reads the
+     * connection. The publication fence runs its own write path inside an immediate transaction that
+     * is then rolled back, so a malformed, wrong-target or unwritable fence refuses here and the probe
+     * leaves nothing behind. The real fence-and-delete transaction is unchanged.
+     * @param {String|Object} [confirmation] Explicit production confirmation token.
+     * @returns {Promise<Object|null>} `{GraphService, graphDb}`, or null when no graph store is open.
+     * @private
+     */
+    async #admitGraphTruncation(confirmation) {
+        await this.#assertGraphDestructiveTargetAllowed({
+            operation: 'memory-core.graph.truncate',
+            mode     : 'truncate',
+            confirmation
+        });
+
+        const
+            GraphService = (await import('./GraphService.mjs')).default,
+            graphDb      = GraphService.db?.storage?.db;
+
+        if (!graphDb) {
+            return null
+        }
+
+        if (graphDb.inTransaction) {
+            throw new Error('Graph truncation cannot join an existing transaction.');
+        }
+
+        const rollback = new Error('graph truncation fence probe');
+
+        try {
+            graphDb.transaction(() => {
+                GraphService.fenceIdentityPublication({
+                    db: graphDb, operation: 'graph-truncate', source: 'DatabaseService.truncateDatabase'
+                });
+                throw rollback
+            }).immediate();
+        } catch (error) {
+            if (error !== rollback) {
+                throw error
+            }
+        }
+
+        return {GraphService, graphDb}
     }
 
     /**

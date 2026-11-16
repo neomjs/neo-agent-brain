@@ -184,7 +184,7 @@ test('disposable owner: actual import and truncate methods fence with isolated s
             ['../../mcp/server/memory-core/config.mjs', 'export default ' + JSON.stringify({storagePaths: {graph: db.name}, vectorDimension: 3})],
             ['../../mcp/server/memory-core/logger.mjs', 'export default {log() {}, warn() {}, error() {}}'],
             ['./managers/StorageRouter.mjs', 'export default {async ready() {}}'],
-            ['../../mcp/server/shared/services/DestructiveOperationGuard.mjs', 'export default {async assertDestructiveTargetAllowed() {}}'],
+            ['../../mcp/server/shared/services/DestructiveOperationGuard.mjs', 'export default {async assertDestructiveTargetAllowed() {if (globalThis.fixtureTargetRefuse) throw new Error("fixture target refusal");}}'],
             ['./GraphService.mjs', 'export default globalThis.fixtureGraphOwner']
         ]);
         const seen = new Set();
@@ -203,7 +203,8 @@ test('disposable owner: actual import and truncate methods fence with isolated s
             db.prepare("UPDATE Edges SET data = json_set(data, '$.properties.readAt', 'committed')").run();
             await owner.importDatabase({file, mode: 'replace', preserveDeliveryReadState: true});
             assert.equal(db.prepare("SELECT json_extract(data, '$.properties.readAt') AS value FROM Edges").get().value, 'committed');
-            assert.deepEqual(calls, ['graph-truncate', 'graph-import-replace']);
+            // The truncation's rolled-back admission probe, its real fence, then the import's.
+            assert.deepEqual(calls, ['graph-truncate', 'graph-truncate', 'graph-import-replace']);
             assert.equal(readIdentityPublicationFence(db, target).state, 'fenced');
             clear();
             await owner.importDatabase({file, mode: 'merge'});
@@ -214,6 +215,31 @@ test('disposable owner: actual import and truncate methods fence with isolated s
             await assert.rejects(owner.truncateDatabase({include: ['graph']}), /fixture owner refusal/);
             assert.deepEqual(db.prepare('SELECT * FROM Nodes ORDER BY id').all(), before);
             assert.equal(readIdentityPublicationFence(db, target).state, 'clear');
+
+            // Every graph refusal is decided before a vector collection drops.
+            const drops = [];
+            class RecordingCollectionProxy extends Neo.core.Base {
+                static config = {className: 'Neo.ai.services.memory-core.managers.CollectionProxy', collectionType: null};
+                async drop() {drops.push(this.collectionType);}
+            }
+            Neo.setupClass(RecordingCollectionProxy);
+            const truncateWithVectors = () => owner.truncateDatabase({include: ['memories', 'graph']});
+            globalThis.fixtureTargetRefuse = true;
+            await assert.rejects(truncateWithVectors(), /fixture target refusal/);
+            globalThis.fixtureTargetRefuse = false;
+            await assert.rejects(truncateWithVectors(), /fixture owner refusal/);
+            globalThis.fixtureGraphOwner.refuse = false;
+            db.prepare('UPDATE IdentityPublicationFence SET data = ?').run('{"version":1}');
+            await assert.rejects(truncateWithVectors(), /malformed or wrong-target state/);
+            assert.deepEqual(drops, []);
+            assert.deepEqual(db.prepare('SELECT * FROM Nodes ORDER BY id').all(), before);
+
+            // An accepted truncation behaves as before: the vectors drop, then the fenced graph empties.
+            clear();
+            await truncateWithVectors();
+            assert.deepEqual(drops, ['memory']);
+            assert.equal(db.prepare('SELECT COUNT(*) AS n FROM Nodes').get().n, 0);
+            assert.equal(readIdentityPublicationFence(db, target).cause.operation, 'graph-truncate');
             assert.deepEqual(seen, new Set(modules.keys()));
         } finally {hooks.deregister(); db.close();}
     `;
