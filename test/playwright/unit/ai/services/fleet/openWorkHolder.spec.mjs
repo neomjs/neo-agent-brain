@@ -94,6 +94,8 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
         expect(holderOf(row(conflict))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
         const red = {...conflict, ci: 'red'}, repair = {role: 'author', kind: 'repair-ci', ids: [seat.seat]};
         expect(holderOf(row(red))).toEqual({role: 'author', kind: 'rebase', ids: [seat.seat]});
+        expect(holderOf(row({...red, owner: {kind: 'unowned', seat: null, login: 'org-user'}})))
+            .toEqual({role: 'author', kind: 'rebase', ids: []});
         for (const reviewer of [{bot: true}, {reviewer: seat.seat}, {reviewer: 'login:outside'}]) {
             expect(holderOf(row({...red, opinions: [{...red.opinions[0], ...reviewer}]}))).toEqual(repair)
         }

@@ -24,8 +24,8 @@
  *
  * A partial read decides only on positive evidence. A native author's red head stays theirs; an eligible
  * outside red head reaches maintainer investigation unless a current content decision or native on-head
- * change request preserves the author's action. Green review, rebase and merge rules still require
- * complete coverage: an unread page cannot certify an absence.
+ * change request preserves the author's action. With complete coverage, a confirmed conflict on an
+ * independently approved head takes precedence over red CI. Review and merge also require complete coverage.
  *
  * A head that reports no CI (`ci: null`) never turns green, so its merge chip reads GitHub's `CLEAN`
  * instead, still beside the approval on the head: a repository that requires no review is CLEAN without one.
@@ -157,8 +157,8 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         named        = eligible && Array.isArray(disclosedFamilies) && disclosedFamilies.length > 0,
         // On a named outside PR an approval counts only from a seat of a known family the PR does not name
         counts       = reviewer => !named || typeof seatFamilies?.[reviewer] === 'string' && !disclosedFamilies.includes(seatFamilies[reviewer]),
-        approved     = (opinions ?? []).some(opinion => opinion.onHead && opinion.state === 'APPROVED' && counts(opinion.reviewer) &&
-            (ci !== 'red' || !opinion.bot && isSeat(opinion.reviewer) && opinion.reviewer !== owner?.seat)),
+        approvesHead = opinion => opinion.onHead && opinion.state === 'APPROVED' && counts(opinion.reviewer),
+        approved     = (opinions ?? []).some(approvesHead),
         // A close target with an open blocker holds the merge for the author; an unread target cannot certify it
         merge        = blockedTargets.length ? {role: 'author', kind: 'await-prerequisite', ids: owner?.seat ? [owner.seat] : [], targets: [...blockedTargets]}
             : targetsComplete ? {role: 'operator', kind: 'merge', ids: []} : {role: 'unknown', kind: null, ids: []};
@@ -175,10 +175,15 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
     }
 
     // A confirmed conflict can itself turn CI red. Integrate the approved head first, then assess the new head's checks.
-    const canIntegrate = ci === 'green' || ci === 'red' && !draft && (eligible || owner?.kind === 'seat' && isSeat(owner.seat));
-    if (canIntegrate && !incomplete && mergeable === 'CONFLICTING' && approved && !onHead('CHANGES_REQUESTED')) {
-        return eligible ? {role: 'rotation', kind: 'rebase', ids: []}
-            : {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
+    if (!incomplete && approved && mergeable === 'CONFLICTING' && !onHead('CHANGES_REQUESTED')) {
+        // Superseding a red CI action requires a countable approval from an independent, resolved maintainer seat.
+        const independentApproval = opinion => approvesHead(opinion) && !opinion.bot && isSeat(opinion.reviewer) && opinion.reviewer !== owner?.seat;
+        const integratesRed       = ci === 'red' && !draft && (eligible || owner?.kind === 'unowned' || owner?.kind === 'seat' && isSeat(owner.seat)) &&
+            opinions.some(independentApproval);
+        if (ci === 'green' || integratesRed) {
+            return eligible ? {role: 'rotation', kind: 'rebase', ids: []}
+                : {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
+        }
     }
 
     if (eligible && ci === 'red' && classification?.kind !== 'content') {
