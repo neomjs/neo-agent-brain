@@ -519,19 +519,34 @@ export function serializeWakeReceiverPlist({
 }
 
 /**
- * @summary Extracts declared runtime, manifest, stateDir, and endpoint fields from a parsed LaunchAgent dict.
+ * @summary Extracts declared runtime, manifest, stateDir, endpoint, and environment fields from a parsed LaunchAgent dict.
  * @param {Object} plist Parsed plist dictionary from {@link parseLaunchAgentPlist}.
  * @returns {Object}
  */
 export function extractReceiverDeclaration(plist) {
     const
-        args        = Array.isArray(plist?.ProgramArguments) && plist.ProgramArguments.every(item => typeof item === 'string') ? plist.ProgramArguments : [],
-        occurrences = flag => args.filter(item => item === flag).length,
-        hasEquals   = flag => args.some(item => item.startsWith(`${flag}=`)),
-        after       = flag => (occurrences(flag) === 1 && !hasEquals(flag)) ? args[args.indexOf(flag) + 1] : undefined,
-        genFlag     = args.find(item => item.startsWith('--neo-runtime-generation=')),
-        portRaw     = after('--port'),
-        port        = /^\d+$/.test(portRaw ?? '') ? Number(portRaw) : null;
+        args            = Array.isArray(plist?.ProgramArguments) && plist.ProgramArguments.every(item => typeof item === 'string') ? plist.ProgramArguments : [],
+        occurrences     = flag => args.filter(item => item === flag).length,
+        hasEquals       = flag => args.some(item => item.startsWith(`${flag}=`)),
+        after           = flag => (occurrences(flag) === 1 && !hasEquals(flag)) ? args[args.indexOf(flag) + 1] : undefined,
+        genFlags        = args.filter(item => item.startsWith('--neo-runtime-generation=')),
+        genFlag         = genFlags.length === 1 ? genFlags[0] : undefined,
+        portRaw         = after('--port'),
+        port            = /^\d+$/.test(portRaw ?? '') ? Number(portRaw) : null,
+        pairedFlags     = ['--manifest', '--state-dir', '--host', '--port'],
+        pairedCount     = pairedFlags.reduce((sum, flag) => sum + (occurrences(flag) === 1 ? 2 : 0), 0),
+        expectedLen     = (args[0] ? 1 : 0) + (args[1] ? 1 : 0) + pairedCount + genFlags.length,
+        rawEnv          = plist?.EnvironmentVariables,
+        hasNonStringEnv = rawEnv !== undefined && (typeof rawEnv !== 'object' || rawEnv === null || Array.isArray(rawEnv) || Object.values(rawEnv).some(value => typeof value !== 'string')),
+        environment     = {};
+
+    if (rawEnv && typeof rawEnv === 'object' && !Array.isArray(rawEnv)) {
+        for (const key of Object.keys(rawEnv).sort()) {
+            if (typeof rawEnv[key] === 'string') {
+                environment[key] = rawEnv[key];
+            }
+        }
+    }
 
     return {
         label               : typeof plist?.Label === 'string' ? plist.Label : null,
@@ -543,6 +558,7 @@ export function extractReceiverDeclaration(plist) {
         host                : after('--host') ?? WAKE_RECEIVER_DEFAULT_HOST,
         port,
         runtimeGenerationDir: genFlag ? genFlag.slice('--neo-runtime-generation='.length) : null,
-        ambiguousFlags      : ['--manifest', '--state-dir', '--port', '--host'].some(flag => occurrences(flag) > 1 || hasEquals(flag))
+        environment,
+        ambiguousFlags      : pairedFlags.some(flag => occurrences(flag) > 1 || hasEquals(flag)) || genFlags.length > 1 || args.length !== expectedLen || hasNonStringEnv
     };
 }

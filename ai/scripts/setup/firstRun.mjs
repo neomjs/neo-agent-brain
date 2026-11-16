@@ -774,7 +774,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                 await fsPromises.mkdir(options.setupRoot, {recursive: true, mode: 0o700});
                 await fsPromises.writeFile(composePath, `${JSON.stringify(state, null, 2)}\n`, {mode: 0o600});
             },
-            initialLaunchd = () => ({loaded: false, running: false, plistPath: null, program: null, workingDirectory: null, arguments: null, host: null, port: null, readyAt: null, calls: [], ...(fake.launchd ?? {})}),
+            initialLaunchd = () => ({loaded: false, running: false, plistPath: null, program: null, workingDirectory: null, arguments: null, defaultEnvironment: null, environment: null, host: null, port: null, readyAt: null, calls: [], ...(fake.launchd ?? {})}),
             readLaunchd    = async () => {
                 if (fake.launchd?.forceSeed) {
                     return initialLaunchd();
@@ -822,6 +822,14 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                             throw Object.assign(new Error(`Could not find service "${WAKE_RECEIVER_LABEL}" in domain for user gui: 113`), {stderr: 'Could not find service'});
                         }
 
+                        const
+                            defEnvEntries = state.defaultEnvironment && typeof state.defaultEnvironment === 'object'
+                                ? state.defaultEnvironment
+                                : {PATH: '/usr/bin:/bin:/usr/sbin:/sbin'},
+                            envEntries    = state.environment && typeof state.environment === 'object'
+                                ? state.environment
+                                : null;
+
                         return {
                             stdout: [
                                 `\tstate = ${state.running ? 'running' : 'not running'}`,
@@ -830,6 +838,18 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                                 ...(state.workingDirectory ? [`\tworking directory = ${state.workingDirectory}`] : []),
                                 ...(Array.isArray(state.arguments) && state.arguments.length > 0
                                     ? ['\targuments = {', ...state.arguments.map(item => `\t\t${item}`), '\t}']
+                                    : []),
+                                '\tdefault environment = {',
+                                ...Object.entries(defEnvEntries).map(([k, v]) => `\t\t${k} => ${v}`),
+                                '\t}',
+                                ...(envEntries
+                                    ? [
+                                        '\tenvironment = {',
+                                        '\t\tOSLogRateLimit => 64',
+                                        ...Object.entries(envEntries).map(([k, v]) => `\t\t${k} => ${v}`),
+                                        `\t\tXPC_SERVICE_NAME => ${WAKE_RECEIVER_LABEL}`,
+                                        '\t}'
+                                    ]
                                     : []),
                                 ...(state.plistPath ? [`\tpath = ${state.plistPath}`] : [])
                             ].join('\n'),
@@ -864,6 +884,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                         state.program          = decl.executable;
                         state.workingDirectory = parsed.WorkingDirectory ?? decl.runtimeRoot;
                         state.arguments        = parsed.ProgramArguments ?? null;
+                        state.environment      = parsed.EnvironmentVariables ?? {};
                         state.host             = decl.host;
                         state.port             = decl.port;
                         state.readyAt          = Number.isInteger(fake.launchd?.readyDelayMs) && fake.launchd.readyDelayMs > 0

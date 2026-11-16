@@ -45,7 +45,40 @@ export const PRIVATE_DIR_MODE = 0o700;
  */
 export const PRIVATE_FILE_MODE = 0o600;
 
-const LOOPBACK_WAKE_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+const
+    LOOPBACK_WAKE_HOSTS         = new Set(['127.0.0.1', '::1', 'localhost']),
+    LAUNCHD_INTRINSIC_ENV_KEYS  = new Set(['XPC_SERVICE_NAME', 'OSLogRateLimit', 'MallocSpaceEfficient', 'ASL_DISABLE']),
+    EXECUTION_OVERRIDE_PREFIXES = ['NODE_', 'DYLD_', 'LD_', 'OPENSSL_', 'UV_'];
+
+function isExecutionOverrideEnvKey(key) {
+    return EXECUTION_OVERRIDE_PREFIXES.some(prefix => key.startsWith(prefix));
+}
+
+function normalizeEnvMap(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return {};
+    }
+
+    const result = {};
+
+    for (const key of Object.keys(raw).sort()) {
+        if (typeof raw[key] === 'string') {
+            result[key] = raw[key];
+        }
+    }
+
+    return result;
+}
+
+function sameEnvMap(left, right) {
+    const
+        a     = normalizeEnvMap(left),
+        b     = normalizeEnvMap(right),
+        aKeys = Object.keys(a),
+        bKeys = Object.keys(b);
+
+    return aKeys.length === bKeys.length && aKeys.every((key, index) => key === bKeys[index] && a[key] === b[key]);
+}
 
 /**
  * @summary Resolves the integer host UID from a setup host adapter when provided.
@@ -232,7 +265,21 @@ function declarationMatchesTarget(declaration, paths) {
         expectedGenDir  = paths.runtimeGeneration?.directory ?? null,
         actualGenDir    = declaration.runtimeGenerationDir ?? null,
         sameRuntimeRoot = !paths.runtimeRoot || declaration.runtimeRoot === paths.runtimeRoot,
-        sameExecutable  = !paths.executable || declaration.executable === paths.executable;
+        sameExecutable  = !paths.executable || declaration.executable === paths.executable,
+        expectedExtra   = normalizeEnvMap(paths.extraEnv),
+        declaredEnv     = normalizeEnvMap(declaration.environment);
+
+    for (const [key, value] of Object.entries(expectedExtra)) {
+        if (declaredEnv[key] !== value) {
+            return false;
+        }
+    }
+
+    for (const key of Object.keys(declaredEnv)) {
+        if (isExecutionOverrideEnvKey(key) && !Object.hasOwn(expectedExtra, key)) {
+            return false;
+        }
+    }
 
     return LOOPBACK_WAKE_HOSTS.has(declaration.host) &&
         declaration.manifestPath === paths.manifestPath &&
@@ -287,6 +334,10 @@ function declarationMatchesCustodySpec(declaration, digest, spec) {
         return false;
     }
 
+    if (spec.environment && typeof spec.environment === 'object' && !sameEnvMap(declaration.environment, spec.environment)) {
+        return false;
+    }
+
     return !spec.plistDigest || digest === spec.plistDigest;
 }
 
@@ -302,11 +353,50 @@ function normalizeDeclarationSpec(spec) {
         stateDir            : spec.stateDir ?? spec.wakeStateDir ?? null,
         host                : spec.host ?? null,
         port                : Number.isInteger(spec.port) ? spec.port : null,
-        runtimeGenerationDir: spec.runtimeGenerationDir ?? spec.runtimeGeneration?.directory ?? null
+        runtimeGenerationDir: spec.runtimeGenerationDir ?? spec.runtimeGeneration?.directory ?? null,
+        environment         : spec.environment && typeof spec.environment === 'object' && !Array.isArray(spec.environment)
+            ? normalizeEnvMap(spec.environment)
+            : {}
     };
 }
 
-function declarationMatchesLoadedSpec(loadedDecl, spec) {
+function supervisorEnvironmentMatches(supervisor, expectedEnv) {
+    const
+        loadedEnv     = supervisor.environment,
+        loadedDefault = supervisor.defaultEnvironment;
+
+    if (!loadedEnv || typeof loadedEnv !== 'object' || Array.isArray(loadedEnv)) {
+        return false;
+    }
+
+    if (loadedEnv.XPC_SERVICE_NAME !== undefined && loadedEnv.XPC_SERVICE_NAME !== WAKE_RECEIVER_LABEL) {
+        return false;
+    }
+
+    const comparableEnv = {};
+
+    for (const [key, value] of Object.entries(loadedEnv)) {
+        if (!LAUNCHD_INTRINSIC_ENV_KEYS.has(key) || Object.hasOwn(expectedEnv, key)) {
+            comparableEnv[key] = value;
+        }
+    }
+
+    if (!sameEnvMap(comparableEnv, expectedEnv)) {
+        return false;
+    }
+
+    if (loadedDefault && typeof loadedDefault === 'object' && !Array.isArray(loadedDefault)) {
+        for (const [key, value] of Object.entries(loadedDefault)) {
+            if (isExecutionOverrideEnvKey(key) && !Object.hasOwn(loadedEnv, key) && expectedEnv[key] !== value) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+function declarationMatchesLoadedSpec(loadedDecl, spec, supervisor) {
     return Boolean(loadedDecl.executable) &&
         Boolean(loadedDecl.runtimeRoot) &&
         Boolean(loadedDecl.manifestPath) &&
@@ -318,13 +408,15 @@ function declarationMatchesLoadedSpec(loadedDecl, spec) {
         (!spec.stateDir || loadedDecl.stateDir === spec.stateDir) &&
         (!spec.host || loadedDecl.host === spec.host) &&
         (!Number.isInteger(spec.port) || loadedDecl.port === spec.port) &&
-        (loadedDecl.runtimeGenerationDir ?? null) === (spec.runtimeGenerationDir ?? null);
+        (loadedDecl.runtimeGenerationDir ?? null) === (spec.runtimeGenerationDir ?? null) &&
+        supervisorEnvironmentMatches(supervisor, spec.environment);
 }
 
 /**
  * @summary Verifies that a loaded `launchd` service matches the expected plist path, program binary,
- * working directory, and receiver invocation arguments (`--manifest`, `--state-dir`, `--host`, `--port`,
- * `--neo-runtime-generation`) against at least one owned declaration spec before adopting, probing, or mutating supervision.
+ * working directory, receiver invocation arguments (`--manifest`, `--state-dir`, `--host`, `--port`,
+ * `--neo-runtime-generation`), and declared launchd environment (rejecting injected `NODE_OPTIONS` / preload overrides)
+ * against at least one owned declaration spec before adopting, probing, or mutating supervision.
  * @param {Object|null} supervisor
  * @param {String} plistPath
  * @param {Object|Object[]} allowedSpecs
@@ -352,6 +444,10 @@ export function supervisorMatchesDeclaration(supervisor, plistPath, allowedSpecs
         return `loaded launchd service '${WAKE_RECEIVER_LABEL}' lacks proven working directory or receiver arguments`;
     }
 
+    if (!supervisor.environment || typeof supervisor.environment !== 'object' || Array.isArray(supervisor.environment)) {
+        return `loaded launchd service '${WAKE_RECEIVER_LABEL}' lacks proven launchd environment`;
+    }
+
     const loadedDecl = extractReceiverDeclaration({
         Label           : WAKE_RECEIVER_LABEL,
         ProgramArguments: supervisor.arguments,
@@ -363,8 +459,8 @@ export function supervisorMatchesDeclaration(supervisor, plistPath, allowedSpecs
         return `loaded launchd service '${WAKE_RECEIVER_LABEL}' declares unproven or foreign receiver arguments (${loadedDecl.entrypoint ?? '<missing>'})`;
     }
 
-    if (!specs.some(spec => declarationMatchesLoadedSpec(loadedDecl, spec))) {
-        return `loaded launchd service '${WAKE_RECEIVER_LABEL}' runs foreign or mismatched receiver declaration (runtime '${loadedDecl.runtimeRoot ?? '<missing>'}', stateDir '${loadedDecl.stateDir ?? '<missing>'}', manifest '${loadedDecl.manifestPath ?? '<missing>'}')`;
+    if (!specs.some(spec => declarationMatchesLoadedSpec(loadedDecl, spec, supervisor))) {
+        return `loaded launchd service '${WAKE_RECEIVER_LABEL}' runs foreign or mismatched receiver declaration or environment (runtime '${loadedDecl.runtimeRoot ?? '<missing>'}', stateDir '${loadedDecl.stateDir ?? '<missing>'}', manifest '${loadedDecl.manifestPath ?? '<missing>'}')`;
     }
 
     return null;
@@ -600,7 +696,8 @@ export async function inspectWakeSetupState({paths, target, host, inspectSupervi
                     ? [{
                         ...custody.previousOwned,
                         manifestPath: custody.previousOwned.manifestPath ?? custody.manifestPath,
-                        stateDir    : custody.previousOwned.stateDir ?? custody.stateDir
+                        stateDir    : custody.previousOwned.stateDir ?? custody.stateDir,
+                        environment : custody.previousOwned.environment ?? d.environment
                     }]
                     : [])
             ];
@@ -791,12 +888,13 @@ export async function inspectWakeSetupState({paths, target, host, inspectSupervi
  * @param {Object} options.host
  * @returns {Promise<void>}
  */
-export async function writeCustodyRecord({
+export function writeCustodyRecord({
     custodyPath,
     hostUid,
     target,
     paths,
     plistDigest,
+    environment = null,
     adoptedFrom,
     installState = 'active',
     previousOwned = null,
@@ -816,6 +914,7 @@ export async function writeCustodyRecord({
         executable       : paths.executable,
         runtimeRoot      : paths.runtimeRoot,
         runtimeGeneration: paths.runtimeGeneration,
+        environment      : environment ? normalizeEnvMap(environment) : null,
         plistDigest,
         installState,
         ...(previousOwned ? {previousOwned} : {}),
@@ -823,8 +922,8 @@ export async function writeCustodyRecord({
         updatedAt        : new Date(host.now()).toISOString()
     };
 
-    await host.fsModule.mkdir(path.dirname(custodyPath), {recursive: true, mode: PRIVATE_DIR_MODE});
-    await writeFileAtomic(custodyPath, `${JSON.stringify(custody, null, 2)}\n`, {mode: PRIVATE_FILE_MODE, fsModule: host.fsModule});
+    return host.fsModule.mkdir(path.dirname(custodyPath), {recursive: true, mode: PRIVATE_DIR_MODE})
+        .then(() => writeFileAtomic(custodyPath, `${JSON.stringify(custody, null, 2)}\n`, {mode: PRIVATE_FILE_MODE, fsModule: host.fsModule}));
 }
 
 /**
@@ -846,6 +945,7 @@ export function summarizeOwnedCustodySpec(custody) {
         manifestPath     : custody.manifestPath ?? null,
         stateDir         : custody.stateDir ?? null,
         host             : custody.host ?? null,
-        port             : custody.port ?? null
+        port             : custody.port ?? null,
+        environment      : custody.environment ?? null
     };
 }

@@ -438,27 +438,104 @@ function launchctlDomain(hostUid) {
     return hostUid !== null && hostUid !== undefined ? `gui/${hostUid}` : 'gui/501';
 }
 
+function parseLaunchctlEnvBlock(blockBody) {
+    const env        = {};
+    let   currentKey = null;
+
+    for (const rawLine of blockBody.split(/\r?\n/)) {
+        const match = rawLine.match(/^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:=>|=)[ \t]*(.*)$/);
+
+        if (match) {
+            currentKey      = match[1];
+            env[currentKey] = match[2].trim();
+        } else if (currentKey !== null && rawLine.trim().length > 0) {
+            env[currentKey] = `${env[currentKey]}\n${rawLine.trim()}`;
+        }
+    }
+
+    return env;
+}
+
 function parseLaunchctlPrint(stdout) {
     const
-        runningState = /state\s*=\s*running/i.test(stdout),
-        pidMatch     = stdout.match(/\bpid\s*=\s*(\d+)/i),
-        pid          = pidMatch ? Number(pidMatch[1]) : null,
-        programMatch = stdout.match(/^[ \t]*program\s*=\s*(.+)$/mi),
-        pathMatch    = stdout.match(/^[ \t]*path\s*=\s*(.+)$/mi),
-        cwdMatch     = stdout.match(/^[ \t]*working directory\s*=\s*(.+)$/mi),
-        argsMatch    = stdout.match(/^[ \t]*arguments\s*=\s*\{([\s\S]*?)^[ \t]*\}/m),
-        argumentsArr = argsMatch
-            ? argsMatch[1].split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-            : null;
+        fields        = new Map(),
+        blocks        = new Map(),
+        collectedKeys = new Set(['arguments', 'default environment', 'environment']),
+        stack         = [];
+    let topDepth = 0,
+        sawRoot  = false;
+
+    for (const line of stdout.split(/\r?\n/)) {
+        if (!line.trim()) {
+            continue;
+        }
+
+        if (!sawRoot) {
+            sawRoot = true;
+
+            if (!/^[ \t]*(?:arguments|default environment|environment|properties|endpoints|spawned environment|resource limits)[ \t]*=/i.test(line) &&
+                /^[ \t]*[^\s=].*=[ \t]*\{[ \t]*$/.test(line)) {
+                topDepth = 1;
+                stack.push(null);
+                continue;
+            }
+        }
+
+        if (stack.length === topDepth) {
+            const blockMatch = line.match(/^[ \t]*([A-Za-z][A-Za-z0-9 ]*?)[ \t]*=[ \t]*\{[ \t]*$/);
+
+            if (blockMatch) {
+                const key = blockMatch[1].toLowerCase();
+                stack.push({key, lines: collectedKeys.has(key) ? [] : null});
+                continue;
+            }
+
+            const scalarMatch = line.match(/^[ \t]*([A-Za-z][A-Za-z0-9 ]*?)[ \t]*=[ \t]*(?!>)(.*)$/);
+
+            if (scalarMatch) {
+                fields.set(scalarMatch[1].toLowerCase(), scalarMatch[2].trim());
+            }
+
+            continue;
+        }
+
+        const current = stack[stack.length - 1] ?? null;
+
+        if (/^[ \t]*\}[ \t]*$/.test(line)) {
+            const closed = stack.pop();
+
+            if (closed?.lines && stack.length === topDepth) {
+                blocks.set(closed.key, closed.lines);
+            }
+
+            continue;
+        }
+
+        if (current?.lines) {
+            current.lines.push(line);
+        } else if (!/=>/.test(line) && /^[ \t]*[^\s=].*=[ \t]*\{[ \t]*$/.test(line)) {
+            stack.push({key: null, lines: null});
+        }
+    }
+
+    const
+        stateRaw   = fields.get('state') ?? '',
+        pidRaw     = fields.get('pid') ?? '',
+        pid        = /^\d+$/.test(pidRaw) ? Number(pidRaw) : null,
+        argLines   = blocks.get('arguments'),
+        defEnvList = blocks.get('default environment'),
+        envList    = blocks.get('environment');
 
     return {
-        loaded          : true,
-        running         : runningState || (Number.isInteger(pid) && pid > 0),
+        loaded            : true,
+        running           : stateRaw.toLowerCase() === 'running' || (Number.isInteger(pid) && pid > 0),
         pid,
-        program         : programMatch ? programMatch[1].trim() : null,
-        plist           : pathMatch ? pathMatch[1].trim() : null,
-        workingDirectory: cwdMatch ? cwdMatch[1].trim() : null,
-        arguments       : argumentsArr
+        program           : fields.get('program') || null,
+        plist             : fields.get('path') || null,
+        workingDirectory  : fields.get('working directory') || null,
+        arguments         : argLines ? argLines.map(item => item.trim()).filter(Boolean) : null,
+        defaultEnvironment: defEnvList ? parseLaunchctlEnvBlock(defEnvList.join('\n')) : null,
+        environment       : envList ? parseLaunchctlEnvBlock(envList.join('\n')) : null
     };
 }
 
@@ -475,10 +552,10 @@ async function inspectSupervisor(host, hostUid) {
         const text = `${error?.stderr ?? ''}\n${error?.stdout ?? ''}\n${error?.message ?? ''}`;
 
         if (/Could not find service|service cannot be found|No such process|113/i.test(text)) {
-            return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null};
+            return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null, defaultEnvironment: null, environment: null};
         }
 
-        return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null, queryError: error.message};
+        return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null, defaultEnvironment: null, environment: null, queryError: error.message};
     }
 }
 
@@ -657,7 +734,7 @@ export async function observeWakeReceiverEffect({layout, target, record = null, 
     };
 }
 
-async function waitForListenerAndSupervisor({paths, host, hostUid}) {
+async function waitForListenerAndSupervisor({paths, expectedDeclaration, host, hostUid}) {
     const
         probeFn     = host.probeWakeListener ?? probeWakeReceiverHttp,
         maxAttempts = Number.isInteger(host.wakeReadinessAttempts) && host.wakeReadinessAttempts > 0
@@ -672,15 +749,7 @@ async function waitForListenerAndSupervisor({paths, host, hostUid}) {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
         lastSupervisor     = await inspectSupervisor(host, hostUid);
         lastListener       = await probeFn({host: paths.host, port: paths.port});
-        supervisorMismatch = supervisorMatchesDeclaration(lastSupervisor, paths.plistPath, {
-            executable          : paths.executable,
-            runtimeRoot         : paths.runtimeRoot,
-            manifestPath        : paths.manifestPath,
-            stateDir            : paths.wakeStateDir,
-            host                : paths.host,
-            port                : paths.port,
-            runtimeGenerationDir: paths.runtimeGeneration?.directory ?? null
-        });
+        supervisorMismatch = supervisorMatchesDeclaration(lastSupervisor, paths.plistPath, expectedDeclaration);
 
         if (lastSupervisor.loaded && lastSupervisor.running && !supervisorMismatch && lastListener.wakeReceiver) {
             return {supervisor: lastSupervisor, listener: lastListener};
@@ -716,7 +785,8 @@ function verificationLayoutOf(paths) {
         runtime         : {
             runtimeRoot: paths.runtimeRoot,
             executable : paths.executable,
-            ...(paths.runtimeGeneration ? {generation: paths.runtimeGeneration} : {})
+            ...(paths.runtimeGeneration ? {generation: paths.runtimeGeneration} : {}),
+            ...(paths.extraEnv && Object.keys(paths.extraEnv).length > 0 ? {env: paths.extraEnv} : {})
         }
     };
 }
@@ -829,6 +899,7 @@ export async function reconcileWakeReceiverService(input, host) {
             target      : input.target,
             paths,
             plistDigest : inspection.plistRead.digest,
+            environment : inspection.plistRead.declaration?.environment ?? {},
             adoptedFrom : inspection.custodyRead.value?.adoptedFrom ?? 'fresh-install',
             installState: 'active',
             host
@@ -849,6 +920,7 @@ export async function reconcileWakeReceiverService(input, host) {
             target      : input.target,
             paths,
             plistDigest : inspection.plistRead.digest,
+            environment : inspection.plistRead.declaration?.environment ?? {},
             adoptedFrom : 'corroborated-legacy',
             installState: 'active',
             host
@@ -878,10 +950,11 @@ export async function reconcileWakeReceiverService(input, host) {
             runtimeGeneration: paths.runtimeGeneration,
             extraEnv         : paths.extraEnv
         }),
-        digest   = contentDigest(xml),
-        domain   = launchctlDomain(hostUid),
-        service  = `${domain}/${WAKE_RECEIVER_LABEL}`,
-        adoptedFrom = inspection.kind === 'owned-upgrade'
+        expectedDeclaration = extractReceiverDeclaration(parseLaunchAgentPlist(xml, {allowComments: false})),
+        digest              = contentDigest(xml),
+        domain              = launchctlDomain(hostUid),
+        service             = `${domain}/${WAKE_RECEIVER_LABEL}`,
+        adoptedFrom         = inspection.kind === 'owned-upgrade'
             ? (inspection.endpointMoved ? 'endpoint-move' : 'upgrade')
             : inspection.kind === 'owned-stopped'
                 ? 'restarted'
@@ -908,6 +981,7 @@ export async function reconcileWakeReceiverService(input, host) {
         target       : input.target,
         paths,
         plistDigest  : digest,
+        environment  : expectedDeclaration.environment,
         adoptedFrom,
         installState : 'installing',
         previousOwned: inspection.custodyRead?.exists ? summarizeOwnedCustodySpec(inspection.custodyRead.value) : null,
@@ -922,7 +996,7 @@ export async function reconcileWakeReceiverService(input, host) {
     await writeFileAtomic(paths.plistPath, xml, {mode: PRIVATE_FILE_MODE, fsModule: host.fsModule});
 
     await host.run('launchctl', ['bootstrap', domain, paths.plistPath], {});
-    await waitForListenerAndSupervisor({paths, host, hostUid});
+    await waitForListenerAndSupervisor({paths, expectedDeclaration, host, hostUid});
 
     await writeCustodyRecord({
         custodyPath : paths.custodyPath,
@@ -930,6 +1004,7 @@ export async function reconcileWakeReceiverService(input, host) {
         target      : input.target,
         paths,
         plistDigest : digest,
+        environment : expectedDeclaration.environment,
         adoptedFrom,
         installState: 'active',
         host

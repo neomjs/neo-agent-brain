@@ -70,7 +70,7 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
         patPath    = path.join(root, 'operator', 'plane-pat'),
         calls      = [],
         reads      = [],
-        launchd    = {loaded: false, running: false, plistPath: null, program: null, workingDirectory: null, arguments: null},
+        launchd    = {loaded: false, running: false, plistPath: null, program: null, workingDirectory: null, arguments: null, defaultEnvironment: null, environment: null},
         fsModule   = {...fs, readFile: (file, ...rest) => { reads.push(String(file)); return fs.readFile(file, ...rest) }},
         host       = createHost({
             fsModule,
@@ -89,6 +89,12 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
                             throw Object.assign(new Error('Could not find service'), {stderr: 'Could not find service'});
                         }
 
+                        const
+                            defEnv = launchd.defaultEnvironment && typeof launchd.defaultEnvironment === 'object'
+                                ? launchd.defaultEnvironment
+                                : {PATH: '/usr/bin:/bin:/usr/sbin:/sbin'},
+                            envMap = launchd.environment && typeof launchd.environment === 'object' ? launchd.environment : null;
+
                         return {
                             stdout: [
                                 `\tstate = ${launchd.running ? 'running' : 'not running'}`,
@@ -97,6 +103,18 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
                                 ...(launchd.workingDirectory ? [`\tworking directory = ${launchd.workingDirectory}`] : []),
                                 ...(Array.isArray(launchd.arguments) && launchd.arguments.length > 0
                                     ? ['\targuments = {', ...launchd.arguments.map(item => `\t\t${item}`), '\t}']
+                                    : []),
+                                '\tdefault environment = {',
+                                ...Object.entries(defEnv).map(([k, v]) => `\t\t${k} => ${v}`),
+                                '\t}',
+                                ...(envMap
+                                    ? [
+                                        '\tenvironment = {',
+                                        '\t\tOSLogRateLimit => 64',
+                                        ...Object.entries(envMap).map(([k, v]) => `\t\t${k} => ${v}`),
+                                        '\t\tXPC_SERVICE_NAME => com.neomjs.agent-os-wake',
+                                        '\t}'
+                                    ]
                                     : []),
                                 ...(launchd.plistPath ? [`\tpath = ${launchd.plistPath}`] : [])
                             ].join('\n'),
@@ -122,6 +140,7 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
                         launchd.program          = decl.executable;
                         launchd.workingDirectory = parsed.WorkingDirectory ?? decl.runtimeRoot;
                         launchd.arguments        = parsed.ProgramArguments ?? null;
+                        launchd.environment      = parsed.EnvironmentVariables ?? {};
 
                         return {stdout: '', stderr: ''};
                     }

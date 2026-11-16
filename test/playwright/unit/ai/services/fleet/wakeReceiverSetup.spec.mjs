@@ -68,15 +68,17 @@ function createScriptedLaunchdHost({
         calls           = [],
         probedEndpoints = [],
         state           = {
-            loaded          : false,
-            running         : false,
-            plistPath       : null,
-            program         : null,
-            workingDirectory: null,
-            arguments       : null,
-            host            : null,
-            port            : null,
-            probesLeft      : readyAfterProbes,
+            loaded            : false,
+            running           : false,
+            plistPath         : null,
+            program           : null,
+            workingDirectory  : null,
+            arguments         : null,
+            defaultEnvironment: null,
+            environment       : null,
+            host              : null,
+            port              : null,
+            probesLeft        : readyAfterProbes,
             ...initialLaunchd
         };
 
@@ -113,6 +115,12 @@ function createScriptedLaunchdHost({
                     throw Object.assign(new Error(`Could not find service "${WAKE_RECEIVER_LABEL}" in domain for user gui: 113`), {stderr: 'Could not find service'});
                 }
 
+                const
+                    defEnv = state.defaultEnvironment && typeof state.defaultEnvironment === 'object'
+                        ? state.defaultEnvironment
+                        : {PATH: '/usr/bin:/bin:/usr/sbin:/sbin'},
+                    envMap = state.environment && typeof state.environment === 'object' ? state.environment : null;
+
                 return {
                     stdout: [
                         `\tstate = ${state.running ? 'running' : 'not running'}`,
@@ -121,6 +129,18 @@ function createScriptedLaunchdHost({
                         ...(state.workingDirectory ? [`\tworking directory = ${state.workingDirectory}`] : []),
                         ...(Array.isArray(state.arguments) && state.arguments.length > 0
                             ? ['\targuments = {', ...state.arguments.map(item => `\t\t${item}`), '\t}']
+                            : []),
+                        '\tdefault environment = {',
+                        ...Object.entries(defEnv).map(([k, v]) => `\t\t${k} => ${v}`),
+                        '\t}',
+                        ...(envMap
+                            ? [
+                                '\tenvironment = {',
+                                '\t\tOSLogRateLimit => 64',
+                                ...Object.entries(envMap).map(([k, v]) => `\t\t${k} => ${v}`),
+                                `\t\tXPC_SERVICE_NAME => ${WAKE_RECEIVER_LABEL}`,
+                                '\t}'
+                            ]
                             : []),
                         ...(state.plistPath ? [`\tpath = ${state.plistPath}`] : [])
                     ].join('\n'),
@@ -151,6 +171,7 @@ function createScriptedLaunchdHost({
                 state.program          = decl.executable;
                 state.workingDirectory = parsed.WorkingDirectory ?? decl.runtimeRoot;
                 state.arguments        = parsed.ProgramArguments ?? null;
+                state.environment      = parsed.EnvironmentVariables ?? {};
                 state.host             = decl.host;
                 state.port             = decl.port;
 
@@ -223,6 +244,9 @@ test.describe('wakeReceiverSetup', () => {
             host                : '127.0.0.1',
             port                : 3199,
             runtimeGenerationDir: null,
+            environment         : {
+                PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+            },
             ambiguousFlags      : false
         });
 
@@ -604,6 +628,102 @@ test.describe('wakeReceiverSetup', () => {
             expect(foreignArgsHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
             expect(foreignArgsHost.probedEndpoints).toEqual([]);
 
+            // 7b3. Loaded job sharing plist, executable, cwd, and argv while injecting a preload override in launchd environment must refuse with 0 bootouts
+            const
+                gen2PlistXml         = serializeWakeReceiverPlist({
+                    templateXml,
+                    executable       : gen2Exec,
+                    runtimeRoot      : gen2Root,
+                    runtimeGeneration: upgradedGen,
+                    manifestPath     : layout.wakeManifestPath,
+                    stateDir         : layout.wakeStateDir,
+                    host             : '127.0.0.1',
+                    port             : 3299
+                }),
+                gen2Parsed           = parseLaunchAgentPlist(gen2PlistXml, {allowComments: false}),
+                gen2State            = {
+                    ...state,
+                    loaded          : true,
+                    running         : true,
+                    plistPath       : layout.wakePlistPath,
+                    program         : gen2Exec,
+                    workingDirectory: gen2Root,
+                    arguments       : gen2Parsed.ProgramArguments,
+                    environment     : gen2Parsed.EnvironmentVariables ?? {}
+                },
+                loadedEnvPreloadHost = createScriptedLaunchdHost({
+                    initialLaunchd: {
+                        ...gen2State,
+                        environment: {
+                            ...gen2State.environment,
+                            NODE_OPTIONS: '--import=/tmp/foreign-preload.mjs'
+                        }
+                    }
+                });
+
+            expect(await observeWakeReceiverEffect({layout: rebindLayout, target, host: loadedEnvPreloadHost.host})).toMatchObject({
+                present: true,
+                problem: expect.stringMatching(/foreign or mismatched receiver declaration or environment/)
+            });
+            await expect(reconcileWakeReceiverService({
+                ...rebindInput,
+                executable       : gen2Exec,
+                runtimeRoot      : gen2Root,
+                runtimeGeneration: upgradedGen
+            }, loadedEnvPreloadHost.host)).rejects.toThrow(/foreign or mismatched receiver declaration or environment/);
+            expect(loadedEnvPreloadHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
+            expect(loadedEnvPreloadHost.probedEndpoints).toEqual([]);
+
+            // Domain default-environment preload injection (`launchctl setenv` equivalent) must also refuse without mutating supervision
+            const domainEnvPreloadHost = createScriptedLaunchdHost({
+                initialLaunchd: {
+                    ...gen2State,
+                    defaultEnvironment: {
+                        PATH        : '/usr/bin:/bin:/usr/sbin:/sbin',
+                        NODE_OPTIONS: '--import=/tmp/domain-preload.mjs'
+                    }
+                }
+            });
+
+            await expect(reconcileWakeReceiverService({
+                ...rebindInput,
+                executable       : gen2Exec,
+                runtimeRoot      : gen2Root,
+                runtimeGeneration: upgradedGen
+            }, domainEnvPreloadHost.host)).rejects.toThrow(/foreign or mismatched receiver declaration or environment/);
+            expect(domainEnvPreloadHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
+
+            // Positive control: explicitly declared extraEnv option upgrades cleanly when loaded environment matches, and still refuses mismatch
+            const declaredEnvHost = createScriptedLaunchdHost({initialLaunchd: {...gen2State}});
+            const declaredExtra   = {NODE_OPTIONS: '--max-old-space-size=512'};
+
+            await expect(reconcileWakeReceiverService({
+                ...rebindInput,
+                executable       : gen2Exec,
+                runtimeRoot      : gen2Root,
+                runtimeGeneration: upgradedGen,
+                extraEnv         : declaredExtra
+            }, declaredEnvHost.host)).resolves.toMatchObject({action: 'upgraded'});
+            expect(await observeWakeReceiverEffect({
+                layout: {...rebindLayout, runtime: {runtimeRoot: gen2Root, executable: gen2Exec, generation: upgradedGen, env: declaredExtra}},
+                target,
+                host  : declaredEnvHost.host
+            })).toMatchObject({present: true, running: true, problem: null});
+
+            declaredEnvHost.state.environment = {...declaredEnvHost.state.environment, NODE_OPTIONS: '--import=/tmp/tampered-preload.mjs'};
+            await expect(reconcileWakeReceiverService({
+                ...rebindInput,
+                executable       : gen2Exec,
+                runtimeRoot      : gen2Root,
+                runtimeGeneration: upgradedGen,
+                extraEnv         : declaredExtra
+            }, declaredEnvHost.host)).rejects.toThrow(/foreign or mismatched receiver declaration or environment/);
+
+            // Restore gen2 plist and mock state before legacy tests
+            await fs.writeFile(layout.wakePlistPath, gen2PlistXml, {mode: 0o600});
+            await fs.writeFile(layout.wakeCustodyPath, custodySnapshot, {mode: 0o600});
+            Object.assign(state, gen2State);
+
             // 7c. Legacy plist (no sidecar) tests: invalid schema, unrelated route, osascript ignoring unused primarySession decoy, wrong deployment env, foreign endpoint never probed, valid legacy adoption
             await fs.rm(layout.wakeCustodyPath, {force: true});
             await fs.writeFile(layout.wakePlistPath, serializeWakeReceiverPlist({
@@ -616,7 +736,8 @@ test.describe('wakeReceiverSetup', () => {
                 port        : 3299
             }), {mode: 0o600});
 
-            const legacyHost = createScriptedLaunchdHost({
+            const legacyParsed = parseLaunchAgentPlist(await fs.readFile(layout.wakePlistPath, 'utf8'), {allowComments: false});
+            const legacyHost   = createScriptedLaunchdHost({
                 initialLaunchd: {
                     loaded          : true,
                     running         : true,
@@ -631,8 +752,9 @@ test.describe('wakeReceiverSetup', () => {
                         '--host', '127.0.0.1',
                         '--port', '3299'
                     ],
-                    host: '127.0.0.1',
-                    port: 3299
+                    environment: legacyParsed.EnvironmentVariables ?? {},
+                    host       : '127.0.0.1',
+                    port       : 3299
                 }
             });
 
