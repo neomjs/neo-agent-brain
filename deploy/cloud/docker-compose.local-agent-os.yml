@@ -175,11 +175,14 @@ services:
 
   ingress:
     restart: unless-stopped
-    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    # The plane cut never recreates the ingress, so a merged Caddyfile reaches it only through this bind.
+    # A DIRECTORY bind shows the new file a checkout writes (a single-file bind keeps the deleted inode),
+    # and `--watch` reloads it; a reload that fails keeps the running config.
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--watch"]
     volumes: !override
       - type: bind
-        source: ./Caddyfile.local-agent-os
-        target: /etc/caddy/Caddyfile
+        source: ./ingress-local
+        target: /etc/caddy
         read_only: true
         bind:
           create_host_path: false

@@ -27,7 +27,7 @@ import {createFleetServerApp}  from '../../../../../../ai/services/fleet/fleetSe
 const
     REPO_ROOT   = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
     cloudCaddy  = readFileSync(path.join(REPO_ROOT, 'deploy/cloud/Caddyfile'), 'utf8'),
-    localCaddy  = readFileSync(path.join(REPO_ROOT, 'deploy/cloud/Caddyfile.local-agent-os'), 'utf8'),
+    localCaddy  = readFileSync(path.join(REPO_ROOT, 'deploy/cloud/ingress-local/Caddyfile'), 'utf8'),
     composeYaml = readFileSync(path.join(REPO_ROOT, 'deploy/cloud/docker-compose.local-agent-os.yml'), 'utf8');
 
 /**
