@@ -31,6 +31,8 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
     let originalFindFilesByBasename;
     let originalGetKnowledgeBaseCollection;
     let originalPathExists;
+    let originalReadJson;
+    let originalStat;
 
     test.beforeAll(async () => {
         ChromaManager        = (await import('../../../../../../ai/services/knowledge-base/ChromaManager.mjs')).default;
@@ -43,6 +45,8 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
         originalFindFilesByBasename        = QueryService.findFilesByBasename;
         originalGetKnowledgeBaseCollection = ChromaManager.getKnowledgeBaseCollection;
         originalPathExists                 = fs.pathExists;
+        originalReadJson                   = fs.readJson;
+        originalStat                       = fs.stat;
     });
 
     test.afterEach(() => {
@@ -53,6 +57,8 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
         TextEmbeddingService.embedText           = originalEmbedText;
         ChromaManager.getKnowledgeBaseCollection = originalGetKnowledgeBaseCollection;
         fs.pathExists                            = originalPathExists;
+        fs.readJson                              = originalReadJson;
+        fs.stat                                  = originalStat;
     });
 
     function installQueryStub(metadatasOrFactory, capture) {
@@ -639,5 +645,239 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
             expect(rowA2.content).toBe('A2');
             expect(rowB.content).toBe('B');
         }
+    });
+
+    test('gates guideMatch on actual non-stopword matches so unrelated guides do not bury matching source files', async () => {
+        const capture = {};
+        installQueryStub([{
+            source          : 'learn/agentos/tooling/MemoryCoreMcpApi.md',
+            type            : 'guide',
+            name            : 'Memory Core MCP API',
+            content         : 'Memory Core MCP endpoint documentation for agent lifecycle messaging.',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'learn/guides/fundamentals/GettingStarted.md',
+            type            : 'guide',
+            name            : 'Getting Started',
+            content         : 'Install dependencies and launch your first workspace.',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'src/core/Config.mjs',
+            type            : 'src',
+            name            : 'Neo.core.Config',
+            className       : 'Neo.core.Config',
+            content         : 'Config reactivity observer subscribe notify subscribers during batched updates.',
+            inheritanceChain: '[]'
+        }], capture);
+
+        const result = await QueryService.queryDocuments({
+            query: 'how does the config reactivity observer notify subscribers during batched changes',
+            type : 'all',
+            limit: 5
+        });
+
+        expect(result.topResult).toBe('src/core/Config.mjs');
+        const configScore = Number(result.results.find(item => item.source === 'src/core/Config.mjs')?.score);
+        const guideScore  = Number(result.results.find(item => item.source === 'learn/agentos/tooling/MemoryCoreMcpApi.md')?.score);
+        expect(configScore).toBeGreaterThan(guideScore);
+
+        // Domain-matching guide still retains guideMatch boost over an unmatching guide.
+        installQueryStub([{
+            source          : 'learn/agentos/tooling/MemoryCoreMcpApi.md',
+            type            : 'guide',
+            name            : 'Memory Core MCP API',
+            content         : 'Memory Core messaging documentation.',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'learn/guides/fundamentals/ConfigSystem.md',
+            type            : 'guide',
+            name            : 'Config Reactivity',
+            content         : 'How Neo.core.Config notifies subscribers.',
+            inheritanceChain: '[]'
+        }], capture);
+
+        const guideResult = await QueryService.queryDocuments({
+            query: 'config reactivity documentation',
+            type : 'all',
+            limit: 5
+        });
+
+        expect(guideResult.topResult).toBe('learn/guides/fundamentals/ConfigSystem.md');
+    });
+
+    test('bounds Base.mjs inheritanceBoost and baseFileBonus accumulation without starving specific parent classes', async () => {
+        const capture = {};
+        installQueryStub([
+            {
+                source          : 'ai/services/github/IssueService.mjs',
+                type            : 'ai-infrastructure',
+                name            : 'Neo.ai.services.github.IssueService',
+                className       : 'Neo.ai.services.github.IssueService',
+                content         : 'Issue triage chunk 1',
+                inheritanceChain: JSON.stringify([{className: 'Neo.core.Base', source: 'src/core/Base.mjs'}])
+            },
+            {
+                source          : 'ai/services/github/IssueService.mjs',
+                type            : 'ai-infrastructure',
+                name            : 'Neo.ai.services.github.IssueService',
+                className       : 'Neo.ai.services.github.IssueService',
+                content         : 'Issue triage chunk 2',
+                inheritanceChain: JSON.stringify([{className: 'Neo.core.Base', source: 'src/core/Base.mjs'}])
+            },
+            {
+                source          : 'ai/services/github/IssueSyncService.mjs',
+                type            : 'ai-infrastructure',
+                name            : 'Neo.ai.services.github.IssueSyncService',
+                className       : 'Neo.ai.services.github.IssueSyncService',
+                content         : 'Issue sync chunk',
+                inheritanceChain: JSON.stringify([{className: 'Neo.core.Base', source: 'src/core/Base.mjs'}])
+            },
+            {
+                source          : 'src/core/Base.mjs',
+                type            : 'src',
+                name            : 'Neo.core.Base',
+                className       : 'Neo.core.Base',
+                content         : 'Base class chunk',
+                inheritanceChain: '[]'
+            }
+        ], capture);
+
+        const brainResult = await QueryService.queryDocuments({
+            query: 'issue service triage sync',
+            type : 'all',
+            limit: 5
+        });
+
+        expect(brainResult.topResult).toBe('ai/services/github/IssueService.mjs');
+        expect(brainResult.results[0].source).not.toBe('src/core/Base.mjs');
+        const baseResult = brainResult.results.find(item => item.source === 'src/core/Base.mjs');
+        expect(Number(baseResult?.score)).toBeLessThan(30);
+
+        // Engine subclass query keeps direct subclass + specific parent class ahead of capped src/core/Base.mjs.
+        installQueryStub([
+            {
+                source          : 'src/button/Base.mjs',
+                type            : 'src',
+                name            : 'Neo.button.Base',
+                className       : 'Neo.button.Base',
+                content         : 'Button Base config chunk 1',
+                inheritanceChain: JSON.stringify([{source: 'src/component/Base.mjs'}, {source: 'src/core/Base.mjs'}])
+            },
+            {
+                source          : 'src/button/Base.mjs',
+                type            : 'src',
+                name            : 'Neo.button.Base',
+                className       : 'Neo.button.Base',
+                content         : 'Button Base config chunk 2',
+                inheritanceChain: JSON.stringify([{source: 'src/component/Base.mjs'}, {source: 'src/core/Base.mjs'}])
+            },
+            {
+                source          : 'src/button/Split.mjs',
+                type            : 'src',
+                name            : 'Neo.button.Split',
+                className       : 'Neo.button.Split',
+                content         : 'Split button chunk',
+                inheritanceChain: JSON.stringify([{source: 'src/button/Base.mjs'}, {source: 'src/component/Base.mjs'}, {source: 'src/core/Base.mjs'}])
+            },
+            {
+                source          : 'src/core/Base.mjs',
+                type            : 'src',
+                name            : 'Neo.core.Base',
+                className       : 'Neo.core.Base',
+                content         : 'Core base chunk',
+                inheritanceChain: '[]'
+            }
+        ], capture);
+
+        const engineResult = await QueryService.queryDocuments({
+            query: 'button split iconcls handler',
+            type : 'src',
+            limit: 5
+        });
+
+        expect(engineResult.topResult).toBe('src/button/Base.mjs');
+        const rankedSources = engineResult.results.map(item => item.source);
+        expect(rankedSources).toContain('src/component/Base.mjs');
+        expect(rankedSources.indexOf('src/component/Base.mjs')).toBeLessThan(rankedSources.indexOf('src/core/Base.mjs'));
+    });
+
+    test('getLexicalRescueCandidates resolves node_modules/neo.mjs paths, filenames, and learn tree guides', async () => {
+        const
+            engineRoot      = path.resolve('node_modules/neo.mjs'),
+            clipboardRel    = 'src/main/addon/Clipboard.mjs',
+            dependencyRel   = 'src/gantt/DependencyStore.mjs',
+            treeGuideRel    = 'learn/guides/datahandling/TreeStore.md',
+            identityAdrRel  = 'learn/agentos/decisions/0018-neo-identity-source-of-truth-model.md',
+            engineTreePath  = path.join(engineRoot, 'learn/tree.json'),
+            engineSrcDir    = path.join(engineRoot, 'src'),
+            engineClipboard = path.join(engineRoot, clipboardRel),
+            engineDepStore  = path.join(engineRoot, dependencyRel),
+            engineTreeGuide = path.join(engineRoot, treeGuideRel),
+            engineAdrGuide  = path.join(engineRoot, identityAdrRel),
+            virtualFiles    = new Set([engineTreePath, engineClipboard, engineDepStore, engineTreeGuide, engineAdrGuide]),
+            virtualDirs     = new Set([engineSrcDir]);
+
+        fs.pathExists = async target => {
+            const resolved = path.resolve(target);
+            return virtualFiles.has(resolved) || virtualDirs.has(resolved);
+        };
+        fs.stat = async target => ({
+            isFile     : () => virtualFiles.has(path.resolve(target)),
+            isDirectory: () => virtualDirs.has(path.resolve(target))
+        });
+        fs.readJson = async target => {
+            if (path.resolve(target) === engineTreePath) {
+                return {
+                    data: [{
+                        id    : 'guides/datahandling/TreeStore',
+                        name  : 'Using TreeStore',
+                        isLeaf: true
+                    }, {
+                        id    : 'agentos/decisions/0018-neo-identity-source-of-truth-model',
+                        name  : '0018 — Neo Identity Source of Truth',
+                        isLeaf: true
+                    }]
+                };
+            }
+            return originalReadJson(target);
+        };
+        QueryService.findFilesByBasename = async (root, fileName) => {
+            if (path.resolve(root) === engineSrcDir && fileName === 'DependencyStore.mjs') {
+                return [engineDepStore];
+            }
+            return [];
+        };
+
+        const srcRescues = await QueryService.getLexicalRescueCandidates({
+            query     : 'Inspect src/main/addon/Clipboard.mjs and DependencyStore.mjs',
+            queryLower: 'inspect src/main/addon/clipboard.mjs and dependencystore.mjs',
+            queryWords: ['inspect', 'src', 'main', 'addon', 'clipboard', 'mjs', 'and', 'dependencystore', 'mjs'],
+            type      : 'src'
+        });
+
+        expect(srcRescues.find(item => item.source === clipboardRel)).toMatchObject({
+            source : clipboardRel,
+            type   : 'src',
+            reasons: [`path:${clipboardRel}`]
+        });
+        expect(srcRescues.find(item => item.source === dependencyRel)).toMatchObject({
+            source : dependencyRel,
+            type   : 'src',
+            reasons: ['filename:DependencyStore.mjs']
+        });
+
+        const guideRescues = await QueryService.getLexicalRescueCandidates({
+            query     : 'How does Using TreeStore work with Neo identity',
+            queryLower: 'how does using treestore work with neo identity',
+            queryWords: ['how', 'does', 'using', 'treestore', 'work', 'with', 'neo', 'identity'],
+            type      : 'guide'
+        });
+
+        expect(guideRescues.find(item => item.source === treeGuideRel)).toMatchObject({
+            source : treeGuideRel,
+            type   : 'guide',
+            reasons: ['guide-title:Using TreeStore']
+        });
+        expect(guideRescues.find(item => item.source === identityAdrRel)).toBeUndefined();
     });
 });

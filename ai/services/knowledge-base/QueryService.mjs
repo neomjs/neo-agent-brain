@@ -31,8 +31,19 @@ const lexicalRescueSkipDirs   = new Set([
     'test-results'
 ]);
 const codeTermRescueRoots     = ['ai/services', 'ai/mcp/server', 'ai/graph'];
-const codeTermRescueFileLimit = 500;
-const sourceLikeTypeAliases   = {
+const codeTermRescueFileLimit = 1000;
+const engineSubmodulePath     = path.join('node_modules', 'neo.mjs');
+const coreBaseSourcePattern   = /(?:^|\/)src\/core\/base\.mjs$/i;
+const guideStopWords          = new Set([
+    'about', 'after', 'all', 'also', 'and', 'any', 'are', 'been', 'before', 'between', 'both', 'can',
+    'could', 'did', 'does', 'each', 'either', 'for', 'from', 'had', 'has', 'have', 'how', 'into',
+    'its', 'may', 'more', 'most', 'must', 'not', 'only', 'other', 'our', 'out', 'over', 'same',
+    'should', 'some', 'such', 'than', 'that', 'the', 'their', 'them', 'then', 'there', 'these',
+    'they', 'this', 'those', 'through', 'under', 'use', 'used', 'using', 'was', 'were', 'what',
+    'when', 'where', 'which', 'while', 'who', 'why', 'will', 'with', 'within', 'without', 'would',
+    'your'
+]);
+const sourceLikeTypeAliases = {
     src: ['src', 'brain-source', 'ai-infrastructure']
 };
 
@@ -157,14 +168,19 @@ class QueryService extends Base {
         // authenticated request context — never from a client-supplied parameter (a forged
         // `tenantId` query arg is therefore ignored). No request context (stdio single-tenant
         // / offline daemon) → no tenant filter, byte-equivalent with the legacy behavior.
-        const requesterTenantId = normalizeUserId(RequestContextService.getUserId());
-        const queryOptions      = this.createQueryOptions({queryEmbeddingValues, requesterTenantId, type});
-        const queryResults      = await Promise.all(queryOptions.map(options => collection.query(options)));
-        const sourceScores      = {};
-        const sourceMetadata    = {};
-        const sourceChunks      = {};
-        const metadatas         = this.dedupeCandidateMetadatas(queryResults.flatMap(result => result.metadatas?.[0] || []));
-        const queryWords        = this.getQueryWords(queryLower);
+        const requesterTenantId           = normalizeUserId(RequestContextService.getUserId());
+        const queryOptions                = this.createQueryOptions({queryEmbeddingValues, requesterTenantId, type});
+        const queryResults                = await Promise.all(queryOptions.map(options => collection.query(options)));
+        const sourceScores                = {};
+        const sourceMetadata              = {};
+        const sourceChunks                = {};
+        const metadatas                   = this.dedupeCandidateMetadatas(queryResults.flatMap(result => result.metadatas?.[0] || []));
+        const queryWords                  = this.getQueryWords(queryLower);
+        const seenBaseBonusSources        = new Set();
+        const seenInheritanceChildSources = new Set();
+        const ancestorBoostTotals         = new Map();
+        const guideBonusTotals            = new Map();
+        const explicitCoreBaseQuery       = queryLower.includes('core/base') || queryLower.includes('neo.core.base');
 
         metadatas.forEach((metadata, index) => {
             if (!metadata.source || metadata.source === 'unknown') return;
@@ -195,6 +211,10 @@ class QueryService extends Base {
                 }
             }
 
+            const chunkContentLower   = chunkContent.toLowerCase();
+            let   guideContentMatched = false;
+            let   conceptContentMatch = false;
+
             queryWords.forEach(queryWord => {
                 const keyword         = queryWord;
                 const keywordSingular = keyword.endsWith('s') ? keyword.slice(0, -1) : keyword;
@@ -209,8 +229,37 @@ class QueryService extends Base {
                          score += queryScoreWeights.classNameMatch;
                     }
 
-                    if (metadata.type === 'guide') score += queryScoreWeights.guideMatch;
-                    if (metadata.type === 'concept') score += queryScoreWeights.conceptMatch;
+                    const isDomainKeyword = !guideStopWords.has(keyword) && !guideStopWords.has(keywordSingular);
+
+                    if (metadata.type === 'guide' && isDomainKeyword) {
+                        const matchedGuideTerm = sourcePathLower.includes(`/${keywordSingular}/`)
+                            || fileName.includes(keywordSingular)
+                            || nameLower.includes(keywordSingular)
+                            || (!guideContentMatched && chunkContentLower.includes(keywordSingular) && (guideContentMatched = true));
+
+                        if (matchedGuideTerm) {
+                            const priorGuideBonus = guideBonusTotals.get(sourcePath) || 0;
+                            const guideGrant      = Math.min(
+                                queryScoreWeights.guideMatch,
+                                Math.max(0, queryScoreWeights.guideMatch * 3 - priorGuideBonus)
+                            );
+
+                            if (guideGrant > 0) {
+                                score += guideGrant;
+                                guideBonusTotals.set(sourcePath, priorGuideBonus + guideGrant);
+                            }
+                        }
+                    }
+
+                    if (metadata.type === 'concept' && isDomainKeyword) {
+                        if (sourcePathLower.includes(`/${keywordSingular}/`) || fileName.includes(keywordSingular) || nameLower.includes(keywordSingular)) {
+                            score += queryScoreWeights.conceptMatch;
+                        } else if (!conceptContentMatch && chunkContentLower.includes(keywordSingular)) {
+                            score += queryScoreWeights.conceptMatch;
+                            conceptContentMatch = true;
+                        }
+                    }
+
                     if (metadata.type === 'blog') {
                         score += queryScoreWeights.blogMatch;
                         if (nameLower.includes(keywordSingular)) score += queryScoreWeights.guideMatch;
@@ -224,20 +273,45 @@ class QueryService extends Base {
             if (metadata.type === 'ticket' && type === 'all') score += queryScoreWeights.ticketPenalty;
             if (metadata.type === 'pull' && type === 'all') score += queryScoreWeights.pullPenalty;
             if (metadata.type === 'release') score += queryScoreWeights.releasePenalty;
-            if (fileName.endsWith('base.mjs')) score += queryScoreWeights.baseFileBonus;
+            if (fileName.endsWith('base.mjs') && !seenBaseBonusSources.has(sourcePath)) {
+                score += queryScoreWeights.baseFileBonus;
+                seenBaseBonusSources.add(sourcePath);
+            }
             // A corpus note's name carries its origin (`neo/v13.1.0`), an engine note's does not
             if (metadata.type === 'release' && queryLower.startsWith('v') && (nameLower === queryLower || nameLower.endsWith(`/${queryLower}`))) score += queryScoreWeights.releaseExactMatch;
 
             sourceScores[sourcePath] = (sourceScores[sourcePath] || 0) + score;
 
-            const inheritanceChain = JSON.parse(metadata.inheritanceChain || '[]');
-            let   boost            = queryScoreWeights.inheritanceBoost;
-            inheritanceChain.forEach(parent => {
-                if (parent.source) {
-                    sourceScores[parent.source] = (sourceScores[parent.source] || 0) + boost;
-                }
-                boost = Math.floor(boost * queryScoreWeights.inheritanceDecay);
-            });
+            if (!seenInheritanceChildSources.has(sourcePath)) {
+                seenInheritanceChildSources.add(sourcePath);
+
+                const inheritanceChain = JSON.parse(metadata.inheritanceChain || '[]');
+                const isBrainChild     = sourcePathLower.startsWith('ai/')
+                    || metadata.type === 'brain-source'
+                    || metadata.type === 'ai-infrastructure';
+                let boost = queryScoreWeights.inheritanceBoost;
+
+                inheritanceChain.forEach(parent => {
+                    if (parent.source) {
+                        const isCoreBase = coreBaseSourcePattern.test(parent.source);
+
+                        if (!isCoreBase || !isBrainChild || explicitCoreBaseQuery) {
+                            const maxCap = isCoreBase && !explicitCoreBaseQuery
+                                ? Math.floor(queryScoreWeights.inheritanceBoost * 0.5)
+                                : queryScoreWeights.inheritanceBoost * 6;
+                            const priorBoost = ancestorBoostTotals.get(parent.source) || 0;
+                            const headroom   = Math.max(0, maxCap - priorBoost);
+                            const grant      = Math.min(boost, headroom);
+
+                            if (grant > 0) {
+                                sourceScores[parent.source] = (sourceScores[parent.source] || 0) + grant;
+                                ancestorBoostTotals.set(parent.source, priorBoost + grant);
+                            }
+                        }
+                    }
+                    boost = Math.floor(boost * queryScoreWeights.inheritanceDecay);
+                });
+            }
         });
 
         // How many sources vector retrieval contributed, captured BEFORE the rescue runs. Rescue both adds
@@ -616,6 +690,41 @@ class QueryService extends Base {
     }
 
     /**
+     * @summary Returns local filesystem roots searched by lexical rescue (primary checkout + installed Engine package).
+     * @returns {String[]} Ordered absolute root paths.
+     */
+    getLexicalRescueRoots() {
+        const primaryRoot = path.resolve(aiConfig.neoRootDir);
+        const engineRoot  = path.resolve(primaryRoot, engineSubmodulePath);
+
+        return engineRoot !== primaryRoot ? [primaryRoot, engineRoot] : [primaryRoot];
+    }
+
+    /**
+     * @summary Resolves a relative rescue path across the primary checkout and installed Engine package.
+     * @param {String} relativePath Normalized repo-relative path.
+     * @returns {Promise<{root: String, absolutePath: String, isEngineFallback: Boolean}|null>} Resolved target or null.
+     */
+    async resolveRescueTarget(relativePath) {
+        const roots = this.getLexicalRescueRoots();
+
+        for (let index = 0; index < roots.length; index++) {
+            const root         = roots[index];
+            const absolutePath = path.resolve(root, relativePath);
+
+            if ((absolutePath === root || absolutePath.startsWith(root + path.sep)) && await fs.pathExists(absolutePath)) {
+                return {
+                    root,
+                    absolutePath,
+                    isEngineFallback: index > 0
+                };
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @summary Finds local Neo sources named directly by path, filename, guide title, or code term.
      * @param {Object} options
      * @param {String} options.query Full query string.
@@ -634,18 +743,22 @@ class QueryService extends Base {
                 return;
             }
 
-            if (!this.matchesTypeFilter(this.inferSourceType(normalizedSource), typeFilter)) {
+            const resolvedTarget = await this.resolveRescueTarget(normalizedSource);
+            if (!resolvedTarget) {
                 return;
             }
 
-            const absoluteSource = path.resolve(aiConfig.neoRootDir, normalizedSource);
-            if (!absoluteSource.startsWith(path.resolve(aiConfig.neoRootDir)) || !await fs.pathExists(absoluteSource)) {
+            const candidateType = resolvedTarget.isEngineFallback && normalizedSource.startsWith('src/')
+                ? 'src'
+                : this.inferSourceType(normalizedSource);
+
+            if (!this.matchesTypeFilter(candidateType, typeFilter)) {
                 return;
             }
 
             const existing = candidateMap.get(normalizedSource) || {
                 source : normalizedSource,
-                type   : this.inferSourceType(normalizedSource),
+                type   : candidateType,
                 name   : path.basename(normalizedSource),
                 reasons: [],
                 score  : 0
@@ -673,31 +786,36 @@ class QueryService extends Base {
      * @returns {Promise<void>}
      */
     async addGuideTitleRescues({addCandidate, queryLower, queryWords}) {
-        const learnTreePath = path.resolve(aiConfig.neoRootDir, aiConfig.sourcePaths.LearningSource || 'learn/tree.json');
-
-        if (!await fs.pathExists(learnTreePath)) {
-            return;
-        }
-
-        const learnBaseRelative = path.dirname(aiConfig.sourcePaths.LearningSource || 'learn/tree.json');
-        const learnTree         = await fs.readJson(learnTreePath);
+        const learnSourceRel    = aiConfig.sourcePaths.LearningSource || 'learn/tree.json';
+        const learnBaseRelative = path.dirname(learnSourceRel);
         const queryWordSet      = new Set(queryWords);
 
-        for (const item of learnTree.data || []) {
-            if (!item.id || item.isLeaf === false) {
+        for (const root of this.getLexicalRescueRoots()) {
+            const learnTreePath = path.resolve(root, learnSourceRel);
+
+            if (!await fs.pathExists(learnTreePath)) {
                 continue;
             }
 
-            const titleWords = this.getQueryWords((item.name || '').toLowerCase())
-                .filter(word => !['and', 'the', 'with'].includes(word));
-            const titleHits = titleWords.filter(word => queryWordSet.has(word));
+            const learnTree = await fs.readJson(learnTreePath);
 
-            if (titleWords.length < 2 || titleHits.length < Math.min(2, titleWords.length)) {
-                continue;
+            for (const item of learnTree.data || []) {
+                if (!item.id || item.isLeaf === false) {
+                    continue;
+                }
+
+                const titleWords = this.getQueryWords((item.name || '').toLowerCase())
+                    .filter(word => !['and', 'for', 'from', 'into', 'neo', 'the', 'with'].includes(word));
+                const titleHits    = titleWords.filter(word => queryWordSet.has(word));
+                const requiredHits = titleWords.length <= 3 ? titleWords.length : titleWords.length - 1;
+
+                if (titleWords.length < 2 || titleHits.length < requiredHits) {
+                    continue;
+                }
+
+                const source = this.normalizeSourcePath(path.join(learnBaseRelative, `${item.id}.md`));
+                await addCandidate(source, `guide-title:${item.name}`, queryScoreWeights.guideMatch);
             }
-
-            const source = this.normalizeSourcePath(path.join(learnBaseRelative, `${item.id}.md`));
-            await addCandidate(source, `guide-title:${item.name}`, queryScoreWeights.guideMatch);
         }
     }
 
@@ -710,13 +828,13 @@ class QueryService extends Base {
         const pathHints = this.extractPathHints(query);
 
         for (const hint of pathHints) {
-            const absolutePath = path.resolve(aiConfig.neoRootDir, hint);
+            const target = await this.resolveRescueTarget(hint);
 
-            if (!absolutePath.startsWith(path.resolve(aiConfig.neoRootDir)) || !await fs.pathExists(absolutePath)) {
+            if (!target) {
                 continue;
             }
 
-            const stat = await fs.stat(absolutePath);
+            const stat = await fs.stat(target.absolutePath);
             if (stat.isFile()) {
                 await addCandidate(hint, `path:${hint}`, queryScoreWeights.sourcePathMatch);
             } else if (stat.isDirectory()) {
@@ -724,9 +842,9 @@ class QueryService extends Base {
                 // from the rescue BEFORE the outer result cap ranks them: the previous 12 silently dropped
                 // members of dirs larger than 12 (e.g. ai/services/graph @ 23 files), so simply adding a file
                 // shifted the collected slice and lost a boundary anchor. The outer `limit` still bounds results.
-                const files = await this.collectFiles(absolutePath, {limit: 40});
+                const files = await this.collectFiles(target.absolutePath, {limit: 40});
                 for (const file of files) {
-                    await addCandidate(path.relative(aiConfig.neoRootDir, file), `path-dir:${hint}`, queryScoreWeights.sourcePathMatch);
+                    await addCandidate(path.relative(target.root, file), `path-dir:${hint}`, queryScoreWeights.sourcePathMatch);
                 }
             }
         }
@@ -738,12 +856,27 @@ class QueryService extends Base {
      * @returns {Promise<void>}
      */
     async addFilenameHintRescues({addCandidate, query}) {
-        const fileNames = this.extractFilenameHints(query);
+        const fileNames                 = this.extractFilenameHints(query);
+        const [primaryRoot, engineRoot] = this.getLexicalRescueRoots();
 
         for (const fileName of fileNames) {
-            const files = await this.findFilesByBasename(path.resolve(aiConfig.neoRootDir), fileName, {limit: 6});
+            const files = await this.findFilesByBasename(primaryRoot, fileName, {limit: 6});
             for (const file of files) {
-                await addCandidate(path.relative(aiConfig.neoRootDir, file), `filename:${fileName}`, queryScoreWeights.fileNameMatch * 20);
+                await addCandidate(path.relative(primaryRoot, file), `filename:${fileName}`, queryScoreWeights.fileNameMatch * 20);
+            }
+
+            if (files.length === 0 && engineRoot) {
+                for (const subDir of ['src', 'learn']) {
+                    const searchRoot = path.join(engineRoot, subDir);
+                    if (!await fs.pathExists(searchRoot)) {
+                        continue;
+                    }
+
+                    const engineFiles = await this.findFilesByBasename(searchRoot, fileName, {limit: 6});
+                    for (const file of engineFiles) {
+                        await addCandidate(path.relative(engineRoot, file), `filename:${fileName}`, queryScoreWeights.fileNameMatch * 20);
+                    }
+                }
             }
         }
     }
@@ -803,22 +936,33 @@ class QueryService extends Base {
      * @returns {Promise<Array<{source: String, compact: String}>>} Source index entries.
      */
     async buildCodeTermRescueIndex() {
-        const entries = [];
-        const roots   = codeTermRescueRoots.map(root => path.resolve(aiConfig.neoRootDir, root));
+        const entries                   = [];
+        const [primaryRoot, engineRoot] = this.getLexicalRescueRoots();
+        const searchSpecs               = codeTermRescueRoots.map(root => ({
+            origin: primaryRoot,
+            dir   : path.resolve(primaryRoot, root)
+        }));
 
-        for (const root of roots) {
-            if (!await fs.pathExists(root)) {
+        if (engineRoot) {
+            searchSpecs.push({
+                origin: engineRoot,
+                dir   : path.resolve(engineRoot, 'src')
+            });
+        }
+
+        for (const {origin, dir} of searchSpecs) {
+            if (!await fs.pathExists(dir)) {
                 continue;
             }
 
-            const files = await this.collectFiles(root, {limit: codeTermRescueFileLimit});
+            const files = await this.collectFiles(dir, {limit: codeTermRescueFileLimit});
             for (const file of files) {
                 const content = await fs.readFile(file, 'utf-8').catch(() => '');
                 const compact = this.normalizeLexicalValue(content);
 
                 if (compact) {
                     entries.push({
-                        source: this.normalizeSourcePath(path.relative(aiConfig.neoRootDir, file)),
+                        source: this.normalizeSourcePath(path.relative(origin, file)),
                         compact
                     });
                 }
