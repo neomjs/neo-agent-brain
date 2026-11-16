@@ -1,10 +1,11 @@
 import {createHash}                                                                                                                   from 'node:crypto';
-import fs                                                                                                                             from 'node:fs/promises';
+import {bundleFs}                                                                                                                     from './inspectAppBundle.mjs';
 import path                                                                                                                           from 'node:path';
 import {inventoryRuntimePayload, isRuntimeGenerationPin, RUNTIME_GENERATION_PAYLOAD, RUNTIME_GENERATION_RECORD, runtimeGenerationPin} from './runtimeGeneration.mjs';
 import {CODEX_WAKE_ARTIFACT_DECLARATION, CODEX_WAKE_ARTIFACT_ROOT, CODEX_WAKE_EXECUTABLE, CODEX_WAKE_MODULE,
     CODEX_WAKE_ORGANISM, CODEX_WAKE_PROTOCOL, CODEX_WAKE_WIRE, describeCodexWakeArtifact} from './codexWakeArtifact.mjs';
 
+const fs      = bundleFs.promises;
 const digest  = value => createHash('sha256').update(value).digest('hex');
 const invalid = () => Object.assign(new Error('Codex wake package or retained artifact is unproven'), {code:'CODEX_WAKE_COMPATIBILITY_UNPROVEN'});
 
