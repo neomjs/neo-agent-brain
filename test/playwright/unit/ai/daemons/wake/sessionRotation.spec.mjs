@@ -717,6 +717,28 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
         expect(await state.read(rotationKey)).toMatchObject({state: 'failed', outcomeReason: 'session-rotate-expired'})
     });
 
+    test('a rotation\'s end is one receiver line beside its record, and a skip keeps its reason', async () => {
+        const lines  = [],
+              logger = {log: line => lines.push(line), warn: line => lines.push(line), error() {}},
+              reason = 'instance-unresolved: No running Claude instance found for userDataDir=\'/seats/ada\'.',
+              second = 'session-rotate:MESSAGE:r2',
+              ended  = () => lines.filter(line => line.startsWith('[Wake Receiver] rotation '));
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
+        await rotationReceiver([{outcome: 'skipped', outcomeReason: reason}], {logger}).drain();
+
+        expect(await state.read(rotationKey)).toMatchObject({state: 'skipped', outcomeReason: reason});
+        expect(ended()).toEqual([`[Wake Receiver] rotation skipped WAKE_SUB:rotate (${reason})`]);
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: second, envelope: rotationEnvelope({
+            eventId: second,
+            payload: {receiptMessageId: 'MESSAGE:r2', oldSessionId: 'session-old', reason: 'sunset_restart', prompt: PROMPT}
+        })});
+        await rotationReceiver(['delivered'], {logger}).drain();
+
+        expect(ended()).toEqual([`[Wake Receiver] rotation skipped WAKE_SUB:rotate (${reason})`, '[Wake Receiver] rotation delivered WAKE_SUB:rotate'])
+    });
+
     test('Emmy\'s control: a session opened by hand during a defer supersedes the rotation, with no second dispatch', async () => {
         const listenerStateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-rotation-listeners-')),
               holder           = sessionId => fs.writeFile(path.join(listenerStateDir, 'neo-opus-ada.json'), JSON.stringify({owner: {sessionId, session: {pid: 7}}})),
