@@ -84,6 +84,7 @@
         "ai:ingest-ci-failures": "node ./ai/scripts/maintenance/ingestCiFailures.mjs",
         "ai:revalidation-sweep": "node ./ai/scripts/lifecycle/revalidationSweep.mjs",
         "ai:server-neural-link": "node ./ai/mcp/server/neural-link/run-bridge.mjs",
+        "ai:pack-memory-core": "node ./ai/scripts/setup/packMcpServer.mjs --target memory-core",
         "pack:neural-link": "node ./ai/scripts/setup/packNeuralLink.mjs",
         "ai:structure-map": "node ./ai/scripts/diagnostics/structureMap.mjs",
         "ai:sync-github-workflow": "node ./ai/scripts/maintenance/syncGithubWorkflow.mjs",

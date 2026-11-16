@@ -1,14 +1,24 @@
 name: Publish MCP Registry
 
-# Publishes the Neural Link's `server.json` to the MCP Registry. The registry grants the
-# `io.github.neomjs` namespace only to a credential that can read the organization role; GitHub
-# Actions OIDC from this repository is that credential, with no secret to hold.
+# Publishes standalone MCP server manifests (`server.json`) to the MCP Registry. The registry
+# grants the `io.github.neomjs` namespace only to a credential that can read the organization
+# role; GitHub Actions OIDC from this repository is that credential, with no secret to hold.
 #
-# Dispatch it from `dev` once the npm version `server.json` names is live: the registry validates the
-# package against npm, so an earlier run fails. The other servers' manifests stay unpublished.
+# Dispatch it from `dev` once the npm version `server.json` names is live: the registry validates
+# each package against npm, so an earlier run fails. Unpublished servers remain excluded.
 
 on:
   workflow_dispatch:
+    inputs:
+      server:
+        description: 'Standalone MCP server manifest to publish'
+        required: true
+        default: 'neural-link'
+        type: choice
+        options:
+          - neural-link
+          - memory-core
+          - all
 
 concurrency:
   group: publish-mcp-registry
@@ -36,5 +46,23 @@ jobs:
       - name: Log in with GitHub OIDC
         run: ./mcp-publisher login github-oidc
 
-      - name: Publish the Neural Link
-        run: ./mcp-publisher publish ai/mcp/server/neural-link/server.json
+      - name: Publish MCP Registry manifest(s)
+        env:
+          TARGET_SERVER: ${{ inputs.server || 'neural-link' }}
+        run: |
+          case "${TARGET_SERVER}" in
+            neural-link)
+              ./mcp-publisher publish ai/mcp/server/neural-link/server.json
+              ;;
+            memory-core)
+              ./mcp-publisher publish ai/mcp/server/memory-core/server.json
+              ;;
+            all)
+              ./mcp-publisher publish ai/mcp/server/neural-link/server.json
+              ./mcp-publisher publish ai/mcp/server/memory-core/server.json
+              ;;
+            *)
+              echo "Unsupported server selection: ${TARGET_SERVER}" >&2
+              exit 1
+              ;;
+          esac
