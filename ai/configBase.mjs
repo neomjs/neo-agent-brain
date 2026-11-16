@@ -130,7 +130,17 @@ class ConfigBase extends ConfigProvider {
                  * member keeping its own env escape.
                  * @type {string}
                  */
-                dataRoot: leaf(planeDataRootDefault, 'NEO_PLANE_DATA_ROOT', 'string', {planeMember: false, planeMemberReason: 'the anchor itself — members derive from it; it is not its own member'})
+                dataRoot: leaf(planeDataRootDefault, 'NEO_PLANE_DATA_ROOT', 'string', {planeMember: false, planeMemberReason: 'the anchor itself — members derive from it; it is not its own member'}),
+                /**
+                 * Declares this deployment a durable plane that is not this host's canonical one.
+                 * The id decides canonical versus overlay and cannot express this third state, so
+                 * the deployment declares it here, never through disk layout. A standalone plane
+                 * keeps its own `NEO_PLANE_ID` on its own root, which may be the image-derived
+                 * canonical path: `assertPlaneCoherence` refuses the canonical id for it instead of
+                 * the overlay root collision.
+                 * @type {boolean}
+                 */
+                standalone: leaf(false, 'NEO_PLANE_STANDALONE', 'boolean')
             },
             /**
              * Turn-end stop-hook policy — two INDEPENDENT axes that were previously welded to one

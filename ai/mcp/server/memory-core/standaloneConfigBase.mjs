@@ -49,7 +49,13 @@ export function buildStandaloneDescriptorData({homedir} = {}) {
             dataRoot: leaf(placement.NEO_PLANE_DATA_ROOT, 'NEO_PLANE_DATA_ROOT', 'string', {
                 planeMember      : false,
                 planeMemberReason: 'Anchor leaf for the standalone memory-core plane root.'
-            })
+            }),
+            /**
+             * Pinned with no env override: this package is a durable plane other than its host's
+             * canonical one by construction, so the coherence assertion requires its own id.
+             * @type {boolean}
+             */
+            standalone: leaf(true)
         },
         /**
          * Canonical JSONL write-ahead log segment storage for standalone episodic turns.

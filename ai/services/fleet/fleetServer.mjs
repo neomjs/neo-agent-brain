@@ -72,6 +72,7 @@ export function assertFleetPlaneReady({aiConfig=AiConfig, rootDir=REPO_ROOT}={})
     const observed = assertPlaneCoherence({
         planeId          : aiConfig.plane.id,
         dataRoot         : aiConfig.plane.dataRoot,
+        standalone       : aiConfig.plane.standalone,
         canonicalDataRoot: resolvePlaneDataRoot({rootDir})
     });
     const members = collectPlaneMembers({

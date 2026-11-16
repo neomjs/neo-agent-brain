@@ -160,9 +160,13 @@ test.describe('ai/planeConfig — the config layer\'s plane helpers', () => {
     test('the leaf declares the env names, and this module no longer restates them', () => {
         const {plane} = ConfigBase.config.data;
 
-        // Hard-coded: these two strings are the deployment contract every operator env file binds.
+        // Hard-coded: these strings are the deployment contract every operator env file binds.
         expect(plane.id.env).toBe('NEO_PLANE_ID');
         expect(plane.dataRoot.env).toBe('NEO_PLANE_DATA_ROOT');
+        expect(plane.standalone.env).toBe('NEO_PLANE_STANDALONE');
+
+        // Only a deployment declares the third state; the canonical plane needs no new variable.
+        expect(plane.standalone.default).toBe(false);
 
         // The one shared literal, consumed by BOTH the leaf default and the coherence assertion.
         expect(plane.id.default).toBe(CANONICAL_PLANE_ID);
@@ -452,6 +456,63 @@ test.describe('assertPlaneCoherence — the F-invariant, both branches', () => {
             })).toThrow('durable root')
         } finally {
             fs.rmSync(base, {recursive: true, force: true})
+        }
+    });
+
+    test('a declared standalone durable plane boots its own id on the image-derived root', () => {
+        expect(assertPlaneCoherence({
+            planeId          : 'tenant-durable-plane',
+            dataRoot         : canonical,
+            canonicalDataRoot: canonical,
+            standalone       : true
+        })).toEqual({planeId: 'tenant-durable-plane', dataRoot: canonical})
+    });
+
+    test('a declared standalone plane that omits NEO_PLANE_ID resolves the canonical id and fails closed', () => {
+        // What the leaf resolves when the deployment sets no NEO_PLANE_ID.
+        const planeId = parsePlaneIdEnv('NEO_PLANE_ID', {env: {}}) ?? ConfigBase.config.data.plane.id.default;
+
+        expect(planeId).toBe(CANONICAL_PLANE_ID);
+        expect(() => assertPlaneCoherence({
+            planeId,
+            dataRoot         : canonical,
+            canonicalDataRoot: canonical,
+            standalone       : true
+        })).toThrow('must declare its own NEO_PLANE_ID')
+    });
+
+    test('a custom config\'s "standalone": "false" refuses at boot instead of reading as a declaration', async () => {
+        const dir     = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-plane-standalone-'));
+        const durable = path.join(dir, '.neo-ai-data');
+        const overlay = path.join(dir, 'config.json');
+
+        fs.writeFileSync(overlay, JSON.stringify({plane: {id: 'tenant-a', standalone: 'false', dataRoot: durable}}));
+
+        const isolated = createConfigProxy(Neo.create(ConfigProvider, {
+            data    : ConfigBase.config.data,
+            formulas: ConfigBase.config.formulas
+        }));
+
+        try {
+            await isolated.load(overlay);
+
+            // The JSON route bypasses the env parser, so the string reaches the resolved tree.
+            expect(isolated.plane.standalone).toBe('false');
+
+            const boot = standalone => assertPlaneCoherence({
+                planeId          : isolated.plane.id,
+                dataRoot         : isolated.plane.dataRoot,
+                canonicalDataRoot: durable,
+                standalone
+            });
+
+            expect(() => boot(isolated.plane.standalone)).toThrow('must be a boolean');
+            // The same overlay with the declared booleans: an overlay refuses, a standalone plane boots.
+            expect(() => boot(false)).toThrow('durable root');
+            expect(boot(true)).toEqual({planeId: 'tenant-a', dataRoot: durable})
+        } finally {
+            isolated.destroy();
+            fs.rmSync(dir, {recursive: true, force: true})
         }
     });
 

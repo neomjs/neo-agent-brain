@@ -973,6 +973,17 @@ test.describe('composed Fleet S1 server', () => {
                 fleetDataDir: member('fleet')
             });
 
+            // The Fleet passes the resolved standalone declaration: a declared standalone plane
+            // boots its own id on the image-derived root, and refuses the borrowed canonical one.
+            const standalone = {...aiConfig, plane: {...aiConfig.plane, standalone: true}};
+
+            expect(assertFleetPlaneReady({
+                aiConfig: {...standalone, plane: {...standalone.plane, id: 'tenant-durable-plane'}},
+                rootDir : root
+            }).planeId).toBe('tenant-durable-plane');
+            expect(() => assertFleetPlaneReady({aiConfig: standalone, rootDir: root}))
+                .toThrow(/must declare its own NEO_PLANE_ID/);
+
             const absentRoot = {
                 ...aiConfig,
                 fleet: {...aiConfig.fleet, dataDir: member('missing-fleet-volume')}
