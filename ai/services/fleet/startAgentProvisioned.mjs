@@ -19,6 +19,7 @@ import {readSeatModelCatalog, unofferedDeclaration}                from './seatM
 import {bindAntigravityProject}                                    from './antigravityProjectBinding.mjs';
 import {probeAntigravityRuntime, verifyAntigravityProfileListener} from './probeAntigravityRuntime.mjs';
 import {excludeManagedWorkspaceFiles}                              from './excludeManagedWorkspaceFiles.mjs';
+import {readCodexWakeArtifact}                                     from './readCodexWakeArtifact.mjs';
 import {assertRuntimeGenerationReferences, RUNTIME_REFERENCE_START_WAIT_MS,
         waitForRuntimeGenerationReferences}                                    from './runtimeGenerationLease.mjs';
 import path            from 'node:path';
@@ -826,8 +827,11 @@ async function provisionAgent({
 
         if (prepareNativeWake && ['codex-desktop', 'antigravity'].includes(agent.harnessType)) {
             try {
+                const artifact = installedRuntime && agent.harnessType === 'codex-desktop'
+                    ? await readCodexWakeArtifact(installedRuntime.generation) : null;
+                startSignal.throwIfAborted();
                 nativeWakePreparation = await prepareNativeWake({agent, instanceHome:prepared.instanceHome,
-                    workspaceRoot:prepared.targetRepoRoot,
+                    workspaceRoot:prepared.targetRepoRoot, ...artifact,
                     configDir:antigravityStartContext ? path.dirname(antigravityStartContext.registryDirectory) : undefined});
                 if (!nativeWakePreparation || typeof nativeWakePreparation !== 'object') {
                     nativeWakePreparation = {state:'refused', reason:'invalid-preparation-result'}

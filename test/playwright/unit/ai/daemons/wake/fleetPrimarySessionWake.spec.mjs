@@ -74,6 +74,10 @@ test('native dispatch holds a busy or unguarded root, then waits for exact recip
     expect((await dispatchFleetPrimarySessionWake(record,options)).status).toBe('pending');
     expect(sent).toHaveLength(0);
     verified = true;
+    for (const verifyCodexRoute of [async () => false, async () => { throw new Error('custody unavailable') }]) {
+        expect((await dispatchFleetPrimarySessionWake(record,{...options,verifyCodexRoute})).status).toBe('pending');
+        expect(sent).toHaveLength(0)
+    }
     expect((await dispatchFleetPrimarySessionWake(record,options)).status).toBe('unknown');
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toMatch(/^\[NEO_WAKE_V1:[0-9a-f-]{36}\] \[WAKE\]/);

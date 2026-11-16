@@ -7,6 +7,7 @@ import {prepareFleetNativeWake, resolveCodexWakeRuntime}               from '../
 import {materializeAntigravitySidecar,materializeAntigravityWakeHooks} from '../../../../../../ai/daemons/wake/antigravityWakeSidecar.mjs';
 import {readRuntimeGenerationRecord, runtimeGenerationPin}             from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
 import {sealRuntimeGeneration, removeSealed, changePayloadBytes}       from './fixtures/sealedRuntimeGeneration.mjs';
+import {readCodexWakeArtifact}                                         from '../../../../../../ai/services/fleet/readCodexWakeArtifact.mjs';
 
 test.describe('Fleet native wake preparation', () => {
     let root, instanceHome, workspaceRoot, stateDir, configDir, manifestPath;
@@ -20,6 +21,61 @@ test.describe('Fleet native wake preparation', () => {
         await fs.writeFile(manifestPath, '{}')
     });
     test.afterEach(async () => fs.rm(root, {recursive:true, force:true}));
+
+    test('a package-only Start keeps its hook, a changed consumer selects a new hook, and rollback selects the old one', async () => {
+        const generations = path.join(root,'generations');
+        await fs.mkdir(generations);
+        const agent = {id:'fixture',harnessType:'codex-desktop'}, options = {agent,instanceHome,workspaceRoot,manifestPath,stateDir};
+        const home  = path.join(instanceHome,'codex-home'), hooks = path.join(home,'hooks.json'), trust = path.join(home,'config.toml');
+        await fs.writeFile(trust, 'trusted_hash = "prior"\n');
+        const assertStart = async retained => {
+            const generation = await readRuntimeGenerationRecord({directory:retained.directory});
+            const selected   = await readCodexWakeArtifact(generation);
+            expect((await prepareFleetNativeWake({...options,...selected})).state).toBe('prepared');
+            const arm = await resolveCodexWakeRuntime({...options,agentId:agent.id,enrolled:true,runtime:{...runtimeGenerationPin(generation),pin:'held'}});
+            expect(arm).toEqual(selected);
+            return fs.readFile(hooks,'utf8')
+        };
+        try {
+            const a      = await sealRuntimeGeneration(generations,{revision:'a',artifactConsumer:'consumer 1'});
+            const b      = await sealRuntimeGeneration(generations,{revision:'b',artifactConsumer:'consumer 1'});
+            const c      = await sealRuntimeGeneration(generations,{revision:'c',artifactConsumer:'consumer 2'});
+            const before = await assertStart(a);
+            expect(await assertStart(b)).toBe(before);
+            expect(await assertStart(c)).not.toBe(before);
+            expect(await assertStart(a)).toBe(before);
+            expect(await fs.readFile(trust,'utf8')).toBe('trusted_hash = "prior"\n')
+        } finally { await removeSealed(generations) }
+    });
+
+    test('withdrawn custody, escaping storage and same-length transitive tamper cannot reuse the Start proof', async () => {
+        const generations = path.join(root,'generations');
+        await fs.mkdir(generations);
+        try {
+            const sealed     = await sealRuntimeGeneration(generations,{revision:'a',artifactConsumer:'consumer 1'});
+            const generation = await readRuntimeGenerationRecord({directory:sealed.directory});
+            let unchanged;
+            const pair = await readCodexWakeArtifact(generation, check => { unchanged = check });
+            expect(await unchanged()).toBe(true);
+            const consumer = path.join(path.dirname(pair.hookModulePath),'fleetPrimarySessionWake.mjs');
+            const prior    = await fs.stat(consumer);
+            await fs.chmod(consumer,0o644);
+            await fs.writeFile(consumer,'consumer 2');
+            await fs.utimes(consumer,prior.atime,prior.mtime);
+            await fs.chmod(consumer,prior.mode & 0o777);
+            expect(await unchanged()).toBe(false);
+            await expect(readCodexWakeArtifact(generation)).rejects.toThrow();
+            await fs.chmod(consumer,0o644);
+            await fs.writeFile(consumer,'consumer 1');
+            await fs.chmod(consumer,prior.mode & 0o777);
+            expect(await readCodexWakeArtifact(generation)).toEqual(pair);
+            const moved = path.join(path.dirname(sealed.artifactRoot),'moved');
+            await fs.rename(sealed.artifactRoot,moved);
+            await expect(readCodexWakeArtifact(generation)).rejects.toThrow();
+            await fs.symlink(moved,sealed.artifactRoot);
+            await expect(readCodexWakeArtifact(generation)).rejects.toThrow()
+        } finally { await removeSealed(generations) }
+    });
 
     test('an unsealed retained runtime cannot bind an outside executable', async () => {
         const

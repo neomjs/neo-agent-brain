@@ -743,7 +743,8 @@ async function boot() {
         });
 
         if (FleetManager.wakeStateOptions.wakeReceiverManifestPath) {
-            nativeWakePump = startFleetPrimaryWakePump({manifestPath:FleetManager.wakeStateOptions.wakeReceiverManifestPath})
+            nativeWakePump = startFleetPrimaryWakePump({manifestPath:FleetManager.wakeStateOptions.wakeReceiverManifestPath,
+                verifyCodexRoute:(config, resident) => FleetManager.verifyCodexWakeRoute(config, resident)})
         }
 
         const bridgeState = await settleFleetBridge({

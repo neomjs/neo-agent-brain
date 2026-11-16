@@ -16,10 +16,11 @@ import {withOutboxLock}                                                         
 import {writeFileAtomic}                                                                           from '../shared/atomicFileWrite.mjs';
 import {assertUntrackedManagedWorkspaceFile, excludeManagedNativeWakeHook}                         from './excludeManagedWorkspaceFiles.mjs';
 import {isRuntimeGenerationPin, readRuntimeGeneration, runtimeGenerationPin}                       from './runtimeGeneration.mjs';
+import {readCodexWakeArtifact}                                                                     from './readCodexWakeArtifact.mjs';
+import {CODEX_WAKE_WIRE}                                                                           from './codexWakeArtifact.mjs';
 
-const wakeModule      = name => fileURLToPath(new URL(`../../daemons/wake/${name}.mjs`, import.meta.url));
-const absolute        = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root;
-const CODEX_WAKE_WIRE = 'neo-codex-primary-wake-v1';
+const wakeModule = name => fileURLToPath(new URL(`../../daemons/wake/${name}.mjs`, import.meta.url));
+const absolute   = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root;
 
 /**
  * @summary Selects only a live Start's retained hook, or a previously enrolled current-host hook.
@@ -34,14 +35,26 @@ const CODEX_WAKE_WIRE = 'neo-codex-primary-wake-v1';
  * @param {Object|null} options.runtime Original Start's held runtime pin.
  * @param {Boolean} options.enrolled Whether this seat is already enrolled.
  * @param {Function} [options.verifyRuntime] Operation-scoped sealed-runtime verifier.
+ * @param {Function} [options.retainArtifact] Keeps the verified shared tree's custody check for this Start.
  * @returns {Promise<{nodePath: String, hookModulePath: String}>} The one selected executable and hook.
  */
 export async function resolveCodexWakeRuntime({agentId, instanceHome, workspaceRoot, manifestPath, stateDir, runtime, enrolled,
-    verifyRuntime = readRuntimeGeneration}) {
+    verifyRuntime = readRuntimeGeneration, retainArtifact}) {
     const current  = {nodePath: process.execPath, hookModulePath:wakeModule('codexWakeHook')};
     const expected = {version:1, family:'codex-desktop', agentId, instanceHome, workspaceRoot, manifestPath, stateDir, configDir:null};
     const previous = await readPrivateWakeJson(path.join(stateDir, 'native-wake-preparation', agentId + '.json'));
     if (previous && !matchesReceipt(previous, expected, 'codex-desktop')) throw new Error('Mismatched seat preparation record');
+    if (runtime?.pin === 'held') {
+        const {pin, ...claimed} = runtime;
+        if (!isRuntimeGenerationPin(claimed)) throw new Error('Codex wake Start runtime is unproven');
+        const artifact = await readCodexWakeArtifact(claimed, retainArtifact);
+        if (artifact) {
+            if (previous && (previous.nodePath !== artifact.nodePath || previous.modulePath !== artifact.hookModulePath)) {
+                throw new Error('Codex wake migration is not retained')
+            }
+            return artifact
+        }
+    }
     if (!enrolled && !previous) return current;
     // Explicit pilot migration stays on the host-owned tuple when that same host is still live.
     if (previous?.nodePath === current.nodePath && previous?.modulePath === current.hookModulePath) return current;
