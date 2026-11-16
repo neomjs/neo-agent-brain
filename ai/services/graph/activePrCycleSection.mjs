@@ -1,6 +1,3 @@
-import logger                 from '../../mcp/server/memory-core/logger.mjs';
-import {hasCrossFamilyReview} from './agentFamilyResolution.mjs';
-
 /**
  * @module ai/services/graph/activePrCycleSection
  * @summary Active PR Cycle handoff rendering, extracted from `GoldenPathSynthesizer` as part of the
@@ -8,14 +5,14 @@ import {hasCrossFamilyReview} from './agentFamilyResolution.mjs';
  *
  * Owner contract: render the visibility-only "Active PR Cycle State" handoff section — the recent
  * open-PR summary (with cross-family-review status), the freshness SLA status, and the degraded
- * Strategic-Interpretation reason. Cross-family-review resolution lives in `agentFamilyResolution.mjs`.
+ * Strategic-Interpretation reason. Acquisition supplies `familyVerdict`; rendering never resolves family authority.
  * `GoldenPathSynthesizer` keeps thin delegating shims so its public API stays stable.
  */
 
 /**
  * @summary Renders a capped recent-open-PR list inside the existing Active PR Cycle section.
  *
- * @param {Object[]} prs GitHub PR payloads.
+ * @param {Object[]} prs GitHub PR payloads with qualified `familyVerdict` results.
  * @param {Object} options
  * @param {Number} options.limit Maximum PRs to render.
  * @returns {String}
@@ -31,8 +28,24 @@ export function renderRecentOpenPrSummary(prs, {limit} = {}) {
     let section = `### Recent Open PRs (\`${recent.length}\` of \`${prs.length}\` items)\n`;
 
     for (const pr of recent) {
-        const author = pr.author?.login || 'unknown';
-        section += `- **PR #${pr.number}**: ${pr.title} — author @${author} — opened ${pr.createdAt} — cross-family reviewed: ${hasCrossFamilyReview(pr, undefined, {warn: logger.warn}) ? 'yes' : 'no'}\n`;
+        const author   = pr.author?.login || 'unknown';
+        const verdict  = pr.familyVerdict;
+        let   coverage = null;
+
+        if (verdict?.sourceState === 'available' && verdict.qualified !== false) {
+            if (typeof verdict.crossFamily === 'boolean') {
+                coverage = verdict.crossFamily;
+            } else if (verdict.crossFamily === null && verdict.outside === true &&
+                Array.isArray(verdict.authorFamilies) && verdict.authorFamilies.length === 0 &&
+                verdict.disclosureTruncated === false && Array.isArray(verdict.approvingFamilies)) {
+                coverage = verdict.approvingFamilies.length > 0;
+            }
+        }
+
+        const label = coverage === null
+            ? `unavailable (${String(verdict?.code || 'family-verdict-unavailable').replace(/\s+/g, ' ').slice(0, 120)})`
+            : coverage ? 'yes' : 'no';
+        section += `- **PR #${pr.number}**: ${pr.title} — author @${author} — opened ${pr.createdAt} — cross-family reviewed: ${label}\n`;
     }
 
     section += `\n`;

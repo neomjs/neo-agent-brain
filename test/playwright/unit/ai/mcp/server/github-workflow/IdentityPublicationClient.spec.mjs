@@ -53,7 +53,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
             ['../../../services/github-workflow/RepositoryService.mjs', 'export default globalThis.fixtureRepository'],
             ['../../../services/github-workflow/SyncService.mjs', 'export default {async ready(){}}'],
             ['../../../services/github-workflow/HealthService.mjs', 'export default {}'],
-            ['./toolService.mjs', 'export const buildToolCatalog=()=>[], listTools=()=>[], callTool=()=>{}']
+            ['./toolService.mjs', 'export const createGitHubToolService=()=>({buildToolCatalog:()=>[],listTools:()=>[],callTool:()=>{},destroy(){}})']
         ]);
         const hooks = registerHooks({resolve(specifier, context, nextResolve) {
             if (context.parentURL === serverUrl && replacements.has(specifier)) {
@@ -82,6 +82,12 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
             assert.equal(calls.filter(value => value === 'healthcheck').length, 1);
             assert.ok(calls.indexOf('fresh-viewer') < calls.indexOf('list_permissions'));
             assert.ok(calls.includes('ordinary-transport'));
+            const beforeForeign = calls.length;
+            assert.deepEqual(await server.readFamilySourceForViewer({login: 'different-viewer'}),
+                {state: 'unavailable', code: 'family-source-viewer-mismatch'});
+            assert.equal(calls.length, beforeForeign, 'a mismatched operation viewer cannot read through the existing client');
+            assert.deepEqual(await server.readFamilySourceForViewer({login: 'fresh-reader'}),
+                {state: 'unavailable', code: 'membership-unknown'});
             assert.deepEqual(await server.readIdentityPublicationSnapshot(), {state: 'unavailable', code: 'membership-unknown'});
             let releaseDelete, secondClosed = false;
             deleteWait = new Promise(resolve => {releaseDelete = resolve;});
@@ -215,7 +221,7 @@ function heldConnectionScript(root, phase, destroy) {
             ['../../../services/github-workflow/RepositoryService.mjs', 'export default globalThis.fixtureRepository'],
             ['../../../services/github-workflow/SyncService.mjs', 'export default {async ready(){}}'],
             ['../../../services/github-workflow/HealthService.mjs', 'export default {}'],
-            ['./toolService.mjs', 'export const buildToolCatalog=()=>[], listTools=()=>[], callTool=()=>{}']
+            ['./toolService.mjs', 'export const createGitHubToolService=()=>({buildToolCatalog:()=>[],listTools:()=>[],callTool:()=>{},destroy(){}})']
         ]);
         const hooks = registerHooks({resolve(specifier, context, nextResolve) {
             if (context.parentURL === serverUrl && replacements.has(specifier)) {

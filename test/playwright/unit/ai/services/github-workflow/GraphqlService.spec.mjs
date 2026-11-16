@@ -689,3 +689,175 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — credential res
         }
     });
 });
+
+/** @summary One decision acquires its endpoints and credential once; ordinary callers retain their existing contract. */
+test.describe('GraphqlService — bound operation acquisition (#1512)', () => {
+    let service, originalFetch, saved;
+    const fields   = ['apiUrl', 'restApiUrl', 'authTokenOverride', 'maxRetryAttempts', 'retryBaseDelayMs', 'retryMaxDelayMs', 'retryJitterRatio'];
+    const query    = 'query BoundViewer { viewer { __typename login databaseId } }';
+    const next     = {apiUrl: 'https://forge.example/api/graphql', restApiUrl: 'https://forge.example/api/v3', authTokenOverride: 'next-fixture-token'};
+    const response = (data, graphql = true) => new Response(JSON.stringify(graphql ? {data} : data), {
+        status: 200, headers: {'content-type': 'application/json'}
+    });
+
+    test.beforeAll(async () => {
+        service = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+    });
+    test.beforeEach(() => {
+        originalFetch = globalThis.fetch;
+        saved = Object.fromEntries(fields.map(name => [name, service[name]]));
+        Object.assign(service, {apiUrl: 'https://api.github.com/graphql', restApiUrl: 'https://api.github.com',
+            authTokenOverride: 'original-fixture-token', maxRetryAttempts: 1, retryBaseDelayMs: 0, retryMaxDelayMs: 0, retryJitterRatio: 0});
+    });
+    test.afterEach(() => {
+        globalThis.fetch = originalFetch;
+        Object.assign(service, saved);
+    });
+
+    test('one operation keeps its original endpoints and token across retry, reads and mutation', async () => {
+        const calls     = [];
+        const operation = await service.createOperationClient();
+        globalThis.fetch = async (url, options) => {
+            calls.push({url, authorization: options.headers.Authorization, redirect: options.redirect});
+            if (calls.length === 1) {
+                Object.assign(service, next);
+                return new Response('', {status: 503});
+            }
+            return response({ok: true}, options.method === 'POST');
+        };
+        await operation.query(query);
+        await operation.rest('GET', '/user');
+        await operation.query('mutation BoundReview { __typename }');
+        expect(calls.map(call => call.url)).toEqual([
+            'https://api.github.com/graphql', 'https://api.github.com/graphql',
+            'https://api.github.com/user', 'https://api.github.com/graphql'
+        ]);
+        expect(calls.every(call => call.authorization === 'bearer original-fixture-token')).toBe(true);
+        expect(calls.every(call => call.redirect === 'error')).toBe(true);
+        const successor = await service.createOperationClient();
+        await successor.query(query);
+        expect(calls.at(-1)).toMatchObject({url: next.apiUrl, authorization: 'bearer next-fixture-token'});
+    });
+
+    test('captures both endpoints before awaiting the token and exposes no credential', async () => {
+        const calls = [];
+        globalThis.fetch = async (url, options) => {calls.push({url, options}); return response({ok: true});};
+        const creating = service.createOperationClient();
+        Object.assign(service, next);
+        const operation = await creating;
+        expect(calls).toEqual([]);
+        expect(Object.keys(operation).sort()).toEqual(['query', 'rest', 'source']);
+        expect(Object.isFrozen(operation)).toBe(true);
+        expect(Object.isFrozen(operation.source)).toBe(true);
+        expect(operation.source).toEqual({authProvider: 'github', providerBaseUrl: 'https://api.github.com'});
+        expect(JSON.stringify(operation)).not.toContain('fixture-token');
+        await operation.query(query);
+        expect(calls[0].url).toBe('https://api.github.com/graphql');
+        expect(calls[0].options.headers.Authorization).toBe('bearer original-fixture-token');
+    });
+
+    test('keeps the declared Enterprise API namespace and accepts an in-base query string', async () => {
+        Object.assign(service, next, {restApiUrl: next.restApiUrl + '///'});
+        const operation = await service.createOperationClient(), calls = [];
+        globalThis.fetch = async (url, options) => {calls.push({url, options}); return response({id: 123}, false);};
+        expect(operation.source.providerBaseUrl).toBe(next.restApiUrl);
+        expect(await operation.rest('GET', '/user?per_page=2')).toEqual({id: 123});
+        expect(calls[0]).toMatchObject({url: next.restApiUrl + '/user?per_page=2', options: {redirect: 'error'}});
+    });
+
+    for (const [label, endpoints] of [
+        ['different origins', {apiUrl: 'https://other.example/graphql'}],
+        ['unpaired paths', {apiUrl: 'https://api.github.com/api/graphql'}],
+        ['cleartext pair', {apiUrl: 'http://forge.example/graphql', restApiUrl: 'http://forge.example'}],
+        ['URL credential', {apiUrl: 'https://reader:secret@api.github.com/graphql'}],
+        ['query suffix', {restApiUrl: 'https://api.github.com?token=fixture'}],
+        ['fragment suffix', {apiUrl: 'https://api.github.com/graphql#fragment'}],
+        ['nonstring endpoint', {restApiUrl: null}]
+    ]) test('refuses a source endpoint pair before any request: ' + label, async () => {
+        Object.assign(service, endpoints);
+        let calls = 0;
+        globalThis.fetch = async () => {calls++; return response({ok: true});};
+        await expect(service.createOperationClient()).rejects.toMatchObject({code: 'GITHUB_SOURCE_UNBOUND'});
+        expect(calls).toBe(0);
+    });
+
+    test('invalid endpoints refuse before credential resolution', async () => {
+        const names = ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY'];
+        const prior = Object.fromEntries(names.map(name => [name, process.env[name]]));
+        try {
+            delete process.env.GH_TOKEN;
+            delete process.env.GITHUB_TOKEN;
+            process.env.NEO_AGENT_IDENTITY = 'fixture-bound-reader';
+            service.authTokenOverride = null;
+            service.apiUrl = 'https://other.example/graphql';
+            await expect(service.createOperationClient()).rejects.toMatchObject({code: 'GITHUB_SOURCE_UNBOUND'});
+        } finally {
+            for (const name of names) {
+                if (prior[name] === undefined) delete process.env[name];
+                else process.env[name] = prior[name];
+            }
+        }
+    });
+
+    test('refuses a REST escape before the captured credential can be sent', async () => {
+        Object.assign(service, next);
+        const operation = await service.createOperationClient();
+        let   calls     = 0;
+        globalThis.fetch = async () => {calls++; return response({ok: true}, false);};
+        for (const requestPath of ['https://other.example/user', '//other.example/user', '/../../user',
+            '/%2e%2e/%2e%2e/user', '/user#fragment', '/\\user', 'user', null]) {
+            await expect(operation.rest('GET', requestPath)).rejects.toMatchObject({code: 'GITHUB_SOURCE_UNBOUND'});
+        }
+        expect(calls).toBe(0);
+    });
+
+    test('bound GraphQL and REST calls refuse redirect delivery', async () => {
+        const operation = await service.createOperationClient(), calls = [];
+        globalThis.fetch = async (url, options) => {
+            calls.push({url, redirect: options.redirect});
+            if (options.redirect === 'error') throw new TypeError('redirect refused');
+            return response({followedForeignRedirect: true}, options.method === 'POST');
+        };
+        await expect(operation.query(query)).rejects.toThrow('redirect refused');
+        await expect(operation.rest('GET', '/user')).rejects.toThrow('redirect refused');
+        expect(calls).toHaveLength(2);
+        expect(calls.every(call => call.redirect === 'error')).toBe(true);
+    });
+
+    test('bound calls preserve GraphQL options/errors and REST empty responses', async () => {
+        const operation = await service.createOperationClient();
+        const data      = {viewer: {login: 'fixture'}}, errors = [{type: 'NOT_FOUND', message: 'fixture failure'}];
+        let feature;
+        globalThis.fetch = async (url, options) => {
+            feature = options.headers['GraphQL-Features'];
+            return new Response(JSON.stringify({data, errors}), {status: 200});
+        };
+        expect(await operation.query(query, {}, {strict: false, enableSubIssues: true})).toEqual({data, errors});
+        expect(feature).toBe('sub_issues');
+        await expect(operation.query(query)).rejects.toMatchObject({graphqlErrors: errors});
+        globalThis.fetch = async () => new Response(null, {status: 204});
+        expect(await operation.rest('DELETE', '/repos/o/r/labels/fixture')).toBeNull();
+    });
+
+    test('ordinary calls retain their existing endpoint timing and redirect policy', async () => {
+        const calls = [];
+        globalThis.fetch = async (url, options) => {
+            calls.push({url, authorization: options.headers.Authorization, redirect: options.redirect});
+            if (calls.length === 1) {
+                service.apiUrl = 'https://third.example/graphql';
+                service.authTokenOverride = 'changed-between-calls';
+                return new Response('', {status: 503});
+            }
+            return response({ok: true}, options.method === 'POST');
+        };
+        const querying = service.query(query);
+        service.apiUrl = next.apiUrl;
+        await querying;
+        expect(calls.map(call => call.url)).toEqual([next.apiUrl, 'https://third.example/graphql']);
+        expect(calls.every(call => call.authorization === 'bearer original-fixture-token')).toBe(true);
+        const reading = service.rest('GET', '/user');
+        service.restApiUrl = next.restApiUrl;
+        await reading;
+        expect(calls.at(-1)).toEqual({url: next.restApiUrl + '/user', authorization: 'bearer changed-between-calls', redirect: undefined});
+    });
+});

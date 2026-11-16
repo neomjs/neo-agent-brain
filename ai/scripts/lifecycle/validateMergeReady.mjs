@@ -121,6 +121,9 @@ export function validateMergeReady(pr = {}) {
 
     if (crossFamilyVerdict === undefined) {
         blockers.push('crossFamilyVerdict was not resolved — cannot certify the cross-family review mandate; failing closed.');
+    } else if (crossFamilyVerdict?.sourceState === 'unavailable' || crossFamilyVerdict?.qualified === false &&
+        (crossFamilyVerdict.crossFamily !== null || namesNoModel)) {
+        blockers.push(`cross-family evidence is unavailable${authorOf}: ${crossFamilyVerdict.code || 'family-source-unavailable'}. Read the qualified family source before certifying readiness.`);
     } else if (crossFamilyVerdict?.crossFamily === null && namesNoModel) {
         advisories.push(`cross-family: the outside pull request${authorOf} names no model, so an approval from any family counts.`);
     } else if (crossFamilyVerdict?.crossFamily === null && unreadCommits) {

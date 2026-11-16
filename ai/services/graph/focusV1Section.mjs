@@ -9,9 +9,6 @@ import {
     resolveMergeHold
 } from '../github-workflow/shared/mergeHoldTokens.mjs';
 import {
-    resolveCrossFamilyVerdict
-} from './agentFamilyResolution.mjs';
-import {
     formatGoldenPathCapturedAt
 } from './goldenPathTimestamp.mjs';
 
@@ -710,11 +707,13 @@ export function formatOperatorCandidateLine(candidate = {}) {
     const link       = candidate.url ? `[${refLabel}](${candidate.url})` : refLabel;
     const projection = candidate.projection ?? {};
     const rawVerdict = projection.verdict;
-    const verdict    = rawVerdict === 'ready' || rawVerdict === 'merge-ready-observed' || projection.ready === true || projection.predicate?.strictMergeReady === true
-        ? 'ready'
-        : rawVerdict === 'not_ready' || rawVerdict === 'not-merge-ready' || projection.ready === false || projection.predicate?.strictMergeReady === false
-            ? 'not_ready'
-            : 'unavailable';
+    const verdict    = rawVerdict === 'unavailable'
+        ? 'unavailable'
+        : rawVerdict === 'ready' || rawVerdict === 'merge-ready-observed' || projection.ready === true || projection.predicate?.strictMergeReady === true
+            ? 'ready'
+            : rawVerdict === 'not_ready' || rawVerdict === 'not-merge-ready' || projection.ready === false || projection.predicate?.strictMergeReady === false
+                ? 'not_ready'
+                : 'unavailable';
 
     let statusLabel;
     if (verdict === 'ready') {
@@ -730,7 +729,9 @@ export function formatOperatorCandidateLine(candidate = {}) {
             : (projection.reason || 'checks or review requirements');
         statusLabel = `\`approved · not ready: ${reasons}\``;
     } else {
-        const missingInput = projection.missingInput || projection.reason || 'merge-readiness projection unavailable';
+        const blocker      = projection.blockers?.[0];
+        const missingInput = projection.missingInput || projection.reason ||
+            (typeof blocker === 'string' ? blocker : blocker?.code || blocker?.message) || 'merge-readiness projection unavailable';
         statusLabel = `\`approved · readiness unverified: ${missingInput}\``;
     }
 
@@ -876,9 +877,9 @@ export function parseViewsReceiptComments(comments = []) {
 }
 
 /**
- * @summary Evaluates a GitHub pull request snapshot using the source-owned `validateMergeReady`,
- * `resolveCrossFamilyVerdict`, and `resolveMergeHold` predicates.
- * @param {Object} [pr={}] Pull request JSON payload from `gh pr view`.
+ * @summary Evaluates a GitHub snapshot with an acquired, qualified family verdict and the existing readiness/hold predicates.
+ * Missing family evidence stays unavailable; this reader never reconstructs it from display logins.
+ * @param {Object} [pr={}] Pull request payload with `familyVerdict` from its authenticated acquisition.
  * @returns {{verdict: ('ready'|'not_ready'|'unavailable'), ready?: Boolean, reasons?: String[], missingInput?: String, approvedAt?: (String|null)}}
  */
 export function evaluateCandidateMergeReadiness(pr = {}) {
@@ -886,22 +887,33 @@ export function evaluateCandidateMergeReadiness(pr = {}) {
         return {verdict: 'unavailable', missingInput: 'PR snapshot absent'};
     }
 
-    if (pr.projection && typeof pr.projection === 'object') {
+    const projection = pr.projection && typeof pr.projection === 'object' ? pr.projection : null;
+
+    if (projection?.verdict === 'unavailable') {
         return pr.projection;
     }
 
     const rollup = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : null;
 
-    if (
+    if (!projection && (
         !rollup ||
         typeof pr.state !== 'string' ||
         typeof pr.mergeStateStatus !== 'string' ||
         !Array.isArray(pr.reviewRequests) ||
         !Array.isArray(pr.reviews) ||
         !Array.isArray(pr.comments)
-    ) {
+    )) {
         return {verdict: 'unavailable', missingInput: 'merge-readiness fields incomplete'};
     }
+
+    const crossFamilyVerdict = pr.familyVerdict;
+
+    if (crossFamilyVerdict?.sourceState !== 'available' || crossFamilyVerdict.qualified === false ||
+        ![true, false, null].includes(crossFamilyVerdict.crossFamily)) {
+        return {verdict: 'unavailable', missingInput: crossFamilyVerdict?.code || 'family-verdict-unavailable'};
+    }
+
+    if (projection) return projection;
 
     const checksGreen = rollup.length > 0 && rollup.every(item => {
         const state = String(item?.conclusion || item?.state || '').toUpperCase();
@@ -916,7 +928,6 @@ export function evaluateCandidateMergeReadiness(pr = {}) {
         .map(item => String(item?.name || item?.context || 'check'));
 
     const reviewRequests     = pr.reviewRequests.map(req => req?.login || req?.name).filter(Boolean);
-    const crossFamilyVerdict = resolveCrossFamilyVerdict(pr, undefined, {warn: () => {}});
     const classifiedComments = pr.comments.map(comment => ({
         login    : comment?.author?.login,
         createdAt: comment?.createdAt,
@@ -968,12 +979,12 @@ export function evaluateCandidateMergeReadiness(pr = {}) {
  *
  * @param {Object} [options={}]
  * @param {Function} [options.execGh=defaultExecGh] Async `gh` CLI runner taking `args: String[]`.
- * @param {Function} [options.evaluateMergeReadiness=evaluateCandidateMergeReadiness] Merge-readiness evaluator.
+ * @param {Function} [options.readReviewReadiness] Source-owned qualified readiness acquisition for {repo, prNumber}.
  * @returns {{readV1Rows: Function, readViewsReceipts: Function, readReachTraffic: Function, readOperatorWord: Function}}
  */
 export function createDefaultFocusV1HostEdgeReaders({
     execGh                 = defaultExecGh,
-    evaluateMergeReadiness = evaluateCandidateMergeReadiness
+    readReviewReadiness
 } = {}) {
     const readV1Rows = async () => {
         const rawRoadmap = await execGh([
@@ -1099,22 +1110,14 @@ export function createDefaultFocusV1HostEdgeReaders({
             const prNumber = item?.number;
 
             try {
-                const rawView = await execGh([
-                    'pr',
-                    'view',
-                    String(prNumber),
-                    '--repo',
-                    repoName,
-                    '--json',
-                    'number,url,state,mergedAt,isDraft,mergeStateStatus,headRefOid,author,body,reviewDecision,reviewRequests,reviews,comments,statusCheckRollup,updatedAt'
-                ]);
-                const prSnapshot = JSON.parse(rawView);
-                const projection = await evaluateMergeReadiness(prSnapshot);
+                const projection = typeof readReviewReadiness === 'function'
+                    ? await readReviewReadiness({repo: repoName, prNumber})
+                    : {verdict: 'unavailable', missingInput: 'family-source-unconfigured'};
 
                 return {
                     repo      : repoName,
                     number    : prNumber,
-                    url       : prSnapshot?.url || item?.url || null,
+                    url       : item?.url || null,
                     approvedAt: projection?.approvedAt || item?.updatedAt || null,
                     projection
                 };
@@ -1168,7 +1171,7 @@ export function createDefaultFocusV1HostEdgeReaders({
  * @param {String}   [readers.outboundLedgerPath=''] Optional path to `strategy/traction/outbound-ledger.json` (`outbound-ledger.v1`), used when `readPrivateLedger` is omitted.
  * @param {Boolean}  [readers.useDefaultHostReaders=false] When `true`, fills omitted GitHub block readers with `createDefaultFocusV1HostEdgeReaders`.
  * @param {Function} [readers.execGh] Optional `gh` CLI runner forwarded to `createDefaultFocusV1HostEdgeReaders`.
- * @param {Function} [readers.evaluateMergeReadiness] Optional merge-readiness evaluator forwarded to `createDefaultFocusV1HostEdgeReaders`.
+ * @param {Function} [readers.readReviewReadiness] Qualified readiness acquisition forwarded to the default host reader.
  * @param {String}   [readers.absentReason=FOCUS_V1_READER_ABSENT_REASON] Reason recorded when a GitHub reader is absent.
  * @returns {{readFocusV1Inputs: Function}}
  */
@@ -1181,11 +1184,11 @@ export function createFocusV1HostEdgeReader({
     outboundLedgerPath = '',
     useDefaultHostReaders = false,
     execGh,
-    evaluateMergeReadiness,
+    readReviewReadiness,
     absentReason = FOCUS_V1_READER_ABSENT_REASON
 } = {}) {
     const defaultReaders = (useDefaultHostReaders || typeof execGh === 'function')
-        ? createDefaultFocusV1HostEdgeReaders({execGh, evaluateMergeReadiness})
+        ? createDefaultFocusV1HostEdgeReaders({execGh, readReviewReadiness})
         : null;
 
     const resolvedReadV1Rows        = readV1Rows        ?? defaultReaders?.readV1Rows;

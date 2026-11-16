@@ -4,12 +4,13 @@ import {resolveRowTimestamp}  from './helpers/resolveRowTimestamp.mjs';
 import {resolveSharingPolicy} from './helpers/resolveSharingPolicy.mjs';
 import {canonicalRawMemoryGraphId, RAW_MEMORY_NODE_LABEL}
                               from './helpers/rawMemoryGraphIdentity.mjs';
-import crypto              from 'crypto';
-import GraphService        from './GraphService.mjs';
-import logger              from '../../mcp/server/memory-core/logger.mjs';
-import SessionService      from './SessionService.mjs';
-import SummaryService      from './SummaryService.mjs';
-import TurnPresenceService from './TurnPresenceService.mjs';
+import crypto                     from 'crypto';
+import GraphService               from './GraphService.mjs';
+import logger                     from '../../mcp/server/memory-core/logger.mjs';
+import SessionService             from './SessionService.mjs';
+import IdentityPublicationService from './IdentityPublicationService.mjs';
+import SummaryService             from './SummaryService.mjs';
+import TurnPresenceService        from './TurnPresenceService.mjs';
 import {withTimeout,
         WITH_TIMEOUT_CODE} from './helpers/withTimeout.mjs';
 
@@ -3348,7 +3349,9 @@ class MemoryService extends Base {
 
             // Trigger event-driven Golden Path Synthesis
             import('../../services/graph/GoldenPathSynthesizer.mjs').then(mod => {
-                mod.default.synthesizeGoldenPath().catch(err => {
+                mod.default.synthesizeGoldenPath({
+                    readFamilySource: () => IdentityPublicationService.getIdentityPublicationSnapshot()
+                }).catch(err => {
                     logger.error('[MemoryService] Event-driven Golden Path Synthesis failed:', err);
                 });
             }).catch(err => {

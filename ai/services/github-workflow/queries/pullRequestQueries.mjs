@@ -85,9 +85,11 @@ export const GET_CONVERSATION = `
  */
 export const GET_MERGE_READINESS = `
   query GetMergeReadiness($owner: String!, $repo: String!, $prNumber: Int!) {
+    viewer { __typename login databaseId }
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $prNumber) {
         number
+        createdAt
         state
         mergedAt
         baseRefName
@@ -97,7 +99,9 @@ export const GET_MERGE_READINESS = `
         body
         authorAssociation
         author {
+          __typename
           login
+          ... on User { databaseId }
         }
         commitMessages: commits(first: 100) {
           pageInfo {
@@ -137,7 +141,9 @@ export const GET_MERGE_READINESS = `
             state
             submittedAt
             author {
+              __typename
               login
+              ... on User { databaseId }
             }
             commit {
               oid
@@ -202,6 +208,36 @@ export const GET_MERGE_READINESS = `
               }
             }
           }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * @summary Acquires original actors, chronology and disclosure completeness for one open-PR handoff batch.
+ * The source owner binds this query and its viewer to one qualified family observation.
+ */
+export const FETCH_FAMILY_REVIEW_SUMMARIES = `
+  query FamilyReviewSummaries($owner: String!, $repo: String!, $limit: Int!) {
+    viewer { __typename login databaseId }
+    repository(owner: $owner, name: $repo) {
+      pullRequests(first: $limit, states: OPEN, orderBy: {field: CREATED_AT, direction: DESC}) {
+        nodes {
+          number title url body createdAt updatedAt isDraft headRefOid authorAssociation
+          author { __typename login ... on User { databaseId } }
+          commitMessages: commits(first: 100) {
+            pageInfo { hasNextPage }
+            nodes { commit { message } }
+          }
+          reviewRequests(first: 100) {
+            nodes { requestedReviewer { __typename ... on User { login } ... on Team { name slug } } }
+          }
+          reviews(last: 100) {
+            pageInfo { hasPreviousPage }
+            nodes { state submittedAt body commit { oid } author { __typename login ... on User { databaseId } } }
+          }
+          comments(last: 100) { nodes { body createdAt author { login } } }
         }
       }
     }

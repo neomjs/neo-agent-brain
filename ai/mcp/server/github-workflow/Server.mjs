@@ -1,11 +1,11 @@
-import BaseServer                              from '../BaseServer.mjs';
-import aiConfig                                from './config.mjs';
-import logger                                  from './logger.mjs';
-import HealthService                           from '../../../services/github-workflow/HealthService.mjs';
-import RepositoryService                       from '../../../services/github-workflow/RepositoryService.mjs';
-import SyncService                             from '../../../services/github-workflow/SyncService.mjs';
-import {buildToolCatalog, listTools, callTool} from './toolService.mjs';
-import {createIdentityPublicationClient}       from '../../../services/shared/identityPublicationClient.mjs';
+import BaseServer                        from '../BaseServer.mjs';
+import aiConfig                          from './config.mjs';
+import logger                            from './logger.mjs';
+import HealthService                     from '../../../services/github-workflow/HealthService.mjs';
+import RepositoryService                 from '../../../services/github-workflow/RepositoryService.mjs';
+import SyncService                       from '../../../services/github-workflow/SyncService.mjs';
+import {createGitHubToolService}         from './toolService.mjs';
+import {createIdentityPublicationClient} from '../../../services/shared/identityPublicationClient.mjs';
 import {normalizeAgentIdentity, normalizeExpectedPlaneTarget, normalizeSecureMcpEndpoint, planeMcpResources}
     from '../../../services/fleet/mcpWireParsing.mjs';
 
@@ -42,6 +42,8 @@ class Server extends BaseServer {
     identityPublicationConnection = null;
     /** @member {Object} identityPublicationState Connection/refusal state, never retained family history. */
     identityPublicationState = familySourceUnavailable('family-source-uninitialized');
+    /** @member {Object|null} familyToolService Per-Server dispatch registry with this reader's lifetime. @private */
+    familyToolService = null;
 
     /**
      * @summary MCP server identity for `createMcpServer()`.
@@ -62,7 +64,14 @@ class Server extends BaseServer {
      * @returns {{listTools: Function, callTool: Function}}
      */
     getToolService() {
-        return {buildToolCatalog, listTools, callTool};
+        const service = this.familyToolService ??= createGitHubToolService({
+            readFamilySource: viewer => this.readFamilySourceForViewer(viewer)
+        });
+        return {
+            buildToolCatalog: service.buildToolCatalog.bind(service),
+            listTools       : service.listTools.bind(service),
+            callTool        : service.callTool.bind(service)
+        };
     }
 
     /**
@@ -174,6 +183,19 @@ class Server extends BaseServer {
             : this.identityPublicationState;
     }
 
+    /**
+     * @summary Requires the current operation viewer to match this reader's independent MC identity proof.
+     * @param {Object} viewer Original authenticated GitHub actor from the captured operation.
+     * @returns {Promise<Object>} One fresh qualified snapshot or named unavailability.
+     */
+    async readFamilySourceForViewer(viewer) {
+        if (!this.identityPublicationClient) return this.identityPublicationState;
+        if (normalizeAgentIdentity(viewer?.login) !== this.identityPublicationClient.expectedIdentity) {
+            return familySourceUnavailable('family-source-viewer-mismatch');
+        }
+        return this.readIdentityPublicationSnapshot();
+    }
+
     /** @summary Detaches the owned reader before awaiting its terminal resource barrier. @returns {Promise<void>} */
     closeIdentityPublicationClient() {
         const client = this.identityPublicationClient;
@@ -191,6 +213,8 @@ class Server extends BaseServer {
     /** @summary Retires the optional reader with its Server owner. @param {...*} args */
     destroy(...args) {
         this.closeIdentityPublicationClient().catch(() => {});
+        this.familyToolService?.destroy();
+        this.familyToolService = null;
         super.destroy(...args);
     }
 

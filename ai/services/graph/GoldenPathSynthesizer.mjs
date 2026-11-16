@@ -958,10 +958,15 @@ class GoldenPathSynthesizer extends Base {
      * physics simulation of the queue. Task state is queried via both `$.properties.state` and
      * `$.state` to ensure reliable `OPEN` detection across varying JSON schemas.
      */
-    async fetchOpenPRs() {
-        const { execSync } = await import('child_process');
-        const rawPrData    = execSync('gh pr list --state open --json number,url,author,title,body,headRefOid,reviewRequests,reviews,comments,createdAt,updatedAt,isDraft', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
-        return JSON.parse(rawPrData);
+    async fetchOpenPRs({readFamilySource, now} = {}) {
+        const [{execFile}, {promisify}, {default: PullRequestService}] = await Promise.all([
+            import('node:child_process'), import('node:util'), import('../github-workflow/PullRequestService.mjs')
+        ]);
+        const {stdout} = await promisify(execFile)('gh', ['repo', 'view', '--json', 'nameWithOwner'], {timeout: 5000});
+        const repo     = JSON.parse(stdout).nameWithOwner;
+        if (typeof repo !== 'string' || !repo.includes('/')) throw new Error('Repository coordinate unavailable.');
+        return PullRequestService.listFamilyReviewSummaries({repo}, {readFamilySource,
+            ...(now === undefined ? {} : {now: () => now})});
     }
 
     /**
@@ -1111,6 +1116,7 @@ class GoldenPathSynthesizer extends Base {
         issuesDir,
         focusV1Inputs,
         focusV1Reader,
+        readFamilySource,
         now   = new Date(),
         runId = randomUUID()
     } = {}) {
@@ -1975,7 +1981,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
         if (repoEnrichmentEnabled) {
             try {
                 const Synthesizer = this.constructor,
-                      prs         = await this.fetchOpenPRs(),
+                      prs         = await this.fetchOpenPRs({readFamilySource, now}),
                       capturedAt  = now instanceof Date ? now : new Date(now);
 
                 if (!Array.isArray(prs)) {
