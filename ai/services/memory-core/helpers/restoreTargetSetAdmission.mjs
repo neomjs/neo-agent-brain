@@ -5,6 +5,10 @@ import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.
 
 import {fingerprintCanonical}    from './restoreTargetSetContract.mjs';
 import {validateJsonlSourceFile} from './vectorJsonlSourceValidation.mjs';
+import {
+    SUBJECT_BINDING_RECORD_TYPES,
+    isWellFormedSubjectBindingRecord
+} from './subjectBinding.mjs';
 
 /**
  * @module ai/services/memory-core/helpers/restoreTargetSetAdmission
@@ -69,6 +73,7 @@ export async function admitRestoreTargetSetBundle({
             rowCount         : graph.rowCount,
             nodeCount        : graph.nodeCount,
             edgeCount        : graph.edgeCount,
+            ...(graph.bindingCount !== undefined && {bindingCount: graph.bindingCount}),
             recordFingerprint: graph.recordFingerprint
         }
     };
@@ -127,7 +132,14 @@ export function normalizeRestoreTargetSetAdmission(admission, targetDescriptor) 
             validateFingerprint(component.recordFingerprint, 'graph.recordFingerprint');
             components.graph.nodeCount         = component.nodeCount;
             components.graph.edgeCount         = component.edgeCount;
-            components.graph.recordFingerprint = component.recordFingerprint
+            components.graph.recordFingerprint = component.recordFingerprint;
+
+            if (component.bindingCount !== undefined) {
+                if (!Number.isInteger(component.bindingCount) || component.bindingCount < 1) {
+                    throw new TypeError('restore target-set graph.bindingCount must be a positive integer when present')
+                }
+                components.graph.bindingCount = component.bindingCount
+            }
         }
     }
 
@@ -181,14 +193,17 @@ async function inspectVectorFile({filePath, expectedDimension}) {
 
 /**
  * @summary Validates graph envelopes without splitting Unicode text inside a JSONL record.
+ * The subject-binding relation's records join the counts and the record fingerprint only when the bundle
+ * carries them, so a bundle without the relation is admitted exactly as before.
  * @param {String} filePath
  * @returns {Promise<Object>} Counts and fingerprints of the admitted graph.
  */
 async function inspectGraphFile(filePath) {
     const
-        lines = openBundlePayload(filePath),
-        nodes = [],
-        edges = [];
+        lines    = openBundlePayload(filePath),
+        nodes    = [],
+        edges    = [],
+        bindings = [];
 
     let lineNumber = 0;
 
@@ -205,6 +220,14 @@ async function inspectGraphFile(filePath) {
                 record = JSON.parse(line)
             } catch (error) {
                 throw new Error(`restore graph source line ${lineNumber} is invalid JSON: ${error.message}`)
+            }
+
+            if (SUBJECT_BINDING_RECORD_TYPES.includes(record?.type)) {
+                if (!isWellFormedSubjectBindingRecord(record)) {
+                    throw new Error(`restore graph source line ${lineNumber} must be a well-formed subject-binding record`)
+                }
+                bindings.push(canonicalJson(record));
+                continue
             }
 
             validateGraphRecord(record, lineNumber);
@@ -225,10 +248,10 @@ async function inspectGraphFile(filePath) {
         rowCount         : nodes.length + edges.length,
         nodeCount        : nodes.length,
         edgeCount        : edges.length,
-        recordFingerprint: fingerprintCanonical({
-            nodes: nodes.sort(),
-            edges: edges.sort()
-        })
+        ...(bindings.length > 0 && {bindingCount: bindings.length}),
+        recordFingerprint: fingerprintCanonical(bindings.length > 0
+            ? {nodes: nodes.sort(), edges: edges.sort(), bindings: bindings.sort()}
+            : {nodes: nodes.sort(), edges: edges.sort()})
     }
 }
 
@@ -269,6 +292,7 @@ function fingerprintAdmissionDescriptor({expectedDimension, components}) {
                 rowCount         : components.graph.rowCount,
                 nodeCount        : components.graph.nodeCount,
                 edgeCount        : components.graph.edgeCount,
+                ...(components.graph.bindingCount !== undefined && {bindingCount: components.graph.bindingCount}),
                 recordFingerprint: components.graph.recordFingerprint
             }
         }

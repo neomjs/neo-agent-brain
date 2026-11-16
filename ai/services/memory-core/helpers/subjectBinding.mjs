@@ -393,6 +393,17 @@ export function clearSubjectBindingsForReplace(db) {
 }
 
 /**
+ * @summary Tests whether a graph bundle record is a well-formed binding or activation record: the shape
+ * {@link restoreSubjectBindingRecord} accepts, so a restore's admission can refuse anything else up front.
+ * @param {Object} record `{type, data}`.
+ * @returns {Boolean}
+ */
+export function isWellFormedSubjectBindingRecord(record) {
+    if (record?.type === SUBJECT_BINDING_RECORD) return wellFormed(record.data);
+    return record?.type === SUBJECT_BINDING_ACTIVATION_RECORD && wellFormedActivation(record.data);
+}
+
+/**
  * @summary Restores one graph bundle record as {@link readSubjectBindingRecords} exported it. A binding
  * identical to the stored one is skipped; one whose subject or identity is bound elsewhere refuses by name
  * and writes nothing, so a restore never overwrites a binding. An activation record only moves the gate
@@ -406,13 +417,12 @@ export function clearSubjectBindingsForReplace(db) {
 export function restoreSubjectBindingRecord(db, record) {
     checkTransaction(db);
 
-    if (record?.type === SUBJECT_BINDING_ACTIVATION_RECORD) {
-        if (!wellFormedActivation(record.data)) throw refusal('SUBJECT_BINDING_INVALID', 'A bundle activation record is malformed.');
-        return insertActivation(db, record.data.cutoverRevision, record.data.activatedAt) ? 'inserted' : 'skippedExisting';
+    if (!isWellFormedSubjectBindingRecord(record)) {
+        throw refusal('SUBJECT_BINDING_INVALID', `A bundle ${record?.type} record is malformed.`);
     }
 
-    if (record?.type !== SUBJECT_BINDING_RECORD || !wellFormed(record.data)) {
-        throw refusal('SUBJECT_BINDING_INVALID', 'A bundle subject-binding record is malformed.');
+    if (record.type === SUBJECT_BINDING_ACTIVATION_RECORD) {
+        return insertActivation(db, record.data.cutoverRevision, record.data.activatedAt) ? 'inserted' : 'skippedExisting';
     }
 
     db.exec(SCHEMA);

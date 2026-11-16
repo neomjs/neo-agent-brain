@@ -368,6 +368,27 @@ test.describe('restoreReceipts maintenance script', () => {
         db.close();
     });
 
+    test('the subject-binding relation\'s records validate, and a receipts run leaves them to the restore', async () => {
+        seedLive([node('MESSAGE:m1', 'MESSAGE', {readAt: null})]);
+        writeBundle([
+            node('MESSAGE:m1', 'MESSAGE', {readAt: '2026-09-25T10:00:00.000Z'}),
+            {type: 'subject-binding', data: {
+                authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '1001',
+                identityId  : '@ada', writer: 'first-admission', foundingRevision: null, boundAt: 10
+            }},
+            {type: 'subject-binding-activation', data: {cutoverRevision: 'cut-1', activatedAt: 11}}
+        ]);
+
+        await expect(validateGraphJsonl(jsonlPath)).resolves.toEqual({records: 3});
+
+        const result = await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, logger: quiet});
+        expect(result.receipts.nodes.filled).toBe(1);
+
+        const db = openDb();
+        expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'SubjectBinding'").get()).toBeUndefined();
+        db.close();
+    });
+
     test('a bundle directory resolves to its one graph JSONL; none or two refuse', async () => {
         const bundleRoot = path.dirname(path.dirname(jsonlPath));
 
