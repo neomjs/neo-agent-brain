@@ -2,6 +2,7 @@ import {setup} from '../../../../setup.mjs';
 setup({appConfig: {name: 'OpenWorkWakeIntakeTest'}, neoConfig: {unitTestMode: true}});
 
 import {test, expect} from '@playwright/test';
+import {spawnSync}    from 'node:child_process';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import 'neo.mjs/src/core/_export.mjs';
 import 'neo.mjs/src/manager/Instance.mjs';
@@ -192,4 +193,161 @@ test.describe('openWorkWakeIntake', () => {
             await fs.rm(records, {recursive: true, force: true})
         }
     });
+});
+
+test('outside repair planner, wire, schema and intake preserve exact evidence with isolated mailbox dependencies', () => {
+    const intakeUrl  = new URL('../../../../../../ai/services/memory-core/openWorkWakeIntake.mjs', import.meta.url).href,
+          wireUrl    = new URL('../../../../../../ai/services/fleet/wireFleetOpenWorkWakes.mjs', import.meta.url).href,
+          contextUrl = new URL('../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs', import.meta.url).href,
+          schemaUrl  = new URL('../../../../../../ai/mcp/server/memory-core/openapi.yaml', import.meta.url).href;
+    const script = `
+        import assert from 'node:assert/strict';
+        import {registerHooks} from 'node:module';
+        import fs from 'node:fs';
+        import os from 'node:os';
+        import path from 'node:path';
+        import Ajv from 'ajv';
+        import {load} from 'js-yaml';
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
+        const {default: context} = await import(${JSON.stringify(contextUrl)});
+        const {wireFleetOpenWorkWakes} = await import(${JSON.stringify(wireUrl)});
+        const intakeUrl = ${JSON.stringify(intakeUrl)};
+        const HEAD = 'a'.repeat(40), KEY = 'b'.repeat(64), SEAT = '@neo-opus-ada', OPERATOR = '@fixture-operator';
+        const start = Date.parse('2026-11-16T06:00:00.000Z'), iso = minute => new Date(start + minute * 60000).toISOString();
+        const stored = [];
+        globalThis.fixtureOpenWorkMailbox = {
+            isReachableTarget: id => id === SEAT,
+            async addMessage(message, options) {
+                assert.equal(options.deferProjection, true);
+                stored.push({...structuredClone(message), from: context.getAgentIdentityNodeId()});
+                return {messageId: 'MESSAGE:fixture-' + stored.length};
+            }
+        };
+        const modules = new Map([
+            ['./GraphService.mjs', 'export default {requireDb() {return {};}};'],
+            ['./MailboxService.mjs', 'export default globalThis.fixtureOpenWorkMailbox; export const isHumanOperatorIdentity = (db, id) => id === "@fixture-operator"; export const resolvePrincipalClass = (db, id) => id === "@neo-opus-ada" ? "agent" : null;'],
+            ['./WakeSubscriptionService.mjs', 'export default {};']
+        ]);
+        const hooks = registerHooks({resolve(specifier, info, nextResolve) {
+            if (info.parentURL === intakeUrl && modules.has(specifier)) {
+                return {url: 'data:text/javascript,' + encodeURIComponent(modules.get(specifier)), shortCircuit: true};
+            }
+            return nextResolve(specifier, info);
+        }});
+        const schema = load(fs.readFileSync(new URL(${JSON.stringify(schemaUrl)}), 'utf8'))
+            .paths['/mailbox/open-work/admit'].post.requestBody.content['application/json'].schema;
+        const validate = new Ajv({strict: false}).compile(schema);
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-repair-intake-'));
+        try {
+            const {admitOpenWorkWake, resetOpenWorkWakeAdmissions} = await import(intakeUrl);
+            for (const mode of ['unclassified', 'mechanical', 'unknown', 'capacity', 'comment-only', 'partial', 'legacy']) {
+                resetOpenWorkWakeAdmissions();
+                fs.mkdirSync(path.join(directory, mode));
+                let minute = 0, nameReads = 0;
+                const observed = (minute, ci, unread = false) => {
+                    const row = {key: 'acme/app#7', repo: 'acme/app', number: 7, head: HEAD, ci,
+                        owner: mode === 'legacy' ? {kind: 'seat', seat: SEAT} : {kind: 'outside', seat: null, login: 'contributor'},
+                        bot: false, authorAssociation: 'CONTRIBUTOR', draft: false, partial: false, mergeable: 'MERGEABLE',
+                        requested: [], reviews: [], opinions: [], observedAt: iso(minute)};
+                    if (mode !== 'legacy') {
+                        row.reviews = mode === 'comment-only' ? [] : [{reviewer: '@neo-opus-grace', state: 'COMMENTED', onHead: true, bot: false}];
+                        row.ciRepairEvidence = mode === 'unknown' || mode === 'partial' || unread ? null : {head: HEAD, key: KEY,
+                            failedChecks: mode === 'capacity' ? Array.from({length: 100}, (_, index) => 'unit-' + index) : ['snapshot-unit']};
+                        row.ciRepairClassification = ['mechanical', 'unknown', 'capacity', 'comment-only'].includes(mode)
+                            ? {head: HEAD, evidenceKey: KEY, kind: 'mechanical', maintainer: '@neo-opus-grace', receiptUrl: 'https://github.com/acme/app/pull/7#issuecomment-101'} : null;
+                        if (mode === 'comment-only') {
+                            const source = {provider: 'github', apiBase: 'https://api.github.com', repo: 'acme/app', prId: 'PR_7', number: 7};
+                            row.ciRepairRead = {head: HEAD, source, touch: {head: HEAD, commentId: 'COMMENT_101', maintainer: '@neo-opus-grace',
+                                receiptUrl: 'https://github.com/acme/app/pull/7#issuecomment-101', source,
+                                author: {id: 'USER_GRACE', kind: 'User', login: 'neo-opus-grace'}}};
+                        }
+                        if (mode === 'partial') {
+                            row.partial = true;
+                            row.ciRepairIncompleteReads = minute < 2 ? ['comments', 'reviews', 'checks', 'legacy-coverage'] : ['comments', 'check-suites'];
+                        }
+                    }
+                    return {observedAt: iso(minute), coverage: mode === 'partial' ? 'partial' : 'complete', snapshot: {rows: {[row.key]: row}, closed: {}},
+                        transitions: [], pulses: [{at: iso(-1500)}, {at: iso(minute)}]};
+                };
+                const round = wireFleetOpenWorkWakes({
+                    registry: {getDataDir: () => path.join(directory, mode), listAgents: () => [{id: 'ada', githubUsername: 'neo-opus-ada'}],
+                        resolveCredential: () => 'fixture-token'},
+                    createQuery: () => async () => {
+                        nameReads++;
+                        return {repository: {object: {statusCheckRollup: {contexts: {pageInfo: {hasNextPage: false},
+                            nodes: [{name: 'native-later-read', conclusion: 'FAILURE'}]}}}}};
+                    },
+                    gateOf: () => ({holds: true}), now: () => start + minute * 60000, rotationSeats: [SEAT],
+                    admitWake: observation => {
+                        assert.equal(validate(observation), true, JSON.stringify(validate.errors));
+                        return admitOpenWorkWake(observation);
+                    }, log: {}
+                });
+                const prior = stored.length;
+                await context.run({agentIdentityNodeId: OPERATOR}, () => round(observed(0, 'pending')));
+                minute = 1;
+                await context.run({agentIdentityNodeId: OPERATOR}, () => round(observed(1, 'red')));
+                if (mode === 'comment-only') {
+                    minute = 2;
+                    await context.run({agentIdentityNodeId: OPERATOR}, () => round(observed(2, 'red', true)));
+                    minute = 3;
+                    await context.run({agentIdentityNodeId: OPERATOR}, () => round(observed(3, 'red')));
+                }
+                if (mode === 'partial') {
+                    minute = 2;
+                    await context.run({agentIdentityNodeId: OPERATOR}, () => round(observed(2, 'red')));
+                }
+                await round.stop();
+                assert.equal(stored.length, prior + 1, mode);
+                const message = stored.at(-1);
+                assert.equal(message.from, '@system');
+                assert.equal(message.task.observedBy, OPERATOR);
+                assert.equal(message.task.state, 'Submitted');
+                assert.equal(message.task.head, HEAD);
+                assert.equal(Object.hasOwn(message.task, 'ciRepair'), false);
+                if (mode === 'legacy') {
+                    assert.equal(nameReads, 1);
+                    assert.match(message.body, /Failing checks: native-later-read/);
+                    assert.equal(message.body.includes('Evidence key:'), false);
+                } else {
+                    assert.equal(nameReads, 0);
+                    if (mode === 'unknown' || mode === 'partial') {
+                        assert.match(message.body, /Evidence key: unknown/);
+                        assert.match(message.body, /Observed classification: unclassified/);
+                        assert.equal(message.body.includes('<!-- neo-ci-repair-classification:'), false);
+                        if (mode === 'partial') {
+                            assert.match(message.body, /Incomplete reads: comments, reviews, checks, legacy-coverage/);
+                            assert.match(message.body, /Inspect beyond the reported read windows before another classification/);
+                            assert.equal(Object.hasOwn(message.task, 'incompleteReads'), false);
+                        }
+                    } else {
+                        if (mode === 'capacity') {
+                            assert.match(message.body, /producer-snapshot check names are unavailable for this wake/);
+                            assert.equal(message.body.includes('unit-0'), false);
+                        } else assert.match(message.body, /Failing checks: snapshot-unit/);
+                        assert.ok(message.body.includes('Evidence key: ' + KEY));
+                        assert.ok(message.body.includes('"head":"' + HEAD + '","evidenceKey":"' + KEY + '"'));
+                        assert.ok(message.body.includes('Observed classification: ' + (['capacity', 'comment-only'].includes(mode) ? 'mechanical' : mode)));
+                    }
+                }
+            }
+            const observation = {repo: 'acme/app', number: 7, head: HEAD, kind: 'repair-ci', episode: iso(2), to: SEAT};
+            for (const ciRepair of [{evidenceKey: KEY, kind: 'mechanical', extra: true}, {evidenceKey: 'bad', kind: 'unclassified'}]) {
+                assert.equal(validate({...observation, ciRepair}), false);
+            }
+            for (const incompleteReads of [[], ['checks', 'checks'], ['unknown'], Array(1), Array(8).fill('comments')]) {
+                assert.equal(validate({...observation, ciRepair: {evidenceKey: null, kind: 'unclassified', incompleteReads}}), false);
+            }
+            const count = stored.length;
+            await assert.rejects(context.run({agentIdentityNodeId: OPERATOR}, () => admitOpenWorkWake({...observation,
+                kind: 'review', ciRepair: {evidenceKey: KEY, kind: 'unclassified'}})), /ciRepair belongs to repair-ci only/);
+            await assert.rejects(context.run({agentIdentityNodeId: OPERATOR}, () => admitOpenWorkWake({...observation,
+                ciRepair: {evidenceKey: null, kind: 'mechanical'}})), /mechanical requires a known key/);
+            assert.equal(stored.length, count);
+        } finally {hooks.deregister(); fs.rmSync(directory, {recursive: true, force: true});}
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {encoding: 'utf8', timeout: 15000});
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr + result.stdout).toBe(0);
 });

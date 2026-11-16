@@ -10,6 +10,7 @@ import {normalizePullRequest, normalizeTerminal, reduceOpenWork} from '../../../
 
 const
     HEAD      = 'a'.repeat(40),
+    EVIDENCE  = 'b'.repeat(64),
     SEAT      = '@neo-opus-ada',
     HOLDER    = '@neo-gpt-euclid',
     INSTANT   = '2026-11-11T19:53:00.285Z',
@@ -86,6 +87,39 @@ test.describe('openWorkWakeMessage — the plane admits tokens, never text (#160
         }
     });
 
+    test('outside repair metadata is bounded, repair-only and mechanical classification requires known evidence', () => {
+        for (const ciRepair of [null, [], {}, {kind: 'unclassified'}, {evidenceKey: EVIDENCE},
+            {evidenceKey: 'short', kind: 'unclassified'}, {evidenceKey: 'B'.repeat(64), kind: 'unclassified'},
+            {evidenceKey: EVIDENCE, kind: 'content'}, {evidenceKey: null, kind: 'mechanical'},
+            {evidenceKey: EVIDENCE, kind: 'mechanical', authority: 'operator'}]) {
+            expect(refusals(open({kind: 'repair-ci', ciRepair})), JSON.stringify(ciRepair)).toHaveLength(1);
+        }
+        expect(refusals(open({ciRepair: {evidenceKey: EVIDENCE, kind: 'unclassified'}})))
+            .toEqual(['ciRepair belongs to repair-ci only']);
+        for (const ciRepair of [{evidenceKey: null, kind: 'unclassified'},
+            {evidenceKey: EVIDENCE, kind: 'unclassified'}, {evidenceKey: EVIDENCE, kind: 'mechanical'}]) {
+            const validated = validateOpenWorkObservation(open({kind: 'repair-ci', ciRepair}));
+            expect(validated.errors).toEqual([]);
+            expect(validated.observation.ciRepair).toEqual(ciRepair);
+            expect(validated.observation.ciRepair).not.toBe(ciRepair);
+        }
+        expect(validateOpenWorkObservation(open({kind: 'repair-ci'})).observation).not.toHaveProperty('ciRepair');
+    });
+
+    test('incomplete-read diagnostics accept only a detached nonempty unique list of the seven closed tokens', () => {
+        const incompleteReads = ['comments', 'reviews', 'review-requests', 'commits', 'check-suites', 'checks', 'legacy-coverage'],
+            ciRepair          = {evidenceKey: null, kind: 'unclassified', incompleteReads},
+            result            = validateOpenWorkObservation(open({kind: 'repair-ci', ciRepair}));
+        expect(result.errors).toEqual([]);
+        expect(result.observation.ciRepair.incompleteReads).toEqual(incompleteReads);
+        expect(result.observation.ciRepair.incompleteReads).not.toBe(incompleteReads);
+        for (const invalid of [null, [], 'comments', ['other'], ['comments', 'comments'], [...incompleteReads, 'comments'],
+            Array(1), Object.assign(Array(2), {0: 'comments'}), Object.assign(['comments'], {extra: true})]) {
+            expect(refusals(open({kind: 'repair-ci', ciRepair: {...ciRepair, incompleteReads: invalid}}))).toHaveLength(1);
+        }
+        expect(refusals(open({kind: 'repair-ci', ciRepair: {...ciRepair, unrelated: true}}))).toHaveLength(1);
+    });
+
     test('an unblocked observation names its issue: required for that kind, refused for every other, and its episode is the merge plus that issue (#1619)', () => {
         const malformed = 'unblocks must be the unblocked issue as owner/name#N';
 
@@ -120,6 +154,57 @@ test.describe('openWorkWakeMessage — the plane admits tokens, never text (#160
 });
 
 test.describe('openWorkWakeMessage — the composed wake (#1536, #1607, #1609)', () => {
+    test('outside repair wakes keep investigation and mechanical ownership with the maintainer and name exact evidence', () => {
+        for (const kind of ['unclassified', 'mechanical']) {
+            const wake = composeOpenWorkWake(validateOpenWorkObservation(open({kind: 'repair-ci', failedChecks: ['unit'],
+                ciRepair: {evidenceKey: EVIDENCE, kind}})).observation);
+            expect(wake.body).toContain(`Evidence key: ${EVIDENCE}`);
+            expect(wake.body).toContain('maintainer');
+            expect(wake.body).toContain('retain mechanical repair ownership');
+            expect(wake.body).toContain('actionable content handback');
+            expect(wake.body).toContain('No content changes without scoped consent');
+            expect(wake.body).toContain('Mechanical classification is not task completion');
+            expect(wake.body).toContain(`<!-- neo-ci-repair-classification:v1 {"head":"${HEAD}","evidenceKey":"${EVIDENCE}","kind":"mechanical|content"} -->`);
+            expect(wake.body).toContain('Maintainer-only classification record');
+            expect(wake.body).toContain('no automatic alternate acceptance or new author deadline');
+            expect(wake.task.state).toBe('Submitted');
+            expect(wake.task).not.toHaveProperty('ciRepair');
+        }
+    });
+
+    test('incomplete outside evidence asks for investigation and cannot emit an exact classification marker', () => {
+        const wake = composeOpenWorkWake(validateOpenWorkObservation(open({kind: 'repair-ci', failedChecks: null,
+            ciRepair: {evidenceKey: null, kind: 'unclassified'}})).observation);
+        expect(wake.body).toContain('Evidence key: unknown');
+        expect(wake.body).toContain('investigate incomplete evidence');
+        expect(wake.body).not.toContain('<!-- neo-ci-repair-classification:');
+        expect(wake.body).not.toContain('"kind":"content"');
+        const empty = composeOpenWorkWake(validateOpenWorkObservation(open({kind: 'repair-ci', failedChecks: [],
+            ciRepair: {evidenceKey: EVIDENCE, kind: 'unclassified'}})).observation);
+        expect(empty.body).toContain('Failing checks: none in the producer snapshot.');
+        expect(empty.body).not.toContain('none when this wake was sent');
+    });
+
+    test('legacy and unrelated wake bodies gain no outside classification ceremony', () => {
+        for (const args of [open(), open({kind: 'repair-ci', failedChecks: ['unit']})]) {
+            const wake = composeOpenWorkWake(validateOpenWorkObservation(args).observation);
+            expect(wake.body).not.toContain('Evidence key:');
+            expect(wake.body).not.toContain('neo-ci-repair-classification');
+            expect(wake.task.id).toBe('open-work:' + JSON.stringify([args.repo, args.number, args.head, args.to, args.kind, args.episode]));
+        }
+    });
+
+    test('incomplete reads are named before further classification and do not alter Task identity', () => {
+        const compose = incompleteReads => composeOpenWorkWake(validateOpenWorkObservation(open({kind: 'repair-ci',
+            ciRepair: {evidenceKey: null, kind: 'unclassified', incompleteReads}})).observation);
+        const first = compose(['comments', 'checks']), second = compose(['reviews']);
+        expect(first.body).toContain('Incomplete reads: comments, checks.');
+        expect(first.body).toContain('Inspect beyond the reported read windows before another classification.');
+        expect(first.body).not.toContain('<!-- neo-ci-repair-classification:');
+        expect(second.body).toContain('Incomplete reads: reviews.');
+        expect(second.task).toEqual(first.task);
+        expect(first.task).not.toHaveProperty('incompleteReads');
+    });
     test('the subject and body name the action, the head and the re-check; the task keeps the full identity', () => {
         const wake = composeOpenWorkWake(validateOpenWorkObservation(open({kind: 'repair-ci', failedChecks: ['unit']})).observation);
 

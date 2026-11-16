@@ -9,13 +9,14 @@
  * retried. An admission keeps its intake receipt's message id, and only the receiver's record of that message, read
  * back from the plane, can certify its holder silent.
  */
-import path                                              from 'path';
-import {exhaustedUntilOf}                                from './capacityThrottleState.mjs';
-import {OPEN_WORK_FAILED_CHECKS}                         from '../github-workflow/queries/openWorkQueries.mjs';
-import {familiesOf, fileStore, seatReaders}              from './wireFleetOpenWorkSource.mjs';
-import {HOLDER_SILENT_MS, planOpenWorkWakes, wakeGateOf} from './openWorkWakes.mjs';
-import {OPEN_WORK_HOLDER_KINDS}                          from './openWorkWakeMessage.mjs';
-import {openWorkFreshness}                               from './openWorkFreshness.mjs';
+import path                                                                 from 'path';
+import {exhaustedUntilOf}                                                   from './capacityThrottleState.mjs';
+import {OPEN_WORK_FAILED_CHECKS}                                            from '../github-workflow/queries/openWorkQueries.mjs';
+import {familiesOf, fileStore, seatReaders}                                 from './wireFleetOpenWorkSource.mjs';
+import {HOLDER_SILENT_MS, planOpenWorkWakes, wakeGateOf}                    from './openWorkWakes.mjs';
+import {ciRepairEvidenceOf}                                                 from './openWorkHolder.mjs';
+import {isOpenWorkCiRepair, isOpenWorkFailedChecks, OPEN_WORK_HOLDER_KINDS} from './openWorkWakeMessage.mjs';
+import {openWorkFreshness}                                                  from './openWorkFreshness.mjs';
 
 const
     ROUTES_TTL_MS     = 5 * 60 * 1000,
@@ -131,11 +132,22 @@ export function failedChecksOf(data) {
  * @returns {Object} The `admit_open_work_wake` arguments.
  * @private
  */
-function observationOf(wake, failedChecks) {
+function observationOf(wake, failedChecks, ciRepair = wake.ciRepair) {
     const {repo, number, head, kind, episode, to, unblocks, holder} = wake;
 
     return {repo, number, head, kind, episode, to, failedChecks, ...(kind === 'unblocked' ? {unblocks} : {}),
+        ...(ciRepair ? {ciRepair} : {}),
         ...(OPEN_WORK_HOLDER_KINDS.has(kind) ? {holder} : {})}
+}
+
+/** @summary Binds outside repair names to their producer snapshot; newer verified evidence expires an old plan. */
+function repairSnapshotOf(wake, state) {
+    const row = state.snapshot.rows[wake.pr], evidence = ciRepairEvidenceOf(row);
+    if (row?.head !== wake.head || row.ciRepairEvidence?.head != null && row.ciRepairEvidence.head !== wake.head) return {stale: true};
+    if (evidence && evidence.key !== wake.ciRepair.evidenceKey) return {stale: true};
+    return evidence
+        ? {ciRepair: {...wake.ciRepair}, failedChecks: isOpenWorkFailedChecks(evidence.failedChecks) ? evidence.failedChecks : null}
+        : {ciRepair: {...wake.ciRepair, evidenceKey: null, kind: 'unclassified'}, failedChecks: null};
 }
 
 /**
@@ -199,6 +211,7 @@ function validateLedger(ledger, now) {
         wake   = value => object(value) && text(value.repo) && Number.isInteger(value.number) && value.number > 0 &&
             text(value.head) && text(value.to) && value.to.startsWith('@') && text(value.kind) &&
             text(value.episode) && text(value.reason) && ['author', 'reviewer', 'rotation', 'assignee'].includes(value.role) &&
+            (!Object.hasOwn(value, 'ciRepair') || value.role === 'rotation' && value.kind === 'repair-ci' && isOpenWorkCiRepair(value.ciRepair)) &&
             value.pr === `${value.repo}#${value.number}` && holder(value) &&
             value.key === JSON.stringify([value.repo, value.number, value.head, value.to, value.kind, value.episode,
                 ...(value.holder ? [value.holder] : [])]);
@@ -212,6 +225,11 @@ function validateLedger(ledger, now) {
                 !validCertification(ledger.activation.certification, Date.parse(ledger.activation.at))) ||
         ledger.certificationRefusal != null && !REFUSAL_CODES.has(ledger.certificationRefusal) ||
         Object.entries(ledger.holding).some(([slot, entry]) => !object(entry) || !wake(entry.wake) ||
+            Object.hasOwn(entry, 'ciRepairEvidenceKey') && !(entry.wake.role === 'rotation' && entry.wake.kind === 'repair-ci' &&
+                isOpenWorkCiRepair({evidenceKey: entry.ciRepairEvidenceKey, kind: 'mechanical'})) ||
+            Object.hasOwn(entry, 'ciRepairDisposition') && !(entry.wake.role === 'rotation' && entry.wake.kind === 'repair-ci' &&
+                isOpenWorkCiRepair({evidenceKey: entry.ciRepairEvidenceKey, kind: 'mechanical'}) &&
+                ['content', 'mechanical'].includes(entry.ciRepairDisposition)) ||
             !['baseline', 'pending', 'admitted'].includes(entry.status) ||
             Object.hasOwn(entry, 'messageId') && (entry.status !== 'admitted' || !messageIdOf(entry.messageId)) ||
             Object.hasOwn(entry, 'attempts') && !validAttempts(entry.attempts) ||
@@ -267,7 +285,8 @@ function freshObservation(state, now) {
  */
 function freshWake(wake, state, now) {
     return freshObservation(state, now) && (wake.kind === 'post-merge' || wake.kind === 'unblocked' ||
-        openWorkFreshness(state.snapshot.rows[wake.pr]?.observedAt, {now}) === 'ok')
+        openWorkFreshness(state.snapshot.rows[wake.pr]?.observedAt, {now}) === 'ok') &&
+        (!Object.hasOwn(wake, 'ciRepair') || !repairSnapshotOf(wake, state).stale)
 }
 
 /**
@@ -431,7 +450,9 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
 
         for (const wake of plan.wakes) {
             // the names read awaits, so enablement and freshness are tested after it, at the send
-            const failedChecks = wake.kind === 'repair-ci' && isEnabled() === true ? await failedChecksFor(wake) : null;
+            const repair     = Object.hasOwn(wake, 'ciRepair') ? repairSnapshotOf(wake, state) : null,
+                failedChecks = wake.kind === 'repair-ci' && isEnabled() === true
+                    ? repair ? repair.failedChecks : await failedChecksFor(wake) : null;
             if (isEnabled() !== true) {
                 disabled = true;
                 break
@@ -441,7 +462,7 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
                 continue
             }
             try {
-                const messageId = messageIdOf((await admitWake(observationOf(wake, failedChecks)))?.messageId);
+                const messageId = messageIdOf((await admitWake(observationOf(wake, failedChecks, repair?.ciRepair)))?.messageId);
                 messageId && receipts.set(wake.key, messageId)
             } catch (error) {
                 sendErrors++;

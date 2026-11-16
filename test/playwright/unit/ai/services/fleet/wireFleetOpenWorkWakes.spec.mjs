@@ -13,6 +13,7 @@ import {createOpenWorkWakeRound, failedChecksOf, undeliverableOf, wireFleetOpenW
 import {familiesOf}                                                                       from '../../../../../../ai/services/fleet/wireFleetOpenWorkSource.mjs';
 
 const START  = Date.parse('2026-10-13T12:00:00.000Z'), HEAD = 'a'.repeat(40), SEAT = '@neo-opus-ada',
+    EVIDENCE = 'b'.repeat(64),
     at       = minute => START + minute * 60000,
     iso      = minute => new Date(at(minute)).toISOString(),
     openGate = () => ({holds: true, reason: null});
@@ -24,6 +25,31 @@ function state(minute, ci = 'pending', extra = {}) {
         requested: [], reviews: [], opinions: [], partial: false, observedAt: iso(minute)};
     return {observedAt: iso(minute), coverage: 'complete', snapshot: {rows: {[row.key]: row}, closed: {}},
         transitions: [], pulses: [{at: iso(-1500)}, {at: iso(minute)}], ...extra}
+}
+
+/** @summary An outside repair row carries the producer's exact CI snapshot independently of later name reads. */
+function outsideRepairState(minute, ci = 'red', evidence = {head: HEAD, key: EVIDENCE, failedChecks: ['snapshot-unit']}, kind = null, incompleteReads = null) {
+    const value = state(minute, ci);
+    Object.assign(value.snapshot.rows['acme/app#7'], {
+        owner           : {kind: 'outside', seat: null, login: 'contributor'}, bot: false, authorAssociation: 'CONTRIBUTOR',
+        reviews         : [{reviewer: '@neo-opus-grace', state: 'COMMENTED', onHead: true, bot: false}],
+        ciRepairEvidence: evidence,
+        ...(incompleteReads ? {ciRepairIncompleteReads: incompleteReads} : {}),
+        ciRepairClassification: kind ? {head: HEAD, evidenceKey: EVIDENCE, kind, maintainer: '@neo-opus-grace',
+            receiptUrl: 'https://github.com/acme/app/pull/7#issuecomment-101'} : null
+    });
+    return value;
+}
+
+/** @summary Builds retained repair history independently of the planner for ledger admission tests. */
+function repairLedger(fields = {}, wakeFields = {}) {
+    const wake = {repo: 'acme/app', number: 7, pr: 'acme/app#7', head: HEAD, to: SEAT,
+        role    : 'rotation', kind: 'repair-ci', episode: iso(0), reason: 'CI repair',
+        ciRepair: {evidenceKey: EVIDENCE, kind: 'unclassified'}, ...wakeFields};
+    wake.key = JSON.stringify([wake.repo, wake.number, wake.head, wake.to, wake.kind, wake.episode]);
+    const slot = JSON.stringify([wake.repo, wake.number, wake.head, wake.role === 'rotation' ? 'rotation' : wake.to, wake.kind]);
+    return {pulse: iso(0), activation: {version: 1, at: iso(0)},
+        holding: {[slot]: {wake, status: 'pending', ...fields}}, pendingMerges: {}, baselines: {}};
 }
 
 /** @summary A terminal source receipt that may leave the producer's retained transition list. */
@@ -656,6 +682,125 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
 test.describe('wireFleetOpenWorkWakes — a repair-ci wake names the checks that failed (#1536)', () => {
     /** @summary GitHub's answer to the failed-checks read for one head. */
     const contexts = (nodes, hasNextPage = false) => ({repository: {object: {statusCheckRollup: {contexts: {pageInfo: {hasNextPage}, nodes}}}}});
+
+    test('outside repair uses the producer evidence key and names without a later name-only query', async () => {
+        for (const kind of [null, 'mechanical']) {
+            let   minute = 0, reads = 0;
+            const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate,
+                now      : () => at(minute), rotationSeats: [SEAT], readFailedChecks: async () => { reads++; return ['later-read']; },
+                admitWake: async observation => (sends.push(observation), {messageId: 'MESSAGE:outside-repair'})});
+            await round(outsideRepairState(0, 'pending'));
+            minute = 1;
+            await round(outsideRepairState(1, 'red', undefined, kind));
+            expect(sends).toEqual([{repo: 'acme/app', number: 7, head: HEAD, kind: 'repair-ci', episode: iso(1), to: SEAT,
+                failedChecks: ['snapshot-unit'], ciRepair: {evidenceKey: EVIDENCE, kind: kind ?? 'unclassified'}}]);
+            expect(reads).toBe(0);
+            await round.stop();
+        }
+    });
+
+    test('same-head unread outside evidence keeps an investigation wake without a stale mechanical claim', async () => {
+        for (const evidence of [null, ...[null, [''], [null]].map(failedChecks => ({head: HEAD, key: EVIDENCE, failedChecks}))]) {
+            let   minute = 0, reads = 0;
+            const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate,
+                now      : () => at(minute), rotationSeats: [SEAT], readFailedChecks: async () => { reads++; return ['later-read']; },
+                admitWake: async observation => sends.push(observation)});
+            await round(outsideRepairState(0, 'pending'));
+            minute = 1;
+            await round(outsideRepairState(1, 'red', evidence, 'mechanical'));
+            expect(sends).toHaveLength(1);
+            expect(sends[0]).toMatchObject({kind: 'repair-ci', failedChecks: null,
+                ciRepair: {evidenceKey: null, kind: 'unclassified'}});
+            expect(reads).toBe(0);
+            await round.stop();
+        }
+    });
+
+    test('complete outside evidence beyond display capacity keeps its key and classification without truncated names', async () => {
+        for (const failedChecks of [Array.from({length: 100}, (_, index) => `unit-${index}`), ['x'.repeat(121)], ['unit\nstep']]) {
+            let   minute = 0, reads = 0;
+            const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate,
+                now      : () => at(minute), rotationSeats: [SEAT], readFailedChecks: async () => { reads++; return ['later']; },
+                admitWake: async observation => sends.push(observation)});
+            await round(outsideRepairState(0, 'pending'));
+            minute = 1;
+            await round(outsideRepairState(1, 'red', {head: HEAD, key: EVIDENCE, failedChecks}, 'mechanical'));
+            expect(sends).toHaveLength(1);
+            expect(sends[0]).toMatchObject({failedChecks: null, ciRepair: {evidenceKey: EVIDENCE, kind: 'mechanical'}});
+            expect(reads).toBe(0);
+            await round.stop();
+        }
+    });
+
+    test('partial outside repair names incomplete reads and diagnostic-only changes do not mint another wake', async () => {
+        let   minute = 0;
+        const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate,
+            now: () => at(minute), rotationSeats: [SEAT], admitWake: async observation => sends.push(observation)});
+        const partial = incompleteReads => {
+            const value = outsideRepairState(minute, 'red', null, 'mechanical', incompleteReads);
+            value.coverage = 'partial';
+            value.snapshot.rows['acme/app#7'].partial = true;
+            return value;
+        };
+        await round(outsideRepairState(0, 'pending'));
+        minute = 1;
+        await round(partial(['comments', 'reviews', 'checks', 'legacy-coverage']));
+        expect(sends).toHaveLength(1);
+        expect(sends[0]).toMatchObject({kind: 'repair-ci', failedChecks: null,
+            ciRepair: {evidenceKey: null, kind: 'unclassified', incompleteReads: ['comments', 'reviews', 'checks', 'legacy-coverage']}});
+        minute = 2;
+        await round(partial(['comments', 'check-suites']));
+        expect(sends).toHaveLength(1);
+        await round.stop();
+    });
+
+    test('a plan made stale at persistence expires before send instead of becoming a null-key episode', async () => {
+        for (const field of ['head', 'evidenceKey']) {
+            let   minute = 0;
+            const store  = memoryStore(), save = store.save, sends = [];
+            store.save = value => {
+                for (const {wake} of Object.values(value.holding)) {
+                    if (!wake.ciRepair) continue;
+                    if (field === 'head') wake.head = 'c'.repeat(40);
+                    else wake.ciRepair.evidenceKey = 'c'.repeat(64);
+                }
+                save(value);
+            };
+            const round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), rotationSeats: [SEAT],
+                admitWake: async observation => sends.push(observation)});
+            await round(outsideRepairState(0, 'pending'));
+            minute = 1;
+            expect(await round(outsideRepairState(1))).toMatchObject({admitted: 1, expired: 1});
+            expect(sends).toEqual([]);
+            await round.stop();
+        }
+    });
+
+    test('retained repair evidence and disposition are optional, bounded and require a matching repair slot', async () => {
+        const valid = [{}, {ciRepairEvidenceKey: EVIDENCE},
+            {ciRepairEvidenceKey: EVIDENCE, ciRepairDisposition: 'content'},
+            {ciRepairEvidenceKey: EVIDENCE, ciRepairDisposition: 'mechanical'}];
+        for (const fields of valid) {
+            const before = repairLedger(fields), store = memoryStore(before), sends = [],
+                round    = createOpenWorkWakeRound({store, now: () => at(1), admitWake: async value => sends.push(value)});
+            await round(state(1, 'pending', {coverage: 'stale'}));
+            expect(store.read()).toEqual(before);
+            expect(sends).toEqual([]);
+        }
+        const invalid = [
+            repairLedger({ciRepairEvidenceKey: null}), repairLedger({ciRepairEvidenceKey: 'short'}),
+            repairLedger({ciRepairDisposition: 'content'}),
+            repairLedger({ciRepairEvidenceKey: EVIDENCE, ciRepairDisposition: 'unknown'}),
+            repairLedger({ciRepairEvidenceKey: EVIDENCE, ciRepairDisposition: null}),
+            repairLedger({ciRepairEvidenceKey: EVIDENCE}, {kind: 'review', ciRepair: undefined}),
+            repairLedger({ciRepairEvidenceKey: EVIDENCE}, {role: 'author'})
+        ];
+        for (const before of invalid) {
+            const store = memoryStore(before), round = createOpenWorkWakeRound({store, now: () => at(1), admitWake: async () => {}});
+            await expect(round(state(1, 'pending', {coverage: 'stale'}))).rejects.toThrow('Malformed open-work wake ledger');
+            expect(store.read()).toEqual(before);
+        }
+    });
 
     test('failing check runs and statuses are named; a truncated or missing rollup is no complete list', () => {
         expect(failedChecksOf(contexts([

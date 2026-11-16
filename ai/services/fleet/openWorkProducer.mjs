@@ -25,7 +25,7 @@
  */
 
 import {
-    OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
+    OPEN_WORK_SNAPSHOT, OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
 } from '../github-workflow/queries/openWorkQueries.mjs';
 import {
     normalizePullRequest, normalizeTerminal, normalizeUnblocked, reduceOpenWork
@@ -482,7 +482,7 @@ export function createOpenWorkProducer({
         if (outsideReader?.query) {
             try {
                 outsideNodes.push(...(await readSearch({
-                    query: outsideReader.query, text: OPEN_WORK_SNAPSHOT, search: ['is:pr is:open archived:false', excluded, scope].filter(Boolean).join(' '),
+                    query: outsideReader.query, text: OPEN_WORK_OUTSIDE_SNAPSHOT, search: ['is:pr is:open archived:false', excluded, scope].filter(Boolean).join(' '),
                     pageBudget, tally, apiBase: outsideReader.apiBase, stamp, progress: outside
                 })).nodes)
             } catch {}
@@ -525,7 +525,7 @@ export function createOpenWorkProducer({
         const
             // the earliest seat's watermark bounds what is still closing, and seeds a seat that joins later
             watermark = Object.values(marks).map(mark => mark.watermark).filter(Boolean).sort()[0] ?? null,
-            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed, searches}, terminal, since: state.watermark ?? null, id: at}),
+            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed, searches}, terminal, since: state.watermark ?? null, id: at, identities}),
             coverage  = complete && outside.complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial',
             readerOf  = new Map(seats.filter(seat => seat.query && answered.some(read => read.seat === seat.seat)).map(seat => [seat.seat, seat])),
             retained  = await readUnblocked({

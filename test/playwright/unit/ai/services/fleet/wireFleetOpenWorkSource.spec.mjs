@@ -27,8 +27,8 @@ import {
     seatReaders,
     wireFleetOpenWorkSource
 } from '../../../../../../ai/services/fleet/wireFleetOpenWorkSource.mjs';
-import {normalizePullRequest}                   from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
-import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
+import {normalizePullRequest}                                               from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
+import {OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const definitions = [
     {id: 'ada',   githubUsername: 'neo-opus-ada', metadata: {repo: {repoSlug: 'acme/app', cloneUrl: 'https://github.com/acme/app.git'}, repos: [{repoSlug: 'acme/lib', cloneUrl: 'https://github.com/acme/lib.git'}]}},
@@ -38,7 +38,7 @@ const definitions = [
 
 test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet server (#760)', () => {
     test('the existing queries observe issuer and measured quota without a second request (#761)', () => {
-        for (const query of [OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL]) {
+        for (const query of [OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_OUTSIDE_SNAPSHOT]) {
             expect(query).toMatch(/viewer\s*\{\s*id\s*\}/);
             expect(query).toMatch(/rateLimit\s*\{\s*cost\s+limit\s+remaining\s+resetAt\s*\}/);
         }

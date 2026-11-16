@@ -3510,6 +3510,29 @@ paths:
                   items:
                     type: string
                   description: "`repair-ci` only: the failing check names, at most 50; null when they could not be read."
+                ciRepair:
+                  type: object
+                  additionalProperties: false
+                  required: [evidenceKey, kind]
+                  description: "Optional outside `repair-ci` observation. Mechanical classification requires a known evidence key; omitted native-seat observations retain legacy behavior."
+                  properties:
+                    evidenceKey:
+                      type: string
+                      nullable: true
+                      pattern: '^[0-9a-f]{64}$'
+                      description: "The exact producer CI evidence key, or null when evidence is incomplete."
+                    kind:
+                      type: string
+                      enum: [unclassified, mechanical]
+                    incompleteReads:
+                      type: array
+                      minItems: 1
+                      maxItems: 7
+                      uniqueItems: true
+                      items:
+                        type: string
+                        enum: [comments, reviews, review-requests, commits, check-suites, checks, legacy-coverage]
+                      description: "Optional named incomplete coverage to inspect beyond the reported windows before another classification; diagnostic only."
                 unblocks:
                   type: string
                   nullable: true

@@ -3,6 +3,7 @@ import {createHash}                                      from 'node:crypto';
 import {pickRotationSeat, planOpenWorkWakes, wakeGateOf} from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
 import {
     OPEN_WORK_QUERY_COSTS,
+    OPEN_WORK_OUTSIDE_SNAPSHOT,
     OPEN_WORK_SNAPSHOT,
     OPEN_WORK_TERMINAL
 } from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
@@ -556,6 +557,157 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
     });
 });
 
+test.describe('openWorkWakes — outside CI evidence episodes', () => {
+    const E1             = '1'.repeat(64), E2 = '2'.repeat(64), roster = [ADA, GPT];
+    const evidence       = (key = E1, head = HEAD) => ({head, key, failedChecks: ['unit']});
+    const classification = (kind, key = E1, head = HEAD) => ({head, evidenceKey: key, kind,
+        maintainer: GPT, receiptUrl: 'https://github.com/acme/app/pull/7#issuecomment-' + (kind === 'content' ? '101' : '102')});
+    const red = (extra = {}) => ({owner: {kind: 'outside', seat: null, login: 'contributor'}, ci: 'red',
+        reviews: [opinion('COMMENTED')], ciRepairEvidence: evidence(), ...extra});
+    const step   = (run, minute, row = red(), options = {}) => run.step(minute, [row], {}, {rotationSeats: roster, ...options});
+    const repair = result => result.wakes.filter(wake => wake.kind === 'repair-ci');
+
+    test('actual holder-to-planner routing carries classification evidence and deduplicates unchanged reads', () => {
+        const run   = journey();
+        const first = repair(step(run, 0));
+        expect(first).toEqual([expect.objectContaining({role: 'rotation', ciRepair: {evidenceKey: E1, kind: 'unclassified'}})]);
+        expect(repair(step(run, 1))).toEqual([]);
+        expect(repair(step(run, 2, red({ciRepairClassification: classification('mechanical')})))).toEqual([]);
+        expect(repair(step(run, 3, red(), {routeOf: () => 'unreachable'}))).toEqual([]);
+    });
+
+    test('E1 to unknown to E1 keeps its episode, while verified E2 and a new head each wake once', () => {
+        const run = journey(), first = repair(step(run, 0))[0];
+        expect(repair(step(run, 1, red({ciRepairEvidence: null})))).toEqual([]);
+        expect(repair(step(run, 2))).toEqual([]);
+        const changed = repair(step(run, 3, red({ciRepairEvidence: evidence(E2)})));
+        expect(changed).toEqual([expect.objectContaining({ciRepair: {evidenceKey: E2, kind: 'unclassified'}})]);
+        expect(changed[0].key).not.toBe(first.key);
+        expect(repair(step(run, 4, red({ciRepairEvidence: evidence(E2)})))).toEqual([]);
+        const head = 'b'.repeat(40);
+        expect(repair(step(run, 5, red({head, ciRepairEvidence: evidence(E2, head)}))))
+            .toEqual([expect.objectContaining({head})]);
+    });
+
+    test('unknown evidence wakes once, then a first verified key begins one actionable episode', () => {
+        const run = journey();
+        expect(repair(step(run, 0, red({ciRepairEvidence: null}))))
+            .toEqual([expect.objectContaining({ciRepair: {evidenceKey: null, kind: 'unclassified'}})]);
+        expect(repair(step(run, 1, red({ciRepairEvidence: null})))).toEqual([]);
+        expect(repair(step(run, 2))).toHaveLength(1);
+        expect(repair(step(run, 3))).toEqual([]);
+    });
+
+    test('a comment-only witness prevents re-triage across unread evidence and revalidates a changed key', () => {
+        const source = {provider: 'github', apiBase: 'https://api.github.com', repo: 'acme/app', prId: 'PR_7', number: 7};
+        const touch  = {head: HEAD, commentId: 'COMMENT_101', maintainer: GPT,
+            receiptUrl: 'https://github.com/acme/app/pull/7#issuecomment-101', source,
+            author    : {id: 'USER_GPT', kind: 'User', login: 'neo-gpt'}};
+        const current = red({reviews: [], ciRepairRead: {head: HEAD, source, touch},
+            ciRepairClassification: classification('mechanical')});
+        const run = journey();
+        expect(step(run, 0, current).wakes).toEqual([expect.objectContaining({kind: 'repair-ci'})]);
+        expect(step(run, 1, {...current, ciRepairEvidence: null}).wakes).toEqual([]);
+        expect(step(run, 2, current).wakes).toEqual([]);
+        expect(step(run, 3, {...current, ciRepairEvidence: evidence(E2)}).wakes)
+            .toEqual([expect.objectContaining({kind: 'repair-ci', ciRepair: {evidenceKey: E2, kind: 'unclassified'}})]);
+        expect(step(run, 4, {...current, ciRepairEvidence: evidence(E2), ciRepairClassification: null}).wakes).toEqual([]);
+        expect(step(run, 5, {...current, ci: 'green'}).wakes)
+            .toEqual([expect.objectContaining({kind: 'triage-outside', role: 'rotation'})]);
+    });
+
+    test('a pending route keeps its last verified key across an unknown payload without minting another episode', () => {
+        const run = journey();
+        expect(repair(step(run, 0, red(), {routeOf: () => 'unreachable'}))).toEqual([]);
+        const first = repair(step(run, 1, red({ciRepairEvidence: null})));
+        expect(first).toEqual([expect.objectContaining({ciRepair: {evidenceKey: null, kind: 'unclassified'}})]);
+        expect(Object.values(run.ledger().holding)[0].ciRepairEvidenceKey).toBe(E1);
+        expect(repair(step(run, 2))).toEqual([]);
+    });
+
+    test('content handback survives unknown gaps and a positive mechanical reversal on the same evidence renews once', () => {
+        const run     = journey(), first = repair(step(run, 0))[0];
+        const content = red({ciRepairClassification: classification('content')});
+        expect(step(run, 1, content).wakes).toEqual([]);
+        expect(repair(step(run, 2, {...content, ciRepairEvidence: null}))).toEqual([]);
+        expect(step(run, 3, content).wakes).toEqual([]);
+        const mechanical = red({ciRepairClassification: classification('mechanical')});
+        const renewed    = repair(step(run, 4, mechanical));
+        expect(renewed).toEqual([expect.objectContaining({ciRepair: {evidenceKey: E1, kind: 'mechanical'}})]);
+        expect(renewed[0].key).not.toBe(first.key);
+        expect(repair(step(run, 5, mechanical))).toEqual([]);
+        expect(repair(step(run, 6, {...mechanical, ciRepairEvidence: null}))).toEqual([]);
+        expect(repair(step(run, 7, mechanical))).toEqual([]);
+    });
+
+    test('partial red revalidates changed verified evidence without waiting for review coverage', () => {
+        const run = journey(); step(run, 0);
+        expect(repair(step(run, 1, red({partial: true, ciRepairEvidence: evidence(E2)}))))
+            .toEqual([expect.objectContaining({ciRepair: {evidenceKey: E2, kind: 'unclassified', incompleteReads: ['legacy-coverage']}})]);
+        expect(repair(step(run, 2, red({ciRepairEvidence: evidence(E2)})))).toEqual([]);
+    });
+
+    test('partial outside CI investigation carries named missing reads without diagnostic-only episodes', () => {
+        const run   = journey(), incompleteReads = Object.freeze(['comments', 'reviews']);
+        const row   = red({partial: true, opinions: undefined, ciRepairEvidence: null, ciRepairIncompleteReads: incompleteReads});
+        const first = repair(step(run, 0, row));
+        expect(first).toEqual([expect.objectContaining({role: 'rotation', ciRepair: {
+            evidenceKey: null, kind: 'unclassified', incompleteReads: ['comments', 'reviews']
+        }})]);
+        expect(first[0].ciRepair.incompleteReads).not.toBe(incompleteReads);
+        expect(step(run, 1, {...row, ciRepairIncompleteReads: ['review-requests']}).wakes).toEqual([]);
+    });
+
+    test('partial content handback consumes a carried current decision without another investigation', () => {
+        const run = journey(); step(run, 0);
+        const row = red({partial: true, opinions: undefined, ciRepairIncompleteReads: ['reviews'],
+            ciRepairClassification: classification('content')});
+        expect(step(run, 1, row).wakes).toEqual([]);
+        expect(Object.values(run.ledger().holding)[0].ciRepairDisposition).toBe('content');
+        expect(step(run, 2, row).wakes).toEqual([]);
+    });
+
+    test('partial native review packets retire unsent investigation while incomplete green cannot rebase or review', () => {
+        const run = journey();
+        step(run, 0, red(), {routeOf: () => 'unreachable'});
+        expect(step(run, 1, red({partial: true, reviews: undefined, opinions: [opinion('CHANGES_REQUESTED')],
+            ciRepairIncompleteReads: ['reviews']})).wakes).toEqual([]);
+        expect(Object.values(run.ledger().holding).filter(({wake}) => wake.kind === 'repair-ci')).toEqual([]);
+        expect(step(run, 2, red({ci: 'green', partial: true, ...judged('APPROVED'), requested: [GPT],
+            mergeable: 'CONFLICTING'})).wakes).toEqual([]);
+    });
+
+    test('partial investigation waits in the existing empty or unreachable rotation and recovers once', () => {
+        const run = journey(), row = red({partial: true, opinions: undefined, ciRepairEvidence: null});
+        expect(step(run, 0, row, {rotationSeats: []}).wakes).toEqual([]);
+        expect(Object.values(run.ledger().holding)).toEqual([expect.objectContaining({status: 'pending'})]);
+        expect(step(run, 1, row, {routeOf: () => 'unreachable'}).wakes).toEqual([]);
+        expect(step(run, 2, row).wakes).toEqual([expect.objectContaining({role: 'rotation', episode: iso(0),
+            ciRepair: {evidenceKey: null, kind: 'unclassified', incompleteReads: ['legacy-coverage']}})]);
+        expect(step(run, 3, row).wakes).toEqual([]);
+    });
+
+    test('legacy admitted slots adopt a verified key without a duplicate wake and native repairs ignore these fields', () => {
+        const run   = journey(); step(run, 0);
+        const entry = Object.values(run.ledger().holding)[0];
+        delete entry.wake.ciRepair; delete entry.ciRepairEvidenceKey; delete entry.ciRepairDisposition;
+        expect(repair(step(run, 1))).toEqual([]);
+        expect(Object.values(run.ledger().holding)[0].ciRepairEvidenceKey).toBe(E1);
+        expect(repair(step(run, 2, red({ciRepairEvidence: evidence(E2)})))).toHaveLength(1);
+        const native = journey(); native.step(0);
+        const first  = native.step(1, [{ci: 'red', ciRepairEvidence: evidence()}]);
+        expect(first.wakes[0]).not.toHaveProperty('ciRepair');
+        expect(native.step(2, [{ci: 'red', ciRepairEvidence: evidence(E2)}]).wakes).toEqual([]);
+    });
+
+    test('a standing native on-head author packet suppresses classification, and approved outside rebase reaches rotation', () => {
+        const run = journey();
+        expect(step(run, 0, red({...judged('CHANGES_REQUESTED'), ciRepairClassification: classification('mechanical')})).wakes).toEqual([]);
+        expect(step(run, 1, red({ci: 'green', ...judged('APPROVED'), mergeable: 'CONFLICTING'})).wakes)
+            .toEqual([expect.objectContaining({role: 'rotation', kind: 'rebase'})]);
+    });
+});
+
 test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)', () => {
     const
         completeSeat = (seat = ADA) => ({
@@ -584,6 +736,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         gate = observed => wakeGateOf(observed, {now: Date.parse(observed.pulses.at(-1).finishedAt) + 1000});
 
     const snapshotHash = createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'),
+        outsideHash    = createHash('sha256').update(OPEN_WORK_OUTSIDE_SNAPSHOT).digest('hex'),
         terminalHash   = createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'),
         classified     = (quota, overrides = {}) => ({...quota, queryHash: snapshotHash, reported: true,
             maxMeasuredCost: quota.cost, zeroCostFailedCalls: 0, firstAttemptAt: quota.firstAt,
@@ -609,6 +762,18 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         expect(gate(observed).holds).toBe(false);
     });
 
+    test('an unmeasured outside read reserves six points independently of the lean seat query', () => {
+        const observed = history(), item = observed.pulses[100], base = item.quota[0];
+        item.quota = [classified(base), classified({...base, cost: 0, calls: 1, failed: 1, unknown: true},
+            {queryHash: outsideHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})];
+        item.costUnknown = true;
+        const result = gate(observed);
+        expect(result.holds).toBe(true);
+        expect(result.certification.buckets.find(row => row.resetAt === base.resetAt)).toMatchObject({estimated: 6, estimatedCalls: 1});
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: outsideHash, formulaCost: 6, reservePerCall: 6}));
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 5}));
+    });
+
     test('query-specific reserves use formula and measured maximum, with no positive-cost double charge', () => {
         const observed = history(), item = observed.pulses[100], base = item.quota[0];
         item.quota = [
@@ -629,10 +794,10 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
 
     test('a retained failed call under the previous snapshot document is still priced, so certification does not wait out the window (#1629)', () => {
         const
-            previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash].includes(entry.queryHash)),
+            previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash, outsideHash].includes(entry.queryHash)),
             observed = history(), item = observed.pulses[100], base = item.quota[0];
 
-        expect(previous).toEqual({queryHash: expect.stringMatching(/^[a-f\d]{64}$/), formulaCost: 5});
+        expect(previous).toEqual({queryHash: 'd42cc876db17c72098c97f2e53a7e96a2b15ba10fafa159e1bad9c6789860524', formulaCost: 5});
         item.quota = [
             classified(base),
             classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: previous.queryHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})
@@ -667,7 +832,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         failed.costUnknown = true;
         failed.quota = [classified({...original, cost: 0, calls: 100, failed: 100, unknown: true},
             {reported: false, maxMeasuredCost: null})];
-        // With no measured account total after all attempts, 200 reserved points exceed the share.
+        // With no measured account total after all attempts, 500 reserved points exceed the share.
         expect(gate(observed).holds).toBe(false);
         const earlier = observed.pulses[5];
         earlier.quota[0] = classified({...earlier.quota[0], remaining: 950});
