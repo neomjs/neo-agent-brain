@@ -29,6 +29,10 @@ import {
     planCanonicalStorageMigration,
     runCanonicalStorageMigration
 } from '../../../../../../ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs';
+import {
+    bindAtFirstAdmission,
+    readIdentityBinding
+} from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 
 const PERMISSION_SCOPES = [
     'BLOCKED_BY',
@@ -189,6 +193,22 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
             const settled = snapshotGraph(db);
             expect(runCanonicalStorageMigration(db, true).clean).toBe(false);
             expect(snapshotGraph(db)).toEqual(settled);
+        } finally {db.close();}
+    });
+
+    test('a binding on an alias identity follows it to the canonical id', () => {
+        const db = new Database(':memory:');
+        try {
+            createGraphSchema(db);
+            insertIdentity(db, '@bob');
+            insertIdentity(db, 'bob');
+            db.transaction(() => bindAtFirstAdmission(db, {
+                subject: {authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '6006'}, identityId: 'bob', at: 1
+            }))();
+
+            expect(runCanonicalStorageMigration(db, true).subjectBindingsMoved).toBe(1);
+            expect(readIdentityBinding(db, 'bob')).toBeNull();
+            expect(readIdentityBinding(db, '@bob').providerUserId).toBe('6006');
         } finally {db.close();}
     });
 
