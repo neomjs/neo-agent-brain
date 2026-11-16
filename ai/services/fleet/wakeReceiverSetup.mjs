@@ -460,7 +460,7 @@ function parseLaunchctlPrint(stdout) {
     const
         fields        = new Map(),
         blocks        = new Map(),
-        collectedKeys = new Set(['arguments', 'default environment', 'environment']),
+        collectedKeys = new Set(['arguments', 'inherited environment', 'default environment', 'environment']),
         stack         = [];
     let topDepth = 0,
         sawRoot  = false;
@@ -473,7 +473,7 @@ function parseLaunchctlPrint(stdout) {
         if (!sawRoot) {
             sawRoot = true;
 
-            if (!/^[ \t]*(?:arguments|default environment|environment|properties|endpoints|spawned environment|resource limits)[ \t]*=/i.test(line) &&
+            if (!/^[ \t]*(?:arguments|inherited environment|default environment|environment|properties|endpoints|dynamic endpoints|pid-local endpoints|spawned environment|resource limits|semaphores|resource coalition|jetsam coalition)[ \t]*=/i.test(line) &&
                 /^[ \t]*[^\s=].*=[ \t]*\{[ \t]*$/.test(line)) {
                 topDepth = 1;
                 stack.push(null);
@@ -482,18 +482,28 @@ function parseLaunchctlPrint(stdout) {
         }
 
         if (stack.length === topDepth) {
-            const blockMatch = line.match(/^[ \t]*([A-Za-z][A-Za-z0-9 ]*?)[ \t]*=[ \t]*\{[ \t]*$/);
+            if (/^[ \t]*\}[ \t]*$/.test(line)) {
+                if (stack.length > 0) {
+                    stack.pop();
+                }
+
+                continue;
+            }
+
+            const blockMatch = !/=>/.test(line)
+                ? line.match(/^[ \t]*([^\s=][^=]*?)[ \t]*=[ \t]*\{[ \t]*$/)
+                : null;
 
             if (blockMatch) {
-                const key = blockMatch[1].toLowerCase();
+                const key = blockMatch[1].trim().toLowerCase();
                 stack.push({key, lines: collectedKeys.has(key) ? [] : null});
                 continue;
             }
 
-            const scalarMatch = line.match(/^[ \t]*([A-Za-z][A-Za-z0-9 ]*?)[ \t]*=[ \t]*(?!>)(.*)$/);
+            const scalarMatch = line.match(/^[ \t]*([A-Za-z][A-Za-z0-9 _-]*?)[ \t]*=[ \t]*(?!>)(.*)$/);
 
             if (scalarMatch) {
-                fields.set(scalarMatch[1].toLowerCase(), scalarMatch[2].trim());
+                fields.set(scalarMatch[1].trim().toLowerCase(), scalarMatch[2].trim());
             }
 
             continue;
@@ -513,7 +523,7 @@ function parseLaunchctlPrint(stdout) {
 
         if (current?.lines) {
             current.lines.push(line);
-        } else if (!/=>/.test(line) && /^[ \t]*[^\s=].*=[ \t]*\{[ \t]*$/.test(line)) {
+        } else if (/=[>]?[ \t]*\{[ \t]*$/.test(line)) {
             stack.push({key: null, lines: null});
         }
     }
@@ -523,19 +533,21 @@ function parseLaunchctlPrint(stdout) {
         pidRaw     = fields.get('pid') ?? '',
         pid        = /^\d+$/.test(pidRaw) ? Number(pidRaw) : null,
         argLines   = blocks.get('arguments'),
+        inhEnvList = blocks.get('inherited environment'),
         defEnvList = blocks.get('default environment'),
         envList    = blocks.get('environment');
 
     return {
-        loaded            : true,
-        running           : stateRaw.toLowerCase() === 'running' || (Number.isInteger(pid) && pid > 0),
+        loaded              : true,
+        running             : stateRaw.toLowerCase() === 'running' || (Number.isInteger(pid) && pid > 0),
         pid,
-        program           : fields.get('program') || null,
-        plist             : fields.get('path') || null,
-        workingDirectory  : fields.get('working directory') || null,
-        arguments         : argLines ? argLines.map(item => item.trim()).filter(Boolean) : null,
-        defaultEnvironment: defEnvList ? parseLaunchctlEnvBlock(defEnvList.join('\n')) : null,
-        environment       : envList ? parseLaunchctlEnvBlock(envList.join('\n')) : null
+        program             : fields.get('program') || null,
+        plist               : fields.get('path') || null,
+        workingDirectory    : fields.get('working directory') || null,
+        arguments           : argLines ? argLines.map(item => item.trim()).filter(Boolean) : null,
+        inheritedEnvironment: inhEnvList ? parseLaunchctlEnvBlock(inhEnvList.join('\n')) : null,
+        defaultEnvironment  : defEnvList ? parseLaunchctlEnvBlock(defEnvList.join('\n')) : null,
+        environment         : envList ? parseLaunchctlEnvBlock(envList.join('\n')) : null
     };
 }
 
@@ -552,10 +564,10 @@ async function inspectSupervisor(host, hostUid) {
         const text = `${error?.stderr ?? ''}\n${error?.stdout ?? ''}\n${error?.message ?? ''}`;
 
         if (/Could not find service|service cannot be found|No such process|113/i.test(text)) {
-            return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null, defaultEnvironment: null, environment: null};
+            return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null, inheritedEnvironment: null, defaultEnvironment: null, environment: null};
         }
 
-        return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null, defaultEnvironment: null, environment: null, queryError: error.message};
+        return {domain, serviceTarget, loaded: false, running: false, pid: null, program: null, plist: null, workingDirectory: null, arguments: null, inheritedEnvironment: null, defaultEnvironment: null, environment: null, queryError: error.message};
     }
 }
 

@@ -116,6 +116,9 @@ function createScriptedLaunchdHost({
                 }
 
                 const
+                    inhEnv = state.inheritedEnvironment && typeof state.inheritedEnvironment === 'object'
+                        ? state.inheritedEnvironment
+                        : {HOME: '/Users/operator', SSH_AUTH_SOCK: '/private/tmp/com.apple.launchd.mock/Listeners'},
                     defEnv = state.defaultEnvironment && typeof state.defaultEnvironment === 'object'
                         ? state.defaultEnvironment
                         : {PATH: '/usr/bin:/bin:/usr/sbin:/sbin'},
@@ -130,6 +133,9 @@ function createScriptedLaunchdHost({
                         ...(Array.isArray(state.arguments) && state.arguments.length > 0
                             ? ['\targuments = {', ...state.arguments.map(item => `\t\t${item}`), '\t}']
                             : []),
+                        '\tinherited environment = {',
+                        ...Object.entries(inhEnv).map(([k, v]) => `\t\t${k} => ${v}`),
+                        '\t}',
                         '\tdefault environment = {',
                         ...Object.entries(defEnv).map(([k, v]) => `\t\t${k} => ${v}`),
                         '\t}',
@@ -142,6 +148,11 @@ function createScriptedLaunchdHost({
                                 '\t}'
                             ]
                             : []),
+                        '\tpid-local endpoints = {',
+                        '\t\t"com.neomjs.mock" = {',
+                        '\t\t\tport = 0x1',
+                        '\t\t}',
+                        '\t}',
                         ...(state.plistPath ? [`\tpath = ${state.plistPath}`] : [])
                     ].join('\n'),
                     stderr: ''
@@ -693,7 +704,32 @@ test.describe('wakeReceiverSetup', () => {
             }, domainEnvPreloadHost.host)).rejects.toThrow(/foreign or mismatched receiver declaration or environment/);
             expect(domainEnvPreloadHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
 
-            // Positive control: explicitly declared extraEnv option upgrades cleanly when loaded environment matches, and still refuses mismatch
+            // Inherited-only preload injection (`inherited environment` block) with key absent from job & default env must refuse with 0 bootouts and 0 probes
+            const inheritedEnvPreloadHost = createScriptedLaunchdHost({
+                initialLaunchd: {
+                    ...gen2State,
+                    inheritedEnvironment: {
+                        HOME         : '/Users/operator',
+                        SSH_AUTH_SOCK: '/private/tmp/com.apple.launchd.mock/Listeners',
+                        NODE_OPTIONS : '--import=/tmp/inherited-preload.mjs'
+                    }
+                }
+            });
+
+            expect(await observeWakeReceiverEffect({layout: rebindLayout, target, host: inheritedEnvPreloadHost.host})).toMatchObject({
+                present: true,
+                problem: expect.stringMatching(/foreign or mismatched receiver declaration or environment/)
+            });
+            await expect(reconcileWakeReceiverService({
+                ...rebindInput,
+                executable       : gen2Exec,
+                runtimeRoot      : gen2Root,
+                runtimeGeneration: upgradedGen
+            }, inheritedEnvPreloadHost.host)).rejects.toThrow(/foreign or mismatched receiver declaration or environment/);
+            expect(inheritedEnvPreloadHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
+            expect(inheritedEnvPreloadHost.probedEndpoints).toEqual([]);
+
+            // Positive control: explicitly declared extraEnv masks an inherited NODE_OPTIONS value cleanly and adopts with 0 extra bootouts, while tampering still refuses
             const declaredEnvHost = createScriptedLaunchdHost({initialLaunchd: {...gen2State}});
             const declaredExtra   = {NODE_OPTIONS: '--max-old-space-size=512'};
 
@@ -704,11 +740,27 @@ test.describe('wakeReceiverSetup', () => {
                 runtimeGeneration: upgradedGen,
                 extraEnv         : declaredExtra
             }, declaredEnvHost.host)).resolves.toMatchObject({action: 'upgraded'});
+            declaredEnvHost.state.inheritedEnvironment = {
+                HOME         : '/Users/operator',
+                SSH_AUTH_SOCK: '/private/tmp/com.apple.launchd.mock/Listeners',
+                NODE_OPTIONS : '--import=/tmp/masked-inherited-preload.mjs'
+            };
             expect(await observeWakeReceiverEffect({
                 layout: {...rebindLayout, runtime: {runtimeRoot: gen2Root, executable: gen2Exec, generation: upgradedGen, env: declaredExtra}},
                 target,
                 host  : declaredEnvHost.host
             })).toMatchObject({present: true, running: true, problem: null});
+
+            const callsBeforeMaskedAdopt = declaredEnvHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0])).length;
+
+            await expect(reconcileWakeReceiverService({
+                ...rebindInput,
+                executable       : gen2Exec,
+                runtimeRoot      : gen2Root,
+                runtimeGeneration: upgradedGen,
+                extraEnv         : declaredExtra
+            }, declaredEnvHost.host)).resolves.toMatchObject({action: 'adopted'});
+            expect(declaredEnvHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0])).length).toBe(callsBeforeMaskedAdopt);
 
             declaredEnvHost.state.environment = {...declaredEnvHost.state.environment, NODE_OPTIONS: '--import=/tmp/tampered-preload.mjs'};
             await expect(reconcileWakeReceiverService({

@@ -90,6 +90,9 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
                         }
 
                         const
+                            inhEnv = launchd.inheritedEnvironment && typeof launchd.inheritedEnvironment === 'object'
+                                ? launchd.inheritedEnvironment
+                                : {HOME: '/Users/operator', SSH_AUTH_SOCK: '/private/tmp/com.apple.launchd.mock/Listeners'},
                             defEnv = launchd.defaultEnvironment && typeof launchd.defaultEnvironment === 'object'
                                 ? launchd.defaultEnvironment
                                 : {PATH: '/usr/bin:/bin:/usr/sbin:/sbin'},
@@ -104,6 +107,9 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
                                 ...(Array.isArray(launchd.arguments) && launchd.arguments.length > 0
                                     ? ['\targuments = {', ...launchd.arguments.map(item => `\t\t${item}`), '\t}']
                                     : []),
+                                '\tinherited environment = {',
+                                ...Object.entries(inhEnv).map(([k, v]) => `\t\t${k} => ${v}`),
+                                '\t}',
                                 '\tdefault environment = {',
                                 ...Object.entries(defEnv).map(([k, v]) => `\t\t${k} => ${v}`),
                                 '\t}',

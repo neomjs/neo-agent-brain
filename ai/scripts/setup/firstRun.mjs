@@ -823,6 +823,9 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                         }
 
                         const
+                            inhEnvEntries = state.inheritedEnvironment && typeof state.inheritedEnvironment === 'object'
+                                ? state.inheritedEnvironment
+                                : {HOME: state.homeDir ?? '/Users/operator', SSH_AUTH_SOCK: '/private/tmp/com.apple.launchd.mock/Listeners'},
                             defEnvEntries = state.defaultEnvironment && typeof state.defaultEnvironment === 'object'
                                 ? state.defaultEnvironment
                                 : {PATH: '/usr/bin:/bin:/usr/sbin:/sbin'},
@@ -839,6 +842,9 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                                 ...(Array.isArray(state.arguments) && state.arguments.length > 0
                                     ? ['\targuments = {', ...state.arguments.map(item => `\t\t${item}`), '\t}']
                                     : []),
+                                '\tinherited environment = {',
+                                ...Object.entries(inhEnvEntries).map(([k, v]) => `\t\t${k} => ${v}`),
+                                '\t}',
                                 '\tdefault environment = {',
                                 ...Object.entries(defEnvEntries).map(([k, v]) => `\t\t${k} => ${v}`),
                                 '\t}',

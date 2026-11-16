@@ -48,7 +48,7 @@ export const PRIVATE_FILE_MODE = 0o600;
 const
     LOOPBACK_WAKE_HOSTS         = new Set(['127.0.0.1', '::1', 'localhost']),
     LAUNCHD_INTRINSIC_ENV_KEYS  = new Set(['XPC_SERVICE_NAME', 'OSLogRateLimit', 'MallocSpaceEfficient', 'ASL_DISABLE']),
-    EXECUTION_OVERRIDE_PREFIXES = ['NODE_', 'DYLD_', 'LD_', 'OPENSSL_', 'UV_'];
+    EXECUTION_OVERRIDE_PREFIXES = ['NODE_', 'DYLD_', 'LD_', 'OPENSSL_', 'SSL_', 'UV_'];
 
 function isExecutionOverrideEnvKey(key) {
     return EXECUTION_OVERRIDE_PREFIXES.some(prefix => key.startsWith(prefix));
@@ -362,8 +362,9 @@ function normalizeDeclarationSpec(spec) {
 
 function supervisorEnvironmentMatches(supervisor, expectedEnv) {
     const
-        loadedEnv     = supervisor.environment,
-        loadedDefault = supervisor.defaultEnvironment;
+        loadedEnv       = supervisor.environment,
+        loadedDefault   = supervisor.defaultEnvironment,
+        loadedInherited = supervisor.inheritedEnvironment;
 
     if (!loadedEnv || typeof loadedEnv !== 'object' || Array.isArray(loadedEnv)) {
         return false;
@@ -385,8 +386,12 @@ function supervisorEnvironmentMatches(supervisor, expectedEnv) {
         return false;
     }
 
-    if (loadedDefault && typeof loadedDefault === 'object' && !Array.isArray(loadedDefault)) {
-        for (const [key, value] of Object.entries(loadedDefault)) {
+    for (const fallbackEnv of [loadedDefault, loadedInherited]) {
+        if (!fallbackEnv || typeof fallbackEnv !== 'object' || Array.isArray(fallbackEnv)) {
+            continue;
+        }
+
+        for (const [key, value] of Object.entries(fallbackEnv)) {
             if (isExecutionOverrideEnvKey(key) && !Object.hasOwn(loadedEnv, key) && expectedEnv[key] !== value) {
                 return false;
             }
@@ -415,8 +420,9 @@ function declarationMatchesLoadedSpec(loadedDecl, spec, supervisor) {
 /**
  * @summary Verifies that a loaded `launchd` service matches the expected plist path, program binary,
  * working directory, receiver invocation arguments (`--manifest`, `--state-dir`, `--host`, `--port`,
- * `--neo-runtime-generation`), and declared launchd environment (rejecting injected `NODE_OPTIONS` / preload overrides)
- * against at least one owned declaration spec before adopting, probing, or mutating supervision.
+ * `--neo-runtime-generation`), and effective launchd environment across `environment`, `default environment`,
+ * and `inherited environment` (rejecting unmasked `NODE_OPTIONS` / preload overrides) against at least one
+ * owned declaration spec before adopting, probing, or mutating supervision.
  * @param {Object|null} supervisor
  * @param {String} plistPath
  * @param {Object|Object[]} allowedSpecs
