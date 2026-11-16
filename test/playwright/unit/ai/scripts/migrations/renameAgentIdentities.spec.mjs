@@ -13,13 +13,14 @@ setup({
     }
 });
 
-import {test, expect}                         from '@playwright/test';
-import Database                               from 'better-sqlite3';
-import {spawnSync}                            from 'node:child_process';
-import {lstatSync, readdirSync, readFileSync} from 'node:fs';
-import path                                   from 'node:path';
-import Neo                                    from 'neo.mjs/src/Neo.mjs';
-import * as core                              from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}                                                          from '@playwright/test';
+import Database                                                                from 'better-sqlite3';
+import {spawnSync}                                                             from 'node:child_process';
+import {existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync} from 'node:fs';
+import {tmpdir}                                                                from 'node:os';
+import path                                                                    from 'node:path';
+import Neo                                                                     from 'neo.mjs/src/Neo.mjs';
+import * as core                                                               from 'neo.mjs/src/core/_export.mjs';
 import {
     findChromaMetadataUpdates,
     rewriteIdentityFields,
@@ -147,6 +148,21 @@ function findFilesContaining(repoRoot, entries, pattern) {
 }
 
 test.describe('migration CLIs — fresh-process bootstrap contract', () => {
+    for (const apply of [false, true]) {
+        test('an absent explicit graph is not created by CLI ' + (apply ? 'apply' : 'dry-run'), () => {
+            const repoRoot  = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../../..');
+            const directory = mkdtempSync(path.join(tmpdir(), 'rename-identities-cli-'));
+            const dbPath    = path.join(directory, 'missing.sqlite');
+            try {
+                const result = spawnSync(process.execPath, ['ai/scripts/migrations/renameAgentIdentities.mjs',
+                    '--graph-only', '--host', '127.0.0.1', '--port', '9', '--db', dbPath, ...(apply ? ['--apply'] : [])],
+                {cwd: repoRoot, encoding: 'utf8', timeout: 15000});
+                expect(result.status).toBe(1);
+                expect(existsSync(dbPath)).toBe(false);
+            } finally {rmSync(directory, {recursive: true, force: true});}
+        });
+    }
+
     test('both --help commands exit 0 with usage output in a BARE process — no Neo bootstrap, no Chroma/SQLite access', () => {
         // The load-bearing regression: Playwright preloads Neo/core before importing these
         // modules, so an in-process import can pass while the real CLI dies on the missing
@@ -404,6 +420,93 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
                 userId             : 'neo-opus-ada'
             }
         });
+    });
+
+    test('retains protected history and historical endpoints while ordinary routing and compound copies converge', () => {
+        const db = new Database(':memory:');
+        createGraphSchema(db);
+        try {
+            const old = '@neo-gpt', next = '@neo-gpt-euclid', compound = 'identity-state-@neo-gpt';
+            insertNode(db, {id: old, user_id: 'neo-gpt', data: {id: old, label: 'AgentIdentity',
+                properties: {githubLogin: old, userId: 'neo-gpt'}}});
+            insertNode(db, {id: compound, data: {id: compound, label: 'IdentityState', identityKey: old,
+                properties: {author: old}}});
+            insertNode(db, {id: 'MESSAGE:ordinary', data: {id: 'MESSAGE:ordinary', label: 'MESSAGE',
+                properties: {author: old}}});
+            insertNode(db, {id: 'identity-family-history', data: {id: 'identity-family-history',
+                label: 'IDENTITY_FAMILY_EPISODE', properties: {identityKey: old, author: old, family: 'gpt'}}});
+            for (const [id, target, type] of [
+                ['history-root', old, 'IDENTITY_FAMILY_PROVENANCE'],
+                ['history-compound', compound, 'IDENTITY_FAMILY_PROVENANCE'],
+                ['ordinary-root', old, 'DELIVERED_TO'],
+                ['ordinary-compound', compound, 'MENTIONS']
+            ]) {
+                const source = id.startsWith('history-') ? 'identity-family-history' : 'MESSAGE:ordinary';
+                insertEdge(db, {id, source, target, type, data: {id, source, target, type, properties: {author: old}}});
+            }
+            const retained = () => ({
+                nodes: db.prepare('SELECT * FROM Nodes WHERE id IN (?, ?, ?) ORDER BY id').all(old, compound, 'identity-family-history'),
+                edges: db.prepare("SELECT * FROM Edges WHERE id LIKE 'history-%' ORDER BY id").all()
+            }), before = retained();
+            runGraphMigration(db, false);
+            expect(retained()).toEqual(before);
+            runGraphMigration(db, true);
+            expect(retained()).toEqual(before);
+            expect(JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(next).data).properties.formerLogins).toContain(old);
+            expect(JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get('MESSAGE:ordinary').data).properties.author).toBe(next);
+            for (const [id, target] of [['ordinary-root', next], ['ordinary-compound', 'identity-state-@neo-gpt-euclid']]) {
+                const row = db.prepare('SELECT * FROM Edges WHERE id = ?').get(id);
+                expect(row.target).toBe(target);
+                expect(JSON.parse(row.data).target).toBe(target);
+            }
+            expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+            const settled = db.prepare('SELECT * FROM Nodes ORDER BY id').all();
+            runGraphMigration(db, true);
+            expect(retained()).toEqual(before);
+            expect(db.prepare('SELECT * FROM Nodes ORDER BY id').all()).toEqual(settled);
+        } finally { db.close(); }
+    });
+
+    test('a protected destination refuses the whole apply and rolls back an earlier ordinary rename', () => {
+        const db = new Database(':memory:');
+        createGraphSchema(db);
+        try {
+            for (const id of ['@neo-opus-4-7', '@neo-gpt']) {
+                insertNode(db, {id, data: {id, label: 'AgentIdentity', properties: {githubLogin: id, retained: 'source-fact'}}});
+            }
+            const target = '@neo-gpt-euclid';
+            insertNode(db, {id: target, data: {id: target, label: 'IDENTITY_FAMILY_FOUNDING', properties: {original: true}}});
+            db.exec(`CREATE TABLE GraphLog (id INTEGER PRIMARY KEY, nodeId TEXT);
+                CREATE TRIGGER fixture_insert AFTER INSERT ON Nodes BEGIN INSERT INTO GraphLog(nodeId) VALUES (NEW.id); END;
+                CREATE TRIGGER fixture_delete AFTER DELETE ON Nodes BEGIN INSERT INTO GraphLog(nodeId) VALUES (OLD.id); END;`);
+            const before = db.prepare('SELECT * FROM Nodes ORDER BY id').all();
+            runGraphMigration(db, false);
+            expect(db.prepare('SELECT * FROM Nodes ORDER BY id').all()).toEqual(before);
+            expect(() => runGraphMigration(db, true))
+                .toThrow(expect.objectContaining({code: 'IDENTITY_PUBLICATION_WRITE_PROTECTED'}));
+            expect(db.prepare('SELECT * FROM Nodes ORDER BY id').all()).toEqual(before);
+            expect(db.prepare('SELECT * FROM GraphLog').all()).toEqual([]);
+            expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+        } finally {db.close();}
+    });
+
+    test('an unexpected protected mutation rolls back the entire rename and trigger log', () => {
+        const db = new Database(':memory:');
+        createGraphSchema(db);
+        try {
+            insertNode(db, {id: '@neo-gpt', data: {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: '@neo-gpt'}}});
+            insertNode(db, {id: 'MESSAGE:ordinary', data: {id: 'MESSAGE:ordinary', label: 'MESSAGE', properties: {author: '@neo-gpt'}}});
+            insertNode(db, {id: 'identity-family-history', data: {id: 'identity-family-history',
+                label: 'IDENTITY_FAMILY_EPISODE', properties: {family: 'gpt'}}});
+            db.exec(`CREATE TABLE GraphLog (id INTEGER PRIMARY KEY, nodeId TEXT);
+                CREATE TRIGGER fixture_log AFTER UPDATE ON Nodes BEGIN INSERT INTO GraphLog(nodeId) VALUES (NEW.id); END;
+                CREATE TRIGGER unexpected_writer AFTER UPDATE ON Nodes WHEN NEW.id = 'MESSAGE:ordinary'
+                BEGIN UPDATE Nodes SET data = json_set(data, '$.properties.family', 'changed') WHERE id = 'identity-family-history'; END;`);
+            const before = db.prepare('SELECT * FROM Nodes ORDER BY id').all();
+            expect(() => runGraphMigration(db, true)).toThrow(/preserv|protected/i);
+            expect(db.prepare('SELECT * FROM Nodes ORDER BY id').all()).toEqual(before);
+            expect(db.prepare('SELECT * FROM GraphLog').all()).toEqual([]);
+        } finally { db.close(); }
     });
 
     test('first-seat pairs rewrite whole handles once: no prefix chaining, siblings and addresses stay, chains resolve, a second pass is a no-op', () => {

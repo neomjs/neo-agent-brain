@@ -1,6 +1,8 @@
 import Base                                           from './Base.mjs';
 import { SQLITE_IN_CLAUSE_BATCH_SIZE }                from './constants.mjs';
 import { isDisposableStorePath, isTestRunnerContext } from '../../services/shared/storeWriteGuard.mjs';
+import {assertIdentityPublicationAbsent, assertOrdinaryGraphMutation}
+    from '../identityPublicationProtection.mjs';
 
 const GRAPH_SCHEMA_VERSION                   = 1;
 const GRAPH_SCHEMA_VERSION_ID                = 'graph';
@@ -34,7 +36,7 @@ function narrowWriteResult(result) {
 }
 
 /**
- * Native Write-Ahead Logging (WAL) SQLite engine proxy driving memory graph persistence logic.
+ * @summary Owns SQLite graph persistence, WAL coordination and protected ordinary-write boundaries.
  * Bounded uniquely inside backend Node.js domains, this integration leverages dynamic imports natively,
  * bypassing generic browser module restraints while translating instantaneous $O(1)$ memory mapping directly to physical data rows.
  *
@@ -335,7 +337,7 @@ class SQLite extends Base {
     }
 
     /**
-     * @summary Resets graph schema tables only under the explicit schema-wipe environment gate.
+     * @summary Resets graph schema only under the maintenance gate and without durable publication state.
      * @param {String} reason Operator-facing reset reason.
      * @protected
      */
@@ -347,24 +349,28 @@ class SQLite extends Base {
             );
         }
 
-        console.warn(
-            `[SQLite] ${GRAPH_SCHEMA_WIPE_ENV}=true; resetting graph schema at ` +
-            `${this.dbPath || ':memory:'}. Reason: ${reason}`
-        );
+        this.db.transaction(() => {
+            assertIdentityPublicationAbsent(this.db);
 
-        this.db.exec(`
-            DROP TRIGGER IF EXISTS node_insert;
-            DROP TRIGGER IF EXISTS node_update;
-            DROP TRIGGER IF EXISTS node_delete;
-            DROP TRIGGER IF EXISTS edge_insert;
-            DROP TRIGGER IF EXISTS edge_update;
-            DROP TRIGGER IF EXISTS edge_delete;
-            DROP TABLE IF EXISTS SummarizationJobs;
-            DROP TABLE IF EXISTS GraphLog;
-            DROP TABLE IF EXISTS Edges;
-            DROP TABLE IF EXISTS Nodes;
-            DROP TABLE IF EXISTS SchemaVersion;
-        `);
+            console.warn(
+                `[SQLite] ${GRAPH_SCHEMA_WIPE_ENV}=true; resetting graph schema at ` +
+                `${this.dbPath || ':memory:'}. Reason: ${reason}`
+            );
+
+            this.db.exec(`
+                DROP TRIGGER IF EXISTS node_insert;
+                DROP TRIGGER IF EXISTS node_update;
+                DROP TRIGGER IF EXISTS node_delete;
+                DROP TRIGGER IF EXISTS edge_insert;
+                DROP TRIGGER IF EXISTS edge_update;
+                DROP TRIGGER IF EXISTS edge_delete;
+                DROP TABLE IF EXISTS SummarizationJobs;
+                DROP TABLE IF EXISTS GraphLog;
+                DROP TABLE IF EXISTS Edges;
+                DROP TABLE IF EXISTS Nodes;
+                DROP TABLE IF EXISTS SchemaVersion;
+            `);
+        }).immediate();
     }
 
     /**
@@ -444,7 +450,7 @@ class SQLite extends Base {
     }
 
     /**
-     * Maps volatile Memory Node structures directly into SQLite standard JSON buffers using Upsert topologies natively.
+     * @summary Persists ordinary node upserts after protected-state checks in one physical transaction.
      * @param {Object[]} nodes
      */
     addNodes(nodes) {
@@ -470,30 +476,14 @@ class SQLite extends Base {
                     throw new Error(`SQLite graph node writes require a non-empty string id. Received: ${String(nodeData.id)}`);
                 }
 
+                assertOrdinaryGraphMutation(this.db, {table: 'Nodes', id: nodeData.id, record: nodeData});
                 stmt.run(nodeData.id, nodeData.properties?.userId || null, JSON.stringify(nodeData));
             }
         });
 
-        insertMany(nodes);
+        insertMany.immediate(nodes);
     }
 
-    /**
-     * @summary Sets ONE property under `$.properties`, in SQL, only when it is currently absent.
-     *
-     * `json_set` rewrites a single path instead of replacing the document, so a field another process
-     * committed between our read and our write survives. The `IS NULL` predicate makes write-once an
-     * atomic property of the statement rather than a caller-side read-then-check, which would race the
-     * very window it is meant to close.
-     *
-     * `table` and `property` are interpolated (neither a table name nor a JSON path can be a bound
-     * parameter), so both are validated against strict shapes first. `value` is bound.
-     *
-     * @param {String} table `'Nodes'` or `'Edges'`.
-     * @param {String} id Record id.
-     * @param {String} property Property name under `$.properties`; identifier characters only.
-     * @param {*} value Value to set.
-     * @returns {Boolean} `true` only when this statement wrote.
-     */
     /**
      * @summary Shared preflight for the narrow property writers. Returns the JSON path, or `null`
      * when there is no database to write to.
@@ -523,17 +513,37 @@ class SQLite extends Base {
         return `$.properties.${property}`
     }
 
+    /**
+     * @summary Sets ONE property under `$.properties`, in SQL, only when it is currently absent.
+     *
+     * `json_set` rewrites a single path instead of replacing the document, so a field another process
+     * committed between our read and our write survives. The `IS NULL` predicate makes write-once an
+     * atomic property of the statement rather than a caller-side read-then-check, which would race the
+     * very window it is meant to close.
+     *
+     * `table` and `property` are interpolated (neither a table name nor a JSON path can be a bound
+     * parameter), so both are validated against strict shapes first. `value` is bound.
+     *
+     * @param {String} table `'Nodes'` or `'Edges'`.
+     * @param {String} id Record id.
+     * @param {String} property Property name under `$.properties`; identifier characters only.
+     * @param {*} value Value to set.
+     * @returns {Boolean} `true` only when this statement wrote.
+     */
     setRecordPropertyIfAbsent(table, id, property, value) {
         const path = this.assertNarrowWrite('setRecordPropertyIfAbsent', table, property);
 
         if (!path) return false;
 
-        return narrowWriteResult(this.db.prepare(`
-            UPDATE ${table}
-            SET   data = json_set(data, '${path}', ?)
-            WHERE id = ?
-              AND json_extract(data, '${path}') IS NULL
-        `).run(value, id));
+        return this.db.transaction(() => {
+            assertOrdinaryGraphMutation(this.db, {table, id});
+            return narrowWriteResult(this.db.prepare(`
+                UPDATE ${table}
+                SET   data = json_set(data, '${path}', ?)
+                WHERE id = ?
+                  AND json_extract(data, '${path}') IS NULL
+            `).run(value, id));
+        }).immediate();
     }
 
     /**
@@ -553,15 +563,18 @@ class SQLite extends Base {
 
         if (!path) return false;
 
-        return narrowWriteResult(this.db.prepare(`
-            UPDATE ${table}
-            SET   data = json_set(data, '${path}', ?)
-            WHERE id = ?
-        `).run(value, id));
+        return this.db.transaction(() => {
+            assertOrdinaryGraphMutation(this.db, {table, id});
+            return narrowWriteResult(this.db.prepare(`
+                UPDATE ${table}
+                SET   data = json_set(data, '${path}', ?)
+                WHERE id = ?
+            `).run(value, id));
+        }).immediate();
     }
 
     /**
-     * Injects complex Edge topologies capturing mapping source/target configurations mapped across WAL schema blocks rigidly.
+     * @summary Persists ordinary edge upserts after checking protected records and endpoints under serialization.
      * @param {Object[]} edges
      */
     addEdges(edges) {
@@ -589,15 +602,16 @@ class SQLite extends Base {
                     type      : isRecord ? edge.get('type') : edge.type,
                     properties: isRecord ? edge.get('properties') : edge.properties
                 };
+                assertOrdinaryGraphMutation(this.db, {table: 'Edges', id: edgeData.id, record: edgeData});
                 stmt.run(edgeData.id, edgeData.properties?.userId || null, edgeData.source, edgeData.target, edgeData.type || null, JSON.stringify(edgeData));
             }
         });
 
-        insertMany(edges);
+        insertMany.immediate(edges);
     }
 
     /**
-     * Eradicates structural SQLite Node links, autonomously invoking SQLite CASCADE deletions for dependent bounding edge segments.
+     * @summary Removes ordinary nodes without cascading protected relations away.
      * @param {Object[]|String[]} nodes
      */
     removeNodes(nodes) {
@@ -609,15 +623,16 @@ class SQLite extends Base {
         const removeMany = this.db.transaction((nodesList) => {
             for (const node of nodesList) {
                 let resolvedId = typeof node === 'object' ? node.id : node;
+                assertOrdinaryGraphMutation(this.db, {table: 'Nodes', id: resolvedId, remove: true});
                 stmt.run(resolvedId);
             }
         });
 
-        removeMany(nodes);
+        removeMany.immediate(nodes);
     }
 
     /**
-     * Atomically removes one physical node only while it remains unreferenced.
+     * @summary Atomically removes one unprotected physical node only while it remains unreferenced.
      * The optional JSON-path guard keeps destructive cleanup bound to the exact
      * source marker that authorized it. A single conditional DELETE closes the
      * check/delete race across SQLite connections: a competing edge either commits
@@ -662,15 +677,18 @@ class SQLite extends Base {
             propertyValue = typeof requiredPropertyValue === 'boolean'
                 ? Number(requiredPropertyValue)
                 : requiredPropertyValue,
-            result        = requiredPropertyPath == null
-                ? statement.run(nodeId)
-                : statement.run(nodeId, requiredPropertyPath, propertyValue);
+            result        = this.db.transaction(() => {
+                assertOrdinaryGraphMutation(this.db, {table: 'Nodes', id: nodeId, remove: true});
+                return requiredPropertyPath == null
+                    ? statement.run(nodeId)
+                    : statement.run(nodeId, requiredPropertyPath, propertyValue);
+            }).immediate();
 
         return result.changes === 1
     }
 
     /**
-     * Cleaves standalone Edge matrices cleanly inside atomic DELETE loop transactions.
+     * @summary Removes ordinary edges after protected-state checks in one physical transaction.
      * @param {Object[]|String[]} edges
      */
     removeEdges(edges) {
@@ -682,15 +700,16 @@ class SQLite extends Base {
         const removeMany = this.db.transaction((edgesList) => {
             for (const edge of edgesList) {
                 let resolvedId = typeof edge === 'object' ? edge.id : edge;
+                assertOrdinaryGraphMutation(this.db, {table: 'Edges', id: resolvedId, remove: true});
                 stmt.run(resolvedId);
             }
         });
 
-        removeMany(edges);
+        removeMany.immediate(edges);
     }
 
     /**
-     * Executes a combined difflog batch inside an atomic SQLite query wrapper natively safely.
+     * @summary Commits an ordinary mutation batch after protected-state checks in one physical transaction.
      * @param {Object[]} diffLog Array of mutation traces generated by internal transaction maps.
      */
     executeTransaction(diffLog) {
@@ -711,6 +730,16 @@ class SQLite extends Base {
         const removeEdgeStmt = this.db.prepare('DELETE FROM Edges WHERE id = ?');
 
         const batchCommit = this.db.transaction((logs) => {
+            for (const {type, mutation} of logs) {
+                const table = type === 'nodes' ? 'Nodes' : type === 'edges' ? 'Edges' : null;
+                if (!table) continue;
+                for (const record of mutation.addedItems || []) {
+                    assertOrdinaryGraphMutation(this.db, {table, id: record.id, record});
+                }
+                for (const record of mutation.removedItems || []) {
+                    assertOrdinaryGraphMutation(this.db, {table, id: record.id, remove: true});
+                }
+            }
             for (const trace of logs) {
                 const storeType = trace.type;
                 const mutation  = trace.mutation;
@@ -733,11 +762,12 @@ class SQLite extends Base {
             }
         });
 
-        batchCommit(diffLog);
+        batchCommit.immediate(diffLog);
     }
 
     /**
-     * Obliterates the relational architecture permanently natively truncating disk layouts instantly.
+     * @summary Clears ordinary disposable graph rows only when publication history and its fence are absent.
+     * This raw owner has no served plane identity; publication-bearing graphs require qualified truncation.
      */
     clear() {
         if (!this.db) return;
@@ -748,9 +778,15 @@ class SQLite extends Base {
         if (!this.isDisposableDbPath()) {
             throw new Error(`FATAL: Attempted to clear a non-temporary SQLite database natively! Path: ${this.dbPath}`);
         }
+        if (this.db.inTransaction) {
+            throw new Error('Native graph clear requires its own physical transaction.');
+        }
 
-        this.db.exec('DELETE FROM Edges');
-        this.db.exec('DELETE FROM Nodes');
+        this.db.transaction(() => {
+            assertIdentityPublicationAbsent(this.db);
+            this.db.exec('DELETE FROM Edges');
+            this.db.exec('DELETE FROM Nodes');
+        }).immediate();
     }
 
     /**

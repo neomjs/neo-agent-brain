@@ -136,3 +136,90 @@ test.describe('Memory_DatabaseService — graph.import.replace preserves committ
         }
     });
 });
+
+test('disposable owner: actual import and truncate methods fence with isolated service dependencies', () => {
+    const tmpDir       = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-restore-owner-fence-'));
+    const ownerUrl     = new URL('../../../../../../ai/services/memory-core/DatabaseService.mjs', import.meta.url).href;
+    const fenceUrl     = new URL('../../../../../../ai/services/memory-core/helpers/identityPublicationFence.mjs', import.meta.url).href;
+    const canonicalUrl = new URL('../../../../../../ai/services/shared/canonicalJson.mjs', import.meta.url).href;
+    const script       = `
+        import assert from 'node:assert/strict';
+        import {registerHooks} from 'node:module';
+        import Database from 'better-sqlite3';
+        import fs from 'node:fs';
+        import path from 'node:path';
+        import {fenceIdentityPublication, readIdentityPublicationFence} from ${JSON.stringify(fenceUrl)};
+        import {stringifyCanonicalJson} from ${JSON.stringify(canonicalUrl)};
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
+        const root = ${JSON.stringify(tmpDir)}, ownerUrl = ${JSON.stringify(ownerUrl)};
+        const target = {planeId: 'owner-fixture', dataRoot: root};
+        const db = new Database(path.join(root, 'graph.sqlite'));
+        db.exec('CREATE TABLE Nodes (id TEXT PRIMARY KEY, user_id TEXT, data TEXT NOT NULL); CREATE TABLE Edges (id TEXT PRIMARY KEY, user_id TEXT, source TEXT, target TEXT, type TEXT, data TEXT NOT NULL);');
+        const records = [
+            {type: 'node', data: {id: 'message', label: 'MESSAGE', properties: {}}},
+            {type: 'node', data: {id: 'recipient', label: 'AgentIdentity', properties: {}}},
+            {type: 'edge', data: {id: 'delivery', source: 'message', target: 'recipient', type: 'DELIVERED_TO', properties: {readAt: null}}}
+        ];
+        for (const {type, data} of records) {
+            if (type === 'node') db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(data.id, JSON.stringify(data));
+            else db.prepare('INSERT INTO Edges (id, source, target, type, data) VALUES (?, ?, ?, ?, ?)').run(data.id, data.source, data.target, data.type, JSON.stringify(data));
+        }
+        const clear = () => db.prepare('UPDATE IdentityPublicationFence SET data = ?').run(stringifyCanonicalJson({version: 1, ...target, state: 'clear', cause: null}));
+        db.transaction(() => fenceIdentityPublication(db, {...target, operation: 'fixture', source: 'fixture'})).immediate();
+        clear();
+        const calls = [];
+        globalThis.fixtureGraphOwner = {
+            db: {storage: {db}}, refuse: false,
+            fenceIdentityPublication(info) {
+                assert.equal(info.db, db);
+                assert.equal(db.inTransaction, true);
+                calls.push(info.operation);
+                const fenced = fenceIdentityPublication(db, {...target, operation: info.operation, source: info.source});
+                if (this.refuse) throw new Error('fixture owner refusal');
+                return fenced;
+            }
+        };
+        const modules = new Map([
+            ['../../mcp/server/memory-core/config.mjs', 'export default ' + JSON.stringify({storagePaths: {graph: db.name}, vectorDimension: 3})],
+            ['../../mcp/server/memory-core/logger.mjs', 'export default {log() {}, warn() {}, error() {}}'],
+            ['./managers/StorageRouter.mjs', 'export default {async ready() {}}'],
+            ['../../mcp/server/shared/services/DestructiveOperationGuard.mjs', 'export default {async assertDestructiveTargetAllowed() {}}'],
+            ['./GraphService.mjs', 'export default globalThis.fixtureGraphOwner']
+        ]);
+        const seen = new Set();
+        const hooks = registerHooks({resolve(specifier, context, nextResolve) {
+            if (context.parentURL === ownerUrl && modules.has(specifier)) {
+                seen.add(specifier);
+                return {url: 'data:text/javascript,' + encodeURIComponent(modules.get(specifier)), shortCircuit: true};
+            }
+            return nextResolve(specifier, context);
+        }});
+        try {
+            const owner = (await import(ownerUrl)).default;
+            await owner.ready();
+            const file = path.join(root, 'graph-backup-fixture.jsonl');
+            fs.writeFileSync(file, records.map(row => JSON.stringify(row)).join('\\n') + '\\n');
+            db.prepare("UPDATE Edges SET data = json_set(data, '$.properties.readAt', 'committed')").run();
+            await owner.importDatabase({file, mode: 'replace', preserveDeliveryReadState: true});
+            assert.equal(db.prepare("SELECT json_extract(data, '$.properties.readAt') AS value FROM Edges").get().value, 'committed');
+            assert.deepEqual(calls, ['graph-truncate', 'graph-import-replace']);
+            assert.equal(readIdentityPublicationFence(db, target).state, 'fenced');
+            clear();
+            await owner.importDatabase({file, mode: 'merge'});
+            assert.equal(readIdentityPublicationFence(db, target).cause.operation, 'graph-import-merge');
+            clear();
+            const before = db.prepare('SELECT * FROM Nodes ORDER BY id').all();
+            globalThis.fixtureGraphOwner.refuse = true;
+            await assert.rejects(owner.truncateDatabase({include: ['graph']}), /fixture owner refusal/);
+            assert.deepEqual(db.prepare('SELECT * FROM Nodes ORDER BY id').all(), before);
+            assert.equal(readIdentityPublicationFence(db, target).state, 'clear');
+            assert.deepEqual(seen, new Set(modules.keys()));
+        } finally {hooks.deregister(); db.close();}
+    `;
+    try {
+        const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {encoding: 'utf8', timeout: 15000});
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr + result.stdout).toBe(0);
+    } finally {fs.rmSync(tmpDir, {recursive: true, force: true});}
+});

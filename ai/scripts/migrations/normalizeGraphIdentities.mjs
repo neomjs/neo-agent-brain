@@ -45,8 +45,10 @@
  * @see learn/agentos/tooling/MemoryCoreMcpAuth.md §Identity Normalization Migration
  */
 
-import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import path                                  from 'node:path';
+import {fileURLToPath}                       from 'node:url';
+import {isEntryModule}                       from '../../services/shared/isEntryModule.mjs';
+import {runWithIdentityPublicationPreserved} from '../../graph/identityPublicationProtection.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -110,14 +112,14 @@ references to the deleted alias nodes until they restart.
 }
 
 /**
- * Core migration routine. Reads current state, plans rewrites + deletions, optionally
- * applies them inside an atomic transaction.
+ * @summary Reads current state, plans rewrites + deletions, optionally
+ * applies them inside the protected-history preservation transaction.
  *
  * @param {Object} db — open SQLite connection
  * @param {Boolean} apply — when true, commit the migration; when false, dry-run only
  * @returns {{edgesRewritten: Number, edgesDropped: Number, nodesDeleted: Number, duplicateCollisions: Number, skipped: String[]}}
  */
-function runMigration(db, apply) {
+export function runMigration(db, apply) {
     const stats = {
         edgesRewritten     : 0,
         edgesDropped       : 0,
@@ -202,8 +204,7 @@ function runMigration(db, apply) {
     };
 
     if (apply) {
-        const transaction = db.transaction(work);
-        transaction();
+        runWithIdentityPublicationPreserved(db, work);
     } else {
         work();
     }
@@ -211,6 +212,7 @@ function runMigration(db, apply) {
     return stats;
 }
 
+/** @summary Runs the explicit CLI against an existing graph, read-only for preview. */
 async function main() {
     const args = parseArgs(process.argv);
     if (args.help) {
@@ -224,7 +226,7 @@ async function main() {
     console.log();
 
     const Database = (await import('better-sqlite3')).default;
-    const db = new Database(dbPath, {verbose: null});
+    const db       = new Database(dbPath, {verbose: null, readonly: !args.apply, fileMustExist: true});
 
     try {
         const stats = runMigration(db, args.apply);
@@ -251,7 +253,9 @@ async function main() {
     }
 }
 
-main().catch(err => {
-    console.error('[normalizeGraphIdentities] FATAL:', err);
-    process.exit(1);
-});
+if (isEntryModule(import.meta.url)) {
+    main().catch(err => {
+        console.error('[normalizeGraphIdentities] FATAL:', err);
+        process.exitCode = 1;
+    });
+}

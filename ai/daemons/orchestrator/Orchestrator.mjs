@@ -917,6 +917,7 @@ export class Orchestrator extends Base {
     }
 
     /**
+     * @summary Composes recovery with qualified live graph fencing and the current cache/election owners.
      * @param {Neo.ai.daemons.services.DataRecoveryActuatorService|Object|null} value
      * @returns {Neo.ai.daemons.services.DataRecoveryActuatorService}
      */
@@ -952,6 +953,7 @@ export class Orchestrator extends Base {
                         chromaClient          : ChromaManager.client,
                         dummyEmbeddingFunction: AiConfig.dummyEmbeddingFunction,
                         graphDb,
+                        beforeGraphMutation   : info => GraphService.fenceIdentityPublication(info),
                         expectedDestinations  : {
                             memories : memoryCoreConfig.collections.memory,
                             summaries: memoryCoreConfig.collections.session,

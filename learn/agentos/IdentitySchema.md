@@ -185,6 +185,69 @@ field projection, scheduling and read-back APIs retain their contracts. Own `__p
 data in raw canonicalized objects; `computePublishRevisionDigest` continues projecting media onto its
 declared fields first. The strict serializer is the separate entry point for signed protocol data.
 
+## Physical family source
+
+[GraphService](../../ai/services/memory-core/GraphService.mjs) exposes typed owners over its mounted
+SQLite connection. Trusted composition supplies the public boot descriptor and independently resolved
+`{planeId, dataRoot}`; ordinary graph properties cannot grant admission authority.
+
+| Method | Physical contract |
+| --- | --- |
+| `consumeIdentityPublicationBoot(bootText, target)` | Reserve the original attempt, then bind its public key once. |
+| `installIdentityFoundingSource(options)` | Install the complete founding payload with its original source reference and lineage provenance. |
+| `admitIdentityPublication(token, options)` | Verify the original signed bytes and atomically commit the operation, counters and receipt. |
+| `readIdentityPublicationSnapshot(options)` | Read complete founding and admitted populations in one SQLite snapshot. |
+| `readIdentityPublicationLineage(bootText, target)` | Observe retained lineage without reserving or repairing it. |
+| `fenceIdentityPublication({db, operation, source})` | Fence the service's exact live mutation connection; never clear its fence. |
+
+First installation has an explicit order:
+
+1. Consume the reservation with `trust: null`, then bind matching public trust to that same attempt.
+2. Install a reviewed, complete founding seed, including an explicitly empty seed when appropriate.
+   At first install, lineage must be the only protected node and no protected edge may exist.
+3. Admit the complete signed baseline, including an explicit empty binding set. Until then, the
+   snapshot reports `membership-unknown`; founding data alone does not establish a membership census.
+
+The [founding owner](../../ai/services/memory-core/helpers/identityFoundingStorage.mjs) treats complete
+seed content as immutable installation identity. An identical-content retry retains the original
+`sourceRevision`, `installedAt`, `issuer` and `lineageHead`, even when supplied a newer source reference.
+Changed content returns `founding-source-conflict` with `reviewed-reconciliation`; missing founding
+source amid protected history returns `founding-history-unreconciled` rather than reseeding it.
+New installations and admission attempts sample their clocks under serialization and reject values
+outside the nonnegative safe-integer and finite `Date` range.
+
+The [snapshot owner](../../ai/services/memory-core/helpers/identityPublicationAdmission.mjs) returns a
+detached, deeply frozen `snapshot` with these separate coordinates:
+
+| Field | Meaning |
+| --- | --- |
+| `revision`, `baselineSince` | Admitted plane revision and the baseline's original admission time. |
+| `founding`, `foundingRevision`, `foundingProvenance` | Complete retained compiler payload, its own revision, and original installation provenance. |
+| `counts` | `subjects` counts the founding/admitted union; `admittedSubjects` counts the persisted admitted subjects. `memberships`, `declarations` and `corrections` count retained history. |
+| `subjects` | Stable provider tuples, per-subject counters, binding incarnations and complete temporal `source` arrays. Founding-only subjects have zero counters and empty binding/history arrays. |
+
+Consumers compose each subject's `source` with the same response's `founding` through
+`buildSubjectFamilyProjection`. The reader validates every protected row before returning any subject;
+this node-based protocol refuses unexpected protected edges. Missing or malformed history, mismatched
+lineage/target, unavailable current trust and existing caller transactions produce explicit refusal,
+never a smaller positive set. A retained receipt makes an identical signed retry idempotent after
+current trust and delivery validity checks; reusing its operation ID for different content conflicts.
+Successful mutations synchronize caches from committed GraphLog rows; a later cache error does not
+undo the physical commit.
+
+[Publication fences](../../ai/services/memory-core/helpers/identityPublicationFence.mjs) live outside
+Nodes/Edges and retain their first cause. Live imports fence before their first mutation; replacement
+fences and deletes share a transaction, while a committed merge fence survives later import failure.
+Fenced reads/admissions require separately admitted recovery; neither graph rows, ordinary boot nor
+the schema-wipe flag clears that boundary.
+[Raw migration preservation](../../ai/graph/identityPublicationProtection.mjs) captures protected rows
+and required historical endpoints before mutation and checks their bytes again before commit.
+`runWithIdentityPublicationPreserved` rolls back the whole migration and its GraphLog effects on a
+mismatch; ordinary identity convergence cannot rewrite or cascade away protected history.
+
+These are physical source methods. Production HTTP/MCP wiring, authenticated caller binding and boot
+orchestration remain a separate integration step; this contract does not establish installed acceptance.
+
 ## Test Pollution Hazard
 
 **The Incident:** On 2026-04-22 (session `15852d91`) and 2026-04-23 (session `8968b9f6`), the production `AgentIdentity` nodes were wiped. This was traced back to a test-pollution anti-pattern in the Playwright test suite.

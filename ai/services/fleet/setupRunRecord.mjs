@@ -62,6 +62,15 @@ const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /**
+ * @summary Checks the original-run reference grammar used by host records and plane lineage.
+ * @param {*} runId Candidate run identifier; no coercion or normalization is performed.
+ * @returns {Boolean} Whether the supported host record owner can address this run id.
+ */
+export function isSetupRunId(runId) {
+    return typeof runId === 'string' && RUN_ID_PATTERN.test(runId);
+}
+
+/**
  * @summary The sha256 hex digest of a string — the receipt's provenance of applied content, never the
  * content itself.
  * @param {String} content
