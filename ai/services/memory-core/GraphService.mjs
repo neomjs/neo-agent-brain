@@ -1021,6 +1021,9 @@ class GraphService extends Base {
      * @description
      * **Transaction Overhead:** Future callers should be aware that invoking `linkNodes` rapidly
      * in a hot path incurs SQLite transaction overhead.
+     * **Commit Boundary:** Existing-edge reinforcement publishes its cache patch and GraphLog cursor
+     * only after its owned physical transaction commits. Logical graph transactions remain supported;
+     * an already-active physical SQLite transaction is refused before mutation.
      * **WAL Snapshot Lag:** If a peer process writes a node, the current connection's snapshot
      * might lack it temporarily. This method automatically attempts to warm the cache and retry
      * the FK verification before culling the edge.
@@ -1030,6 +1033,7 @@ class GraphService extends Base {
      * @param {String} relationship
      * @param {Number} weight
      * @param {Object} [properties={}] Additional edge metadata (e.g. justification, context_source).
+     * @throws {Error} When a caller already owns the physical SQLite transaction.
      * @see {@link GraphService#ensureStructuralEdge} for asserted topology that must not reinforce
      *     an equivalent existing relation.
      */
@@ -1038,7 +1042,11 @@ class GraphService extends Base {
             return;
         } // Safe guard for SQLite backend
 
-        const executeLink = () => this.db.storage.db.transaction(() => {
+        if (this.db.storage.db.inTransaction) {
+            throw new Error('GraphService.linkNodes requires its own physical transaction.');
+        }
+
+        const persistLink = this.db.storage.db.transaction(() => {
             assertOrdinaryGraphMutation(this.db.storage.db, {
                 table: 'Edges', id: null, record: {source, target, type: relationship}
             });
@@ -1106,18 +1114,19 @@ class GraphService extends Base {
                     updateStmt.run(JSON.stringify(parsed), existing.id);
                 }
 
-                // Keep RAM cache functionally coherent if edge actively exists
-                syncCachedEdgeProperties(
-                    this.db,
-                    {id: existing.id, source, target},
-                    {...edgeProperties, weight: newWeight}
-                );
+                return {id: existing.id, properties: {...edgeProperties, weight: newWeight}};
+            }
+        });
+        const executeLink = () => {
+            const reinforced = persistLink.immediate();
 
+            if (reinforced) {
+                syncCachedEdgeProperties(this.db, {id: reinforced.id, source, target}, reinforced.properties);
                 if (typeof this.db.acknowledgeLocalMutations === 'function') {
                     this.db.acknowledgeLocalMutations();
                 }
             }
-        }).immediate();
+        };
 
         if (this.db.isExecutingTransaction) {
             executeLink();

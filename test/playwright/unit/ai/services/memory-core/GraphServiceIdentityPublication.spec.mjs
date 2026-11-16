@@ -2,9 +2,13 @@ import {setup}                                                    from '../../..
 import {test, expect}                                             from '@playwright/test';
 import Neo                                                        from 'neo.mjs/src/Neo.mjs';
 import * as core                                                  from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                                            from 'neo.mjs/src/manager/Instance.mjs';
 import SQLite                                                     from '../../../../../../ai/graph/storage/SQLite.mjs';
 import GraphDatabase                                              from '../../../../../../ai/graph/Database.mjs';
 import {generateKeyPairSync, sign}                                from 'node:crypto';
+import {mkdtempSync, rmSync}                                      from 'node:fs';
+import {tmpdir}                                                   from 'node:os';
+import {join}                                                     from 'node:path';
 import {stringifyCanonicalJson}                                   from '../../../../../../ai/services/shared/canonicalJson.mjs';
 import {compileFoundingFamilySeed}                                from '../../../../../../ai/graph/identityFoundingSeed.mjs';
 import {familyFoundingKey, familyLineageKey, familyPlaneStateKey} from '../../../../../../ai/services/shared/identityPublicationKeys.mjs';
@@ -73,6 +77,109 @@ test('raw edge reinforcement refuses protected history before changing physical 
         .toThrow(/protected/i);
     expect(physical()).toEqual(before);
     expect(graph.edges.get(edge.id).get('properties')).toMatchObject({weight: 0.5, retained: true});
+});
+
+test('existing-edge COMMIT failure preserves cache and cursor and does not hide a reused peer log id', async () => {
+    const directory   = mkdtempSync(join(tmpdir(), 'neo-edge-commit-test-'));
+    const fileStorage = Neo.create(SQLite, {dbPath: join(directory, 'graph.sqlite')});
+    let fileGraph, peer;
+    try {
+        await fileStorage.ready();
+        fileGraph = Neo.create(GraphDatabase, {storage: fileStorage});
+        await fileGraph.ready();
+        service.db = fileGraph;
+        const db = fileStorage.db;
+        fileStorage.addNodes(['source', 'target'].map(id => ({id, label: 'TEST', properties: {}})));
+        fileStorage.addEdges([{id: 'reinforced', source: 'source', target: 'target', type: 'RELATED_TO',
+            properties: {weight: 0.5, marker: 'original'}}]);
+        fileGraph.getAdjacentNodes('source', 'both');
+        const cached   = fileGraph.edges.get('reinforced');
+        const snapshot = () => ({
+            edge          : db.prepare("SELECT * FROM Edges WHERE id = 'reinforced'").get(),
+            log           : db.prepare('SELECT * FROM GraphLog ORDER BY log_id').all(),
+            cachedWeight  : cached.get('properties').weight,
+            indexedWeights: fileGraph.edges.getByIndex('source', 'source').map(value => value.properties.weight),
+            cursor        : fileGraph.lastSyncId
+        });
+        const before = snapshot();
+        db.exec(`CREATE TABLE ReinforcementParent (id TEXT PRIMARY KEY);
+            CREATE TABLE ReinforcementDeferred (parent_id TEXT REFERENCES ReinforcementParent(id) DEFERRABLE INITIALLY DEFERRED);
+            CREATE TRIGGER reject_reinforcement_commit AFTER UPDATE ON Edges
+                WHEN NEW.id = 'reinforced' BEGIN
+                    INSERT INTO ReinforcementDeferred(parent_id) VALUES ('missing-parent');
+                END;`);
+
+        // This control distinguishes COMMIT failure from a statement or callback failure.
+        let callbackFinished = false;
+        expect(() => db.transaction(() => {
+            db.prepare("UPDATE Edges SET data = data WHERE id = 'reinforced'").run();
+            callbackFinished = true;
+        }).immediate()).toThrow('FOREIGN KEY constraint failed');
+        expect(callbackFinished).toBe(true);
+        expect(snapshot()).toEqual(before);
+
+        expect(() => service.linkNodes('source', 'target', 'RELATED_TO', 2, {marker: 'speculative'}))
+            .toThrow('FOREIGN KEY constraint failed');
+        expect(db.inTransaction).toBe(false);
+        expect.soft(snapshot()).toEqual(before);
+        db.exec('DROP TRIGGER reject_reinforcement_commit; DROP TABLE ReinforcementDeferred; DROP TABLE ReinforcementParent;');
+
+        peer = new db.constructor(fileStorage.dbPath);
+        peer.prepare("UPDATE Edges SET data = json_set(data, '$.properties.weight', 0.9) WHERE id = 'reinforced'").run();
+        const peerLogId = peer.prepare('SELECT max(log_id) AS id FROM GraphLog').get().id;
+        expect(peerLogId).toBe(before.cursor + 1);
+        fileGraph.getAdjacentNodes('source', 'both');
+        expect(fileGraph.edges.get('reinforced').get('properties').weight).toBe(0.9);
+        expect(fileGraph.lastSyncId).toBe(peerLogId);
+    } finally {
+        service.db = graph;
+        peer?.close();
+        if (fileStorage.db?.open) fileStorage.db.exec('DROP TRIGGER IF EXISTS reject_reinforcement_commit; DROP TABLE IF EXISTS ReinforcementDeferred; DROP TABLE IF EXISTS ReinforcementParent;');
+        fileGraph?.destroy();
+        if (!fileStorage.isDestroyed) fileStorage.destroy();
+        rmSync(directory, {recursive: true, force: true});
+    }
+});
+
+test('existing-edge reinforcement refuses a caller-owned physical transaction before changing state', () => {
+    storage.addNodes(['source', 'target'].map(id => ({id, label: 'TEST', properties: {}})));
+    storage.addEdges([{id: 'reinforced', source: 'source', target: 'target', type: 'RELATED_TO', properties: {weight: 0.5}}]);
+    graph.getAdjacentNodes('source', 'both');
+    const cached = graph.edges.get('reinforced'), before = physical();
+    storage.db.transaction(() => {
+        expect(() => service.linkNodes('source', 'target', 'RELATED_TO', 2))
+            .toThrow(/own physical transaction/);
+        expect(storage.db.inTransaction).toBe(true);
+        expect(physical()).toEqual(before);
+        expect(cached.get('properties').weight).toBe(0.5);
+        storage.db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)')
+            .run('caller-owned', JSON.stringify({id: 'caller-owned', label: 'TEST', properties: {}}));
+    }).immediate();
+    expect(storage.db.prepare("SELECT id FROM Nodes WHERE id = 'caller-owned'").get()).toEqual({id: 'caller-owned'});
+    expect(storage.db.prepare('SELECT * FROM Edges ORDER BY id').all()).toEqual(before.edges);
+    expect(cached.get('properties').weight).toBe(0.5);
+    expect(graph.lastSyncId).toBe(before.cursor);
+    expect(storage.db.prepare('SELECT * FROM GraphLog ORDER BY log_id').all()).toHaveLength(before.log.length + 1);
+});
+
+test('committed existing-edge reinforcement synchronizes cached references and acknowledges its log', () => {
+    storage.addNodes(['source', 'target'].map(id => ({id, label: 'TEST', properties: {}})));
+    storage.addEdges([{id: 'reinforced', source: 'source', target: 'target', type: 'RELATED_TO',
+        properties: {weight: 0.5, retained: true}}]);
+    graph.getAdjacentNodes('source', 'both');
+    const cached = graph.edges.get('reinforced'), before = physical();
+    graph.transaction(() => {
+        expect(storage.db.inTransaction).toBe(false);
+        service.linkNodes('source', 'target', 'RELATED_TO', 2, {marker: 'committed'});
+    });
+    expect(JSON.parse(storage.db.prepare("SELECT data FROM Edges WHERE id = 'reinforced'").get().data).properties)
+        .toMatchObject({weight: 0.7, retained: true, marker: 'committed'});
+    expect(graph.edges.get('reinforced')).toBe(cached);
+    expect(cached.get('properties')).toMatchObject({weight: 0.7, retained: true, marker: 'committed'});
+    expect(graph.edges.getByIndex('source', 'source').map(value => value.properties.weight)).toEqual([0.7]);
+    expect(storage.db.prepare('SELECT count(*) AS count FROM GraphLog').get().count).toBe(before.log.length + 1);
+    expect(graph.lastSyncId).toBe(before.cursor + 1);
+    expect(graph.lastSyncId).toBe(storage.getLatestLogId());
 });
 
 test('frontier mutation refuses before touching a protected cached edge', () => {

@@ -244,6 +244,8 @@ the schema-wipe flag clears that boundary.
 and required historical endpoints before mutation and checks their bytes again before commit.
 `runWithIdentityPublicationPreserved` rolls back the whole migration and its GraphLog effects on a
 mismatch; ordinary identity convergence cannot rewrite or cascade away protected history.
+Every new raw Nodes/Edges writer must either prove that its namespace cannot reach protected rows,
+incident edges or historical endpoints, or use this preservation boundary.
 
 These are physical source methods. Production HTTP/MCP wiring, authenticated caller binding and boot
 orchestration remain a separate integration step; this contract does not establish installed acceptance.
