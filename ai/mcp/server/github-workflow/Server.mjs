@@ -6,7 +6,7 @@ import RepositoryService                 from '../../../services/github-workflow
 import SyncService                       from '../../../services/github-workflow/SyncService.mjs';
 import {createGitHubToolService}         from './toolService.mjs';
 import {createIdentityPublicationClient} from '../../../services/shared/identityPublicationClient.mjs';
-import {normalizeAgentIdentity, normalizeExpectedPlaneTarget, normalizeSecureMcpEndpoint, planeMcpResources}
+import {normalizeAgentIdentity, normalizeSeatPlaneTarget, normalizeSecureMcpEndpoint, planeMcpResources}
     from '../../../services/fleet/mcpWireParsing.mjs';
 
 /** @summary Names reader unavailability without changing ordinary GitHub startup or exposing credentials. */
@@ -118,15 +118,9 @@ class Server extends BaseServer {
         const expectedIdentity = normalizeAgentIdentity(RepositoryService.viewerLogin);
         if (typeof permission !== 'string' || !expectedIdentity) return;
 
-        let expectedTarget = null;
-        try {
-            // Authority-bearing bootstrap metadata stays atomic through Provider inheritance.
-            if (typeof this.aiConfig.seat.planeTarget === 'string') {
-                expectedTarget = normalizeExpectedPlaneTarget(JSON.parse(this.aiConfig.seat.planeTarget));
-            }
-        } catch {}
-        const endpoint = normalizeSecureMcpEndpoint(this.aiConfig.seat.planeBase);
-        if (!expectedTarget || !endpoint || typeof this.aiConfig.seat.planeBearer !== 'string' || !this.aiConfig.seat.planeBearer.trim()) {
+        const expectedTarget = normalizeSeatPlaneTarget(this.aiConfig.seat.planeTarget),
+              endpoint       = normalizeSecureMcpEndpoint(this.aiConfig.seat.planeBase);
+        if (!expectedTarget || !endpoint || !this.aiConfig.seat.planeBearer.trim()) {
             this.identityPublicationState = familySourceUnavailable('family-source-configuration-unavailable');
             return;
         }

@@ -20,7 +20,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
         assert.notEqual(target.planeId, process.env.NEO_PLANE_ID);
         assert.notEqual(target.dataRoot, process.env.NEO_PLANE_DATA_ROOT);
         let health = 'healthy', permission = 'WRITE', actualIdentity = '@fresh-reader', actualTarget = target, deleteWait = null;
-        globalThis.fixtureConfig = {seat: {planeBase: 'https://plane.example', planeBearer: 'seat-token', planeTarget: JSON.stringify(target)}};
+        globalThis.fixtureConfig = {seat: {planeBase: 'https://plane.example', planeBearer: 'seat-token', planeTarget: [target.planeId, target.dataRoot]}};
         globalThis.fixtureRepository = {viewerLogin: 'stale-viewer', async fetchAndCacheViewerPermission() {
             calls.push('fresh-viewer');
             if (permission) this.viewerLogin = 'fresh-reader';
@@ -100,7 +100,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
             deleteWait = null;
             await close(); assert.ok(calls.includes('delete'));
 
-            for (const planeTarget of [null, '{', '{"planeId":"changed"}', {planeId:'mixed', dataRoot:${JSON.stringify(roots.inherited)}}]) {
+            for (const planeTarget of [null, [], ['changed'], '{', '{"planeId":"changed"}', {planeId:'mixed', dataRoot:${JSON.stringify(roots.inherited)}}]) {
                 calls.length = 0;
                 globalThis.fixtureConfig.seat.planeTarget = planeTarget;
                 await create();
@@ -110,7 +110,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
                 assert.ok(calls.includes('ordinary-transport'));
                 await close();
             }
-            globalThis.fixtureConfig.seat.planeTarget = JSON.stringify(target);
+            globalThis.fixtureConfig.seat.planeTarget = [target.planeId, target.dataRoot];
             permission = null; calls.length = 0;
             await create();
             assert.equal(server.identityPublicationState?.code, 'family-source-viewer-unavailable');
@@ -190,7 +190,7 @@ function heldConnectionScript(root, phase, destroy) {
             })]);} finally {clearTimeout(timer);}
         };
         globalThis.fixtureConfig = {seat: {planeBase: 'https://held-plane.example', planeBearer: 'fixture-reader-token',
-            planeTarget: JSON.stringify(target)}};
+            planeTarget: [target.planeId, target.dataRoot]}};
         globalThis.fixtureRepository = {viewerLogin: 'old-viewer', async fetchAndCacheViewerPermission() {
             calls.push('fresh-viewer'); this.viewerLogin = 'held-reader'; return 'WRITE';
         }};

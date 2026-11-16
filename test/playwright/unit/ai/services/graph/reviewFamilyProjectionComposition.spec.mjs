@@ -62,7 +62,7 @@ test.describe('qualified family projection production composition', () => {
         directory = fs.mkdtempSync(path.join(os.tmpdir(), 'family-projection-composition-'));
         restoreConfig = snapshotAiConfig(AiConfig, {
             'seat.planeBase'                                        : 'https://plane.fixture.example', 'seat.planeBearer': 'fixture-only',
-            'seat.planeTarget'                                      : JSON.stringify(TARGET),
+            'seat.planeTarget'                                      : [TARGET.planeId, TARGET.dataRoot],
             'orchestrator.localOnly.goldenPathRepoEnrichmentEnabled': true
         });
         originalAcquire = GraphqlService.createOperationClient;
@@ -119,10 +119,11 @@ test.describe('qualified family projection production composition', () => {
         });
     }
 
-    for (const mode of ['available', 'fenced', 'wrong-plane', 'wrong-identity', 'unconfigured']) {
+    for (const mode of ['available', 'fenced', 'wrong-plane', 'wrong-identity', 'unconfigured', 'malformed-target']) {
         test(`host collector writes and renders the ${mode} source through its actual composed readers`, async () => {
             installPlane(mode);
             if (mode === 'unconfigured') snapshotAiConfig(AiConfig, {'seat.planeBearer': ''});
+            if (mode === 'malformed-target') snapshotAiConfig(AiConfig, {'seat.planeTarget': []});
             orchestrator.initFocusV1ProjectionCollector();
             const collect = orchestrator.focusV1ProjectionCollector;
             expect(collect).toBe(collectFocusV1Projection);
@@ -140,7 +141,7 @@ test.describe('qualified family projection production composition', () => {
             const projection = inputs.operatorWord.candidates[0].projection;
             const rendered   = renderFocusV1Section(inputs);
             expect(calls.acquisitions).toBe(1); expect(calls.queries).toBe(2); expect(calls.rules).toBe(2);
-            if (mode === 'unconfigured') {
+            if (mode === 'unconfigured' || mode === 'malformed-target') {
                 expect(calls.clients).toHaveLength(0);
                 expect(calls.tools).toHaveLength(0);
             } else {

@@ -1,13 +1,13 @@
 // Class bootstrap belongs to `daemon.mjs`; this consumed class relies on global Neo.
-import fs                                                                            from 'fs-extra';
-import {spawn}                                                                       from 'child_process';
-import net                                                                           from 'net';
-import path                                                                          from 'path';
-import Base                                                                          from 'neo.mjs/src/core/Base.mjs';
-import ClassSystemUtil                                                               from 'neo.mjs/src/util/ClassSystem.mjs';
-import AiConfig                                                                      from '../../config.mjs';
-import {createIdentityPublicationClient}                                             from '../../services/shared/identityPublicationClient.mjs';
-import {normalizeExpectedPlaneTarget, normalizeSecureMcpEndpoint, planeMcpResources} from '../../services/fleet/mcpWireParsing.mjs';
+import fs                                                                        from 'fs-extra';
+import {spawn}                                                                   from 'child_process';
+import net                                                                       from 'net';
+import path                                                                      from 'path';
+import Base                                                                      from 'neo.mjs/src/core/Base.mjs';
+import ClassSystemUtil                                                           from 'neo.mjs/src/util/ClassSystem.mjs';
+import AiConfig                                                                  from '../../config.mjs';
+import {createIdentityPublicationClient}                                         from '../../services/shared/identityPublicationClient.mjs';
+import {normalizeSeatPlaneTarget, normalizeSecureMcpEndpoint, planeMcpResources} from '../../services/fleet/mcpWireParsing.mjs';
 import HealthService, {
     createEmbeddingProbeTimeoutError
 }                      from '../../services/memory-core/HealthService.mjs';
@@ -2021,14 +2021,14 @@ export class Orchestrator extends Base {
      */
     async readFamilySource(viewer, {createClient = createIdentityPublicationClient} = {}) {
         if (this.isDestroying || this.isDestroyed) return {state: 'unavailable', code: 'family-source-closed'};
-        const endpoint = normalizeSecureMcpEndpoint(AiConfig.seat.planeBase), credential = AiConfig.seat.planeBearer;
-        let   target   = null, client;
+        const endpoint = normalizeSecureMcpEndpoint(AiConfig.seat.planeBase);
+        let   client;
         try {
-            if (typeof AiConfig.seat.planeTarget === 'string') target = normalizeExpectedPlaneTarget(JSON.parse(AiConfig.seat.planeTarget));
-            if (!endpoint || !target || typeof credential !== 'string' || !credential || !viewer?.login) {
+            const target = normalizeSeatPlaneTarget(AiConfig.seat.planeTarget);
+            if (!endpoint || !target || !AiConfig.seat.planeBearer || !viewer?.login) {
                 return {state: 'unavailable', code: 'family-source-configuration-unavailable'};
             }
-            client = createClient({baseUrl: planeMcpResources(endpoint)['memory-core'].url, credential,
+            client = createClient({baseUrl: planeMcpResources(endpoint)['memory-core'].url, credential: AiConfig.seat.planeBearer,
                 expectedIdentity: '@' + viewer.login, expectedTarget: target});
             await client.ready();
             const result = await client.readSnapshot();

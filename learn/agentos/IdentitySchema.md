@@ -319,6 +319,17 @@ uses an explicitly bound registered client and closes it after the read. Missing
 unavailability. A host observation has no maintainer-bound B-prime certificate. Body-only review
 updates preserve their existing transport and do not acquire family history.
 
+The bootstrap environment carries `NEO_SEAT_PLANE_TARGET` as JSON. Its leaf decodes that once into
+the atomic `[planeId, dataRoot]` value at `seat.planeTarget`; `null` is unconfigured and `[]` marks
+malformed input. Consumers validate the complete tuple. Resolved overlays and runtime overrides use
+the tuple, not raw JSON text. Replace or clear the whole value: a partial tuple refuses, while the
+Provider's existing object-patch behavior can retain the previous whole tuple rather than retarget it.
+
+Adopting these consumers requires a qualified source for the reviewing seats first. Without it,
+managed Request Changes on post-cutover PRs refuses and merge readiness is unavailable; approval
+remains unaffected. The provisioning/census witness and each seat's qualified read are the rollout
+gate. Source tests cannot substitute for those observations.
+
 For `family-source-configuration-unavailable`, restore the declared remote credential and plane target;
 do not borrow the forge token or local data root. For a viewer mismatch, reconcile the owner’s captured
 credential bindings. Malformed or fenced sources follow the source remedies above. Unclassified
