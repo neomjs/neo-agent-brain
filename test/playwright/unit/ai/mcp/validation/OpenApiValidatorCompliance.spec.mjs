@@ -312,6 +312,8 @@ const expectedMemoryCoreToolTiers = {
     search_nodes                           : 'read',
     query_hybrid_graph                     : 'read',
     get_graph_scene                        : 'read',
+    get_identity_publication_snapshot      : 'read',
+    get_identity_publication_lineage       : 'read',
     grant_permission                       : 'admin',
     revoke_permission                      : 'admin',
     list_permissions                       : 'extended',

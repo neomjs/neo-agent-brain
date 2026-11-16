@@ -250,6 +250,10 @@ test.describe('Neo.ai.mcp.server.BaseServer — MCP initialize instructions for 
         for (const requiredTool of ['explore_lane_landscape', 'pre_brief_session', 'query_hybrid_graph', 'inspect_deployment']) {
             expect(collectedInstructions['memory-core']).toContain(`${requiredTool} (`);
         }
+        const graphCatalog = collectedInstructions['memory-core'].split('\n').find(line => line.startsWith('Graph: '));
+        for (const readTool of ['get_identity_publication_snapshot', 'get_identity_publication_lineage']) {
+            expect(graphCatalog).toContain(readTool);
+        }
         expect(collectedInstructions['knowledge-base']).toContain('inspect_deployment (');
         expect(collectedInstructions['knowledge-base']).toContain('get_class_hierarchy (');
 

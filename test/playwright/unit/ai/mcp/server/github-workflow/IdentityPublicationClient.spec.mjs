@@ -1,15 +1,24 @@
 import {test, expect} from '@playwright/test';
 import {spawnSync}    from 'node:child_process';
+import fs             from 'node:fs';
+import os             from 'node:os';
+import path           from 'node:path';
 
 const serverUrl = new URL('../../../../../../../ai/mcp/server/github-workflow/Server.mjs', import.meta.url).href;
 
 test('GitHub boot owns a real identity-bound client and keeps unavailable family input optional', () => {
-    const script = `
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'neo-family-reader-')));
+    try {
+        const roots = Object.fromEntries(['local', 'remote', 'different', 'inherited'].map(name => [name, path.join(root, name)]));
+        for (const directory of Object.values(roots)) fs.mkdirSync(directory);
+        const script = `
         import assert from 'node:assert/strict';
         import {registerHooks} from 'node:module';
         const Neo = (await import('neo.mjs/src/Neo.mjs')).default;
         await import('neo.mjs/src/core/_export.mjs');
-        const calls = [], target = {planeId: 'declared-remote', dataRoot: '/remote/root'};
+        const calls = [], target = {planeId: 'declared-remote', dataRoot: ${JSON.stringify(roots.remote)}};
+        assert.notEqual(target.planeId, process.env.NEO_PLANE_ID);
+        assert.notEqual(target.dataRoot, process.env.NEO_PLANE_DATA_ROOT);
         let health = 'healthy', permission = 'WRITE', actualIdentity = '@fresh-reader', actualTarget = target, deleteWait = null;
         globalThis.fixtureConfig = {seat: {planeBase: 'https://plane.example', planeBearer: 'seat-token', planeTarget: JSON.stringify(target)}};
         globalThis.fixtureRepository = {viewerLogin: 'stale-viewer', async fetchAndCacheViewerPermission() {
@@ -85,7 +94,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
             deleteWait = null;
             await close(); assert.ok(calls.includes('delete'));
 
-            for (const planeTarget of [null, '{', '{"planeId":"changed"}', {planeId:'mixed', dataRoot:'/inherited'}]) {
+            for (const planeTarget of [null, '{', '{"planeId":"changed"}', {planeId:'mixed', dataRoot:${JSON.stringify(roots.inherited)}}]) {
                 calls.length = 0;
                 globalThis.fixtureConfig.seat.planeTarget = planeTarget;
                 await create();
@@ -103,7 +112,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
             assert.ok(calls.includes('ordinary-transport'));
             await close();
 
-            permission = 'WRITE'; actualTarget = {...target, dataRoot: '/different'}; calls.length = 0;
+            permission = 'WRITE'; actualTarget = {...target, dataRoot: ${JSON.stringify(roots.different)}}; calls.length = 0;
             await create();
             assert.equal(server.identityPublicationState?.code, 'plane-binding-unavailable');
             assert.ok(calls.includes('ordinary-transport'));
@@ -146,9 +155,12 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
             assert.equal(unhandled, 0, 'destroy owns its asynchronous close failure');
             console.log('PASS: actual Server boot, fresh viewer, owned SDK client, optional source refusals and cleanup');
         } finally {if (server && !server.isDestroyed) await close(); hooks.deregister();}
-    `;
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {encoding: 'utf8', timeout: 20000,
-        env: {...process.env, NEO_PLANE_ID: 'family-reader-fixture', NEO_PLANE_DATA_ROOT: '/private/tmp/neo-family-reader-fixture'}});
-    expect(result.status, result.stdout + result.stderr).toBe(0);
-    expect(result.stdout).toContain('PASS: actual Server boot');
+        `;
+        const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {encoding: 'utf8', timeout: 20000,
+            env: {...process.env, NEO_PLANE_ID: 'family-reader-fixture', NEO_PLANE_DATA_ROOT: roots.local}});
+        expect(result.status, result.stdout + result.stderr).toBe(0);
+        expect(result.stdout).toContain('PASS: actual Server boot');
+    } finally {
+        fs.rmSync(root, {recursive: true, force: true});
+    }
 });

@@ -112,7 +112,10 @@ test('fixed target capture preserves required and absent optional slots without 
             'https://plane.example.test/mc/mcp', '--token-env', 'NEO_MCP_REMOTE_TOKEN'],
         slots: [{name: 'NEO_MCP_REMOTE_TOKEN', required: true, state: 'owner'}]});
     expect(value.targets[2].slots).toEqual([
-        {name: 'GH_TOKEN', required: true, state: 'owner'}, {name: 'GITHUB_TOKEN', required: false, state: 'absent'}
+        {name: 'GH_TOKEN', required: true, state: 'owner'}, {name: 'GITHUB_TOKEN', required: false, state: 'absent'},
+        {name: 'NEO_MCP_REMOTE_TOKEN', required: false, state: 'owner'},
+        {name: 'NEO_SEAT_PLANE_BASE', required: false, state: 'absent'},
+        {name: 'NEO_SEAT_PLANE_TARGET', required: false, state: 'absent'}
     ]);
     expect(value.targets[1].slots).toEqual([
         {name: 'NEO_NL_PORT', required: false, state: 'absent'},
@@ -121,6 +124,17 @@ test('fixed target capture preserves required and absent optional slots without 
     expect(JSON.stringify(value)).not.toMatch(/fixture-(?:secret|pat|token)/);
     options.env.GITHUB_TOKEN = 'a-later-ambient-alias';
     expect(value.targets[2].slots[1].state).toBe('absent');
+    options.env.NEO_SEAT_PLANE_BASE = 'https://family-source.example.test';
+    options.env.NEO_SEAT_PLANE_TARGET = JSON.stringify({planeId: 'family-source', dataRoot: '/family-source-root'});
+    expect(value.targets[2].slots.slice(3).map(slot => slot.state)).toEqual(['absent', 'absent']);
+    const later = createSeatRuntimeRecord(options).targets[2];
+    expect(later.slots.slice(3)).toEqual([
+        {name: 'NEO_SEAT_PLANE_BASE', required: false, state: 'held'},
+        {name: 'NEO_SEAT_PLANE_TARGET', required: false, state: 'held'}
+    ]);
+    for (const input of [options.env.NEO_SEAT_PLANE_BASE, options.env.NEO_SEAT_PLANE_TARGET, '/family-source-root']) {
+        expect(JSON.stringify(later)).not.toContain(input);
+    }
     for (const mutate of [
         row => row.targets[0].args[2] = 'https://user:secret@plane.example.test/mc/mcp',
         row => row.targets[0].args[2] = 'https://plane.example.test/mc/mcp?token=secret',

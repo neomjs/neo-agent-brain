@@ -163,14 +163,14 @@ x-neo-exact-tool-profiles:
 paths:
   /identity/family-snapshot:
     post:
-      summary: "Read one protected founding and admitted family snapshot; use for family decisions bound to this plane."
+      summary: "Read protected founding and admitted family history; use when making family decisions bound to this plane."
       operationId: get_identity_publication_snapshot
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
       description: "Returns one coherent physical observation with admission revision and founding digest/provenance. Missing, malformed or fenced authority returns explicit unavailability. Callers cannot select trust, target or time."
-      tags: [Identity Publication]
+      tags: [Graph]
       requestBody:
         required: false
         content:
@@ -227,14 +227,14 @@ paths:
 
   /identity/publication-lineage:
     post:
-      summary: "Read the protected publication reservation and consumed trust witness; use to reconcile an original setup attempt."
+      summary: "Read publication reservation and consumed trust; use when reconciling an original setup attempt."
       operationId: get_identity_publication_lineage
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
       description: "Reads current target-bound lineage without reserving, generating keys, repairing history or clearing a restore fence. A witness is current evidence, never host consent or permission to mint replacement custody."
-      tags: [Identity Publication]
+      tags: [Graph]
       requestBody:
         required: false
         content:
