@@ -52,6 +52,7 @@ class IdentityPublicationService extends Base {
      * @summary Consumes trusted boot input once the graph owner is ready; never called by a request.
      * The server treats a storage refusal as publication degradation while preserving WAL-local MCP.
      * @returns {Promise<Object>} The committed reservation/trust witness, or the unprovisioned state.
+     * @throws {Error} Bounded code/message with the original exception retained only as a local cause.
      */
     async start() {
         if (!this.#generation) return this.#unprovisioned();
@@ -78,9 +79,9 @@ class IdentityPublicationService extends Base {
             }
             this.#bootFailure = null;
             return result;
-        } catch {
+        } catch (cause) {
             const code = epoch === this.#bootEpoch ? this.#bootFailure : 'publication-boot-canceled';
-            throw Object.assign(new Error(`Identity publication boot unavailable: ${code}`), {code});
+            throw Object.assign(new Error(`Identity publication boot unavailable: ${code}`, {cause}), {code});
         }
     }
 
@@ -133,6 +134,8 @@ class IdentityPublicationService extends Base {
 
     /**
      * @summary Exposes the current target-bound original-run reservation/trust witness without writing.
+     * Remains callable during pending or failed boot for read-only reconciliation; its physical owner
+     * still reports unavailable or fenced state explicitly. This read does not certify completed boot.
      * @returns {Object} Physical lineage observation or named unavailability.
      */
     getIdentityPublicationLineage() {

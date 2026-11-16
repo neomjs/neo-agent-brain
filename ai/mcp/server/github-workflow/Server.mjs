@@ -38,6 +38,8 @@ class Server extends BaseServer {
     identityPublicationClient = null;
     /** @member {Promise|null} identityPublicationClosing Shared close barrier for this reader epoch. @private */
     identityPublicationClosing = null;
+    /** @member {Promise|null} identityPublicationConnection Observed optional proof, never a server boot dependency. @private */
+    identityPublicationConnection = null;
     /** @member {Object} identityPublicationState Connection/refusal state, never retained family history. */
     identityPublicationState = familySourceUnavailable('family-source-uninitialized');
 
@@ -92,7 +94,7 @@ class Server extends BaseServer {
 
     /**
      * @summary Fetches the current authenticated viewer, then constructs its independently bound MC reader.
-     * GitHub remains available when the optional family source is absent. The fresh API response owns
+     * GitHub startup does not await the optional family connection. The fresh API response owns
      * expected identity; neither a stale viewer cache nor local RequestContext proves a remote caller.
      * @param {Object} health
      */
@@ -127,15 +129,40 @@ class Server extends BaseServer {
                 expectedIdentity,
                 expectedTarget
             });
-            const state = await client.connect();
-            if (this.identityPublicationClient === client && !this.isDestroying && !this.isDestroyed) {
-                this.identityPublicationState = state;
-            }
+            this.identityPublicationState = familySourceUnavailable('family-source-connecting');
+            this.identityPublicationConnection = this.observeIdentityPublicationClient(client);
         } catch {
             await this.closeIdentityPublicationClient();
             if (!this.isDestroying && !this.isDestroyed) {
                 this.identityPublicationState = familySourceUnavailable('family-source-unavailable');
             }
+        }
+    }
+
+    /**
+     * @summary Observes a reader's proof without holding the ordinary GitHub transport.
+     * Family reads await the client's shared initialization themselves. A retired reader's late
+     * completion cannot overwrite its successor or resurrect a destroyed Server.
+     * @param {Object} client This Server's newly constructed reader.
+     * @returns {Promise<Object>} Connection or bounded refusal state, including teardown failure.
+     */
+    async observeIdentityPublicationClient(client) {
+        try {
+            const state = await client.connect();
+            if (this.identityPublicationClient === client && !this.isDestroying && !this.isDestroyed) {
+                this.identityPublicationState = state;
+            }
+            return state;
+        } catch {
+            if (this.identityPublicationClient !== client || this.isDestroying || this.isDestroyed) {
+                return familySourceUnavailable('family-source-closed');
+            }
+            try {await this.closeIdentityPublicationClient();} catch {}
+            const state = familySourceUnavailable('family-source-unavailable');
+            if (!this.identityPublicationClient && !this.isDestroying && !this.isDestroyed) {
+                this.identityPublicationState = state;
+            }
+            return state;
         }
     }
 
@@ -151,6 +178,7 @@ class Server extends BaseServer {
     closeIdentityPublicationClient() {
         const client = this.identityPublicationClient;
         this.identityPublicationClient = null;
+        this.identityPublicationConnection = null;
         this.identityPublicationState = familySourceUnavailable('family-source-closed');
         this.identityPublicationClosing ??= (async () => {
             if (client) {

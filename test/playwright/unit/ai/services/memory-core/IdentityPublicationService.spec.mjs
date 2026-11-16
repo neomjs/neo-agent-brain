@@ -108,6 +108,33 @@ test('boot composition preserves signed bytes, physical refusal and coherent fou
             assert.equal(read.snapshot.foundingRevision, 1);
             assert.equal(read.snapshot.foundingProvenance.sourceRevision, 'fixture-reviewed-source');
             const retainedSource = read.snapshot.foundingProvenance;
+
+            for (const method of ['ready', 'consumeIdentityPublicationBoot']) {
+                const original = globalThis.fixtureGraph[method];
+                const cause = Object.assign(new Error('fixture-private-owner-detail'), {
+                    code: 'untrusted-owner-code', statusCode: 201, credential: 'fixture-private-credential'
+                });
+                globalThis.fixtureGraph[method] = method === 'ready'
+                    ? async () => {throw cause;}
+                    : () => {throw cause;};
+                service.configureBoot();
+                assert.equal(service.getIdentityPublicationLineage().state, 'bound', 'pending boot does not hide the retained lineage');
+                try {
+                    await assert.rejects(service.start(), error => {
+                        assert.equal(error.cause, cause, method + ' preserves the original exception locally');
+                        assert.equal(error.code, 'publication-boot-unavailable');
+                        assert.equal(error.message, 'Identity publication boot unavailable: publication-boot-unavailable');
+                        assert.deepEqual(Object.keys(error), ['code']);
+                        assert.equal(JSON.stringify(error), '{"code":"publication-boot-unavailable"}');
+                        return true;
+                    });
+                    assert.deepEqual(service.publish(token), {statusCode: 503, body: {state: 'unavailable', code: 'publication-boot-unavailable'}});
+                    assert.deepEqual(service.getIdentityPublicationSnapshot(), {state: 'unavailable', code: 'publication-boot-unavailable'});
+                    assert.equal(service.getIdentityPublicationLineage().state, 'bound', 'failed boot still permits read-only lineage reconciliation');
+                } finally {globalThis.fixtureGraph[method] = original;}
+                assert.equal((await service.start()).state, 'bound');
+            }
+
             globalThis.fixtureConfig.identityPublicationFounding = stringifyCanonicalJson({
                 seed: compileFoundingFamilySeed({identities: [], subjects: []}), sourceRevision: 'replacement'});
             service.configureBoot();
