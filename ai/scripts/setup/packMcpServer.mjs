@@ -1,7 +1,27 @@
 #!/usr/bin/env node
 /**
  * @module ai/scripts/setup/packMcpServer
- * @summary Assembles standalone MCP server npm packages from their static import closure, assets, and server.json manifest.
+ * @summary Assembles standalone MCP server npm packages from their static import closure, runtime
+ * assets, tracked config overlays, and `server.json` manifest.
+ *
+ * This repository is `private` and is never published whole. An outside developer's MCP client
+ * needs one server that runs with no checkout, no Agent OS, and no native dependency, and the MCP
+ * Registry needs an npm package whose `mcpName` equals its manifest `name`. Each packaged target
+ * is therefore the closure of its entrypoints and nothing more, copied with its paths intact so
+ * every relative import resolves identically outside the checkout.
+ *
+ * **One declaration owns each target's package identity:** `<serverDir>/server.json`. Its `name`
+ * supplies `mcpName`, and its npm `packages` entry supplies the published package name and version.
+ * Renaming a package is a one-line change there, so the registry entry cannot drift from npm.
+ *
+ * **Overlays are written the way `prepare` writes them on a clean clone** — from tracked
+ * `config.template.mjs` files through `initTier1Config` and `initConfigs`. An npm/registry install
+ * never runs `prepare`, so the standalone package embeds generated overlays derived strictly from
+ * tracked templates; local operator deltas in this checkout can never ship.
+ *
+ * @example
+ * npm run ai:pack-memory-core -- --out /tmp/neo-memory-core
+ * (cd /tmp/neo-memory-core && npm pack)
  */
 
 import {parse}                        from 'acorn';
@@ -115,8 +135,16 @@ MIT licensed. Source: https://github.com/neomjs/neo-agent-brain/tree/dev/ai/mcp/
 }
 
 /**
- * Declarative standalone packaging specifications keyed by server folder name.
- * @type {Object<String, Object>}
+ * @summary Declarative packaging registry keyed by MCP server folder name.
+ *
+ * Each target entry declares:
+ * - `serverDir` — checkout-relative directory holding `<serverDir>/server.json`; published `bin` resolves to `<serverDir>/standalone.mjs`.
+ * - `entrypoints` — checkout-relative `.mjs` entrypoints whose static import closure defines shipped code.
+ * - `assets` — runtime files read by path (`openapi.yaml`, `server.json`) that static import walks cannot reach.
+ * - `scripts` — optional npm `scripts` map copied into the packaged `package.json`, or `null`.
+ * - `readme` — function receiving the generated manifest and returning the package `README.md`.
+ *
+ * @type {Object<String, {serverDir: String, entrypoints: ReadonlyArray<String>, assets: ReadonlyArray<String>, scripts: Object|null, readme: Function}>}
  */
 export const PACK_TARGETS = Object.freeze({
     'neural-link': Object.freeze({
@@ -185,6 +213,12 @@ export function moduleSpecifiers(source) {
 
 /**
  * @summary Computes the transitive relative-file and npm-package closure for an MCP target or custom entrypoints.
+ *
+ * An import of an untracked `config.mjs` overlay resolves to its tracked `config.template.mjs` template,
+ * because standalone packages write their overlays from tracked templates. An import that resolves to
+ * nothing is thrown as an error, never skipped: a broken closure that only loads inside this checkout
+ * would fail on an outside developer's machine where nobody can inspect why.
+ *
  * @param {Object} [options={}]
  * @param {String} [options.root=brainRoot] Checkout or package root directory.
  * @param {String} [options.target='neural-link'] Named target key in {@link PACK_TARGETS}.
@@ -238,7 +272,9 @@ export function collectClosure({root = brainRoot, target = 'neural-link', entryp
 }
 
 /**
- * @summary Resolves the publishable npm range for a closure package dependency.
+ * @summary The range a dependency is published with: this repository's own range passes through, or —
+ * where this repository pins a git URL or tarball, as it does the engine — resolves to a caret on the
+ * installed version so the published package installs from the npm registry.
  * @param {Object} brain Root `package.json` manifest.
  * @param {String} name Package name.
  * @param {String} root Checkout root directory.
