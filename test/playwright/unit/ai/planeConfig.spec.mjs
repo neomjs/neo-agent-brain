@@ -481,6 +481,41 @@ test.describe('assertPlaneCoherence — the F-invariant, both branches', () => {
         })).toThrow('must declare its own NEO_PLANE_ID')
     });
 
+    test('a custom config\'s "standalone": "false" refuses at boot instead of reading as a declaration', async () => {
+        const dir     = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-plane-standalone-'));
+        const durable = path.join(dir, '.neo-ai-data');
+        const overlay = path.join(dir, 'config.json');
+
+        fs.writeFileSync(overlay, JSON.stringify({plane: {id: 'tenant-a', standalone: 'false', dataRoot: durable}}));
+
+        const isolated = createConfigProxy(Neo.create(ConfigProvider, {
+            data    : ConfigBase.config.data,
+            formulas: ConfigBase.config.formulas
+        }));
+
+        try {
+            await isolated.load(overlay);
+
+            // The JSON route bypasses the env parser, so the string reaches the resolved tree.
+            expect(isolated.plane.standalone).toBe('false');
+
+            const boot = standalone => assertPlaneCoherence({
+                planeId          : isolated.plane.id,
+                dataRoot         : isolated.plane.dataRoot,
+                canonicalDataRoot: durable,
+                standalone
+            });
+
+            expect(() => boot(isolated.plane.standalone)).toThrow('must be a boolean');
+            // The same overlay with the declared booleans: an overlay refuses, a standalone plane boots.
+            expect(() => boot(false)).toThrow('durable root');
+            expect(boot(true)).toEqual({planeId: 'tenant-a', dataRoot: durable})
+        } finally {
+            isolated.destroy();
+            fs.rmSync(dir, {recursive: true, force: true})
+        }
+    });
+
     test('a relative dataRoot fails the internal-consistency clause', () => {
         expect(() => assertPlaneCoherence({
             planeId          : CANONICAL_PLANE_ID,

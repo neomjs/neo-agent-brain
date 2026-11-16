@@ -235,7 +235,8 @@ export function assertPlaneDataRootPlacement(dataRoot, {requireWritable = false,
  * @param {String} options.dataRoot Resolved plane data root.
  * @param {String} [options.canonicalDataRoot] The durable root reference; clause 3 only runs when provided.
  * @param {String} [options.canonicalPlaneId] Canonical identity; defaults to the twin literal.
- * @param {Boolean} [options.standalone=false] The resolved `plane.standalone` declaration.
+ * @param {Boolean} [options.standalone=false] The resolved `plane.standalone` declaration; any other type refuses,
+ * because a custom config file bypasses the env parser and a string `"false"` would read as a declaration.
  * @param {Function} [options.realpathFn] Path-identity resolver, injectable for tests.
  * @returns {Object} Frozen observed identity `{planeId, dataRoot}` for emission consumers.
  */
@@ -251,6 +252,13 @@ export function assertPlaneCoherence({planeId, dataRoot, canonicalDataRoot, cano
         throw new Error(
             `planeConfig.assertPlaneCoherence: dataRoot "${dataRoot}" must be absolute — ` +
             'a relative plane root re-imports the ambient-cwd resolution this contract retires.'
+        );
+    }
+
+    if (typeof standalone !== 'boolean') {
+        throw new Error(
+            `planeConfig.assertPlaneCoherence: plane.standalone must be a boolean, got ${JSON.stringify(standalone)} — ` +
+            'a config file bypasses the env parser, and a string would decide the durable-root exemption by truthiness.'
         );
     }
 
