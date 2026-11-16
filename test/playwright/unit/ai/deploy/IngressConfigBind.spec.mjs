@@ -1,5 +1,7 @@
 import {test, expect}     from '@playwright/test';
+import {execFileSync}     from 'node:child_process';
 import fs                 from 'node:fs';
+import os                 from 'node:os';
 import path               from 'node:path';
 import {load as loadYaml} from 'js-yaml';
 
@@ -8,78 +10,65 @@ const
     cloudDir = path.join(repoRoot, 'deploy/cloud'),
     // The one single-file bind left: every plane cut force-recreates both of its consumers, which
     // re-binds the file, and its readers resolve `<neoRootDir>/kb-config.yaml`
-    SINGLE_FILE_BINDS = ['./kb-config.yaml'];
+    SINGLE_FILE_BINDS = ['kb-config.yaml'],
+    probe             = source => `services:\n  chroma:\n    volumes:\n      - ${source}:/guard-probe:ro\n`;
 
 /**
- * @summary Parses a Compose file, keeping `volumes: !override` visible as its own key.
- * @param {String} file
- * @returns {Object}
+ * @summary Whether the `docker compose` CLI can run at all: availability, never validity.
+ * @returns {Boolean}
  */
-function readCompose(file) {
-    const text = fs.readFileSync(path.join(cloudDir, file), 'utf8');
-
-    return loadYaml(text.replace(/^(\s+)volumes: !override\b/gm, '$1volumesOverride:').replace(/!override\b/g, ''))
-}
-
-/**
- * @summary Each service's mounts in the local profile: the overlay's list replaces the base list under
- * `!override`, and is appended to it otherwise.
- * @param {Object} base    The base Compose file.
- * @param {Object} overlay The local overlay.
- * @returns {Array<String|Object>}
- */
-function effectiveVolumes(base, overlay) {
-    const names = new Set([...Object.keys(base.services || {}), ...Object.keys(overlay.services || {})]);
-
-    return [...names].flatMap(name => {
-        const local = overlay.services?.[name] || {};
-
-        return local.volumesOverride || [...(base.services?.[name]?.volumes || []), ...(local.volumes || [])]
-    })
-}
-
-/**
- * @summary A bind's source as written, from the short (`src:dst[:mode]`) or the long form.
- * @param {String|Object} entry
- * @returns {String|null} `null` for a named volume.
- */
-function bindSource(entry) {
-    if (typeof entry === 'string') {
-        const source = entry.match(/^((?:\$\{(?:[^{}]|\{[^{}]*\})*\}|[^:])+)/)?.[1] || '';
-
-        return /^[./~$]/.test(source) ? source : null
+function composeCliAvailable() {
+    try {
+        execFileSync('docker', ['compose', 'version'], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+        return true
+    } catch {
+        return false
     }
-
-    return entry?.type === 'bind' ? entry.source : null
 }
 
 /**
- * @summary Resolves Compose interpolation against an empty environment: a default stands in for its
- * variable, and a variable without one is a host input the env file names, so it resolves to nothing.
- * @param {String} value
- * @returns {String} The resolved value; a NUL marks an input with no default.
+ * @summary Renders the local profile through Compose itself, which resolves interpolation from the env
+ * file and merges mounts by their container target. Only `PATH` and `HOME` reach it, so no variable of the
+ * host's shell changes the render.
+ * @param {Object} [options]
+ * @param {Object} [options.env]        The env file's variables beyond the required receiver directory.
+ * @param {String[]} [options.inherited] Compose files merged between the base and the local overlay.
+ * @returns {Object} The rendered document.
  */
-function interpolate(value) {
-    return value.replace(/\$\{([A-Za-z_]\w*)(?::?-((?:[^{}]|\{[^{}]*\})*))?(?::?\?(?:[^{}]|\{[^{}]*\})*)?\}/g,
-        (match, name, fallback) => fallback === undefined ? '\0' : interpolate(fallback))
+function renderLocalProfile({env = {}, inherited = []} = {}) {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ingress-bind-'));
+
+    try {
+        const
+            envFile = path.join(fixtureDir, 'local.env'),
+            between = inherited.map((text, index) => {
+                const file = path.join(fixtureDir, `inherited-${index}.yml`);
+
+                fs.writeFileSync(file, text);
+                return file
+            });
+
+        fs.writeFileSync(envFile, Object.entries({NEO_WAKE_RECEIVER_RECORDS_HOST_DIR: fixtureDir, ...env})
+            .map(([key, value]) => `${key}=${value}`).join('\n'));
+
+        return JSON.parse(execFileSync('docker', ['compose', '--env-file', envFile, '-f', 'docker-compose.yml',
+            ...between.flatMap(file => ['-f', file]), '-f', 'docker-compose.local-agent-os.yml',
+            '--profile', 'ingress', 'config', '--format', 'json'],
+        {cwd: cloudDir, encoding: 'utf8', env: {PATH: process.env.PATH, HOME: process.env.HOME}, stdio: ['ignore', 'pipe', 'pipe']}))
+    } finally {
+        fs.rmSync(fixtureDir, {recursive: true, force: true})
+    }
 }
 
 /**
- * @summary The local profile's bind sources that resolve to a regular file, as written.
- * @param {Object} base
- * @param {Object} overlay
+ * @summary The rendered bind sources that are regular files, relative to `deploy/cloud`.
+ * @param {Object} rendered
  * @returns {String[]}
  */
-function fileBinds(base, overlay) {
-    return [...new Set(effectiveVolumes(base, overlay).map(bindSource).filter(source => {
-        const resolved = source && interpolate(source);
-
-        if (!resolved || resolved.includes('\0')) return false;
-
-        const file = path.resolve(cloudDir, resolved);
-
-        return fs.existsSync(file) && fs.statSync(file).isFile()
-    }))].sort()
+function fileBinds(rendered) {
+    return [...new Set(Object.values(rendered.services).flatMap(service => service.volumes || [])
+        .filter(mount => mount.type === 'bind' && fs.existsSync(mount.source) && fs.statSync(mount.source).isFile())
+        .map(mount => path.relative(cloudDir, mount.source)))].sort()
 }
 
 /**
@@ -88,23 +77,14 @@ function fileBinds(base, overlay) {
  * deleted, so no other single-file bind may join the one reasoned exception.
  */
 test.describe('the local ingress sees a merged Caddyfile', () => {
-    const
-        base    = readCompose('docker-compose.yml'),
-        overlay = readCompose('docker-compose.local-agent-os.yml'),
-        probe   = (doc, service, entry) => {
-            const copy = structuredClone(doc);
-
-            copy.services[service] ??= {};
-            (copy.services[service].volumes ??= []).push(entry);
-            return copy
-        };
-
     test('the ingress binds its config directory read-only, replacing the base bind, and reloads a change', () => {
         const
-            ingress = overlay.services.ingress,
-            binds   = (ingress.volumesOverride || []).filter(bindSource),
-            source  = path.join(cloudDir, binds[0].source);
+            overlayText = fs.readFileSync(path.join(cloudDir, 'docker-compose.local-agent-os.yml'), 'utf8'),
+            ingress     = loadYaml(overlayText.replace(/!override\b/g, '')).services.ingress,
+            binds       = ingress.volumes.filter(entry => entry?.type === 'bind'),
+            source      = path.join(cloudDir, binds[0].source);
 
+        expect(overlayText, 'the overlay replaces the cloud profile\'s single-file bind').toMatch(/\n {2}ingress:[\s\S]*?\n {4}volumes: !override\n/);
         expect(binds).toHaveLength(1);
         expect(binds[0]).toMatchObject({target: '/etc/caddy', read_only: true, bind: {create_host_path: false}});
         expect(fs.statSync(source).isDirectory(), `${binds[0].source} is a directory`).toBe(true);
@@ -112,17 +92,26 @@ test.describe('the local ingress sees a merged Caddyfile', () => {
         expect(ingress.command).toEqual(expect.arrayContaining(['--config', '/etc/caddy/Caddyfile', '--watch']))
     });
 
-    test('the effective local profile binds no single file beyond the reasoned exception', () => {
-        expect(fileBinds(base, overlay)).toEqual(SINGLE_FILE_BINDS)
-    });
+    test.describe('Compose\'s own render of the local profile', () => {
+        test.beforeEach(() => {
+            test.skip(!composeCliAvailable(), 'docker compose CLI unavailable; the static shape above still holds the ingress bind');
+        });
 
-    test('the guard sees a file bind the local profile inherits from the base file', () => {
-        expect(fileBinds(probe(base, 'chroma', './Caddyfile:/guard-probe:ro'), overlay)).toContain('./Caddyfile')
-    });
+        test('binds no single file beyond the reasoned exception', () => {
+            expect(fileBinds(renderLocalProfile())).toEqual(SINGLE_FILE_BINDS)
+        });
 
-    test('the guard sees an interpolated source whose default is a file, but not a host input without one', () => {
-        expect(fileBinds(base, probe(overlay, 'chroma', '${PROBE_SOURCE:-./Caddyfile}:/guard-probe:ro')))
-            .toContain('${PROBE_SOURCE:-./Caddyfile}');
-        expect(fileBinds(base, probe(overlay, 'chroma', '${PROBE_SOURCE:?set it}:/guard-probe:ro'))).toEqual(SINGLE_FILE_BINDS)
+        test('sees a file bind the local profile inherits', () => {
+            expect(fileBinds(renderLocalProfile({inherited: [probe('./Caddyfile')]}))).toContain('Caddyfile')
+        });
+
+        test('sees a required variable whose env-file value is a file', () => {
+            expect(fileBinds(renderLocalProfile({inherited: [probe('${PROBE_SOURCE:?set it}')], env: {PROBE_SOURCE: './Caddyfile'}})))
+                .toContain('Caddyfile')
+        });
+
+        test('passes a file that a directory replaces at the same target', () => {
+            expect(fileBinds(renderLocalProfile({inherited: [probe('./Caddyfile'), probe('./ingress-local')]}))).toEqual(SINGLE_FILE_BINDS)
+        })
     })
 });
