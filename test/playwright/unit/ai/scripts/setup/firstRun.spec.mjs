@@ -9,7 +9,7 @@ import {PLANE_MEMORY_CORE_PATH, fakeHostObservers, hostLayout, parseArgs, produc
 import {RECIPE_VERSION, evaluateRecipe}                                                                    from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
 import {createHost}                                                                                        from '../../../../../../ai/services/fleet/hostEffects.mjs';
 import {presets}                                                                                           from '../../../../../../ai/services/fleet/placementPresets.mjs';
-import {contentDigest, createSetupRecord, runTarget, withConsent}                                          from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {contentDigest, createSetupRecord, runTarget, withConsent, withReceipt}                             from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
 
 // The CLI on a fake host: a child process per arm, stdin closed (never a TTY), the record under a temp setup root.
 
@@ -49,7 +49,7 @@ function greenFake({patPath, planeId = 'plane-a', dataRoot = '/srv/plane-a', ser
             verification: {present: true, digest: null, problem: null},
             done
         },
-        answers: answers ? {preset: 'local-small', 'plane-credential': patPath} : {}
+        answers: answers ? {preset: 'local-small', 'plane-credential': patPath, 'desktop-wake': 'enabled'} : {}
     };
 }
 
@@ -86,7 +86,7 @@ test.describe('firstRun CLI', () => {
         expect(result.code, result.stderr).toBe(0);
         expect(output.runId).toBe(RUN_ID);
         expect(output.binding).toBe('bound');
-        expect(output.steps).toHaveLength(13);
+        expect(output.steps).toHaveLength(15);
 
         for (const step of output.steps) {
             expect(typeof step.status, step.id).toBe('string');
@@ -95,6 +95,7 @@ test.describe('firstRun CLI', () => {
         }
         expect(output.steps.find(step => step.id === 'preset').answer).toBe('local-small');
         expect(output.steps.find(step => step.id === 'plane-credential').answer).toBe(patPath);
+        expect(output.steps.find(step => step.id === 'desktop-wake').answer).toBe('enabled');
 
         // the record: consents and accepted receipts, owner-only, secret-free; the carrier and the secret file, owner-only
         const
@@ -103,17 +104,24 @@ test.describe('firstRun CLI', () => {
             layout     = hostLayout({stateRoot});
 
         expect(recordText).not.toContain(PAT);
-        expect(record.consents.map(consent => consent.stepId).sort()).toEqual(['plane-credential', 'preset']);
-        expect(record.receipts.map(receipt => [receipt.effectId, receipt.outcome])).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted']]);
+        expect(record.consents.map(consent => consent.stepId).sort()).toEqual(['desktop-wake', 'plane-credential', 'preset']);
+        expect(record.receipts.map(receipt => [receipt.effectId, receipt.outcome])).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted'], ['start-wake-receiver', 'accepted']]);
         expect((await fs.stat(path.join(setupRoot, `${RUN_ID}.json`))).mode & 0o777).toBe(0o600);
         expect(output.steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'ok', reason: "not needed: the 'local-small' preset requires no providerKey"});
 
         const env = await fs.readFile(layout.envFile, 'utf8');
 
-        // the carrier holds paths, never a value: the admission token and the minted Fleet bearer by file
+        // the carrier holds paths, never a value: the admission token, the minted Fleet bearer, and the 0700 wake records dir
         expect(env).not.toContain(PAT);
         expect(env).toContain(`NEO_MCP_AUTH_TOKEN_FILE=${layout.secretsDir}/mcp-auth-token\n`);
         expect(env).toContain(`NEO_FLEET_PLANE_TOKEN_FILE=${layout.secretsDir}/fleet-plane-token\n`);
+        expect(env).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(layout.wakeStateDir, 'records')}\n`);
+        expect((await fs.stat(path.join(layout.wakeStateDir, 'records'))).mode & 0o777).toBe(0o700);
+        expect((await fs.stat(layout.wakeManifestPath)).mode & 0o777).toBe(0o600);
+        expect(JSON.parse(await fs.readFile(layout.wakeManifestPath, 'utf8'))).toEqual({schemaVersion: 1, routes: {}});
+        expect(await fs.readFile(layout.wakePlistPath, 'utf8')).not.toContain('<!--');
+        expect(await fs.readFile(layout.wakePlistPath, 'utf8')).not.toMatch(/__[A-Z0-9_]+__/);
+        expect((await fs.stat(layout.wakePlistPath)).mode & 0o777).toBe(0o600);
         expect(env).not.toContain('GEMINI_API_KEY_FILE');
         expect(env).toContain('NEO_PLANE_ID=plane-a\n');
         expect(env).toContain('NEO_PLANE_DATA_ROOT=/srv/plane-a\n');
@@ -132,12 +140,16 @@ test.describe('firstRun CLI', () => {
 
         expect(calls).toEqual([{command: 'docker', args: ['compose', '-p', 'neo-local-agent-os', '--env-file', layout.envFile, '-f', 'docker-compose.yml', '-f', 'docker-compose.local-agent-os.yml', '--profile', 'cloud', '--profile', 'fleet', '--profile', 'ingress', 'up', '-d', '--wait'], cwd: path.join(brainRoot, 'deploy', 'cloud')}]);
 
-        // a resumed run performs nothing again and exits 0
-        const resumed = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
+        // a resumed run discovers the receiver cleanly, bootstraps zero extra listeners, and exits 0
+        const
+            resumed        = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
+            launchdHistory = JSON.parse(await fs.readFile(path.join(setupRoot, 'fake-launchd.json'), 'utf8')).calls;
 
         expect(resumed.code).toBe(0);
         expect(JSON.parse(await fs.readFile(path.join(setupRoot, 'fake-run.json'), 'utf8'))).toHaveLength(1);
+        expect(launchdHistory.filter(entry => entry.args[0] === 'bootstrap')).toHaveLength(1);
         expect(JSON.parse(resumed.stdout).steps.find(step => step.id === 'write-env').reason).toBe('observed; matches the accepted receipt');
+        expect(JSON.parse(resumed.stdout).steps.find(step => step.id === 'start-wake-receiver').reason).toBe('observed; matches the accepted receipt');
     });
 
     test('the exit code reflects the terminal step: a failed terminal observation exits 1; unanswered questions without a TTY exit 2 and never prompt', async () => {
@@ -295,7 +307,7 @@ test.describe('firstRun CLI', () => {
             recordPath                            = path.join(setupRoot, `${RUN_ID}.json`),
             layout                                = hostLayout({stateRoot}),
             fake                                  = greenFake({patPath}),
-            hosted                                = servedPlane => ({...fake, observers: {...fake.observers, servedPlane, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath}}),
+            hosted                                = servedPlane => ({...fake, observers: {...fake.observers, servedPlane, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}),
             cold                                  = {throw: 'connect ECONNREFUSED 127.0.0.1:3102'},
             secrets                               = async () => (await fs.readdir(layout.secretsDir)).sort(),
             stepOf                                = run => JSON.parse(run.stdout).steps.find(step => step.id === 'write-secrets');
@@ -386,7 +398,7 @@ test.describe('firstRun CLI', () => {
 
         const
             fake   = greenFake({patPath}),
-            hosted = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath}}}),
+            hosted = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}}),
             output = JSON.parse(hosted.stdout),
             layout = hostLayout({stateRoot}),
             env    = await fs.readFile(layout.envFile, 'utf8');
@@ -418,7 +430,7 @@ test.describe('firstRun CLI', () => {
         const
             {setupRoot, stateRoot, patPath} = await scratch(),
             fake                            = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
-            result                          = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {throw: 'no plane to ask'}}, answers: {preset: 'hosted', 'plane-credential': patPath}}}),
+            result                          = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {throw: 'no plane to ask'}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'desktop-wake': 'enabled'}}}),
             layout                          = hostLayout({stateRoot});
 
         expect(result.code).toBe(2);
@@ -437,11 +449,11 @@ test.describe('firstRun CLI', () => {
 
         const
             fake   = greenFake({patPath}),
-            local  = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {preset: 'local-small', 'plane-credential': patPath, 'provider-key': keyPath}}}),
+            local  = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {preset: 'local-small', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}}),
             record = JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8'));
 
         expect(local.code, local.stderr).toBe(0);
-        expect(record.consents.map(consent => consent.stepId)).toEqual(['preset', 'plane-credential']);
+        expect(record.consents.map(consent => consent.stepId)).toEqual(['preset', 'plane-credential', 'desktop-wake']);
         expect(JSON.parse(local.stdout).steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'ok', reason: "not needed: the 'local-small' preset requires no providerKey", answer: null});
     });
 
@@ -687,5 +699,63 @@ test.describe('firstRun CLI', () => {
 
         expect(JSON.parse((await runCli({setupRoot: other.setupRoot, stateRoot: other.stateRoot, fake: greenFake({patPath: other.patPath})})).stdout).target)
             .toEqual({planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'});
+    });
+
+    test('AC-1 / desktop-wake: declining or running on unsupported OS provisions an empty receiver-less 0700 records dir without LaunchAgent, reports wake unavailable, and retires v1 records cleanly', async () => {
+        const
+            declinedRun = await scratch(),
+            declined    = await runCli({
+                setupRoot: declinedRun.setupRoot,
+                stateRoot: declinedRun.stateRoot,
+                fake     : {...greenFake({patPath: declinedRun.patPath}), answers: {preset: 'local-small', 'plane-credential': declinedRun.patPath, 'desktop-wake': 'declined'}}
+            }),
+            declinedOut    = JSON.parse(declined.stdout),
+            declinedLayout = hostLayout({stateRoot: declinedRun.stateRoot});
+
+        expect(declined.code, declined.stderr).toBe(0);
+        expect(declinedOut.steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false, answer: 'declined'});
+        expect(declinedOut.steps.find(step => step.id === 'start-wake-receiver')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false});
+        expect(await fs.readFile(declinedLayout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(declinedLayout.receiverlessWakeStateDir, 'records')}\n`);
+        expect((await fs.stat(path.join(declinedLayout.receiverlessWakeStateDir, 'records'))).mode & 0o777).toBe(0o700);
+        await expect(fs.access(declinedLayout.wakePlistPath)).rejects.toThrow();
+
+        // unsupported host OS (linux): skips desktop-wake without requiring consent and exits 0
+        const
+            linuxRun = await scratch(),
+            linux    = await runCli({
+                setupRoot: linuxRun.setupRoot,
+                stateRoot: linuxRun.stateRoot,
+                fake     : {...greenFake({patPath: linuxRun.patPath, answers: false}), platform: 'linux', answers: {preset: 'local-small', 'plane-credential': linuxRun.patPath}}
+            }),
+            linuxOut    = JSON.parse(linux.stdout),
+            linuxLayout = hostLayout({stateRoot: linuxRun.stateRoot});
+
+        expect(linux.code, linux.stderr).toBe(0);
+        expect(linuxOut.steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false});
+        expect(linuxOut.steps.find(step => step.id === 'start-wake-receiver')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false});
+        expect(await fs.readFile(linuxLayout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${path.join(linuxLayout.receiverlessWakeStateDir, 'records')}\n`);
+        await expect(fs.access(linuxLayout.wakePlistPath)).rejects.toThrow();
+
+        // v1 record on disk is retired as version-mismatch without conferring desktop-wake install consent
+        const legacyRun = await scratch();
+
+        let legacyRec = {...createSetupRecord({runId: RUN_ID, target: {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'}, recipeVersion: 1}), createdAt: '2026-10-01T00:00:00.000Z'};
+        legacyRec = withConsent(legacyRec, {stepId: 'preset', answer: 'local-small', consentedAt: 't'});
+        legacyRec = withConsent(legacyRec, {stepId: 'plane-credential', answer: legacyRun.patPath, consentedAt: 't'});
+        legacyRec = withReceipt(legacyRec, {effectId: 'compose-up', outcome: 'accepted', inputDigest: 'x', acceptedAt: 't', references: []});
+
+        await fs.mkdir(legacyRun.setupRoot, {recursive: true});
+        await fs.writeFile(path.join(legacyRun.setupRoot, `${RUN_ID}.json`), `${JSON.stringify(legacyRec, null, 2)}\n`, {mode: 0o600});
+
+        const
+            migrated    = await runCli({setupRoot: legacyRun.setupRoot, stateRoot: legacyRun.stateRoot, fake: greenFake({patPath: legacyRun.patPath, answers: false, done: {persisted: false, queryAnswered: false}})}),
+            migratedOut = JSON.parse(migrated.stdout),
+            savedRec    = JSON.parse(await fs.readFile(path.join(legacyRun.setupRoot, `${RUN_ID}.json`), 'utf8'));
+
+        expect(migrated.code).toBe(2);
+        expect(migrated.stderr).toMatch(/version-mismatch; prior consents and receipts retired into history/);
+        expect(migratedOut.steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'pending', answer: null});
+        expect(savedRec.recipeVersion).toBe(RECIPE_VERSION);
+        expect(savedRec.history).toHaveLength(1);
     });
 });

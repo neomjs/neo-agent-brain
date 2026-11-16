@@ -28,20 +28,28 @@ import {
     withReceipt,
     withVerification
 } from './setupRunRecord.mjs';
+import {
+    DESKTOP_WAKE_CHOICES,
+    WAKE_RECEIVER_LABEL,
+    prepareWakeRecordsDir,
+    probeWakeReceiverHttp,
+    reconcileWakeReceiverService
+} from './wakeReceiverSetup.mjs';
 
 const execFileAsync = promisify(execFile);
 
 /**
- * The v1 effects, in recipe order. `verify` has no handler here: it is performed through the served plane
+ * The v2 recipe effects, in recipe order. `verify` has no handler here: it is performed through the served plane
  * by `verifyEffect.mjs`, which persists its sub-step receipts through {@link recordVerification}.
  * @type {Object}
  */
 export const EFFECT_IDS = Object.freeze({
-    writeEnv     : 'write-env',
-    writeSecrets : 'write-secrets',
-    composeUp    : 'compose-up',
-    registerForge: 'register-forge',
-    verify       : 'verify'
+    writeEnv         : 'write-env',
+    writeSecrets     : 'write-secrets',
+    composeUp        : 'compose-up',
+    registerForge    : 'register-forge',
+    startWakeReceiver: 'start-wake-receiver',
+    verify           : 'verify'
 });
 
 const
@@ -258,14 +266,23 @@ export const hostEffectHandlers = Object.freeze({
         describe: input => `write the plane's env carrier at ${input?.path}`,
         expects : input => contentDigest(renderEnvFile(input?.entries)),
         /**
-         * @param {Object} input `{path, entries}` — the carrier path and the preset's env set plus the plane's own bindings.
+         * @param {Object} input `{path, entries, recordsStateDir?}` — the carrier path, env entries, and optional wake records state dir (`0700`).
          * @param {Object} host
          * @returns {Promise<{digest: String, references: String[]}>}
          */
         async handler(input, host) {
-            const digest = await writeOwnerOnly(input.path, renderEnvFile(input.entries), host);
+            const rendered = renderEnvFile(input.entries);
+            let references = [input.path];
 
-            return {digest, references: [input.path]};
+            if (input.recordsStateDir) {
+                const prepared = await prepareWakeRecordsDir(input.recordsStateDir, host);
+
+                references = [input.path, prepared.recordsDir];
+            }
+
+            const digest = await writeOwnerOnly(input.path, rendered, host);
+
+            return {digest, references};
         }
     }),
     [EFFECT_IDS.writeSecrets]: Object.freeze({
@@ -364,20 +381,42 @@ export const hostEffectHandlers = Object.freeze({
 
             return {digest: observed.digest, references: [`forge-connection:${status.binding.connectionId}`]};
         }
+    }),
+    [EFFECT_IDS.startWakeReceiver]: Object.freeze({
+        id      : EFFECT_IDS.startWakeReceiver,
+        describe: input => `install, upgrade, or adopt LaunchAgent ${WAKE_RECEIVER_LABEL} at ${input?.plistPath ?? '<default>'}`,
+        /**
+         * @param {Object} input
+         * @param {Object} host
+         * @returns {Promise<{digest: String, references: String[], action: String}>}
+         */
+        handler(input, host) {
+            return reconcileWakeReceiverService(input, host);
+        }
     })
 });
 
 /**
  * @summary The host the effects run against. Production defaults; a spec injects a fake filesystem, a
- * recording command runner and a fixed clock.
+ * recording command runner, platform/UID probes, listener probe, and a fixed clock.
  * @param {Object} [options]
  * @param {Object}   [options.fsModule=node:fs/promises]
  * @param {Function} [options.run] `(command, args, {cwd}) → Promise<{stdout, stderr}>`
  * @param {Function} [options.now=Date.now]
- * @returns {{fsModule: Object, run: Function, now: Function}}
+ * @param {Function} [options.platform]
+ * @param {Function} [options.uid]
+ * @param {Function} [options.probeWakeListener]
+ * @returns {{fsModule: Object, run: Function, now: Function, platform: Function, uid: Function, probeWakeListener: Function}}
  */
-export function createHost({fsModule = fsPromises, run = (command, args, options) => execFileAsync(command, args, {...options, encoding: 'utf8'}), now = Date.now} = {}) {
-    return {fsModule, run, now};
+export function createHost({
+    fsModule = fsPromises,
+    run = (command, args, options) => execFileAsync(command, args, {...options, encoding: 'utf8'}),
+    now = Date.now,
+    platform = () => process.platform,
+    uid = () => (typeof process.getuid === 'function' ? process.getuid() : null),
+    probeWakeListener = probeWakeReceiverHttp
+} = {}) {
+    return {fsModule, run, now, platform, uid, probeWakeListener};
 }
 
 /**
@@ -629,6 +668,10 @@ export async function admitCredentialReference({answer, fsModule = fsPromises}) 
 export async function recordConsent({stepId, answer, record, recordPath, host}) {
     if (!['string', 'number', 'boolean'].includes(typeof answer) || (typeof answer === 'string' && answer.length > 256)) {
         throw new Error(`recordConsent: the answer for '${stepId}' must be a choice or a reference (a short scalar).`);
+    }
+
+    if (stepId === 'desktop-wake' && !Object.values(DESKTOP_WAKE_CHOICES).includes(answer)) {
+        throw new Error(`recordConsent: the answer for 'desktop-wake' must be '${DESKTOP_WAKE_CHOICES.enabled}' or '${DESKTOP_WAKE_CHOICES.declined}'.`);
     }
 
     const

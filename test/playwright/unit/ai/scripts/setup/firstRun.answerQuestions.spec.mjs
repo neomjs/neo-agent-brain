@@ -17,7 +17,7 @@ const
     target = {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'};
 
 /** One prompted pass: the next line is typed only once a prompt asked for it. */
-async function session({setupRoot, id, lines}) {
+async function session({setupRoot, id, lines, observers = {}}) {
     const
         queue  = [...lines],
         input  = new PassThrough(),
@@ -34,7 +34,7 @@ async function session({setupRoot, id, lines}) {
     });
 
     const record = await answerQuestions({
-        evaluate   : candidate => evaluateRecipe({target, record: candidate, observers: {}, presets}),
+        evaluate   : candidate => evaluateRecipe({target, record: candidate, observers, presets}),
         answers    : {},
         record     : createSetupRecord({runId: RUN_ID, target, recipeVersion: RECIPE_VERSION}),
         recordPath : path.join(setupRoot, `${id}.json`),
@@ -45,13 +45,13 @@ async function session({setupRoot, id, lines}) {
     });
 
     return {
-        asked   : ['preset (', 'plane credential file path', 'the provider key file'].filter(prefix => seen.join('').includes(prefix)),
+        asked   : ['preset (', 'plane credential file path', 'the provider key file', 'desktop wake receiver'].filter(prefix => seen.join('').includes(prefix)),
         consents: record.consents.map(consent => consent.stepId)
     };
 }
 
 test.describe('firstRun answerQuestions (interactive)', () => {
-    test('each question is decided after the previous answer: a local preset never asks for a provider key, a hosted one does (review round 1, RA-2)', async () => {
+    test('each question is decided after the previous answer: a local preset never asks for a provider key, a hosted one does (review round 1, RA-2), and desktop-wake follows unless unsupported', async () => {
         const
             root      = await fs.mkdtemp(path.join(os.tmpdir(), 'first-run-prompts-')),
             setupRoot = path.join(root, 'setup'),
@@ -62,13 +62,17 @@ test.describe('firstRun answerQuestions (interactive)', () => {
         await fs.writeFile(patPath, 'ghp_FAKEPAT0123456789abcdefghijklmnopqrstuv\n', {mode: 0o600});
         await fs.writeFile(keyPath, 'AIzaFAKEKEY\n', {mode: 0o600});
 
-        expect(await session({setupRoot, id: 'local', lines: ['local-small', patPath]})).toEqual({
+        expect(await session({setupRoot, id: 'local', lines: ['local-small', patPath, 'enabled']})).toEqual({
+            asked   : ['preset (', 'plane credential file path', 'desktop wake receiver'],
+            consents: ['preset', 'plane-credential', 'desktop-wake']
+        });
+        expect(await session({setupRoot, id: 'hosted', lines: ['hosted', patPath, keyPath, 'declined']})).toEqual({
+            asked   : ['preset (', 'plane credential file path', 'the provider key file', 'desktop wake receiver'],
+            consents: ['preset', 'plane-credential', 'provider-key', 'desktop-wake']
+        });
+        expect(await session({setupRoot, id: 'linux', lines: ['local-small', patPath], observers: {desktopWake: async () => ({supported: false, platform: 'linux'})}})).toEqual({
             asked   : ['preset (', 'plane credential file path'],
             consents: ['preset', 'plane-credential']
-        });
-        expect(await session({setupRoot, id: 'hosted', lines: ['hosted', patPath, keyPath]})).toEqual({
-            asked   : ['preset (', 'plane credential file path', 'the provider key file'],
-            consents: ['preset', 'plane-credential', 'provider-key']
         });
     });
 });

@@ -515,4 +515,44 @@ test.describe('hostEffects', () => {
         expect(withVerification(written, null).verification).toBeNull();
         expect(() => withVerification(written, 'yes')).toThrow('withVerification: verification must be an object or null.');
     });
+
+    test('desktop-wake consent validation, write-env recordsStateDir 0700 preparation and safety refusal, and start-wake-receiver effect', async () => {
+        const
+            {root, recordPath, host, record} = await scratch(),
+            envPath   = path.join(root, 'config', 'local-agent-os.env'),
+            stateDir  = path.join(root, 'wake-receiver'),
+            symDir    = path.join(root, 'sym-wake'),
+            consented = await recordConsent({stepId: 'desktop-wake', answer: 'enabled', record, recordPath, host});
+
+        expect(consented.consent.answer).toBe('enabled');
+        await expect(recordConsent({stepId: 'desktop-wake', answer: 'maybe', record, recordPath, host})).rejects.toThrow(/must be 'enabled' or 'declined'/);
+        expect(EFFECT_IDS.startWakeReceiver).toBe('start-wake-receiver');
+        expect(hostEffectHandlers[EFFECT_IDS.startWakeReceiver].describe({plistPath: '/Users/op/Library/LaunchAgents/com.neomjs.agent-os-wake.plist'})).toContain('com.neomjs.agent-os-wake');
+
+        const env = await applyEffect({
+            effectId  : EFFECT_IDS.writeEnv,
+            input     : {path: envPath, recordsStateDir: stateDir, entries: {NEO_PLANE_ID: 'plane-a', NEO_WAKE_RECEIVER_RECORDS_HOST_DIR: path.join(stateDir, 'records')}},
+            record    : consented.record,
+            recordPath,
+            host
+        });
+
+        expect(env.receipt.outcome).toBe(RECEIPT_OUTCOMES.accepted);
+        expect(env.receipt.references).toEqual([envPath, path.join(stateDir, 'records')]);
+        expect(await modeOf(path.join(stateDir, 'records'))).toBe(0o700);
+
+        await fs.symlink(stateDir, symDir);
+
+        const refused = await applyEffect({
+            effectId  : EFFECT_IDS.writeEnv,
+            input     : {path: path.join(root, 'config', 'second.env'), recordsStateDir: symDir, entries: {NEO_PLANE_ID: 'plane-a'}},
+            record    : env.record,
+            recordPath,
+            host
+        });
+
+        expect(refused.receipt.outcome).toBe(RECEIPT_OUTCOMES.failed);
+        expect(refused.receipt.reason).toMatch(/symbolic link/);
+        await expect(fs.access(path.join(root, 'config', 'second.env'))).rejects.toThrow();
+    });
 });

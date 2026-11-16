@@ -60,26 +60,67 @@ const forgeCommands = calls => calls.filter(call => call.args.includes(FORGE_CLI
  * @param {Function} [options.forge] Answers the plane's forge-connection CLI; a throw is a command that printed nothing.
  * @returns {Promise<Object>} `{root, stateRoot, recordPath, patPath, calls, reads, host, layout, record}`
  */
-async function consentedRun({preset = 'local-small', forge = scriptedForge()} = {}) {
+async function consentedRun({preset = 'local-small', forge = scriptedForge(), desktopWake = 'declined'} = {}) {
     const
-        root       = await fs.mkdtemp(path.join(os.tmpdir(), 'setup-orchestration-')),
-        stateRoot  = path.join(root, 'state'),
-        recordPath = setupRecordPath(path.join(stateRoot, 'setup'), RUN_ID),
-        patPath    = path.join(root, 'operator', 'plane-pat'),
-        calls      = [],
-        reads      = [],
-        fsModule   = {...fs, readFile: (file, ...rest) => { reads.push(String(file)); return fs.readFile(file, ...rest) }},
-        host       = createHost({fsModule, run: async (command, args, options) => {
-            calls.push({command, args, cwd: options?.cwd});
+        root        = await fs.mkdtemp(path.join(os.tmpdir(), 'setup-orchestration-')),
+        stateRoot   = path.join(root, 'state'),
+        homeDir     = path.join(root, 'home'),
+        recordPath  = setupRecordPath(path.join(stateRoot, 'setup'), RUN_ID),
+        patPath     = path.join(root, 'operator', 'plane-pat'),
+        calls       = [],
+        reads       = [],
+        launchd     = {loaded: false, running: false, plistPath: null},
+        fsModule    = {...fs, readFile: (file, ...rest) => { reads.push(String(file)); return fs.readFile(file, ...rest) }},
+        host        = createHost({
+            fsModule,
+            platform         : () => 'darwin',
+            uid              : () => typeof process.getuid === 'function' ? process.getuid() : 501,
+            probeWakeListener: async ({host: h, port: p}) => launchd.loaded && launchd.running && h === '127.0.0.1' && p === 3199
+                ? {listening: true, wakeReceiver: true, statusCode: 404, reason: null}
+                : {listening: false, wakeReceiver: false, statusCode: null, reason: 'ECONNREFUSED'},
+            run: async (command, args, options) => {
+                calls.push({command, args, cwd: options?.cwd});
 
-            return {stdout: args.includes(FORGE_CLI) ? JSON.stringify(forge(args.slice(args.indexOf(FORGE_CLI) + 1))) : '', stderr: ''};
-        }, now: () => NOW}),
+                if (command === 'launchctl') {
+                    if (args[0] === 'print') {
+                        if (!launchd.loaded) {
+                            throw Object.assign(new Error('Could not find service'), {stderr: 'Could not find service'});
+                        }
+
+                        return {stdout: `\tstate = ${launchd.running ? 'running' : 'not running'}\n\tpid = ${launchd.running ? 4242 : 0}\n\tpath = ${launchd.plistPath}\n`, stderr: ''};
+                    }
+
+                    if (args[0] === 'bootout') {
+                        launchd.loaded  = false;
+                        launchd.running = false;
+
+                        return {stdout: '', stderr: ''};
+                    }
+
+                    if (args[0] === 'bootstrap') {
+                        launchd.loaded    = true;
+                        launchd.running   = true;
+                        launchd.plistPath = args[2];
+
+                        return {stdout: '', stderr: ''};
+                    }
+                }
+
+                return {stdout: args.includes(FORGE_CLI) ? JSON.stringify(forge(args.slice(args.indexOf(FORGE_CLI) + 1))) : '', stderr: ''};
+            },
+            now: () => NOW
+        }),
         layout     = {
-            envFile       : path.join(stateRoot, 'config', 'local-agent-os.env'),
-            secretsDir    : path.join(stateRoot, 'secrets'),
-            composeDir    : path.join(brainRoot, 'deploy', 'cloud'),
-            composeFiles  : ['docker-compose.yml', 'docker-compose.local-agent-os.yml'],
-            composeProject: 'neo-local-agent-os'
+            homeDir,
+            stateRoot,
+            repoRoot        : brainRoot,
+            nodeBin         : process.execPath,
+            envFile         : path.join(stateRoot, 'config', 'local-agent-os.env'),
+            secretsDir      : path.join(stateRoot, 'secrets'),
+            composeDir      : path.join(brainRoot, 'deploy', 'cloud'),
+            composeFiles    : ['docker-compose.yml', 'docker-compose.local-agent-os.yml'],
+            composeProject  : 'neo-local-agent-os',
+            wakeTemplatePath: path.join(brainRoot, 'deploy', 'host', 'com.neomjs.agent-os-wake.plist')
         };
 
     await fs.mkdir(path.dirname(patPath), {recursive: true});
@@ -90,8 +131,11 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge()} = 
     await persistSetupRecord(recordPath, record, host);
     record = (await recordConsent({stepId: 'preset', answer: preset, record, recordPath, host})).record;
     record = (await recordConsent({stepId: 'plane-credential', answer: patPath, record, recordPath, host})).record;
+    if (desktopWake !== null) {
+        record = (await recordConsent({stepId: 'desktop-wake', answer: desktopWake, record, recordPath, host})).record;
+    }
 
-    return {root, stateRoot, recordPath, patPath, calls, reads, host, layout, record};
+    return {root, stateRoot, homeDir, recordPath, patPath, calls, reads, host, layout, record, launchd};
 }
 
 /**
@@ -115,6 +159,7 @@ function evaluate(record, present = {}, servedPlane = {id: target.planeId, dataR
             envCarrier     : observe(EFFECT_IDS.writeEnv),
             runningPlane   : observe(EFFECT_IDS.composeUp),
             forgeConnection: observe(EFFECT_IDS.registerForge),
+            wakeReceiver   : observe(EFFECT_IDS.startWakeReceiver),
             servedPlane    : async () => { if (servedPlane instanceof Error) throw servedPlane; return servedPlane }
         }
     });
@@ -155,14 +200,21 @@ test.describe('setupOrchestration', () => {
 
         // one list: the order that runs is the recipe's effect steps as listed, the secret files before the carrier that points at them
         expect(EFFECT_ORDER).toEqual(RECIPE_STEPS.filter(step => step.kind === STEP_KINDS.effect).map(step => step.effectId));
-        expect(EFFECT_ORDER).toEqual([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp, EFFECT_IDS.registerForge, EFFECT_IDS.verify]);
+        expect(EFFECT_ORDER).toEqual([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp, EFFECT_IDS.registerForge, EFFECT_IDS.startWakeReceiver, EFFECT_IDS.verify]);
         expect(receipts(record)).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted'], ['register-forge', 'accepted']]);
         expect(run.calls.map(call => [call.command, call.args[0], call.cwd])).toEqual(Array(6).fill(['docker', 'compose', run.layout.composeDir]));
         expect(run.calls[0].args).toContain('up');
         // the forge is read from the plane compose-up brought up, once for the input and once before the handler mutates
         expect(forgeCommands(run.calls)).toEqual([['status'], ['status'], ['init', '--apply'], ['register', '--provider', 'github', '--endpoint', 'https://api.github.com', '--apply'], ['status']]);
         expect(findReceipt(record, EFFECT_IDS.registerForge).references).toEqual(['forge-connection:conn-1']);
-        expect(await fs.readFile(run.layout.envFile, 'utf8')).toContain('NEO_PLANE_ID=plane-a\n')
+
+        const
+            envContent     = await fs.readFile(run.layout.envFile, 'utf8'),
+            disabledRecord = path.join(run.stateRoot, 'wake-receiver-disabled', 'records');
+
+        expect(envContent).toContain('NEO_PLANE_ID=plane-a\n');
+        expect(envContent).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${disabledRecord}\n`);
+        expect((await fs.stat(disabledRecord)).mode & 0o777).toBe(0o700);
     });
 
     test('register-forge selected behind an unfinished compose-up waits for it and asks the plane nothing; a plane that cannot say what it declares is reported, and nothing is applied', async () => {
@@ -262,7 +314,7 @@ test.describe('setupOrchestration', () => {
         expect(empty.record).toBe(run.record);
         expect(empty.reports).toEqual([]);
         expect(unknown.record).toBe(run.record);
-        expect(unknown.reports).toEqual(["unknown effect 'deploy': the effects are write-secrets, write-env, compose-up, register-forge, verify"]);
+        expect(unknown.reports).toEqual(["unknown effect 'deploy': the effects are write-secrets, write-env, compose-up, register-forge, start-wake-receiver, verify"]);
         expect(run.reads).toEqual([]);
         expect(run.calls).toEqual([])
     });
@@ -438,6 +490,7 @@ test.describe('setupOrchestration', () => {
                 envCarrier     : async () => ({present: true, digest: null}),
                 runningPlane   : async () => ({present: true, digest: null}),
                 forgeConnection: async () => ({present: true, digest: null, problem: null}),
+                wakeReceiver   : async () => ({present: true, running: true, digest: null}),
                 servedPlane    : async () => ({id: target.planeId, dataRoot: target.dataRoot}),
                 // the production observer's read of the record's section, through the recipe's `{record}` argument
                 verification: async (_, {record: bound}) => ({present: bound?.verification?.recall?.hit === true, digest: null, problem: null, reason: 'not yet'}),
@@ -504,5 +557,48 @@ test.describe('setupOrchestration', () => {
         expect(outside.record.verification.attempt.offered).toEqual(['resume']);
         expect(outside.record.verification.attempt.marker).not.toBe(partial.record.verification.attempt.marker);
         expect(outside.record.verification.priorAttempts).toHaveLength(1);
+    });
+
+    test('desktop-wake enables start-wake-receiver behind served-plane, writes 0700 active records carrier, materializes comment-free plist, and refuses dead-plist settlement', async () => {
+        const
+            unanswered = await consentedRun({desktopWake: null}),
+            waited     = await perform(unanswered, {evaluation: await evaluate(unanswered.record)});
+
+        expect(waited.record).toBe(unanswered.record);
+        expect(waited.reports).toEqual(["'write-secrets' waits for 'desktop-wake': it is pending (unanswered)"]);
+
+        const
+            enabled    = await consentedRun({desktopWake: 'enabled'}),
+            gatedEval  = await evaluate(enabled.record, {[EFFECT_IDS.writeSecrets]: true, [EFFECT_IDS.writeEnv]: true, [EFFECT_IDS.composeUp]: true, [EFFECT_IDS.registerForge]: true}, COLD),
+            gatedRun   = await perform(enabled, {evaluation: gatedEval, effectIds: [EFFECT_IDS.startWakeReceiver]});
+
+        expect(gatedRun.reports).toEqual(["'start-wake-receiver' waits for 'served-plane': it is unknown (connect ECONNREFUSED 127.0.0.1:3102)"]);
+
+        const
+            okRun     = await perform(enabled, {evaluation: await evaluate(enabled.record), effectIds: EFFECT_ORDER.slice(0, -1)}),
+            envText   = await fs.readFile(enabled.layout.envFile, 'utf8'),
+            activeDir = path.join(enabled.stateRoot, 'wake-receiver', 'records'),
+            plistPath = path.join(enabled.homeDir, 'Library', 'LaunchAgents', 'com.neomjs.agent-os-wake.plist');
+
+        expect(okRun.reports).toEqual([]);
+        expect(findReceipt(okRun.record, EFFECT_IDS.startWakeReceiver)).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted});
+        expect(envText).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${activeDir}\n`);
+        expect((await fs.stat(activeDir)).mode & 0o777).toBe(0o700);
+        expect(await fs.readFile(plistPath, 'utf8')).not.toContain('<!--');
+        expect(enabled.calls.some(call => call.command === 'launchctl' && call.args[0] === 'bootstrap')).toBe(true);
+
+        // settlePending refuses a stopped wake receiver even if its plist digest matches; only a running listener settles
+        const
+            parked     = await interrupted(enabled, EFFECT_IDS.startWakeReceiver),
+            stoppedObs = {present: false, running: false, digest: 'x', reason: 'not running'},
+            unsettled  = await settlePending({record: parked, recordPath: enabled.recordPath, host: enabled.host, evaluation: await evaluate(parked, {[EFFECT_IDS.startWakeReceiver]: stoppedObs})});
+
+        expect(findReceipt(unsettled, EFFECT_IDS.startWakeReceiver).outcome).toBe(RECEIPT_OUTCOMES.reconcileRequired);
+
+        const
+            runningObs = {present: true, running: true, digest: 'x'},
+            settled    = await settlePending({record: unsettled, recordPath: enabled.recordPath, host: enabled.host, evaluation: await evaluate(unsettled, {[EFFECT_IDS.startWakeReceiver]: runningObs})});
+
+        expect(findReceipt(settled, EFFECT_IDS.startWakeReceiver)).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, settledBy: 'observation'});
     });
 });

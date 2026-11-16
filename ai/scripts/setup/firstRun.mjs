@@ -38,6 +38,18 @@ import {
 } from '../../services/fleet/setupRunRecord.mjs';
 import {composeContextOf, performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
 import {VERIFY_EXITS}                                    from '../../services/fleet/verifyEffect.mjs';
+import {
+    DESKTOP_WAKE_CHOICES,
+    WAKE_RECEIVER_DEFAULT_HOST,
+    WAKE_RECEIVER_DEFAULT_PORT,
+    WAKE_RECEIVER_LABEL,
+    WAKE_RECEIVER_PLIST_NAME,
+    extractReceiverDeclaration,
+    inspectWakeRecordsDir,
+    observeDesktopWakeQuestion,
+    observeWakeReceiverEffect,
+    parseLaunchAgentPlist
+} from '../../services/fleet/wakeReceiverSetup.mjs';
 import {CANONICAL_PLANE_ID, resolvePlaneDataRoot}        from '../../planeConfig.mjs';
 import {runHealthcheck}                                  from '../diagnostics/mcpHealthcheck.mjs';
 import {isEntryModule}                                   from '../../services/shared/isEntryModule.mjs';
@@ -120,24 +132,63 @@ export function parseArgs(argv, env = process.env) {
  * @param {Object} options
  * @returns {Object}
  */
-export function hostLayout({stateRoot}) {
+export function hostLayout({stateRoot, homeDir, wakeHost, wakePort, runtime} = {}) {
+    const
+        wakeStateDir             = path.join(stateRoot, 'wake-receiver'),
+        receiverlessWakeStateDir = path.join(stateRoot, 'wake-receiver-disabled');
+
     return {
-        envFile        : path.join(stateRoot, 'config', 'local-agent-os.env'),
-        secretsDir     : path.join(stateRoot, 'secrets'),
-        composeDir     : path.join(brainRoot, 'deploy', 'cloud'),
-        composeFiles   : COMPOSE_FILES,
-        composeProject : COMPOSE_PROJECT,
-        composeProfiles: COMPOSE_PROFILES,
-        target         : PROFILE_TARGET
+        stateRoot,
+        repoRoot                : brainRoot,
+        nodeBin                 : process.execPath,
+        envFile                 : path.join(stateRoot, 'config', 'local-agent-os.env'),
+        secretsDir              : path.join(stateRoot, 'secrets'),
+        composeDir              : path.join(brainRoot, 'deploy', 'cloud'),
+        composeFiles            : COMPOSE_FILES,
+        composeProject          : COMPOSE_PROJECT,
+        composeProfiles         : COMPOSE_PROFILES,
+        target                  : PROFILE_TARGET,
+        wakeStateDir,
+        receiverlessWakeStateDir,
+        wakeManifestPath        : path.join(wakeStateDir, 'manifest.json'),
+        wakePlistPath           : path.join(homeDir ?? path.dirname(stateRoot), 'Library', 'LaunchAgents', WAKE_RECEIVER_PLIST_NAME),
+        wakeTemplatePath        : path.join(brainRoot, 'deploy', 'host', WAKE_RECEIVER_PLIST_NAME),
+        wakeHost                : wakeHost ?? WAKE_RECEIVER_DEFAULT_HOST,
+        wakePort                : wakePort ?? WAKE_RECEIVER_DEFAULT_PORT,
+        ...(runtime ? {runtime} : {})
     };
 }
 
-async function digestOfFile(fsModule, filePath) {
+async function observeEnvCarrier(layout, host) {
+    let content;
+
     try {
-        return {present: true, digest: contentDigest(await fsModule.readFile(filePath, 'utf8')), problem: null};
+        content = await host.fsModule.readFile(layout.envFile, 'utf8');
     } catch (error) {
-        return error?.code === 'ENOENT' ? {present: false, reason: `${filePath} does not exist`} : {present: true, digest: null, problem: error.message};
+        return error?.code === 'ENOENT'
+            ? {present: false, reason: `${layout.envFile} does not exist`}
+            : {present: true, digest: null, problem: error.message};
     }
+
+    const
+        digest       = contentDigest(content),
+        recordsMatch = content.match(/^NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=(.+)$/m);
+
+    if (!recordsMatch) {
+        return {present: true, digest, problem: 'NEO_WAKE_RECEIVER_RECORDS_HOST_DIR is missing from the env carrier'};
+    }
+
+    const recordsPath = recordsMatch[1].trim();
+
+    if (!path.isAbsolute(recordsPath) || path.basename(recordsPath) !== 'records') {
+        return {present: true, digest, problem: `NEO_WAKE_RECEIVER_RECORDS_HOST_DIR '${recordsPath}' must end with '/records'`};
+    }
+
+    const dirCheck = await inspectWakeRecordsDir(path.dirname(recordsPath), host);
+
+    return dirCheck.ok
+        ? {present: true, digest, problem: null}
+        : {present: true, digest, problem: dirCheck.reason};
 }
 
 export {PLANE_MEMORY_CORE_PATH};
@@ -204,7 +255,9 @@ export function productionObservers({layout, host, probe = probePlacement, healt
 
     return {
         placement,
-        envCarrier : () => digestOfFile(host.fsModule, layout.envFile),
+        envCarrier  : () => observeEnvCarrier(layout, host),
+        desktopWake : target => observeDesktopWakeQuestion({layout, host, target}),
+        wakeReceiver: (target, {record = null} = {}) => observeWakeReceiverEffect({layout, target, record, host}),
         // present means the WHOLE set the consented preset needs: the files are written one at a time,
         // so an interrupted write leaves some of them, and "any file" would read that as done
         secretFiles: async (target, {record = null} = {}) => {
@@ -407,7 +460,11 @@ export async function answerQuestions({evaluate, answers, record, recordPath, ho
         if (answer === null && interactive) {
             const prompt = step.id === 'preset'
                 ? `preset (${presets.map(preset => preset.id).join(' | ')}): `
-                : step.id === 'plane-credential' ? 'plane credential file path (an existing file holding the PAT): ' : `${step.summary}: `;
+                : step.id === 'plane-credential'
+                    ? 'plane credential file path (an existing file holding the PAT): '
+                    : step.id === 'desktop-wake'
+                        ? `desktop wake receiver — ${step.capability?.planSummary ?? `install or adopt ${WAKE_RECEIVER_LABEL}`} (${DESKTOP_WAKE_CHOICES.enabled} | ${DESKTOP_WAKE_CHOICES.declined}): `
+                        : `${step.summary}: `;
 
             answer = await ask(prompt, io);
         }
@@ -418,6 +475,11 @@ export async function answerQuestions({evaluate, answers, record, recordPath, ho
 
         if (step.id === 'preset' && !presets.some(preset => preset.id === answer)) {
             throw new Error(`'${answer}' is not a preset`);
+        }
+
+        if (step.id === 'desktop-wake' && !Object.values(DESKTOP_WAKE_CHOICES).includes(answer)) {
+            stderr.write(`${step.id}: choose '${DESKTOP_WAKE_CHOICES.enabled}' or '${DESKTOP_WAKE_CHOICES.declined}'\n`);
+            continue;
         }
 
         // a file reference is admitted before the record sees it: a pasted token is refused here, never
@@ -467,20 +529,99 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     let target, host = createHost(), observers, answers = {};
 
     if (options.fakeHost) {
-        // the fake host: a recording runner (its compose-up counts as the plane running), the real file
-        // observers over the temp layout, and the fixture's values for everything it names
+        // the fake host: a recording runner (docker calls in `fake-run.json`, simulated launchd state in
+        // `fake-launchd.json`), the real file observers over the temp layout, and the fixture's remaining observers
         const
-            fake      = JSON.parse(await fsPromises.readFile(options.fakeHost, 'utf8')),
-            callsPath = path.join(options.setupRoot, 'fake-run.json'),
-            readCalls = () => fsPromises.readFile(callsPath, 'utf8').then(JSON.parse, () => []);
+            fake            = JSON.parse(await fsPromises.readFile(options.fakeHost, 'utf8')),
+            callsPath       = path.join(options.setupRoot, 'fake-run.json'),
+            launchdPath     = path.join(options.setupRoot, 'fake-launchd.json'),
+            defaultUid      = typeof process.getuid === 'function' ? process.getuid() : 501,
+            readCalls       = () => fsPromises.readFile(callsPath, 'utf8').then(JSON.parse, () => []),
+            initialLaunchd  = () => ({loaded: false, running: false, plistPath: null, host: null, port: null, calls: [], ...(fake.launchd ?? {})}),
+            readLaunchd     = async () => {
+                if (fake.launchd?.forceSeed) {
+                    return initialLaunchd();
+                }
 
-        host = createHost({run: async (command, args, runOptions) => {
-            const calls = [...await readCalls(), {command, args, cwd: runOptions?.cwd}];
+                return fsPromises.readFile(launchdPath, 'utf8').then(JSON.parse, () => initialLaunchd());
+            },
+            writeLaunchd    = async state => {
+                await fsPromises.mkdir(options.setupRoot, {recursive: true, mode: 0o700});
+                await fsPromises.writeFile(launchdPath, `${JSON.stringify(state, null, 2)}\n`, {mode: 0o600});
+            };
 
-            await fsPromises.writeFile(callsPath, `${JSON.stringify(calls, null, 2)}\n`);
+        host = createHost({
+            platform         : () => fake.platform ?? 'darwin',
+            uid              : () => fake.uid ?? defaultUid,
+            probeWakeListener: async ({host: probeHost, port: probePort}) => {
+                if (Array.isArray(fake.foreignPorts) && fake.foreignPorts.includes(probePort)) {
+                    return {listening: true, wakeReceiver: false, statusCode: 200, reason: `foreign listener on ${probeHost}:${probePort}`};
+                }
 
-            return {stdout: '', stderr: ''};
-        }});
+                const state = await readLaunchd();
+
+                if (state.loaded && state.running && (state.host ?? WAKE_RECEIVER_DEFAULT_HOST) === probeHost && state.port === probePort) {
+                    return {listening: true, wakeReceiver: true, statusCode: 404, reason: null};
+                }
+
+                return {listening: false, wakeReceiver: false, statusCode: null, reason: `connect ECONNREFUSED ${probeHost}:${probePort}`};
+            },
+            run: async (command, args, runOptions) => {
+                if (command === 'launchctl') {
+                    const state = await readLaunchd();
+
+                    state.calls = [...(state.calls ?? []), {args}];
+
+                    if (args[0] === 'print') {
+                        await writeLaunchd(state);
+
+                        if (!state.loaded) {
+                            throw Object.assign(new Error(`Could not find service "${WAKE_RECEIVER_LABEL}" in domain for user gui: 113`), {stderr: 'Could not find service'});
+                        }
+
+                        return {
+                            stdout: [
+                                `\tstate = ${state.running ? 'running' : 'not running'}`,
+                                ...(state.running ? [`\tpid = ${state.pid ?? 4242}`] : []),
+                                ...(state.plistPath ? [`\tpath = ${state.plistPath}`] : [])
+                            ].join('\n'),
+                            stderr: ''
+                        };
+                    }
+
+                    if (args[0] === 'bootout') {
+                        state.loaded  = false;
+                        state.running = false;
+                        await writeLaunchd(state);
+
+                        return {stdout: '', stderr: ''};
+                    }
+
+                    if (args[0] === 'bootstrap') {
+                        const
+                            plistPath = args[2],
+                            xml       = await fsPromises.readFile(plistPath, 'utf8'),
+                            decl      = extractReceiverDeclaration(parseLaunchAgentPlist(xml, {allowComments: false}));
+
+                        state.loaded    = true;
+                        state.running   = true;
+                        state.pid       = 4242;
+                        state.plistPath = plistPath;
+                        state.host      = decl.host;
+                        state.port      = decl.port;
+                        await writeLaunchd(state);
+
+                        return {stdout: '', stderr: ''};
+                    }
+                }
+
+                const calls = [...await readCalls(), {command, args, cwd: runOptions?.cwd}];
+
+                await fsPromises.writeFile(callsPath, `${JSON.stringify(calls, null, 2)}\n`);
+
+                return {stdout: '', stderr: ''};
+            }
+        });
 
         const fakeHost = fakeHostObservers(fake);
 
@@ -540,6 +681,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         report          : line => stderr.write(`${line}\n`),
         configSourcePath: path.join(brainRoot, 'ai/configBase.mjs'),
         newAttempt      : options.newAttempt,
+        evaluate,
         // a fake host has no plane to witness through: the fixture's `done` observer stands in for the terminal read
         ...(options.fakeHost ? {createPlaneClient: null} : {})
     });

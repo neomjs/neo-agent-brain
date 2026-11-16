@@ -31,7 +31,7 @@ import {verifyExits}                                                 from './ver
  * and retired as current proof (bootstrap-record decision§2.7).
  * @type {Number}
  */
-export const RECIPE_VERSION = 1;
+export const RECIPE_VERSION = 2;
 
 /**
  * The working headroom a recommendation needs above a bare fit — the 2026-09-23 harness-stack measurement:
@@ -73,19 +73,21 @@ export const STEP_STATUSES = Object.freeze({
  * @type {Object[]}
  */
 export const RECIPE_STEPS = Object.freeze([
-    Object.freeze({id: 'placement',        kind: STEP_KINDS.observation, observer: 'placement',    summary: 'the presets this host bears, each with its reason'}),
-    Object.freeze({id: 'preset',           kind: STEP_KINDS.question,                              summary: 'the inference preset'}),
-    Object.freeze({id: 'plane-credential', kind: STEP_KINDS.question,    answer: 'file',           summary: 'the plane credential, kept as a secret file (the record holds its path)'}),
-    Object.freeze({id: 'provider-key',     kind: STEP_KINDS.question,    answer: 'file', requiredBy: 'providerKey', summary: 'the provider key file, when the consented preset requires one (the record holds its path)'}),
-    Object.freeze({id: 'advanced',         kind: STEP_KINDS.question,    optional: true,           summary: 'advanced bindings, folded by default'}),
-    Object.freeze({id: 'write-secrets',    kind: STEP_KINDS.effect,      observer: 'secretFiles',  effectId: 'write-secrets', summary: 'the secret files exist, owner-only'}),
-    Object.freeze({id: 'write-env',        kind: STEP_KINDS.effect,      observer: 'envCarrier',   effectId: 'write-env',     summary: 'the plane env carrier holds the preset and the plane bindings'}),
-    Object.freeze({id: 'compose-up',       kind: STEP_KINDS.effect,      observer: 'runningPlane', effectId: 'compose-up',    summary: 'the compose project is running'}),
-    Object.freeze({id: 'register-forge',   kind: STEP_KINDS.effect,      observer: 'forgeConnection', effectId: 'register-forge', summary: `the plane's ${ANY_FORGE_NAME} connection is registered, so seats can be owned`}),
-    Object.freeze({id: 'served-plane',     kind: STEP_KINDS.observation, observer: 'servedPlane',  summary: 'the served plane identity and data root match the target'}),
-    Object.freeze({id: 'validation',       kind: STEP_KINDS.observation, observer: 'validation',   summary: 'one fresh provider call and one fresh embedding with the configuration the run supplied, at the preset dimension — never read from a receipt'}),
-    Object.freeze({id: 'verify',           kind: STEP_KINDS.effect,      observer: 'verification', effectId: 'verify',        gates: Object.freeze(['served-plane', 'validation']), summary: 'the first-run witness: one memory written through the served plane under this run, read back and recalled through its embedding lane'}),
-    Object.freeze({id: 'done',             kind: STEP_KINDS.observation, observer: 'done',         terminal: true, summary: 'this run\'s witness was persisted and recalled, and the served plane and validation are fresh and ok in the same evaluation'})
+    Object.freeze({id: 'placement',           kind: STEP_KINDS.observation, observer: 'placement',    summary: 'the presets this host bears, each with its reason'}),
+    Object.freeze({id: 'preset',              kind: STEP_KINDS.question,                              summary: 'the inference preset'}),
+    Object.freeze({id: 'plane-credential',    kind: STEP_KINDS.question,    answer: 'file',           summary: 'the plane credential, kept as a secret file (the record holds its path)'}),
+    Object.freeze({id: 'provider-key',        kind: STEP_KINDS.question,    answer: 'file', requiredBy: 'providerKey', summary: 'the provider key file, when the consented preset requires one (the record holds its path)'}),
+    Object.freeze({id: 'advanced',            kind: STEP_KINDS.question,    optional: true,           summary: 'advanced bindings, folded by default'}),
+    Object.freeze({id: 'desktop-wake',        kind: STEP_KINDS.question,                              summary: 'the user-owned macOS wake receiver service (or a receiver-less local plane)'}),
+    Object.freeze({id: 'write-secrets',       kind: STEP_KINDS.effect,      observer: 'secretFiles',  effectId: 'write-secrets', summary: 'the secret files exist, owner-only'}),
+    Object.freeze({id: 'write-env',           kind: STEP_KINDS.effect,      observer: 'envCarrier',   effectId: 'write-env',     summary: 'the plane env carrier holds the preset and the plane bindings'}),
+    Object.freeze({id: 'compose-up',          kind: STEP_KINDS.effect,      observer: 'runningPlane', effectId: 'compose-up',    summary: 'the compose project is running'}),
+    Object.freeze({id: 'register-forge',      kind: STEP_KINDS.effect,      observer: 'forgeConnection', effectId: 'register-forge', summary: `the plane's ${ANY_FORGE_NAME} connection is registered, so seats can be owned`}),
+    Object.freeze({id: 'served-plane',        kind: STEP_KINDS.observation, observer: 'servedPlane',  summary: 'the served plane identity and data root match the target'}),
+    Object.freeze({id: 'start-wake-receiver', kind: STEP_KINDS.effect,      observer: 'wakeReceiver', effectId: 'start-wake-receiver', gates: Object.freeze(['served-plane']), summary: 'the user-owned desktop wake receiver is installed or adopted, loaded, and listening for this plane'}),
+    Object.freeze({id: 'validation',          kind: STEP_KINDS.observation, observer: 'validation',   summary: 'one fresh provider call and one fresh embedding with the configuration the run supplied, at the preset dimension — never read from a receipt'}),
+    Object.freeze({id: 'verify',              kind: STEP_KINDS.effect,      observer: 'verification', effectId: 'verify',        gates: Object.freeze(['served-plane', 'validation']), summary: 'the first-run witness: one memory written through the served plane under this run, read back and recalled through its embedding lane'}),
+    Object.freeze({id: 'done',                kind: STEP_KINDS.observation, observer: 'done',         terminal: true, summary: 'this run\'s witness was persisted and recalled, and the served plane and validation are fresh and ok in the same evaluation'})
 ]);
 
 const GIB_TEXT = bytes => `${(bytes / GiB).toFixed(1)} GiB`;
@@ -174,8 +176,51 @@ function status(step, state, reason, extra = {}) {
     return {id: step.id, kind: step.kind, status: state, reason, summary: step.summary, ...extra};
 }
 
-function evaluateQuestion(step, {record, bound, bindingReason, presets}) {
+function evaluateQuestion(step, {record, bound, bindingReason, presets, desktopWake, observedAt}) {
     const consent = bound ? findConsent(record, step.id) : null;
+
+    if (step.id === 'desktop-wake') {
+        if (desktopWake && !desktopWake.ok) {
+            return status(step, STEP_STATUSES.unknown, desktopWake.reason, {answer: null, observedAt});
+        }
+
+        const capability = desktopWake?.value ?? {supported: true};
+
+        if (capability.supported === false) {
+            return status(step, STEP_STATUSES.ok, capability.reason ?? 'not supported on this host OS: wake delivery unavailable; local plane continues receiver-less', {
+                answer               : null,
+                skipped              : true,
+                wakeDeliveryAvailable: false,
+                capability
+            });
+        }
+
+        if (consent) {
+            if (consent.answer === 'declined') {
+                return status(step, STEP_STATUSES.ok, 'declined: wake delivery unavailable; local plane continues receiver-less', {
+                    answer               : 'declined',
+                    consentedAt          : consent.consentedAt,
+                    skipped              : true,
+                    wakeDeliveryAvailable: false,
+                    capability
+                });
+            }
+
+            if (consent.answer === 'enabled') {
+                return status(step, STEP_STATUSES.ok, capability.planSummary ? `consented (${capability.planSummary})` : 'consented', {
+                    answer               : 'enabled',
+                    consentedAt          : consent.consentedAt,
+                    skipped              : false,
+                    wakeDeliveryAvailable: true,
+                    capability
+                });
+            }
+
+            return status(step, STEP_STATUSES.failed, `invalid desktop-wake consent '${consent.answer}'`, {answer: consent.answer, capability});
+        }
+
+        return status(step, STEP_STATUSES.pending, bound ? (capability.promptSummary ?? 'unanswered') : `unanswered (${bindingReason})`, {answer: null, capability});
+    }
 
     if (consent) {
         return status(step, STEP_STATUSES.ok, 'consented', {answer: consent.answer, consentedAt: consent.consentedAt});
@@ -204,11 +249,27 @@ function evaluateQuestion(step, {record, bound, bindingReason, presets}) {
     return status(step, STEP_STATUSES.pending, bound ? 'unanswered' : `unanswered (${bindingReason})`, {answer: null});
 }
 
-async function evaluateEffect(step, {record, bound, observers, target, context, observedAt}) {
+async function evaluateEffect(step, {record, bound, observers, target, context, observedAt, steps}) {
     const
         receipt = bound ? findReceipt(record, step.effectId) : null,
-        read    = await observe(observers, step.observer, target, context),
         extra   = {effectId: step.effectId, receipt: receipt ? receipt.outcome : null, observedAt};
+
+    if (step.id === 'start-wake-receiver') {
+        const desktopWakeStep = steps.find(row => row.id === 'desktop-wake');
+
+        if (desktopWakeStep?.skipped === true) {
+            return status(
+                step,
+                STEP_STATUSES.ok,
+                desktopWakeStep.answer === 'declined'
+                    ? 'skipped: desktop wake receiver declined; wake delivery unavailable'
+                    : 'skipped: unsupported host OS; wake delivery unavailable',
+                {...extra, skipped: true, wakeDeliveryAvailable: false}
+            );
+        }
+    }
+
+    const read = await observe(observers, step.observer, target, context);
 
     if (receipt?.outcome === RECEIPT_OUTCOMES.pending && receipt.resumable) {
         // a multi-step effect that says what landed and what has not: pending, not interrupted — a re-check
@@ -242,6 +303,10 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
 
     if (observed.problem) {
         return status(step, STEP_STATUSES.failed, observed.problem, extra);
+    }
+
+    if (observed.upgradePending === true || observed.inputMismatch === true) {
+        return status(step, STEP_STATUSES.pending, observed.reason ?? 'the host declaration requires an update for this run', {...extra, observed});
     }
 
     if (receipt?.outcome === RECEIPT_OUTCOMES.accepted && receipt.digest && observed.digest && receipt.digest !== observed.digest) {
@@ -432,16 +497,17 @@ export async function evaluateRecipe({target, record = null, observers = {}, pre
         }[binding],
         context       = {record: bound ? record : null},
         observedAt    = new Date(now()).toISOString(),
+        desktopWake   = typeof observers?.desktopWake === 'function' ? await observe(observers, 'desktopWake', target, context) : null,
         steps         = [];
 
     for (const step of RECIPE_STEPS) {
         if (step.kind === STEP_KINDS.question) {
-            steps.push(evaluateQuestion(step, {record, bound, bindingReason, presets}));
+            steps.push(evaluateQuestion(step, {record, bound, bindingReason, presets, desktopWake, observedAt}));
             continue;
         }
 
         if (step.kind === STEP_KINDS.effect) {
-            const row = await evaluateEffect(step, {record, bound, observers, target, context, observedAt});
+            const row = await evaluateEffect(step, {record, bound, observers, target, context, observedAt, steps});
 
             steps.push({
                 ...row,
