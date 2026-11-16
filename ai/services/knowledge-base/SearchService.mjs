@@ -371,8 +371,9 @@ class SearchService extends Base {
         if (this.isNonLocalTenantReference(metadata)) {
             if (embeddedContent) {
                 return this.prioritizeOversizedDocumentResult(embeddedContent, {
-                    query : options.query,
-                    source: ref.source
+                    query           : options.query,
+                    source          : ref.source,
+                    coordinateOrigin: 'embedded'
                 });
             }
 
@@ -384,8 +385,9 @@ class SearchService extends Base {
         if (metadata.rootKind === 'neo-workspace' && metadata.extractionIdentity) {
             if (embeddedContent) {
                 return this.prioritizeOversizedDocumentResult(embeddedContent, {
-                    query : options.query,
-                    source: ref.source
+                    query           : options.query,
+                    source          : ref.source,
+                    coordinateOrigin: 'embedded'
                 });
             }
 
@@ -427,8 +429,9 @@ class SearchService extends Base {
 
         if (!content && embeddedContent) {
             return this.prioritizeOversizedDocumentResult(embeddedContent, {
-                query : options.query,
-                source: ref.source
+                query           : options.query,
+                source          : ref.source,
+                coordinateOrigin: 'embedded'
             });
         }
 
@@ -438,9 +441,10 @@ class SearchService extends Base {
         }
 
         return this.prioritizeOversizedDocumentResult(content, {
-            query : options.query,
+            query           : options.query,
             embeddedContent,
-            source: ref.source
+            source          : ref.source,
+            coordinateOrigin: 'file'
         });
     }
 
@@ -471,14 +475,16 @@ class SearchService extends Base {
      * @param {String} [options.query=''] Active search query.
      * @param {String} [options.embeddedContent=''] Matched chunk content from QueryService.
      * @param {String} [options.source=''] Document source path for syntax-aware windowing.
+     * @param {String} [options.coordinateOrigin='file'] Provenance of the hydrated content (`'file'` or `'embedded'`).
      * @returns {{content: String, shortened: Boolean}} Prioritized/windowed content and truncation status.
      */
-    prioritizeOversizedDocumentResult(content, {query = '', embeddedContent = '', source = ''} = {}) {
+    prioritizeOversizedDocumentResult(content, {query = '', embeddedContent = '', source = '', coordinateOrigin = 'file'} = {}) {
         return prioritizeOversizedDocument(content, {
             query,
             embeddedContent,
             source,
-            maxCharsPerDocument: aiConfig.askSynthesis.contextMaxCharsPerDocument
+            maxCharsPerDocument: aiConfig.askSynthesis.contextMaxCharsPerDocument,
+            coordinateOrigin
         });
     }
 

@@ -233,4 +233,44 @@ test.describe('prioritizeOversizedDocument — code and guide windowing', () => 
         expect(singleResult.content).toContain('Needle method updateIssueRelationship resolves parentRepo cleanly');
         expect(singleResult.content).toContain('omitted]');
     });
+
+    test('windows many-member JS modules with O(N) offset indexing while preserving exact line omission markers', () => {
+        const methodCount = 1500;
+        const methods     = Array.from({length: methodCount}, (_, index) => [
+            `    helper_${index}(v) {`,
+            `        return v + ${index};`,
+            '    }'
+        ].join('\n')).join('\n\n');
+
+        const largeModule = [
+            "import Base from 'neo.mjs/src/core/Base.mjs';",
+            '',
+            'class MassiveService extends Base {',
+            methods,
+            '',
+            '    resolveFinalTargetQuota() {',
+            '        return "FINAL_TARGET_SENTINEL";',
+            '    }',
+            '}',
+            '',
+            'export default MassiveService;',
+            ''
+        ].join('\n');
+
+        const firstKeptLine    = largeModule.slice(0, largeModule.indexOf('helper_1498(v)')).split('\n').length;
+        const targetLineNumber = largeModule.slice(0, largeModule.indexOf('resolveFinalTargetQuota()')).split('\n').length;
+        const startedAt        = performance.now();
+        const result           = prioritizeOversizedDocument(largeModule, {
+            query              : 'Where is resolveFinalTargetQuota defined?',
+            source             : 'ai/services/MassiveService.mjs',
+            maxCharsPerDocument: 12000
+        });
+        const elapsedMs = performance.now() - startedAt;
+
+        expect(result.shortened).toBe(true);
+        expect(result.content).toContain('resolveFinalTargetQuota()');
+        expect(result.content).toContain(`// ... [lines 4-${firstKeptLine - 1} omitted] ...`);
+        expect(result.content).toContain(`// ... [lines ${targetLineNumber - 1}-${targetLineNumber - 1} omitted] ...`);
+        expect(elapsedMs).toBeLessThan(250);
+    });
 });

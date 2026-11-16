@@ -58,7 +58,7 @@ function extractQuerySignals(query, embeddedContent) {
         const chunks = embeddedContent
             .split(/\n{2,}/)
             .map(part => part.trim())
-            .filter(part => part.length >= 24);
+            .filter(part => part.length >= 18);
 
         for (const chunk of chunks) {
             chunkSet.add(chunk);
@@ -68,7 +68,7 @@ function extractQuerySignals(query, embeddedContent) {
             for (const line of chunk.split('\n')) {
                 const trimmedLine = line.trim();
 
-                if (trimmedLine.length >= 28 && !trimmedLine.startsWith('import ')) {
+                if (trimmedLine.length >= 18 && !trimmedLine.startsWith('import ')) {
                     chunkSet.add(trimmedLine);
                 }
             }
@@ -78,7 +78,7 @@ function extractQuerySignals(query, embeddedContent) {
     return {
         exactTokens  : [...exactSet],
         subWords     : [...subWordSet],
-        chunkSnippets: [...chunkSet].slice(0, 40)
+        chunkSnippets: [...chunkSet].sort((left, right) => right.length - left.length).slice(0, 50)
     };
 }
 
@@ -106,8 +106,8 @@ function scoreTextAgainstSignals(text, signals, {headerLines = 1} = {}) {
         chunkHits = 0;
 
     for (const snippet of signals.chunkSnippets) {
-        if ((trimmed.length >= 32 && snippet.includes(trimmed)) || trimmed.includes(snippet)) {
-            score += snippet.length >= 48 ? 35 : 20;
+        if ((trimmed.length >= 18 && snippet.includes(trimmed)) || trimmed.includes(snippet)) {
+            score += snippet.length >= 48 ? 500 : 350;
             chunkHits++;
 
             if (chunkHits >= 3) {
@@ -140,34 +140,227 @@ function scoreTextAgainstSignals(text, signals, {headerLines = 1} = {}) {
 }
 
 /**
- * @summary Counts 1-based line number of a character offset inside source text.
+ * @summary Builds a single-pass newline offset index for O(log L) offset-to-line lookup.
  * @param {String} content
- * @param {Number} offset
- * @returns {Number}
+ * @returns {{totalLines: Number, lineNumberAt: Function}}
  * @private
  */
-function lineNumberAt(content, offset) {
-    let lines = 1;
+function buildLineOffsetIndex(content) {
+    const lineStarts = [0];
 
-    for (let i = 0; i < offset && i < content.length; i++) {
+    for (let i = 0; i < content.length; i++) {
         if (content.charCodeAt(i) === 10) {
-            lines++;
+            lineStarts.push(i + 1);
         }
     }
 
-    return lines;
+    const totalLines = lineStarts.length;
+
+    return {
+        totalLines,
+        lineNumberAt(offset) {
+            const clamped = Math.max(0, Math.min(offset, content.length));
+            let   low     = 0,
+                high = totalLines - 1;
+
+            while (low <= high) {
+                const mid = (low + high) >> 1;
+
+                if (lineStarts[mid] <= clamped) {
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            }
+
+            return high + 1;
+        }
+    };
 }
 
 /**
- * @summary Formats an explicit line-range omission marker matching the document syntax.
+ * @summary Formats an omission marker that distinguishes filesystem line ranges from embedded chunk coordinates.
  * @param {Number} startLine
  * @param {Number} endLine
  * @param {String} commentPrefix
+ * @param {String} coordinateOrigin
  * @returns {String}
  * @private
  */
-function omissionMarker(startLine, endLine, commentPrefix = '// ') {
+function omissionMarker(startLine, endLine, commentPrefix = '// ', coordinateOrigin = 'file') {
+    if (coordinateOrigin === 'embedded') {
+        return `${commentPrefix}... [embedded chunk content omitted] ...`;
+    }
+
     return `${commentPrefix}... [lines ${startLine}-${endLine} omitted] ...`;
+}
+
+/**
+ * @summary Formats an intra-line omission marker respecting filesystem vs embedded chunk coordinate custody.
+ * @param {Object} options
+ * @param {String} [options.commentPrefix='']
+ * @param {Number} [options.lineNumber=1]
+ * @param {Number} [options.startChar]
+ * @param {Number} [options.endChar]
+ * @param {String} [options.coordinateOrigin='file']
+ * @returns {String}
+ * @private
+ */
+function inlineOmissionMarker({commentPrefix = '', lineNumber = 1, startChar, endChar, coordinateOrigin = 'file'}) {
+    if (coordinateOrigin === 'embedded') {
+        return `${commentPrefix}... [embedded chunk content omitted] ...`;
+    }
+
+    if (Number.isFinite(startChar) && Number.isFinite(endChar)) {
+        return `${commentPrefix}... [line ${lineNumber} characters ${startChar + 1}-${endChar} omitted] ...`;
+    }
+
+    return `${commentPrefix}... [characters omitted on line ${lineNumber}] ...`;
+}
+
+/**
+ * @summary Locates the strongest match span inside one oversized line and slices a bounded window around it.
+ * @param {String} lineText
+ * @param {Object} options
+ * @param {{exactTokens: String[], subWords: String[], chunkSnippets: String[]}} options.signals
+ * @param {Number} options.maxChars
+ * @param {Number} [options.lineNumber=1]
+ * @param {String} [options.commentPrefix='']
+ * @param {String} [options.coordinateOrigin='file']
+ * @returns {String}
+ * @private
+ */
+function windowSingleLongLine(lineText, {signals, maxChars, lineNumber = 1, commentPrefix = '', coordinateOrigin = 'file'}) {
+    if (!(maxChars > 0) || lineText.length <= maxChars) {
+        return lineText;
+    }
+
+    const lower  = lineText.toLowerCase();
+    let   hitPos = -1,
+          matchLen  = 0;
+
+    for (const snippet of signals.chunkSnippets) {
+        const snippetLower = snippet.toLowerCase();
+        const foundAt      = lower.indexOf(snippetLower);
+
+        if (foundAt >= 0) {
+            hitPos   = foundAt;
+            matchLen = snippetLower.length;
+            break;
+        }
+    }
+
+    if (hitPos < 0) {
+        const
+            windowSize = Math.min(360, Math.max(120, Math.floor(maxChars * 0.15))),
+            step       = Math.max(60, Math.floor(windowSize / 3));
+        let bestScore = -1,
+            bestStart = 0;
+
+        for (let pos = 0; pos < lower.length; pos += step) {
+            const slice = lower.slice(pos, pos + windowSize);
+            let   score = 0;
+
+            for (const token of signals.exactTokens) {
+                if (slice.includes(token)) {
+                    score += 60;
+                }
+            }
+
+            for (const word of signals.subWords) {
+                const stem = word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word;
+
+                if (slice.includes(stem)) {
+                    score += 15;
+                }
+            }
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestStart = pos;
+            }
+        }
+
+        if (bestScore > 0) {
+            const targetSlice = lower.slice(bestStart, bestStart + windowSize);
+            const candidates  = [
+                ...[...signals.exactTokens].sort((a, b) => b.length - a.length),
+                ...[...signals.subWords].sort((a, b) => b.length - a.length)
+            ];
+
+            for (const candidate of candidates) {
+                const offset = targetSlice.indexOf(candidate);
+
+                if (offset >= 0) {
+                    hitPos   = bestStart + offset;
+                    matchLen = candidate.length;
+                    break;
+                }
+            }
+
+            if (hitPos < 0) {
+                hitPos = bestStart;
+            }
+        }
+    }
+
+    if (hitPos < 0 || hitPos + Math.max(40, matchLen) <= maxChars) {
+        const suffixReserve = 64;
+
+        if (lineText.length > maxChars && maxChars > suffixReserve + 32) {
+            const bodyLen   = maxChars - suffixReserve;
+            const endMarker = inlineOmissionMarker({
+                commentPrefix,
+                lineNumber,
+                startChar: bodyLen,
+                endChar  : lineText.length,
+                coordinateOrigin
+            });
+            const joined = `${lineText.slice(0, Math.max(1, maxChars - endMarker.length - 1))}\n${endMarker}`;
+
+            return joined.length <= maxChars ? joined : joined.slice(0, maxChars);
+        }
+
+        return lineText.slice(0, maxChars);
+    }
+
+    const
+        anchorEnd  = Math.min(lineText.length, hitPos + Math.max(matchLen, 160)),
+        markerJoin = '\n',
+        maxSlice   = Math.max(64, maxChars - 140);
+    let sliceEnd   = Math.min(lineText.length, Math.max(anchorEnd + Math.floor(maxSlice * 0.2), maxSlice)),
+        sliceStart = Math.max(0, sliceEnd - maxSlice);
+
+    if (sliceStart > hitPos) {
+        sliceStart = Math.max(0, hitPos - Math.floor(maxSlice * 0.35));
+        sliceEnd   = Math.min(lineText.length, sliceStart + maxSlice);
+    }
+
+    const buildSlice = (start, end) => {
+        const leadMarker = start > 0
+            ? `${inlineOmissionMarker({commentPrefix, lineNumber, startChar: 0, endChar: start, coordinateOrigin})}${markerJoin}`
+            : '';
+        const tailMarker = end < lineText.length
+            ? `${markerJoin}${inlineOmissionMarker({commentPrefix, lineNumber, startChar: end, endChar: lineText.length, coordinateOrigin})}`
+            : '';
+
+        return `${leadMarker}${lineText.slice(start, end)}${tailMarker}`;
+    };
+
+    let result = buildSlice(sliceStart, sliceEnd);
+
+    // Trim upstream of the hit first so the matched tail evidence itself is never dropped by hard truncation.
+    if (result.length > maxChars && sliceStart < hitPos) {
+        const overflow = result.length - maxChars;
+        sliceStart = Math.min(hitPos, sliceStart + overflow + 8);
+        result     = buildSlice(sliceStart, sliceEnd);
+    }
+
+    if (result.length > maxChars) {
+        result = result.slice(0, maxChars);
+    }
+
+    return result;
 }
 
 /**
@@ -178,51 +371,53 @@ function omissionMarker(startLine, endLine, commentPrefix = '// ') {
  * @param {Number} options.maxChars
  * @param {Number} [options.baseLine=1]
  * @param {String} [options.commentPrefix='// ']
+ * @param {String} [options.coordinateOrigin='file']
  * @returns {String}
  * @private
  */
-function windowTextBySignals(text, {signals, maxChars, baseLine = 1, commentPrefix = '// '}) {
+function windowTextBySignals(text, {signals, maxChars, baseLine = 1, commentPrefix = '// ', coordinateOrigin = 'file'}) {
     if (!(maxChars > 0) || text.length <= maxChars) {
         return text;
     }
 
     const lines = text.split('\n');
 
-    if (lines.length <= 2) {
-        const lower   = text.toLowerCase(),
-              targets = [...signals.exactTokens, ...signals.subWords];
-        let hitPos = -1;
-
-        for (const target of targets) {
-            const pos = lower.indexOf(target);
-
-            if (pos >= 0 && (hitPos < 0 || pos < hitPos)) {
-                hitPos = pos;
-            }
-        }
-
-        if (hitPos < 0 || hitPos + 40 <= maxChars) {
-            return text.slice(0, maxChars);
-        }
-
-        const
-            prefix     = `${commentPrefix}... `,
-            available  = Math.max(1, maxChars - prefix.length),
-            sliceStart = Math.max(0, Math.min(text.length - available, hitPos - Math.floor(available * 0.25)));
-
-        return `${prefix}${text.slice(sliceStart, sliceStart + available)}`.slice(0, maxChars);
+    if (lines.length === 1) {
+        return windowSingleLongLine(text, {
+            signals,
+            maxChars,
+            lineNumber: baseLine,
+            commentPrefix,
+            coordinateOrigin
+        });
     }
 
-    let bestIndex = 0,
-        bestScore = -1;
+    if (lines.length === 2) {
+        const
+            line0      = lines[0],
+            line1      = lines[1],
+            headBudget = Math.floor(maxChars * 0.25);
 
-    for (let i = 0; i < lines.length; i++) {
-        const lineScore = scoreTextAgainstSignals(lines[i], signals, {headerLines: 1});
+        if (line0.length <= headBudget && line1.length > maxChars - line0.length - 1) {
+            const remaining = maxChars - line0.length - 1;
+            const tailWin   = windowSingleLongLine(line1, {
+                signals,
+                maxChars  : remaining,
+                lineNumber: baseLine + 1,
+                commentPrefix,
+                coordinateOrigin
+            });
 
-        if (lineScore > bestScore) {
-            bestScore = lineScore;
-            bestIndex = i;
+            return `${line0}\n${tailWin}`;
         }
+
+        return windowSingleLongLine(text, {
+            signals,
+            maxChars,
+            lineNumber: baseLine,
+            commentPrefix,
+            coordinateOrigin
+        });
     }
 
     const
@@ -246,12 +441,39 @@ function windowTextBySignals(text, {signals, maxChars, baseLine = 1, commentPref
 
     const headCount = headLines.length;
 
+    // Head lines are already retained unconditionally; score interior lines first so a method
+    // signature or heading cannot outscore the retrieved body line hidden further down.
+    let bestIndex = -1,
+        bestScore = -1;
+
+    for (let i = headCount; i < lines.length; i++) {
+        const lineScore = scoreTextAgainstSignals(lines[i], signals, {headerLines: 1});
+
+        if (lineScore > bestScore) {
+            bestScore = lineScore;
+            bestIndex = i;
+        }
+    }
+
+    if (bestScore <= 0) {
+        for (let i = 0; i < headCount; i++) {
+            const lineScore = scoreTextAgainstSignals(lines[i], signals, {headerLines: 1});
+
+            if (lineScore > bestScore) {
+                bestScore = lineScore;
+                bestIndex = i;
+            }
+        }
+    }
+
     if (bestScore <= 0 || bestIndex < headCount) {
         const kept = [];
         let   len  = 0;
 
         for (let i = 0; i < lines.length; i++) {
-            const trailer = i < lines.length - 1 ? `\n${omissionMarker(baseLine + i + 1, baseLine + lines.length - 1, commentPrefix)}` : '';
+            const trailer = i < lines.length - 1
+                ? `\n${omissionMarker(baseLine + i + 1, baseLine + lines.length - 1, commentPrefix, coordinateOrigin)}`
+                : '';
             const nextLen = len + lines[i].length + (kept.length > 0 ? 1 : 0);
 
             if (nextLen + trailer.length > maxChars) {
@@ -263,11 +485,17 @@ function windowTextBySignals(text, {signals, maxChars, baseLine = 1, commentPref
         }
 
         if (kept.length === 0) {
-            return text.slice(0, maxChars);
+            return windowSingleLongLine(lines[0], {
+                signals,
+                maxChars,
+                lineNumber: baseLine,
+                commentPrefix,
+                coordinateOrigin
+            });
         }
 
         const omittedAfter = kept.length < lines.length
-            ? `\n${omissionMarker(baseLine + kept.length, baseLine + lines.length - 1, commentPrefix)}`
+            ? `\n${omissionMarker(baseLine + kept.length, baseLine + lines.length - 1, commentPrefix, coordinateOrigin)}`
             : '';
 
         return `${kept.join('\n')}${omittedAfter}`.slice(0, maxChars);
@@ -287,7 +515,7 @@ function windowTextBySignals(text, {signals, maxChars, baseLine = 1, commentPref
         const gapBeforeEnd   = winStart - 1;
 
         if (gapBeforeEnd >= gapBeforeStart) {
-            parts.push(omissionMarker(baseLine + gapBeforeStart, baseLine + gapBeforeEnd, commentPrefix));
+            parts.push(omissionMarker(baseLine + gapBeforeStart, baseLine + gapBeforeEnd, commentPrefix, coordinateOrigin));
         }
 
         const bodyStart = Math.max(headCount, winStart);
@@ -297,14 +525,48 @@ function windowTextBySignals(text, {signals, maxChars, baseLine = 1, commentPref
         }
 
         if (winEnd < lines.length - 1) {
-            parts.push(omissionMarker(baseLine + winEnd + 1, baseLine + lines.length - 1, commentPrefix));
+            parts.push(omissionMarker(baseLine + winEnd + 1, baseLine + lines.length - 1, commentPrefix, coordinateOrigin));
         }
 
         return parts.join('\n');
     };
 
     if (renderRange(start, end).length > maxChars) {
-        return lines[bestIndex].slice(0, maxChars);
+        const
+            parts      = [],
+            keepHeader = headCount > 0 && headChars <= Math.floor(maxChars * 0.2),
+            preMarker  = bestIndex > (keepHeader ? headCount : 0)
+                ? omissionMarker(baseLine + (keepHeader ? headCount : 0), baseLine + bestIndex - 1, commentPrefix, coordinateOrigin)
+                : '',
+            postMarker     = bestIndex < lines.length - 1
+                ? omissionMarker(baseLine + bestIndex + 1, baseLine + lines.length - 1, commentPrefix, coordinateOrigin)
+                : '',
+            headerOverhead = (keepHeader ? headChars + 1 : 0)
+                + (preMarker ? preMarker.length + 1 : 0)
+                + (postMarker ? postMarker.length + 1 : 0),
+            lineBudget     = Math.max(128, maxChars - headerOverhead),
+            windowedLine   = windowSingleLongLine(lines[bestIndex], {
+                signals,
+                maxChars  : lineBudget,
+                lineNumber: baseLine + bestIndex,
+                commentPrefix,
+                coordinateOrigin
+            });
+
+        if (keepHeader) {
+            parts.push(headLines.join('\n'));
+        }
+        if (preMarker) {
+            parts.push(preMarker);
+        }
+        parts.push(windowedLine);
+        if (postMarker) {
+            parts.push(postMarker);
+        }
+
+        const combined = parts.join('\n');
+
+        return combined.length <= maxChars ? combined : combined.slice(0, maxChars);
     }
 
     let step = 0;
@@ -366,10 +628,11 @@ function findClassDeclaration(stmt) {
 /**
  * @summary Parses a JS module into a bounded preamble plus member/declaration source units.
  * @param {String} content
+ * @param {{totalLines: Number, lineNumberAt: Function}} [lineIndex]
  * @returns {{preamble: String, preambleEndLine: Number, units: Array, totalLines: Number}|null}
  * @private
  */
-function extractJavaScriptUnits(content) {
+function extractJavaScriptUnits(content, lineIndex = buildLineOffsetIndex(content)) {
     let ast;
 
     for (const sourceType of ['module', 'script']) {
@@ -390,7 +653,7 @@ function extractJavaScriptUnits(content) {
         return null;
     }
 
-    const totalLines = content.split('\n').length;
+    const {totalLines, lineNumberAt} = lineIndex;
 
     let importEndOffset = 0,
         bodyStartIndex  = 0;
@@ -420,8 +683,8 @@ function extractJavaScriptUnits(content) {
                 units.push({
                     start    : headerStart,
                     end      : classBodyOpenEnd,
-                    startLine: lineNumberAt(content, headerStart),
-                    endLine  : lineNumberAt(content, classBodyOpenEnd),
+                    startLine: lineNumberAt(headerStart),
+                    endLine  : lineNumberAt(classBodyOpenEnd),
                     text     : content.slice(headerStart, classBodyOpenEnd).replace(/^\n+/, ''),
                     pinned   : true
                 });
@@ -440,8 +703,8 @@ function extractJavaScriptUnits(content) {
                     units.push({
                         start    : memberCursor,
                         end      : member.end,
-                        startLine: lineNumberAt(content, memberCursor),
-                        endLine  : lineNumberAt(content, member.end),
+                        startLine: lineNumberAt(memberCursor),
+                        endLine  : lineNumberAt(member.end),
                         text     : unitText
                     });
                 }
@@ -463,8 +726,8 @@ function extractJavaScriptUnits(content) {
             units.push({
                 start    : cursor,
                 end      : stmt.end,
-                startLine: lineNumberAt(content, cursor),
-                endLine  : lineNumberAt(content, stmt.end),
+                startLine: lineNumberAt(cursor),
+                endLine  : lineNumberAt(stmt.end),
                 text     : unitText
             });
         }
@@ -480,22 +743,25 @@ function extractJavaScriptUnits(content) {
 
     return {
         preamble       : rawPreamble,
-        preambleEndLine: rawPreamble ? lineNumberAt(content, preambleEndOffset) : 0,
+        preambleEndLine: rawPreamble ? lineNumberAt(preambleEndOffset) : 0,
         units,
         totalLines
     };
 }
 
 /**
- * @summary Builds a bounded code window from AST preamble, highest-scored units, and line-gap markers.
+ * @summary Builds a bounded code window from AST preamble, reserving strongest-evidence units first.
  * @param {String} content
  * @param {{exactTokens: String[], subWords: String[], chunkSnippets: String[]}} signals
  * @param {Number} maxCharsPerDocument
+ * @param {Object} [options]
+ * @param {String} [options.coordinateOrigin='file']
+ * @param {{totalLines: Number, lineNumberAt: Function}} [options.lineIndex]
  * @returns {{content: String, shortened: Boolean}|null}
  * @private
  */
-function windowJavaScriptModule(content, signals, maxCharsPerDocument) {
-    const parsed = extractJavaScriptUnits(content);
+function windowJavaScriptModule(content, signals, maxCharsPerDocument, {coordinateOrigin = 'file', lineIndex} = {}) {
+    const parsed = extractJavaScriptUnits(content, lineIndex);
 
     if (!parsed) {
         return null;
@@ -514,10 +780,11 @@ function windowJavaScriptModule(content, signals, maxCharsPerDocument) {
     }
 
     const
-        maxPreamble   = Math.floor(maxCharsPerDocument * 0.25),
-        headerBlock   = preamble.length <= maxPreamble ? preamble : preamble.slice(0, maxPreamble).replace(/\n[^\n]*$/, ''),
-        headerEndLine = headerBlock === preamble ? preambleEndLine : headerBlock.split('\n').length,
-        selectedSet   = new Set();
+        maxPreamble       = Math.floor(maxCharsPerDocument * 0.25),
+        headerBlock       = preamble.length <= maxPreamble ? preamble : preamble.slice(0, maxPreamble).replace(/\n[^\n]*$/, ''),
+        headerEndLine     = headerBlock === preamble ? preambleEndLine : headerBlock.split('\n').length,
+        selectedSet       = new Set(),
+        unitTextOverrides = new Map();
 
     scored.forEach((item, index) => {
         if (item.pinned) {
@@ -540,15 +807,15 @@ function windowJavaScriptModule(content, signals, maxCharsPerDocument) {
 
         for (const item of sorted) {
             if (item.startLine > lastEndLine + 1) {
-                parts.push(omissionMarker(lastEndLine + 1, item.startLine - 1, '// '));
+                parts.push(omissionMarker(lastEndLine + 1, item.startLine - 1, '// ', coordinateOrigin));
             }
 
-            parts.push(item.text);
+            parts.push(unitTextOverrides.get(item.index) ?? item.text);
             lastEndLine = item.endLine;
         }
 
         if (lastEndLine < totalLines) {
-            parts.push(omissionMarker(lastEndLine + 1, totalLines, '// '));
+            parts.push(omissionMarker(lastEndLine + 1, totalLines, '// ', coordinateOrigin));
         }
 
         return parts.join('\n');
@@ -562,56 +829,76 @@ function windowJavaScriptModule(content, signals, maxCharsPerDocument) {
         .filter(item => !item.pinned && item.score > 0)
         .sort((left, right) => right.score - left.score || left.index - right.index);
 
-    for (const candidate of ranked) {
-        const nextSet = new Set(selectedSet);
-        nextSet.add(candidate.index);
+    // Reserve the strongest retrieved match first (windowing inside it if oversized) so weaker
+    // fitting methods never exhaust the cap before the primary evidence is admitted.
+    if (ranked.length > 0) {
+        const
+            topCandidate = ranked[0],
+            firstSet     = new Set(selectedSet);
 
-        if (render(nextSet).length <= maxCharsPerDocument) {
-            selectedSet.add(candidate.index);
+        firstSet.add(topCandidate.index);
+
+        if (render(firstSet).length <= maxCharsPerDocument) {
+            selectedSet.add(topCandidate.index);
+        } else {
+            const
+                baseOverhead  = render(selectedSet).length,
+                markerReserve = 160,
+                available     = Math.max(512, maxCharsPerDocument - baseOverhead - markerReserve),
+                topBudget     = ranked.length > 1
+                    ? Math.max(512, Math.floor(available * 0.85))
+                    : available;
+
+            let windowedTop = windowTextBySignals(topCandidate.text, {
+                signals,
+                maxChars     : topBudget,
+                baseLine     : topCandidate.startLine,
+                commentPrefix: '// ',
+                coordinateOrigin
+            });
+
+            unitTextOverrides.set(topCandidate.index, windowedTop);
+            selectedSet.add(topCandidate.index);
+
+            if (render(selectedSet).length > maxCharsPerDocument) {
+                scored.forEach((item, index) => {
+                    if (item.pinned) {
+                        selectedSet.delete(index);
+                    }
+                });
+
+                const unpinnedOverhead = render(new Set()).length + markerReserve;
+                const retryBudget      = Math.max(256, maxCharsPerDocument - unpinnedOverhead);
+
+                if (windowedTop.length > retryBudget) {
+                    windowedTop = windowTextBySignals(topCandidate.text, {
+                        signals,
+                        maxChars     : retryBudget,
+                        baseLine     : topCandidate.startLine,
+                        commentPrefix: '// ',
+                        coordinateOrigin
+                    });
+                    unitTextOverrides.set(topCandidate.index, windowedTop);
+                }
+            }
         }
     }
 
-    // If the top match itself exceeds the whole document cap, window inside that declaration
-    // so callers still inspect its signature and matched implementation lines.
-    const hasPositiveHit = [...selectedSet].some(idx => scored[idx].score > 0);
+    let currentLength = render(selectedSet).length;
 
-    if (!hasPositiveHit && ranked.length > 0) {
-        const
-            topItem      = ranked[0],
-            overheadText = render(selectedSet),
-            reserve      = overheadText ? overheadText.length + 120 : 120,
-            methodBudget = Math.max(256, maxCharsPerDocument - reserve),
-            windowedText = windowTextBySignals(topItem.text, {
-                signals,
-                maxChars     : methodBudget,
-                baseLine     : topItem.startLine,
-                commentPrefix: '// '
-            });
-
-        const parts = [];
-
-        if (headerBlock) {
-            parts.push(headerBlock);
-
-            if (topItem.startLine > headerEndLine + 1) {
-                parts.push(omissionMarker(headerEndLine + 1, topItem.startLine - 1, '// '));
-            }
-        } else if (topItem.startLine > 1) {
-            parts.push(omissionMarker(1, topItem.startLine - 1, '// '));
+    for (const candidate of ranked.slice(1)) {
+        if (currentLength + candidate.text.length - 64 > maxCharsPerDocument) {
+            continue;
         }
 
-        parts.push(windowedText);
+        const nextSet = new Set(selectedSet);
+        nextSet.add(candidate.index);
+        const nextLength = render(nextSet).length;
 
-        if (topItem.endLine < totalLines) {
-            parts.push(omissionMarker(topItem.endLine + 1, totalLines, '// '));
+        if (nextLength <= maxCharsPerDocument) {
+            selectedSet.add(candidate.index);
+            currentLength = nextLength;
         }
-
-        const fallbackRendered = parts.join('\n').slice(0, maxCharsPerDocument);
-
-        return {
-            content  : fallbackRendered,
-            shortened: fallbackRendered.length < content.length
-        };
     }
 
     // Pull immediate adjacent sibling units when spare budget remains so nearby helpers travel together.
@@ -625,11 +912,17 @@ function windowJavaScriptModule(content, signals, maxCharsPerDocument) {
                 continue;
             }
 
+            if (currentLength + scored[neighbor].text.length - 64 > maxCharsPerDocument) {
+                continue;
+            }
+
             const nextSet = new Set(selectedSet);
             nextSet.add(neighbor);
+            const nextLength = render(nextSet).length;
 
-            if (render(nextSet).length <= maxCharsPerDocument) {
+            if (nextLength <= maxCharsPerDocument) {
                 selectedSet.add(neighbor);
+                currentLength = nextLength;
             }
         }
     }
@@ -642,7 +935,7 @@ function windowJavaScriptModule(content, signals, maxCharsPerDocument) {
 
     return {
         content  : rendered,
-        shortened: selectedSet.size < scored.length || rendered.length < content.length
+        shortened: unitTextOverrides.size > 0 || selectedSet.size < scored.length || rendered.length < content.length
     };
 }
 
@@ -722,13 +1015,15 @@ export function splitMarkdownSections(content) {
  * @param {String} [options.embeddedContent='']
  * @param {String} [options.source='']
  * @param {Number} [options.maxCharsPerDocument=0]
+ * @param {String} [options.coordinateOrigin='file']
  * @returns {{content: String, shortened: Boolean}}
  */
 export function prioritizeOversizedDocument(content, {
     query               = '',
     embeddedContent     = '',
     source              = '',
-    maxCharsPerDocument = 0
+    maxCharsPerDocument = 0,
+    coordinateOrigin    = 'file'
 } = {}) {
     if (typeof content !== 'string' || !(maxCharsPerDocument > 0) || content.length <= maxCharsPerDocument) {
         return {content, shortened: false};
@@ -746,10 +1041,14 @@ export function prioritizeOversizedDocument(content, {
 
     const
         isExplicitCode = CODE_EXTENSION_RE.test(source),
-        isExplicitDoc  = DOC_EXTENSION_RE.test(source);
+        isExplicitDoc  = DOC_EXTENSION_RE.test(source),
+        lineIndex      = buildLineOffsetIndex(content);
 
     if (isExplicitCode) {
-        const windowed = windowJavaScriptModule(content, signals, maxCharsPerDocument);
+        const windowed = windowJavaScriptModule(content, signals, maxCharsPerDocument, {
+            coordinateOrigin,
+            lineIndex
+        });
 
         if (windowed) {
             return windowed;
@@ -759,7 +1058,8 @@ export function prioritizeOversizedDocument(content, {
             signals,
             maxChars     : maxCharsPerDocument,
             baseLine     : 1,
-            commentPrefix: '// '
+            commentPrefix: '// ',
+            coordinateOrigin
         });
 
         return {
@@ -795,8 +1095,9 @@ export function prioritizeOversizedDocument(content, {
         const windowedTop = windowTextBySignals(scored[0].section, {
             signals,
             maxChars     : maxCharsPerDocument,
-            baseLine     : lineNumberAt(content, content.indexOf(scored[0].section)),
-            commentPrefix: ''
+            baseLine     : lineIndex.lineNumberAt(content.indexOf(scored[0].section)),
+            commentPrefix: '',
+            coordinateOrigin
         });
 
         return {
@@ -806,7 +1107,10 @@ export function prioritizeOversizedDocument(content, {
     }
 
     if (!isExplicitDoc) {
-        const windowedCode = windowJavaScriptModule(content, signals, maxCharsPerDocument);
+        const windowedCode = windowJavaScriptModule(content, signals, maxCharsPerDocument, {
+            coordinateOrigin,
+            lineIndex
+        });
 
         if (windowedCode) {
             return windowedCode;
@@ -817,7 +1121,8 @@ export function prioritizeOversizedDocument(content, {
         signals,
         maxChars     : maxCharsPerDocument,
         baseLine     : 1,
-        commentPrefix: ''
+        commentPrefix: '',
+        coordinateOrigin
     });
 
     return {

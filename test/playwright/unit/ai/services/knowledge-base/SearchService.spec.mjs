@@ -1026,5 +1026,175 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
             ]);
         }
     });
+
+    test('reserves bounded windows for oversized winning JS methods and late single-paragraph Markdown evidence in SearchService.ask', async () => {
+        let capturedPrompt = null;
+
+        const oversizedMethodLines = Array.from({length: 260}, (_, index) =>
+            `        const policyStep${index} = "${'quota-envelope-padding-'.repeat(2)}${index}";`
+        ).join('\n');
+
+        const competingJsSource = [
+            "import Base from 'neo.mjs/src/core/Base.mjs';",
+            '',
+            'class ThermalPolicyService extends Base {',
+            '    auditStatus() {',
+            '        return "audit-ok";',
+            '    }',
+            '',
+            '    resolveThermalQuota(envelope) {',
+            oversizedMethodLines,
+            '        return "THERMAL_SPARE_CAPACITY";',
+            '    }',
+            '}',
+            '',
+            'export default ThermalPolicyService;',
+            ''
+        ].join('\n');
+
+        expect(competingJsSource.length).toBeGreaterThan(16000);
+
+        const competingJsFile     = path.join(path.dirname(tmpFilePath), 'competing-quota-service.mjs');
+        const singleParagraphBody = `${'Background architectural summary covering configuration rules. '.repeat(280)}CRITICAL_PARAGRAPH_TAIL_INVARIANT: preserve ancestor custody.`;
+        const lateParagraphGuide  = `# Policy Guide\n\n${singleParagraphBody}\n`;
+        const lateGuideFile       = path.join(path.dirname(tmpFilePath), 'late-single-paragraph-guide.md');
+
+        expect(singleParagraphBody.length).toBeGreaterThan(16000);
+        await Promise.all([
+            fs.writeFile(competingJsFile, competingJsSource, 'utf8'),
+            fs.writeFile(lateGuideFile, lateParagraphGuide, 'utf8')
+        ]);
+
+        const jsRelative    = path.relative(aiConfig.neoRootDir, competingJsFile);
+        const guideRelative = path.relative(aiConfig.neoRootDir, lateGuideFile);
+
+        try {
+            QueryService.queryDocuments = async () => ({
+                topResult: jsRelative,
+                results  : [{
+                    source  : jsRelative,
+                    score   : '9400',
+                    metadata: {
+                        type    : 'src',
+                        tenantId: 'neo-shared',
+                        repoSlug: 'neo',
+                        content : '        return "THERMAL_SPARE_CAPACITY";'
+                    }
+                }]
+            });
+
+            SearchService.model = {
+                generateContent: async prompt => {
+                    capturedPrompt = prompt;
+                    return {response: {text: () => 'Quota answer.'}};
+                }
+            };
+
+            const jsAnswer = await SearchService.ask({
+                query: 'Which policy controls resolveThermalQuota for the audit?',
+                type : 'src'
+            });
+
+            expect(capturedPrompt).toContain('resolveThermalQuota(envelope)');
+            expect(capturedPrompt).toContain('THERMAL_SPARE_CAPACITY');
+            expect(capturedPrompt).toContain('// ... [lines');
+            expect(jsAnswer.answer).toContain('Document(s) 1 were shortened.');
+
+            capturedPrompt = null;
+            QueryService.queryDocuments = async () => ({
+                topResult: guideRelative,
+                results  : [{
+                    source  : guideRelative,
+                    score   : '9300',
+                    metadata: {
+                        type    : 'guide',
+                        tenantId: 'neo-shared',
+                        repoSlug: 'neo',
+                        content : 'CRITICAL_PARAGRAPH_TAIL_INVARIANT: preserve ancestor custody.'
+                    }
+                }]
+            });
+
+            const guideAnswer = await SearchService.ask({
+                query: 'What does CRITICAL_PARAGRAPH_TAIL_INVARIANT require?',
+                type : 'guide'
+            });
+
+            expect(capturedPrompt).toContain('# Policy Guide');
+            expect(capturedPrompt).toContain('CRITICAL_PARAGRAPH_TAIL_INVARIANT: preserve ancestor custody.');
+            expect(guideAnswer.answer).toContain('Document(s) 1 were shortened.');
+        } finally {
+            await Promise.all([
+                fs.remove(competingJsFile).catch(() => {}),
+                fs.remove(lateGuideFile).catch(() => {})
+            ]);
+        }
+    });
+
+    test('distinguishes embedded chunk coordinates from filesystem line ranges for tenant and revision-bound references', async () => {
+        let capturedPrompt = null;
+
+        const sameNamedLocalFile = path.join(path.dirname(tmpFilePath), 'custody-collision-target.md');
+        const collisionRelative  = path.relative(aiConfig.neoRootDir, sameNamedLocalFile);
+        const embeddedPayload    = [
+            '# Embedded Section A',
+            'Introductory chunk details from Chroma metadata. '.repeat(320),
+            '',
+            'EMBEDDED_CUSTODY_TARGET: isolated metadata chunk reached synthesis cleanly.'
+        ].join('\n');
+
+        await fs.writeFile(sameNamedLocalFile, 'LOCAL_FILESYSTEM_SENTINEL must never leak for tenant or revision rows.\n', 'utf8');
+
+        SearchService.model = {
+            generateContent: async prompt => {
+                capturedPrompt = prompt;
+                return {response: {text: () => 'Embedded custody verified.'}};
+            }
+        };
+
+        try {
+            const tenantMetadata = {
+                type      : 'guide',
+                tenantId  : 'tenant-external',
+                repoSlug  : 'external-repo',
+                line_start: 9000,
+                content   : embeddedPayload
+            };
+            const revisionMetadata = {
+                type              : 'guide',
+                tenantId          : 'neo-shared',
+                repoSlug          : 'neo',
+                rootKind          : 'neo-workspace',
+                extractionIdentity: 'neo.mjs@13.2.0',
+                line_start        : 9000,
+                content           : `${'Early unrelated embedded paragraph. '.repeat(450)}\n\nEMBEDDED_CUSTODY_TARGET: isolated metadata chunk reached synthesis cleanly.`
+            };
+
+            for (const metadata of [tenantMetadata, revisionMetadata]) {
+                capturedPrompt = null;
+                QueryService.queryDocuments = async () => ({
+                    topResult: collisionRelative,
+                    results  : [{
+                        source: collisionRelative,
+                        score : '8800',
+                        metadata
+                    }]
+                });
+
+                const result = await SearchService.ask({
+                    query: 'What does EMBEDDED_CUSTODY_TARGET establish?',
+                    type : 'guide'
+                });
+
+                expect(capturedPrompt).not.toContain('LOCAL_FILESYSTEM_SENTINEL');
+                expect(capturedPrompt).toContain('EMBEDDED_CUSTODY_TARGET: isolated metadata chunk reached synthesis cleanly.');
+                expect(capturedPrompt).not.toMatch(/\[lines \d+-\d+ omitted\]/);
+                expect(capturedPrompt).toContain('[embedded chunk content omitted]');
+                expect(result.answer).toContain('Embedded custody verified.');
+            }
+        } finally {
+            await fs.remove(sameNamedLocalFile).catch(() => {});
+        }
+    });
 });
 
