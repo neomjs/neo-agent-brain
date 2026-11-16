@@ -71,14 +71,9 @@ export const INVISIBLE_PR_BODY_ANCHORS = [
  * The agent-facing artifact that actually carries the full anchor list (both layers): §9
  * holds the agent PR body template and the canonical anchor-list sentence.
  *
- * This repo has two PR-body templates with near-identical names and opposite audiences —
- * the external-contributor `.github/PULL_REQUEST_TEMPLATE.md` (which carries none of the
- * anchors and must never be copied into agent PRs) and the workflow §9 body template below.
- * Routing readers to "the template" without naming the split has a 50% chance of handing
- * them the wrong file.
- *
- * That already happened once: a reader routed to "the template" took the wrong file, which is why
- * the split is named here.
+ * `.github/PULL_REQUEST_TEMPLATE.md` pre-fills only the web UI's `<...>` placeholder skeleton;
+ * `pull-request-workflow.md` §9 owns the full close-target, outside-CI, and residual rules, so
+ * silent-miss guidance routes agents there rather than to the web placeholder file.
  */
 export const PR_BODY_TEMPLATE_REFERENCE =
     '.agents/skills/pull-request/references/pull-request-workflow.md — §9 carries the agent body template';

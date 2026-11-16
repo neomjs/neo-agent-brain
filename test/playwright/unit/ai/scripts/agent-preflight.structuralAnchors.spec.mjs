@@ -50,9 +50,8 @@ test.describe('buildStructuralAnchorMissGuidance — silent-layer contract', () 
         const out = buildStructuralAnchorMissGuidance().join('\n');
 
         expect(out).toMatch(/silently and deliberately/i);
-        // The agent-facing body template (workflow §9), never the external-contributor
-        // `.github/PULL_REQUEST_TEMPLATE.md` — that file carries 0/6 anchors and §9:278
-        // forbids copying it into agent PRs.
+        // Route agents to the full specification in workflow §9 rather than the web UI's
+        // `.github/PULL_REQUEST_TEMPLATE.md` `<...>` placeholder skeleton.
         expect(out).toContain('pull-request-workflow.md');
         expect(out).not.toContain('.github/PULL_REQUEST_TEMPLATE.md');
     });
