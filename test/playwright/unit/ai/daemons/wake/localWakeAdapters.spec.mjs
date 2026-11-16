@@ -152,14 +152,35 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         expect(await dispatchLocalWake(record('test'), {log: {log() {}}})).toBe('delivered');
     });
 
-    test('missing Codex app-server binary fails closed', async () => {
+    test('missing Codex app-server binary fails closed, and the skip names its cause (#1781)', async () => {
         expect(await dispatchLocalWake(record('codex-app-server', {
             route: {
                 agentIdentity,
                 harnessTargetMetadata: {adapter: 'codex-app-server', appName: 'Codex'},
                 adapterConfig        : {attemptTimeoutMs: 100}
             }
-        }))).toBe('skipped');
+        }))).toEqual({outcome: 'skipped', outcomeReason: 'codex-app-server-unconfigured'});
+    });
+
+    // A skip is the one outcome that delivers nothing and fails nothing, so its reason is the only account
+    // of why a wake or a rotation never reached its seat.
+    test('every skip names its cause (#1781)', async () => {
+        const route = harnessTargetMetadata => ({route: {agentIdentity, harnessTargetMetadata, adapterConfig: {attemptTimeoutMs: 100}}}),
+              cases = [
+                  [record('carrier-pigeon'), {}, 'unknown-adapter:carrier-pigeon'],
+                  [record('tmux'), {}, 'tmux-session-missing'],
+                  [record('osascript', route({adapter: 'osascript', appName: 'Claude'})), {platform: 'linux'}, 'osascript-needs-darwin:linux'],
+                  [record('osascript', route({adapter: 'osascript', appName: 'Notes'})), {platform: 'darwin'}, 'osascript-unsupported-app:Notes'],
+                  [record('osascript', route({adapter: 'osascript', appName: 'Codex'})), {platform: 'darwin'}, 'codex-focus-seed-missing'],
+                  [record('osascript', route({adapter: 'osascript', appName: 'Claude'})),
+                      {platform: 'darwin', getDefaultTarget: async () => ({status: 'ambiguous'})}, 'default-target-ambiguous:Claude'],
+                  [record('osascript', route({adapter: 'osascript', appName: 'Claude'})),
+                      {platform: 'darwin', getDefaultTarget: async () => ({status: 'probe-failed'})}, 'default-target-probe-failed:Claude']
+              ];
+
+        for (const [wake, effects, outcomeReason] of cases) {
+            expect(await dispatchLocalWake(wake, effects), outcomeReason).toEqual({outcome: 'skipped', outcomeReason});
+        }
     });
 
     test('a non-abortable adapter timeout is unknown and is not represented as a safe retry', async () => {
@@ -210,7 +231,8 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         expect(JSON.parse(request.options.body).digest).toContain('[WAKE]');
     });
 
-    test('instance-addressed UI delivery fails closed when the target cannot be resolved', async () => {
+    // A missing instance is diagnosed by the resolver's own sentence, so the skip keeps it.
+    test('instance-addressed UI delivery fails closed when the target cannot be resolved, and keeps the resolver\'s error (#1781)', async () => {
         const addressed = record('osascript', {
             route: {
                 agentIdentity,
@@ -229,7 +251,39 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
             resolveGuiInstancePid: async () => {
                 throw new Error('target is stale');
             }
-        })).toBe('skipped');
+        })).toEqual({outcome: 'skipped', outcomeReason: 'instance-unresolved: target is stale'});
+
+        const verbose = await dispatchLocalWake(addressed, {
+            platform             : 'darwin',
+            resolveGuiInstancePid: async () => {
+                throw new Error(`No running Claude instance found for userDataDir='${'/seat'.repeat(100)}'.`);
+            }
+        });
+
+        expect(verbose.outcomeReason.length, 'a resolver message is bounded on the record').toBeLessThanOrEqual(240);
+
+        // the rotation itself, as Grace's was: its own window addressed by data dir, and no instance found
+        const rotation = record('osascript', {
+            envelope: {
+                schemaVersion: '1.0',
+                eventType    : 'session/rotate',
+                eventId      : 'session-rotate:MESSAGE:r1',
+                agentIdentity,
+                payload      : {receiptMessageId: 'MESSAGE:r1', oldSessionId: 'session-old', reason: 'sunset_restart', prompt: '/context-recovery'}
+            },
+            route: {
+                agentIdentity,
+                harnessTargetMetadata: {adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir', instanceAddress: '/seats/grace'},
+                adapterConfig        : {attemptTimeoutMs: 100}
+            }
+        });
+
+        expect(await dispatchLocalWake(rotation, {
+            platform             : 'darwin',
+            resolveGuiInstancePid: async () => {
+                throw new Error("No running Claude instance found for userDataDir='/seats/grace'.");
+            }
+        })).toEqual({outcome: 'skipped', outcomeReason: "instance-unresolved: No running Claude instance found for userDataDir='/seats/grace'."});
     });
 
     // `delivered` here is a claim about the DISPATCH, never about a turn starting: the arm below proves the
@@ -717,7 +771,10 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
             spawnAsync: async () => {
                 spawnedOnMismatch = true;
             }
-        })).toBe('skipped');
+        })).toEqual({
+            outcome      : 'skipped',
+            outcomeReason: "instance-unresolved: No running Antigravity instance found for userDataDir='/agents/neo-gemini-pro/harness/antigravity'."
+        });
         expect(spawnedOnMismatch).toBe(false);
     });
 

@@ -169,9 +169,10 @@ function formatPullRequestStateEcho(summary = {}) {
  *
  * @param {Object} record Durable receiver record.
  * @param {Object} [dependencies] Injectable host effects for tests.
- * @returns {Promise<'delivered'|'skipped'|'failed'|'unknown'|{outcome:'failed',outcomeReason:String}>}
+ * @returns {Promise<'delivered'|'failed'|'unknown'|{outcome:'failed'|'skipped',outcomeReason:String}>}
  *   A bare outcome string, or `{outcome, outcomeReason}` when a cause was captured. The receiver
  *   accepts either, so the reason channel is additive and no caller needs updating to keep working.
+ *   A skip always names its cause ({@link skipped}).
  */
 export async function dispatchLocalWake(record, dependencies = {}) {
     const meta           = record?.route?.harnessTargetMetadata || {};
@@ -224,6 +225,21 @@ export async function dispatchLocalWake(record, dependencies = {}) {
 }
 
 /**
+ * @summary The most a skip's reason keeps of a host error, so a verbose message never bloats the record.
+ * @type {Number}
+ */
+const SKIP_REASON_MAX_CHARS = 240;
+
+/**
+ * @summary A skip with its cause: the record's only account of why a wake or rotation never reached its seat.
+ * The delivery projection reads skips as transparent, whatever they carry.
+ * @param {String} outcomeReason
+ * @returns {{outcome: 'skipped', outcomeReason: String}}
+ * @private
+ */
+const skipped = outcomeReason => ({outcome: 'skipped', outcomeReason: outcomeReason.slice(0, SKIP_REASON_MAX_CHARS)});
+
+/**
  * @summary Performs one adapter attempt after the global delivery owner is acquired.
  * @private
  */
@@ -273,7 +289,7 @@ async function performDispatch({adapter, adapterConfig, digest, meta, record, si
         return 'delivered';
     }
     if (adapter === 'codex-app-server') {
-        if (meta.appName !== 'Codex' || typeof adapterConfig.codexBinary !== 'string') return 'skipped';
+        if (meta.appName !== 'Codex' || typeof adapterConfig.codexBinary !== 'string') return skipped('codex-app-server-unconfigured');
         await effects.spawnAsync(adapterConfig.codexBinary, ['debug', 'app-server', 'send-message-v2', digest]);
         return 'delivered';
     }
@@ -296,7 +312,7 @@ async function performDispatch({adapter, adapterConfig, digest, meta, record, si
         const session = meta.addressType === 'tmuxSession'
             ? meta.instanceAddress
             : meta.tmuxSession;
-        if (typeof session !== 'string' || session.length === 0) return 'skipped';
+        if (typeof session !== 'string' || session.length === 0) return skipped('tmux-session-missing');
         await effects.spawnAsync('tmux', ['send-keys', '-t', session, digest, 'C-m']);
         return 'delivered';
     }
@@ -308,7 +324,7 @@ async function performDispatch({adapter, adapterConfig, digest, meta, record, si
         return deliverOsascript({adapterConfig, digest, effects, meta, record, signal});
     }
 
-    return 'skipped';
+    return skipped(`unknown-adapter:${adapter}`);
 }
 
 /**
@@ -684,12 +700,12 @@ function buildDialogGateArgs({appName, instancePid}) {
  * @private
  */
 async function deliverOsascript({adapterConfig, digest, effects, meta, record, signal}) {
-    if (effects.platform !== 'darwin') return 'skipped';
+    if (effects.platform !== 'darwin') return skipped(`osascript-needs-darwin:${effects.platform}`);
 
     const resolvedMeta = applyHarnessMetadataDefaults(meta);
     const appName      = resolvedMeta.appName;
-    if (!['Antigravity', 'Claude', 'Codex', 'OpenCode'].includes(appName)) return 'skipped';
-    if (appName === 'Codex' && !resolvedMeta.focusSeedKey) return 'skipped';
+    if (!['Antigravity', 'Claude', 'Codex', 'OpenCode'].includes(appName)) return skipped(`osascript-unsupported-app:${appName}`);
+    if (appName === 'Codex' && !resolvedMeta.focusSeedKey) return skipped('codex-focus-seed-missing');
 
     let   instancePid     = null;
     const rotation        = isSessionRotation(record?.envelope);
@@ -718,12 +734,13 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
                 target        : 'wake receiver',
                 appName
             });
-        } catch {
-            return 'skipped';
+        } catch (error) {
+            // the resolver names why it found no instance; that sentence is the whole diagnosis
+            return skipped(`instance-unresolved: ${error?.message || error}`);
         }
     } else {
         const target = await effects.getDefaultTarget({appName});
-        if (['ambiguous', 'probe-failed'].includes(target.status)) return 'skipped';
+        if (['ambiguous', 'probe-failed'].includes(target.status)) return skipped(`default-target-${target.status}:${appName}`);
         instancePid = target.pid;
     }
 

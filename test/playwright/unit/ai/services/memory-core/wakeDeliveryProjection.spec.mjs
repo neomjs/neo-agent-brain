@@ -136,6 +136,19 @@ test.describe('projectWakeDelivery — per-subscription delivery outcome', () =>
         expect(projected.lastAttemptedAt, 'the receiver genuinely was asked, most recently by the skip').toBe('2026-09-25T00:03:01.000Z');
     });
 
+    // A skip may carry its cause; the projection must read it as it reads any skip.
+    test('a skip that names its cause still decides nothing, and its reason is never the failure reason', () => {
+        const reason = 'instance-unresolved: No running Claude instance found',
+              lone   = projectWakeDelivery([at('skipped', {outcomeReason: reason})])['WAKE_SUB:sub-a'],
+              after  = projectWakeDelivery([
+                  at('skipped', {acceptedAt: '2026-09-25T00:01:00.000Z', dispatchFinishedAt: '2026-09-25T00:01:01.000Z', outcomeReason: reason}),
+                  at('failed', {acceptedAt: '2026-09-25T00:00:00.000Z', dispatchFinishedAt: '2026-09-25T00:00:01.000Z', outcomeReason: 'a'})
+              ])['WAKE_SUB:sub-a'];
+
+        expect(lone).toMatchObject({state: 'unknown', consecutiveFailures: 0, lastOutcomeReason: null});
+        expect(after).toMatchObject({state: 'unreachable', consecutiveFailures: 1, lastOutcomeReason: 'a'});
+    });
+
     test('a delivery followed only by a run of skips is no longer evidence that a wake lands', () => {
         const minute = n => `2026-09-25T00:0${n}:01.000Z`,
             records  = n => [at('delivered', {dispatchFinishedAt: minute(0)}),
