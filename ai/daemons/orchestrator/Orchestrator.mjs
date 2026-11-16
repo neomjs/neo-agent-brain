@@ -323,6 +323,8 @@ export class Orchestrator extends Base {
     lastFocusV1ProjectionAt       = 0
     heavyMaintenanceTaskNames     = DEFAULT_HEAVY_MAINTENANCE_TASK_NAMES
     goldenPathDependencyTaskNames = DEFAULT_GOLDEN_PATH_DEPENDENCY_TASK_NAMES
+    /** @summary The session-rotation lane's logged wait reason per receipt, kept across passes. */
+    rotationWaitsLogged           = new Map()
 
     processSupervisorWriteLog = (level, msg) => this.writeLog(level, msg)
     deploymentRuntimeAccessWriteLog  = (level, msg) => this.writeLog(level, msg)
@@ -525,7 +527,8 @@ export class Orchestrator extends Base {
             windowMs         : AiConfig.orchestrator.sessionRotation.windowMs,
             minIntervalMs    : AiConfig.orchestrator.sessionRotation.minIntervalMs,
             writeLog         : this.writeLog.bind(this),
-            publishDefectNote: note => this.publishDefectNote(note)
+            publishDefectNote: note => this.publishDefectNote(note),
+            waitsLogged      : this.rotationWaitsLogged
         })
     }
 

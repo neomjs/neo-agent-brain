@@ -147,15 +147,15 @@ test.afterAll(() => {
 });
 
 test.describe('projectSeatHooks — the census of the real population', () => {
-    test('enumerates exactly the ten Agent-OS-owned hooks, split 6/2/2', () => {
+    test('enumerates exactly the eleven Agent-OS-owned hooks, split 7/2/2', () => {
         const hooks = enumerateHooks(REPO_ROOT);
 
         // The count is asserted so a future re-read cannot silently re-conflate the executables with
         // the config artifacts that leaf 6 also removed. The fifth Claude hook is the harness-id guard,
-        // the sixth the seat model guard.
-        expect(hooks.length).toBe(10);
+        // the sixth the seat model guard, the seventh the writer stamp.
+        expect(hooks.length).toBe(11);
 
-        expect(hooks.filter(hook => hook.harness === 'claude').length).toBe(6);
+        expect(hooks.filter(hook => hook.harness === 'claude').length).toBe(7);
         expect(hooks.filter(hook => hook.harness === 'codex').length).toBe(2);
         expect(hooks.filter(hook => hook.harness === 'kimi-code').length).toBe(2);
 
@@ -604,15 +604,15 @@ const KIMI_CONFIG = '[[hooks]]\nevent = "Stop"\ncommand = \'node ' +
     '"$(git rev-parse --show-toplevel)/.kimi-code/hooks/turnPresenceHook.mjs"\'\ntimeout = 5\n';
 
 test.describe('projectSeatHooks — the deleted config artifacts (#250 census kind 2)', () => {
-    test('the real census is 10 executables + 2 config artifacts, and never re-conflates them', () => {
+    test('the real census is 11 executables + 2 config artifacts, and never re-conflates them', () => {
         const
             configs    = enumerateConfigs(REPO_ROOT),
             projection = enumerateProjection(REPO_ROOT);
 
         // The counts are the ticket's own, asserted so a re-read cannot silently merge the kinds.
-        expect(enumerateHooks(REPO_ROOT).length).toBe(10);
+        expect(enumerateHooks(REPO_ROOT).length).toBe(11);
         expect(configs.length).toBe(2);
-        expect(projection.length).toBe(12);
+        expect(projection.length).toBe(13);
 
         expect(configs.map(entry => entry.target).sort())
             .toEqual(['.codex/hooks.json', '.kimi-code/hooks/turn-presence.example.toml']);

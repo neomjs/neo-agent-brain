@@ -50,6 +50,7 @@ import {
     evaluateCorpusProjectionAdmission
 } from '../graph/corpusProjectionContract.mjs';
 import {readCorpusProjectionReceipt} from '../graph/corpusProjectionReceiptStore.mjs';
+import {writerStamp}                 from '../../daemons/wake/sunsetReceipt.mjs';
 
 const CONTEXT_FRONTIER_PROJECTION_CACHE_MAX = 64;
 const contextFrontierProjectionCache        = new Map();
@@ -616,6 +617,9 @@ class MemoryService extends Base {
      * @param {String} [options.model]   The model name (e.g. 'gemini-3.1-pro').
      * @param {Number} [options.amountToolCalls] The number of tool calls executed during the turn.
      * @param {Array|String} [options.toolsUsed] Descriptions or array of tools used.
+     * @param {String} [options.writerKey] The writer key the seat's harness hook stamps, stored on the node.
+     * @param {String} [options.writerTurn] The turn id the same hook stamps. Stored on the node, and named
+     *   by the turn-presence terminal, so the save closes its own turn rather than the seat's newest interval.
      * @returns {Promise<{id: String, sessionId: String, timestamp: String, message: String,
      *     visibility: Object, mailbox: null, stageTimings: {walMs: Number, mailboxMs: null,
      *     mailboxTerminal: 'omitted', mailboxReason: 'synchronous-query-outside-accepted-write-contract',
@@ -626,7 +630,7 @@ class MemoryService extends Base {
      *     latency contract, and callers use `list_messages` for the authoritative mailbox read.
      *     `stageTimings` names the omission and reports the bounded post-WAL disclosure stages.
      */
-    async addMemory({prompt, response, decisionContext, sessionId, agent, model, amountToolCalls, toolsUsed}) {
+    async addMemory({prompt, response, decisionContext, sessionId, agent, model, amountToolCalls, toolsUsed, writerKey, writerTurn}) {
         // Stale-overlay guard (caught + actionable): the gitignored config.mjs is a MATERIALIZED
         // template copy, so on a clone predating the memoryWal block these leaves resolve
         // undefined — and the validation gate's minFieldLength read below was an UNCAUGHT
@@ -702,11 +706,13 @@ class MemoryService extends Base {
             //    derived work: graph contention/unavailability must not reject the mandatory
             //    add_memory save once the WAL append has succeeded. Recency reads merge pending WAL
             //    rows until the graph projection catches up.
+            const stamp            = writerStamp({writerKey, writerTurn});
             const memoryProperties = {
                 ...(canonicalIdentity ? { agentIdentity: canonicalIdentity } : {}),
                 ...(userId ? { userId } : {}),
                 sessionId,
-                timestamp
+                timestamp,
+                ...stamp
             };
             const stageTimings = {};
             const walStartedAt = Date.now();
@@ -785,7 +791,8 @@ class MemoryService extends Base {
                 const presenceWrite = Promise.resolve().then(() => TurnPresenceService.recordTurnPresence({
                     action       : 'terminal',
                     terminalState: 'completed',
-                    source       : 'add_memory'
+                    source       : 'add_memory',
+                    ...(stamp.writerTurn ? {turnId: stamp.writerTurn} : {})
                 }));
                 presenceWrite.catch(error => logger.warn(`[MemoryService] Late turn-presence terminal failed (non-fatal): ${error.message}`));
 

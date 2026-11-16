@@ -45,6 +45,7 @@ import {
     resolveResidentFamilyById
 } from '../graph/agentFamilyResolution.mjs';
 import {getMissingMemoryWalLeaves}    from './helpers/memoryWalStore.mjs';
+import {writerStamp}                  from '../../daemons/wake/sunsetReceipt.mjs';
 import {
     classifyMailboxReadState,
     normalizeMailboxIdentityForComparison,
@@ -163,7 +164,9 @@ const
         'taggedConcepts',
         'wakeSuppressed',
         'task',
-        'requestPublish'
+        'requestPublish',
+        'writerKey',
+        'writerTurn'
     ]),
     SHA256_HEX_PATTERN                = /^[0-9a-fA-F]{64}$/;
 
@@ -3414,6 +3417,10 @@ class MailboxService extends Base {
      *   state-machine transitions, RBAC, and idempotent claim-and-lock semantics. Schema follows
      *   Neo's A2A hybrid contract: an A2A subset plus `expiresAt` / `Blocked`. See
      *   {@link https://a2a-protocol.org/latest/specification/} for the canonical Task envelope.
+     * @param {String} [args.writerKey] The writer key the seat's harness hook stamps: a hash of seat
+     *   and harness session. Stored as given; the rotation lane compares it, never reads it back out.
+     * @param {String} [args.writerTurn] The turn id the same hook stamps, which the turn's presence
+     *   interval also carries. Stored as given.
      * @param {Object} [options]
      * @param {Boolean} [options.deferProjection=false] Return after the accepted message is durable
      *   in the WAL and schedule its graph projection. The MCP write boundary enables this mode so
@@ -3440,7 +3447,9 @@ class MailboxService extends Base {
             taggedConcepts: rawTaggedConcepts = [],
             wakeSuppressed: rawWakeSuppressed = null,
             task          : rawTask,
-            requestPublish: rawRequestPublish
+            requestPublish: rawRequestPublish,
+            writerKey,
+            writerTurn
         } = args || {};
         let to             = rawTo,
             priority       = rawPriority,
@@ -3850,7 +3859,8 @@ class MailboxService extends Base {
             taggedConcepts,
             wakeSuppressed: Boolean(wakeSuppressed),
             userId        : senderUserId,
-            sharedEntity  : true
+            sharedEntity  : true,
+            ...writerStamp({writerKey, writerTurn})
         };
 
         if (serverSessionId && to === sentBy && taggedConcepts.includes('sunset-protocol-handover')) {

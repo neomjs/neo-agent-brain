@@ -4490,6 +4490,27 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(node.properties.readAt).toBeNull();
     });
 
+    test('addMessage stores the writer stamp as given, and keeps a malformed one off the node', async () => {
+        const {WRITER_STAMP_MAX_CHARS} = await import('../../../../../../ai/daemons/wake/sunsetReceipt.mjs'),
+              stamp                    = {writerKey: 'v1:0123456789abcdef0123456789abcdef', writerTurn: 'turn-stamp-1'};
+        let stampedId, malformedId;
+
+        await RequestContextService.run({ agentIdentityNodeId: '@alice' }, async () => {
+            stampedId = (await MailboxService.addMessage({
+                to: '@alice', subject: 'Sunset handover', body: 'handover payload',
+                taggedConcepts: ['sunset-protocol-handover'], wakeSuppressed: true, ...stamp
+            })).messageId;
+            malformedId = (await MailboxService.addMessage({
+                to: '@alice', subject: 'A note', body: 'note', wakeSuppressed: true,
+                writerKey: 'k'.repeat(WRITER_STAMP_MAX_CHARS + 1), writerTurn: ''
+            })).messageId;
+        });
+
+        expect(GraphService.db.nodes.get(stampedId).properties).toMatchObject(stamp);
+        expect(GraphService.db.nodes.get(malformedId).properties).not.toHaveProperty('writerKey');
+        expect(GraphService.db.nodes.get(malformedId).properties).not.toHaveProperty('writerTurn');
+    });
+
     test('#1739 a sunset handover to self carries the server session as originSessionId; a note to self and a message to a peer carry none', async () => {
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
             await PermissionService.grantPermission({ to: '@alice', scope: 'CAN_REPLY_TO' });

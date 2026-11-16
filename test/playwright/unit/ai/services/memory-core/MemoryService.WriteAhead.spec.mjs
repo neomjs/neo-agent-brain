@@ -464,6 +464,45 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         expect(afterRow.terminalState).toBe('completed');
     });
 
+    test('a stamped save closes its own turn: the newer parallel turn stays open, and its progress lands', async () => {
+        const originalSchedule     = MemoryService._scheduleMemoryGraphProjection;
+        const originalBuildSummary = MemoryService.buildMiniSummary;
+        MemoryService._scheduleMemoryGraphProjection = () => {};
+        MemoryService.buildMiniSummary               = async () => null;
+
+        const
+            stamp    = {writerKey: 'v1:0123456789abcdef0123456789abcdef', writerTurn: `stamp-own-${Date.now()}`},
+            parallel = `stamp-parallel-${Date.now()}`,
+            presence = options => asTenant(() => TurnPresenceService.recordTurnPresence({source: 'writer-stamp-arm', ...options})),
+            interval = turnId => JSON.parse(GraphService.db.storage.db.prepare(
+                "SELECT data FROM Nodes WHERE json_extract(data,'$.properties.turnId') = ?"
+            ).get(turnId).data).properties;
+
+        try {
+            // The parallel chat's turn starts later, so it is the seat's newest interval: the one an
+            // unstamped save would close
+            await presence({action: 'start', turnId: stamp.writerTurn, now: new Date(Date.now() - 2000)});
+            await presence({action: 'start', turnId: parallel,         now: new Date(Date.now() - 1000)});
+
+            const result = await asTenant(() => MemoryService.addMemory({
+                prompt: 'stamped prompt', decisionContext: 'stamped thought', response: 'stamped response', ...stamp
+            }));
+
+            expect(result.stageTimings.presenceTerminal).toBe('completed');
+            expect(interval(stamp.writerTurn)).toMatchObject({status: 'terminal', terminalState: 'completed'});
+            expect(interval(parallel).status).toBe('active');
+            expect((await presence({action: 'progress', turnId: parallel})).status).toBe('recorded');
+
+            await MemoryService.drainPendingGraphProjections({ids: [result.id]});
+            expect(GraphService.db.nodes.get(result.id).properties).toMatchObject(stamp)
+        } finally {
+            // Later serial tests close the newest open turn, so none is left behind
+            await presence({action: 'terminal', turnId: parallel});
+            MemoryService._scheduleMemoryGraphProjection = originalSchedule;
+            MemoryService.buildMiniSummary               = originalBuildSummary;
+        }
+    });
+
     test('#17342: a DEFERRED terminal carries a reason too — OpenAPI promises it for both incomplete states', async () => {
         // Without this, a mutant that populates the reason only on `failed` keeps
         // every other assertion green while the schema promises it for `deferred` as well.

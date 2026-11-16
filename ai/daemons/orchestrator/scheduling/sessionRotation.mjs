@@ -36,8 +36,9 @@ import {
  * - **`incomplete` is told:** the plane cannot read the receiver's records, so a rotation that failed on the
  *   host surfaces only here, and an ERROR line alone reaches nobody. One `defect-note:` per receipt reports
  *   what the plane knows, that no successor marker arrived, and asks for the seat's window to be checked
- *   before anyone starts a session by hand: a session may have opened without sending its marker. Its
- *   hand-start prompt says the session was started by hand, never that the plane opened it.
+ *   before anyone starts a session by hand: a session may have opened without sending its marker, or the
+ *   wake the window's end released may have resumed the old one. Its hand-start prompt says the session
+ *   was started by hand, never that the plane opened it.
  */
 
 /**
@@ -59,7 +60,7 @@ export function composeIncompleteRotationNote({identity, receipt, rotation, reas
             `- handover: ${receipt.id}, sent ${receipt.sentAt}`,
             `- rotation: requested ${rotation?.requestedAt ?? 'never'}, delivered ${rotation?.deliveredAt ?? 'never'}`,
             '',
-            'Check the seat\'s window first: a fresh session there needs no second one.',
+            'Check the seat\'s window first. A session working there needs no second one: a fresh one, or the old one a released wake resumed, which writes `[sunset rescinded]`.',
             'If there is none, start one by hand, with a first prompt that says so, e.g.:',
             `/context-recovery Fresh session for ${identity}, started by hand after your sunset handover ${receipt.id}: the plane saw no successor marker for it. Read the handover first.`
         ].join('\n'),
@@ -78,14 +79,18 @@ export function composeIncompleteRotationNote({identity, receipt, rotation, reas
  * @param {Function} options.writeLog `(level, message)`.
  * @param {Function} [options.publishDefectNote] `(note) => Promise`, the mailbox publisher an `incomplete`
  *   record's note goes through.
+ * @param {Map<String, String>} [options.waitsLogged] The wait reason last logged per receipt id. A caller
+ *   that keeps it across passes logs each receipt's wait once per reason; a receipt that stops waiting
+ *   leaves it.
  * @param {Number} [options.now=Date.now()]
  * @returns {Promise<{requested: Number, completed: Number, refused: Number, incomplete: Number, waiting: Number}>}
  */
-export async function runSessionRotation({db, deliver, operatorPresence, windowMs, minIntervalMs, writeLog, publishDefectNote, now = Date.now()}) {
+export async function runSessionRotation({db, deliver, operatorPresence, windowMs, minIntervalMs, writeLog, publishDefectNote, waitsLogged = new Map(), now = Date.now()}) {
     const nowIso   = new Date(now).toISOString(),
           sinceIso = new Date(now - 2 * windowMs - minIntervalMs).toISOString(),
           outcome  = {requested: 0, completed: 0, refused: 0, incomplete: 0, waiting: 0},
-          routes   = new Map(getActiveSessionRotateRoutes(db).map(route => [route.properties.agentIdentity, route]));
+          routes   = new Map(getActiveSessionRotateRoutes(db).map(route => [route.properties.agentIdentity, route])),
+          waiting  = new Set();
 
     for (const [identity, route] of routes) {
         const read     = readSunsetReceipt(db, identity, {sinceIso, nowIso}),
@@ -96,9 +101,11 @@ export async function runSessionRotation({db, deliver, operatorPresence, windowM
         if (verdict.action === 'none') continue;
 
         if (verdict.action === 'wait') {
-            // the one wait nothing else surfaces: an unattributable receipt after a predecessor's marker
-            if (verdict.reason === 'writer-close-pending') {
-                writeLog('INFO', `[Orchestrator] session-rotation: pending for ${identity} (${verdict.reason}), receipt ${receipt.id}`);
+            waiting.add(receipt.id);
+
+            if (waitsLogged.get(receipt.id) !== verdict.reason) {
+                waitsLogged.set(receipt.id, verdict.reason);
+                writeLog('INFO', `[Orchestrator] session-rotation: waiting for ${identity} (${verdict.reason}), receipt ${receipt.id}`);
             }
             outcome.waiting++;
             continue
@@ -174,6 +181,9 @@ export async function runSessionRotation({db, deliver, operatorPresence, windowM
             `[Orchestrator] session-rotation: requested for ${identity} (${delivery}), session ${record.oldSessionId}, receipt ${receipt.id}`);
         outcome.requested++
     }
+
+    // a receipt that stopped waiting logs again if it waits once more
+    [...waitsLogged.keys()].filter(id => !waiting.has(id)).forEach(id => waitsLogged.delete(id));
 
     return outcome
 }
