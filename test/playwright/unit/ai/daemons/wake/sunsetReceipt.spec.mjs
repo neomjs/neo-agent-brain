@@ -148,6 +148,12 @@ const histories = [
         chain(db); interval(db, 'tB3', {started: 25, progress: 22.5, closed: true}); save(db, 'bEarlier', 22.5, 'mcB2', 'kB', 'tB3');
         handover(db, 'rX', 20, {key: 'kB', turn: 'tB4', origin: 'mcB2'}); save(db, 'bX', 19.5, 'mcB2', 'kB', 'tB4')
     }],
+    // add_memory records a terminal interval for a turn with no start row, so tB4 reads as started at its save
+    ['Clio\'s lost start after a reconnect: the sunset save mints the turn\'s only interval', 'request', db => {
+        chain(db); interval(db, 'tB3', {started: 25, progress: 22.5, closed: true}); save(db, 'bEarlier', 22.5, 'mcB1', 'kB', 'tB3');
+        handover(db, 'rX', 20, {key: 'kB', turn: 'tB4', origin: 'mcB2'}); save(db, 'bX', 19.5, 'mcB2', 'kB', 'tB4');
+        interval(db, 'tB4', {started: 19.5, progress: 19.5, closed: true})
+    }],
     ['the writer\'s own interval is still open after its same-turn save', 'request', db => {
         chain(db); interval(db, 'tB3', {started: 25, progress: 18.9}); sunsetB(db)
     }],

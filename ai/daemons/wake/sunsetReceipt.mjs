@@ -250,7 +250,7 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
         },
         oldSessionId,
         successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt} : null,
-        promptedTurnAt : stamped ? promptedAt || stamped.promptedAt : promptedAt || null,
+        promptedTurnAt : stamped ? stamped.promptedAt : promptedAt || null,
         liveTurnUntil  : stamped ? stamped.liveTurnUntil : liveUntil || null,
         writerClosedAt : stamped ? stamped.closedAt : closedAt,
         lastRequestedAt: requestedAts.sort().at(-1) || null,
