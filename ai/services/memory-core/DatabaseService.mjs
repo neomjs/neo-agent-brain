@@ -358,7 +358,7 @@ class DatabaseService extends Base {
     }
 
     /**
-     * Helper method to import the Native Graph from JSONL.
+     * @summary Imports graph JSONL through the live owner's transactional publication fence.
      * @param {String} filePath The JSONL file path.
      * @param {String} mode 'merge' or 'replace'.
      * @param {String|Object} [confirmation] Explicit production confirmation token.
@@ -390,7 +390,8 @@ class DatabaseService extends Base {
             db,
             filePath,
             mode,
-            warn: message => logger.warn(message)
+            beforeMutation: info => GraphService.fenceIdentityPublication(info),
+            warn          : message => logger.warn(message)
         });
 
         const summary = `nodes(inserted=${counts.nodes.inserted}, skipped=${counts.nodes.skippedExisting}, failed=${counts.nodes.failed}) ` +
@@ -786,7 +787,7 @@ class DatabaseService extends Base {
     }
 
     /**
-     * Truncates specified collections (or graph) from the database.
+     * @summary Truncates selected stores, coupling graph deletion to its physical publication fence.
      *
      * `messages` (the A2A message index) is opt-in and never exported: it is derived from the graph's
      * MESSAGE nodes, so a restore rebuilds it with `backfillMessageEmbeddings.mjs` instead of carrying
@@ -837,6 +838,9 @@ class DatabaseService extends Base {
                 const GraphService = (await import('./GraphService.mjs')).default;
                 if (GraphService.db?.storage?.db) {
                     const graphDb = GraphService.db.storage.db;
+                    if (graphDb.inTransaction) {
+                        throw new Error('Graph truncation cannot join an existing transaction.');
+                    }
 
                     // Capture-and-truncate in ONE transaction when the caller opts in. A separate SELECT
                     // followed by the DELETE leaves a window in which an acknowledged `mark_read` commits
@@ -844,6 +848,9 @@ class DatabaseService extends Base {
                     // class this preservation exists to prevent, reintroduced inside the operation.
                     // better-sqlite3 transactions are synchronous and serialized, so nothing interleaves.
                     preservedDeliveryState = graphDb.transaction(() => {
+                        GraphService.fenceIdentityPublication({
+                            db: graphDb, operation: 'graph-truncate', source: 'DatabaseService.truncateDatabase'
+                        });
                         const captured = preserveDeliveryReadState
                             ? graphDb.prepare(
                                 `SELECT source,
@@ -861,7 +868,7 @@ class DatabaseService extends Base {
                         graphDb.prepare('DELETE FROM Edges').run();
 
                         return captured
-                    })();
+                    }).immediate();
 
                     truncated.push('graph');
                 }

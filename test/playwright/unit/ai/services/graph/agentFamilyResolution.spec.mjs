@@ -15,16 +15,27 @@ import {
     resolveResidentFamily,
     resolveReviewerFamily
 } from '../../../../../../ai/services/graph/agentFamilyResolution.mjs';
-import {IDENTITIES}      from '../../../../../../ai/graph/identityRoots.mjs';
-import {migrateResident} from '../../../../../../ai/graph/identityRootsMigration.mjs';
+import {IDENTITIES}                                               from '../../../../../../ai/graph/identityRoots.mjs';
+import {migrateResident}                                          from '../../../../../../ai/graph/identityRootsMigration.mjs';
+import {identityFamilyComparisonKey, isIdentityPublicationFamily} from '../../../../../../ai/services/shared/identityPublicationOperation.mjs';
 
 /**
- * Consumer-migration coverage for the identityRoots flat-fact retirement: the family read-path
- * consumes the hydration index (era chain → `currentEra.family`) with the flat property as the
- * DOCUMENTED post-epoch fallback. The regression AC is behavioral identity: the login-to-family
- * map must be exactly what the flat read produced before the move.
+ * Compatibility coverage for legacy family readers while admitted-source consumers migrate.
+ * These readers preserve the hydration-first map; the checked-in family field remains the
+ * reviewed founding input rather than a field an era backfill may silently retire.
  */
 test.describe('ai/services/graph/agentFamilyResolution — hydration-index family reads', () => {
+    test('the reviewed founding catalog contains no distinct labels with the same comparison key', () => {
+        const labels = IDENTITIES.filter(row => row.type === 'AgentIdentity' && row.properties?.accountType === 'agent')
+            .map(row => row.properties.modelFamily), known = new Map();
+        expect(labels.length).toBeGreaterThan(0);
+        for (const label of labels) {
+            expect(isIdentityPublicationFamily(label)).toBe(true);
+            const key = identityFamilyComparisonKey(label);
+            if (known.has(key)) expect(label).toBe(known.get(key));
+            else known.set(key, label);
+        }
+    });
     test('#17702 pure consumers import without bootstrapping Neo or AiConfig', () => {
         const child = spawnSync(process.execPath, ['--input-type=module', '--eval', [
             'await import("./ai/services/graph/agentFamilyResolution.mjs");',
@@ -101,11 +112,10 @@ test.describe('ai/services/graph/agentFamilyResolution — hydration-index famil
         expect(resolveResidentFamily(stripped)).toBe('claude');
     });
 
-    test('the fallback boundary: a migration-refused resident reads the flat property (the retirement witness)', () => {
+    test('the legacy fallback boundary: a migration-refused resident reads the recorded founding property', () => {
         // Post-epoch residents are refused by migrateResident BY DESIGN (first era is
-        // observation-owned; it exists only after the gated graph-seeding slice). Until then the
-        // flat property is the only truth source — this population reaching zero IS the
-        // flat-field retirement gate.
+        // observation-owned). Legacy readers retain the recorded founding field until their
+        // admitted-source replacement; this test does not authorize retroactive era seeding.
         const postEpoch = IDENTITIES.filter(identity =>
             identity.properties?.accountType === 'agent' &&
             !migrateResident(identity).valid
@@ -126,7 +136,7 @@ test.describe('ai/services/graph/agentFamilyResolution — hydration-index famil
         ]);
     });
 
-    test('every current index-path resolution agrees with the flat property it will replace', () => {
+    test('every current index-path resolution agrees with the recorded founding property', () => {
         for (const identity of IDENTITIES.filter(i => i.properties?.accountType === 'agent')) {
             const migrated = migrateResident(identity);
 

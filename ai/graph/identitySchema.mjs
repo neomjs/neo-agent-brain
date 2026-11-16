@@ -72,10 +72,11 @@ export function createIdentityStateNode({identityKey, socialLayer = {}} = {}) {
 
 /**
  * @summary Builds a frozen `EmbodiedEpisode` era owning the mutable facts for one span of a
- * resident's history. `until: null` marks the open (current) era.
+ * resident's history. `until: null` marks the open (current) era. An explicit
+ * `model: null` retains an unattested model without inventing a designation; omission refuses.
  * @param {Object} options
  * @param {String} options.identityKey The anchor this era belongs to
- * @param {String} options.model E.g. 'claude-fable-5'
+ * @param {String|null} options.model Model designation, or explicit null when unattested
  * @param {String} options.family E.g. 'claude' | 'gpt' | 'gemini' | 'human'
  * @param {String} options.since ISO timestamp the era opened
  * @param {String|null} [options.until=null] ISO timestamp the era closed; null = current
@@ -85,10 +86,14 @@ export function createIdentityStateNode({identityKey, socialLayer = {}} = {}) {
  * @returns {{valid: Boolean, reason: String|null, node: Object|null}}
  */
 export function createEmbodiedEpisodeNode({identityKey, model, family, since, until = null, tier, capabilities = {}, harness} = {}) {
-    for (const [name, value] of [['identityKey', identityKey], ['model', model], ['family', family], ['since', since]]) {
+    for (const [name, value] of [['identityKey', identityKey], ['family', family], ['since', since]]) {
         if (typeof value !== 'string' || value.trim() === '') {
             return {valid: false, reason: `EmbodiedEpisode requires a non-empty string ${name}`, node: null};
         }
+    }
+
+    if (model !== null && (typeof model !== 'string' || model.trim() === '')) {
+        return {valid: false, reason: 'EmbodiedEpisode requires a model string or explicit null', node: null};
     }
 
     // temporal gate is fail-CLOSED: inputs reach this vocabulary from persistence, hydration,

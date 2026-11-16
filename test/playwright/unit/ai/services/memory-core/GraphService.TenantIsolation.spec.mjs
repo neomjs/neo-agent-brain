@@ -14,6 +14,7 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
+import BetterSqlite   from 'better-sqlite3';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 import Database       from '../../../../../../ai/graph/Database.mjs';
@@ -439,38 +440,50 @@ function makeWritableDb() {
 }
 
 /**
- * Writable fake `GraphService.db` that ALSO supports the edge-write path (`linkNodes` →
- * `storage.db.prepare` FK-verify + existing-edge check + `addEdge`) and the topology read
- * (`edges.getByIndex` consumed by `getContextFrontier`). Lets a spec provision + link global
- * sentinels end-to-end, then read them back as a different tenant — the path the global-edge gap lived in.
+ * @summary Couples a warm cache facade to real SQLite for protected reads and edge transactions.
+ * Node and edge writes update both representations so RLS topology reads share the persisted facts.
  */
 function makeTopologyDb() {
-    const nodeMap = new Map(),
-          edges   = [];
-    const sqliteDb = {
-        prepare(sql) {
-            return {
-                get(...args) {
-                    // linkNodes FK pre-check: both endpoints must exist in Nodes.
-                    if (sql.includes('FROM Nodes')) {
-                        const [a, b] = args;
-                        return {count: (nodeMap.has(a) ? 1 : 0) + (a === b ? 0 : (nodeMap.has(b) ? 1 : 0))};
-                    }
-                    // linkNodes existing-edge lookup: none → a fresh edge is written.
-                    return undefined;
-                }
-            };
-        }
-    };
+    const nodeMap  = new Map(),
+          edges    = [],
+          sqliteDb = new BetterSqlite(':memory:');
+    sqliteDb.exec(`PRAGMA foreign_keys = ON;
+        CREATE TABLE Nodes (id TEXT PRIMARY KEY, user_id TEXT, data TEXT NOT NULL);
+        CREATE TABLE Edges (id TEXT PRIMARY KEY, user_id TEXT,
+            source TEXT NOT NULL REFERENCES Nodes(id) ON DELETE CASCADE,
+            target TEXT NOT NULL REFERENCES Nodes(id) ON DELETE CASCADE, type TEXT NOT NULL, data TEXT NOT NULL);`);
+
     return {
         getAdjacentNodes() {},
         nodes: nodeMap,
-        edges: {getByIndex(field, id) { return edges.filter(e => e[field] === id); }},
-        addNode(spec) { nodeMap.set(spec.id, {id: spec.id, label: spec.label, properties: spec.properties}); },
-        addEdge(spec) { edges.push({id: spec.id, source: spec.source, target: spec.target, type: spec.type, properties: spec.properties}); },
-        transaction(fn) { return fn(); },  // linkNodes wraps executeLink in a transaction when not already in one
+        edges: {
+            get(id) { return edges.find(value => value.id === id); },
+            getByIndex(field, id) { return edges.filter(value => value[field] === id); }
+        },
+        addNode(spec) {
+            const record = {id: spec.id, label: spec.label, properties: spec.properties};
+            sqliteDb.prepare(`INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id, data=excluded.data`)
+                .run(record.id, record.properties?.userId ?? null, JSON.stringify(record));
+            nodeMap.set(record.id, record);
+        },
+        addEdge(spec) {
+            const record = {id: spec.id, source: spec.source, target: spec.target, type: spec.type, properties: spec.properties};
+            sqliteDb.prepare(`INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id, source=excluded.source,
+                    target=excluded.target, type=excluded.type, data=excluded.data`)
+                .run(record.id, record.properties?.userId ?? null, record.source, record.target, record.type, JSON.stringify(record));
+            const index = edges.findIndex(value => value.id === record.id);
+            if (index < 0) edges.push(record);
+            else edges[index] = record;
+        },
+        transaction(fn) { return fn(); },
+        close() { sqliteDb.close(); },
         autoSave: false,
-        storage : {db: sqliteDb, dbPath: '/tmp/neo-graph.db', RequestContextService: {getAgentIdentityNodeId: () => requester.value}}
+        storage : {
+            db                   : sqliteDb, dbPath: ':memory:',
+            RequestContextService: {getAgentIdentityNodeId: () => requester.value}
+        }
     };
 }
 
@@ -487,7 +500,9 @@ test.describe('GraphService — global system-node provisioning (write-side null
     });
 
     test.afterEach(() => {
+        const fixtureDb = GraphService.db;
         GraphService.db = originalDb;
+        if (fixtureDb !== originalDb) fixtureDb?.close?.();
         requester.value = null;
     });
 

@@ -6,16 +6,21 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import Database       from 'better-sqlite3';
-import fs             from 'fs-extra';
-import path           from 'path';
+import {test, expect}                                           from '@playwright/test';
+import Neo                                                      from 'neo.mjs/src/Neo.mjs';
+import * as core                                                from 'neo.mjs/src/core/_export.mjs';
+import Database                                                 from 'better-sqlite3';
+import fs                                                       from 'fs-extra';
+import path                                                     from 'path';
+import os                                                       from 'node:os';
+import {fenceIdentityPublication, readIdentityPublicationFence} from '../../../../../../ai/services/memory-core/helpers/identityPublicationFence.mjs';
+import {stringifyCanonicalJson}                                 from '../../../../../../ai/services/shared/canonicalJson.mjs';
 import {
     MAILBOX_EDGE_TYPES,
+    assertRestoreReceiptsTarget,
     resolveGraphJsonl,
-    runRestoreReceipts,
+    restoreReceipts,
+    runRestoreReceipts as runRestoreReceiptsOwner,
     validateGraphJsonl
 } from '../../../../../../ai/scripts/maintenance/restoreReceipts.mjs';
 
@@ -26,7 +31,12 @@ import {
  */
 test.describe('restoreReceipts maintenance script', () => {
     let tmpRoot, dbPath, jsonlPath;
-    const quiet = {log() {}};
+    const quiet          = {log() {}, error() {}};
+    const fenceTarget    = () => ({planeId: 'receipt-fixture', dataRoot: tmpRoot});
+    const beforeMutation = info => fenceIdentityPublication(info.db, {
+        ...fenceTarget(), operation: info.operation, source: info.source
+    });
+    const runRestoreReceipts = options => runRestoreReceiptsOwner({beforeMutation, ...options});
 
     const node = (id, label, properties = {}) => ({type: 'node', data: {id, label, properties}});
     const edge = (id, source, target, type, properties = {}) => ({type: 'edge', data: {id, source, target, type, properties: {weight: 1, ...properties}}});
@@ -50,6 +60,10 @@ test.describe('restoreReceipts maintenance script', () => {
         records.forEach(({type, data}) => type === 'node'
             ? insertNode.run(data.id, JSON.stringify(data))
             : insertEdge.run(data.id, data.source, data.target, data.type, JSON.stringify(data)));
+        db.transaction(() => beforeMutation({db, operation: 'fixture', source: 'fixture'})).immediate();
+        db.prepare('UPDATE IdentityPublicationFence SET data = ?').run(stringifyCanonicalJson({
+            version: 1, ...fenceTarget(), state: 'clear', cause: null
+        }));
         db.close();
     };
 
@@ -69,8 +83,14 @@ test.describe('restoreReceipts maintenance script', () => {
         return row;
     };
 
+    const liveFence = () => {
+        const db = openDb();
+        try { return readIdentityPublicationFence(db, fenceTarget()); }
+        finally { db.close(); }
+    };
+
     test.beforeEach(async () => {
-        tmpRoot   = path.resolve(process.cwd(), 'tmp', `restore-receipts-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        tmpRoot   = fs.mkdtempSync(path.join(os.tmpdir(), 'restore-receipts-'));
         dbPath    = path.join(tmpRoot, 'memory-core-graph.sqlite');
         jsonlPath = path.join(tmpRoot, 'bundle', 'graph', 'graph-backup.jsonl');
         await fs.ensureDir(path.dirname(jsonlPath));
@@ -103,6 +123,117 @@ test.describe('restoreReceipts maintenance script', () => {
         ]);
         expect(liveNode('MESSAGE:m1').readAt).toBe('2026-09-25T10:00:00.000Z');
         expect(liveNode('MESSAGE:m2').readAt).toBe('2026-09-25T20:00:00.000Z');
+        expect(liveFence().state).toBe('fenced');
+    });
+
+    test('missing or declared async callbacks refuse apply before touching receipts', async () => {
+        seedLive([node('MESSAGE:m1', 'MESSAGE', {readAt: null})]);
+        writeBundle([node('MESSAGE:m1', 'MESSAGE', {readAt: 'restored'})]);
+        for (const callback of [undefined, async () => {}]) {
+            await expect(runRestoreReceipts({dbPath, source: jsonlPath, apply: true,
+                beforeMutation: callback, logger: quiet})).rejects.toThrow(/synchronous.*fence/);
+            expect(liveNode('MESSAGE:m1').readAt).toBeNull();
+            expect(liveFence().state).toBe('clear');
+        }
+    });
+
+    test('receipt writes and their fence commit atomically on the physical handle', async () => {
+        seedLive([node('MESSAGE:m1', 'MESSAGE', {readAt: null})]);
+        writeBundle([node('MESSAGE:m1', 'MESSAGE', {readAt: 'restored'}),
+            node('clear-spoof', 'IdentityPublicationFence', {state: 'clear'})]);
+        let called = 0;
+        await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, logger: quiet,
+            beforeMutation: info => {
+                called++;
+                expect(info.db.inTransaction).toBe(true);
+                expect(info.operation).toBe('restore-receipts');
+                beforeMutation(info);
+                expect(liveFence().state).toBe('clear');
+                expect(liveNode('MESSAGE:m1').readAt).toBeNull();
+            }});
+        expect(called).toBe(1);
+        expect(liveNode('MESSAGE:m1').readAt).toBe('restored');
+        expect(liveFence().state).toBe('fenced');
+    });
+
+    test('a receipt fence refusal rolls back eligibility and reports no committed writes', async () => {
+        seedLive([node('MESSAGE:m1', 'MESSAGE', {readAt: null})]);
+        writeBundle([node('MESSAGE:m1', 'MESSAGE', {readAt: 'restored'})]);
+        const error = await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, logger: quiet,
+            beforeMutation: info => {
+                beforeMutation(info);
+                throw new Error('fixture receipt refusal');
+            }}).then(() => null, error => error);
+        expect(error?.message).toBe('fixture receipt refusal');
+        expect(error.committed).toBeNull();
+        expect(liveNode('MESSAGE:m1').readAt).toBeNull();
+        expect(liveFence().state).toBe('clear');
+    });
+
+    test('receipt restoration refuses protected relations and cold protected endpoints', async () => {
+        seedLive([node('@a', 'AgentIdentity'), node('ordinary-id', 'IDENTITY_FAMILY_CURRENT')]);
+        for (const type of ['IDENTITY_FAMILY_LINK', 'RELATES_TO']) {
+            writeBundle([edge('ordinary-edge', '@a', 'ordinary-id', type)]);
+            await expect(runRestoreReceipts({dbPath, source: jsonlPath, apply: true,
+                edgeTypes: [type], logger: quiet})).rejects.toThrow(/Protected identity-publication/);
+            expect(liveEdges()).toEqual([]);
+            expect(liveFence().state).toBe('clear');
+        }
+    });
+
+    test('apply target qualification accepts the configured file and refuses a different existing database', () => {
+        seedLive([]);
+        const alias = path.join(tmpRoot, 'alias.sqlite'), other = path.join(tmpRoot, 'other.sqlite');
+        fs.symlinkSync(dbPath, alias);
+        fs.writeFileSync(other, '');
+        expect(() => assertRestoreReceiptsTarget(alias, dbPath)).not.toThrow();
+        expect(() => assertRestoreReceiptsTarget(other, dbPath)).toThrow('configured live graph path');
+        expect(() => assertRestoreReceiptsTarget(dbPath, undefined)).toThrow('configured live graph path');
+    });
+
+    test('a colliding protected bundle id cannot become an ordinary edge through id replacement', async () => {
+        seedLive([node('@a', 'AgentIdentity'), node('@b', 'AgentIdentity'),
+            edge('identity-family-collision', '@a', '@b', 'RELATES_TO')]);
+        writeBundle([edge('identity-family-collision', '@b', '@a', 'RELATES_TO')]);
+        await expect(runRestoreReceipts({dbPath, source: jsonlPath, apply: true,
+            edgeTypes: ['RELATES_TO'], logger: quiet})).rejects.toThrow(/Protected identity-publication/);
+        expect(liveEdges()).toHaveLength(1);
+        expect(liveFence().state).toBe('clear');
+    });
+
+    test('nested receipt restore and thenable fences refuse without committing graph changes', async () => {
+        seedLive([node('MESSAGE:m1', 'MESSAGE', {readAt: null})]);
+        writeBundle([node('MESSAGE:m1', 'MESSAGE', {readAt: 'restored'})]);
+        const db = openDb();
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            await expect(restoreReceipts({db, jsonl: jsonlPath, apply: true, beforeMutation}))
+                .rejects.toThrow('existing transaction');
+        } finally { db.exec('ROLLBACK'); db.close(); }
+        await expect(runRestoreReceipts({dbPath, source: jsonlPath, apply: true, logger: quiet,
+            beforeMutation: info => {
+                beforeMutation(info);
+                return Promise.reject(new Error('fixture async refusal'));
+            }})).rejects.toThrow('synchronous');
+        expect(liveNode('MESSAGE:m1').readAt).toBeNull();
+        expect(liveFence().state).toBe('clear');
+    });
+
+    test('a later batch refusal reports only earlier committed receipt counts', async () => {
+        const rows = Array.from({length: 1001}, (_, index) => node(`MESSAGE:${index}`, 'MESSAGE', {readAt: null}));
+        seedLive(rows);
+        writeBundle(rows.map(row => node(row.data.id, 'MESSAGE', {readAt: 'restored'})));
+        let   batches = 0;
+        const error   = await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, logger: quiet,
+            beforeMutation: info => {
+                if (++batches === 2) throw new Error('second batch refused');
+                return beforeMutation(info);
+            }}).then(() => null, error => error);
+        expect(error.message).toBe('second batch refused');
+        expect(error.committed.receipts.nodes.filled).toBe(1000);
+        expect(liveNode('MESSAGE:999').readAt).toBe('restored');
+        expect(liveNode('MESSAGE:1000').readAt).toBeNull();
+        expect(liveFence().state).toBe('fenced');
     });
 
     test('a bundle written at the head holds graph/*.jsonl.br — the receipts come from the compressed payload (#974)', async () => {

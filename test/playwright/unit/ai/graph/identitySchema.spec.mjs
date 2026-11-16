@@ -71,6 +71,20 @@ test.describe('identitySchema — node-types + the reflexive-landing acceptance 
         expect(schema.createEmbodiedEpisodeNode({identityKey: '@r1', model: 'm', family: 'claude', since: '2026-06-01T00:00:00Z', until: 'garbage'}).valid).toBe(false);
     });
 
+    test('an explicitly unattested model remains null while absent or malformed model facts refuse', () => {
+        const facts = {identityKey: '@unattested', family: 'gpt', since: '2026-07-01T00:00:00Z'},
+            result  = schema.createEmbodiedEpisodeNode({...facts, model: null});
+
+        expect(result.valid).toBe(true);
+        expect(Object.hasOwn(result.node, 'model')).toBe(true);
+        expect(JSON.parse(JSON.stringify(result.node)).model).toBeNull();
+        expect(Object.isFrozen(result.node)).toBe(true);
+
+        for (const model of [undefined, '', '  ', false, 0, {}, []]) {
+            expect(schema.createEmbodiedEpisodeNode({...facts, model}).valid).toBe(false);
+        }
+    });
+
     test('THE REFLEXIVE LANDING (ADR-0032 §2.3.7): the real Opus→Fable swap is one resident, two eras, one unchanged anchor', () => {
         const {identity, episodes} = buildRealResident();
 

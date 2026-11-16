@@ -5,6 +5,8 @@ import path      from 'node:path';
 
 import {isBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
 import {isEntryModule}                      from '../../services/shared/isEntryModule.mjs';
+import {assertOrdinaryGraphMutation}        from '../../graph/identityPublicationProtection.mjs';
+import {fenceIdentityPublication}           from '../../services/memory-core/helpers/identityPublicationFence.mjs';
 
 /**
  * @module ai/scripts/maintenance/restoreReceipts
@@ -31,6 +33,8 @@ import {isEntryModule}                      from '../../services/shared/isEntryM
  *
  * Dry-run by default: the database is opened read-only, so nothing can be written without `--apply`.
  * The database path is explicit and mandatory; nothing is inferred from the checkout or the cwd.
+ * Apply requires that path to match the configured graph. Every committed batch fences publication
+ * eligibility on that physical connection; imported graph rows cannot restore clear eligibility.
  */
 
 export const MAILBOX_EDGE_TYPES = Object.freeze(['DELIVERED_TO', 'SENT_TO', 'SENT_BY']);
@@ -128,9 +132,17 @@ export async function validateGraphJsonl(file) {
  * @param {String}   options.jsonl             Graph JSONL path.
  * @param {Boolean}  [options.apply=false]     Write; otherwise count only.
  * @param {String[]} [options.edgeTypes=[]]    Non-mailbox edge types to insert where absent.
+ * @param {Function} [options.beforeMutation] Required synchronous source-owned fence when applying.
  * @returns {Promise<Object>} `{receipts: {edges, nodes}, edges: {requested, types}}` with per-ledger counts.
  */
-export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}) {
+export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = [], beforeMutation}) {
+    if (apply && (typeof beforeMutation !== 'function' ||
+        Object.prototype.toString.call(beforeMutation) === '[object AsyncFunction]')) {
+        throw new TypeError('restoreReceipts: a synchronous source-owned mutation fence is required');
+    }
+    if (apply && db.inTransaction) {
+        throw new Error('restoreReceipts: an existing transaction is not supported');
+    }
     const requested = edgeTypes.filter(type => !MAILBOX_EDGE_TYPES.includes(type));
 
     const
@@ -166,9 +178,22 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
         seenFills   = new Set(),
         identity    = (source, target, type) => `${source}\u0000${target}\u0000${type}`;
 
-    let pending = [];
+    let pending = [], committed = null;
 
-    const flush = db.transaction(ops => { ops.forEach(op => op()); });
+    const writeBatch = db.transaction(ops => {
+        const fence = beforeMutation({db, operation: 'restore-receipts', source: jsonl});
+        if (fence && typeof fence.then === 'function') {
+            Promise.resolve(fence).catch(() => {});
+            throw new TypeError('restoreReceipts: mutation fence must be synchronous');
+        }
+        ops.forEach(op => op());
+    });
+    /** @summary Fences each physical write batch and records only successfully committed counts. */
+    const flush = ops => {
+        if (db.inTransaction) throw new Error('restoreReceipts: an existing transaction is not supported');
+        writeBatch.immediate(ops);
+        committed = structuredClone(result);
+    };
     const queue = op => {
         pending.push(op);
         if (pending.length >= WRITE_BATCH_SIZE) {
@@ -212,7 +237,10 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
                 if (!live) { result.receipts.nodes.missingLive++; continue; }
 
                 result.receipts.nodes.matched++;
-                fillFields(result.receipts.nodes, data.id, live, props, (field, value) => setNodeField[field].run(value, data.id));
+                fillFields(result.receipts.nodes, data.id, live, props, (field, value) => {
+                    assertOrdinaryGraphMutation(db, {table: 'Nodes', id: data.id, record: data});
+                    return setNodeField[field].run(value, data.id);
+                });
                 continue;
             }
 
@@ -227,7 +255,10 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
                 if (rows.length === 0) { result.receipts.edges.missingLive++; continue; }
 
                 result.receipts.edges.matched++;
-                rows.forEach(row => fillFields(result.receipts.edges, row.id, row, properties, (field, value) => setEdgeField[field].run(value, row.id)));
+                rows.forEach(row => fillFields(result.receipts.edges, row.id, row, properties, (field, value) => {
+                    assertOrdinaryGraphMutation(db, {table: 'Edges', id: row.id, record: data});
+                    return setEdgeField[field].run(value, row.id);
+                }));
                 continue;
             }
 
@@ -250,8 +281,10 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
 
             if (apply && requested.includes(type)) {
                 queue(() => {
+                    assertOrdinaryGraphMutation(db, {table: 'Edges', id, record: data});
                     const edgeId = edgeIdTaken.get(id) ? globalThis.crypto.randomUUID() : id;
-                    row.inserted += insertEdge.run(edgeId, properties.userId ?? null, source, target, type, JSON.stringify({id: edgeId, source, target, type, properties}), source, target, type).changes;
+                    const record = {id: edgeId, source, target, type, properties};
+                    row.inserted += insertEdge.run(edgeId, properties.userId ?? null, source, target, type, JSON.stringify(record), source, target, type).changes;
                 });
             }
         }
@@ -261,7 +294,7 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
         }
     } catch (error) {
         // Whatever flushed before the failure is committed; the counts say exactly what. A rerun is safe.
-        error.committed = apply ? structuredClone(result) : null;
+        error.committed = apply ? committed : null;
         throw error;
     }
 
@@ -276,9 +309,10 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
  * @param {Boolean}  [options.apply=false]
  * @param {String[]} [options.edgeTypes=[]]
  * @param {Object}   [options.logger=console]
+ * @param {Function} [options.beforeMutation] Source-owned fence, required for apply.
  * @returns {Promise<Object>} The `restoreReceipts` result.
  */
-export async function runRestoreReceipts({dbPath, source, apply = false, edgeTypes = [], logger = console}) {
+export async function runRestoreReceipts({dbPath, source, apply = false, edgeTypes = [], logger = console, beforeMutation}) {
     if (typeof dbPath !== 'string' || !dbPath.trim()) {
         throw new Error('dbPath must be an explicit non-empty path.');
     }
@@ -287,7 +321,7 @@ export async function runRestoreReceipts({dbPath, source, apply = false, edgeTyp
           db    = new Database(path.resolve(dbPath), {fileMustExist: true, readonly: !apply, timeout: 10000});
 
     try {
-        const result = await restoreReceipts({db, jsonl, apply, edgeTypes});
+        const result = await restoreReceipts({db, jsonl, apply, edgeTypes, beforeMutation});
 
         logResult(result, {apply, logger});
         return result;
@@ -298,6 +332,19 @@ export async function runRestoreReceipts({dbPath, source, apply = false, edgeTyp
         throw error;
     } finally {
         db.close();
+    }
+}
+
+/**
+ * @summary Requires the explicit receipt target to be the configured physical graph, without deriving plane identity.
+ * @param {String} dbPath Explicit existing target path.
+ * @param {String} configuredGraphPath Current resolved graph path.
+ * @throws {Error} When either path is unavailable or they identify different files.
+ */
+export function assertRestoreReceiptsTarget(dbPath, configuredGraphPath) {
+    if (typeof configuredGraphPath !== 'string' || !configuredGraphPath ||
+        fs.realpathSync(dbPath) !== fs.realpathSync(configuredGraphPath)) {
+        throw new Error('restoreReceipts: apply target must match the configured live graph path');
     }
 }
 
@@ -339,8 +386,22 @@ export function createCommand() {
  */
 export async function runCli(argv = process.argv) {
     const options = createCommand().parse(argv).opts();
+    let beforeMutation;
+    if (options.apply) {
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
+        const {default: aiConfig} = await import('../../mcp/server/memory-core/config.mjs');
+        assertRestoreReceiptsTarget(options.dbPath, aiConfig.storagePaths.graph);
+        beforeMutation = info => {
+            assertRestoreReceiptsTarget(info.db.name, aiConfig.storagePaths.graph);
+            return fenceIdentityPublication(info.db, {
+                planeId  : aiConfig.plane.id, dataRoot: aiConfig.plane.dataRoot,
+                operation: info.operation, source: info.source
+            });
+        };
+    }
 
-    return runRestoreReceipts({dbPath: options.dbPath, source: options.source, apply: options.apply, edgeTypes: options.edgeTypes});
+    return runRestoreReceipts({dbPath: options.dbPath, source: options.source, apply: options.apply, edgeTypes: options.edgeTypes, beforeMutation});
 }
 
 if (isEntryModule(import.meta.url)) {

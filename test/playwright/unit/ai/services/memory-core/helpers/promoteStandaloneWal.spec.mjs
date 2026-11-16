@@ -17,6 +17,7 @@ import fs              from 'node:fs';
 import os              from 'node:os';
 import path            from 'node:path';
 import {DatabaseSync}  from 'node:sqlite';
+import BetterSqlite    from 'better-sqlite3';
 import {fileURLToPath} from 'node:url';
 import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
@@ -137,57 +138,51 @@ function createCustomGraphDb(dbPath, nodes) {
 }
 
 /**
- * @summary Builds a writable fake `GraphService.db` supporting `upsertNode`, `linkNodes`, and RLS reads without mutating `AiConfig`.
+ * @summary Couples a warm RLS cache facade to real SQLite records and physical transactions.
  * @param {{value: (String|null)}} requester Active requester holder.
  * @returns {Object}
  */
 function makeTopologyDb(requester) {
-    const nodeMap  = new Map();
-    const edges    = [];
-    const sqliteDb = {
-        prepare(sql) {
-            return {
-                get(...args) {
-                    if (sql.includes('FROM Nodes')) {
-                        const [a, b] = args;
-                        return {count: (nodeMap.has(a) ? 1 : 0) + (a === b ? 0 : (nodeMap.has(b) ? 1 : 0))};
-                    }
-                    return undefined;
-                }
-            };
-        }
-    };
+    const nodeMap  = new Map(),
+          edges    = [],
+          sqliteDb = new BetterSqlite(':memory:');
+    sqliteDb.exec(`PRAGMA foreign_keys = ON;
+        CREATE TABLE Nodes (id TEXT PRIMARY KEY, user_id TEXT, data TEXT NOT NULL);
+        CREATE TABLE Edges (id TEXT PRIMARY KEY, user_id TEXT,
+            source TEXT NOT NULL REFERENCES Nodes(id) ON DELETE CASCADE,
+            target TEXT NOT NULL REFERENCES Nodes(id) ON DELETE CASCADE, type TEXT NOT NULL, data TEXT NOT NULL);`);
 
     return {
         getAdjacentNodes() {},
         nodes: nodeMap,
         edges: {
-            getByIndex(field, id) {
-                return edges.filter(edge => edge[field] === id);
-            }
+            get(id) { return edges.find(value => value.id === id); },
+            getByIndex(field, id) { return edges.filter(value => value[field] === id); }
         },
         addNode(spec) {
-            nodeMap.set(spec.id, {id: spec.id, label: spec.label, properties: spec.properties});
+            const record = {id: spec.id, label: spec.label, properties: spec.properties};
+            sqliteDb.prepare(`INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id, data=excluded.data`)
+                .run(record.id, record.properties?.userId ?? null, JSON.stringify(record));
+            nodeMap.set(record.id, record);
         },
         addEdge(spec) {
-            edges.push({
-                id        : spec.id,
-                source    : spec.source,
-                target    : spec.target,
-                type      : spec.type,
-                properties: spec.properties
-            });
+            const record = {id: spec.id, source: spec.source, target: spec.target, type: spec.type, properties: spec.properties};
+            sqliteDb.prepare(`INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id, source=excluded.source,
+                    target=excluded.target, type=excluded.type, data=excluded.data`)
+                .run(record.id, record.properties?.userId ?? null, record.source, record.target, record.type, JSON.stringify(record));
+            const index = edges.findIndex(value => value.id === record.id);
+            if (index < 0) edges.push(record);
+            else edges[index] = record;
         },
-        transaction(fn) {
-            return fn();
-        },
+        transaction(fn) { return fn(); },
+        close() { sqliteDb.close(); },
         autoSave: false,
         storage : {
             db                   : sqliteDb,
-            dbPath               : '/tmp/promote-standalone-rls-fake.db',
-            RequestContextService: {
-                getAgentIdentityNodeId: () => requester.value
-            }
+            dbPath               : ':memory:',
+            RequestContextService: {getAgentIdentityNodeId: () => requester.value}
         }
     };
 }
@@ -496,6 +491,7 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
         const originalDb = GraphService.db;
         const requester  = {value: null};
         const sandbox    = makeTempDir('mc-promote-ac3-');
+        let topologyDb;
 
         try {
             const sourceWalDir    = path.join(sandbox, 'standalone-wal');
@@ -633,8 +629,8 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
             expect(promotedRecord.planeId).toBe(DEFAULT_STANDALONE_PLANE_ID);
             expect(promotedRecord.graphProjectionVersion).toBe(1);
 
-            // Project into GraphService using MemoryService's real WAL projection helpers + B4-safe fake topology DB.
-            GraphService.db = makeTopologyDb(requester);
+            // Project through the real WAL helpers with the fixture's synchronized SQLite and cache.
+            GraphService.db = topologyDb = makeTopologyDb(requester);
             GraphService.upsertGlobalNode({id: 'frontier', type: 'SYSTEM_ANCHOR', name: 'Frontier'});
             GraphService.upsertGlobalNode({id: '@neo-gemini-julia', type: 'AgentIdentity', name: 'Julia'});
             GraphService.upsertGlobalNode({id: '@neo-opus-ada', type: 'AgentIdentity', name: 'Ada'});
@@ -684,6 +680,7 @@ test.describe('Neo.ai.services.memory-core.helpers.promoteStandaloneWal (#1717)'
             expect(GraphService.getNodeRecord({id: promotedId})).toBeNull();
         } finally {
             GraphService.db = originalDb;
+            topologyDb?.close();
             requester.value = null;
             fs.rmSync(sandbox, {recursive: true, force: true});
         }

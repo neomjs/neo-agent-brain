@@ -33,7 +33,8 @@ import {
     normalizeRawMemoryUserId,
     RAW_MEMORY_NODE_LABEL
 } from '../../services/memory-core/helpers/rawMemoryGraphIdentity.mjs';
-import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
+import {isEntryModule}                       from '../../services/shared/isEntryModule.mjs';
+import {runWithIdentityPublicationPreserved} from '../../graph/identityPublicationProtection.mjs';
 
 const
     PAGE_SIZE            = 2000,
@@ -474,7 +475,7 @@ export function planRawMemoryIdentityReconciliation({chromaRows, graphNodes, gra
 }
 
 /**
- * @summary Applies one conflict-free plan in a single SQLite transaction.
+ * @summary Applies one conflict-free plan only while protected history and endpoints retain their bytes.
  * @param {Object} db better-sqlite3 connection.
  * @param {Object} plan Result from {@link planRawMemoryIdentityReconciliation}.
  * @returns {{nodesMerged: Number, edgesRewritten: Number, edgesDropped: Number}}
@@ -498,7 +499,7 @@ export function applyRawMemoryIdentityReconciliation(db, plan) {
         deleteEdge = db.prepare('DELETE FROM Edges WHERE id = ?'),
         deleteNode = db.prepare('DELETE FROM Nodes WHERE id = ?');
 
-    const apply = db.transaction(() => {
+    runWithIdentityPublicationPreserved(db, () => {
         for (const action of plan.nodeActions) {
             upsertNode.run(action.canonicalId, action.userId, JSON.stringify(action.data))
         }
@@ -517,8 +518,6 @@ export function applyRawMemoryIdentityReconciliation(db, plan) {
 
         plan.nodeActions.forEach(action => deleteNode.run(action.legacyId))
     });
-
-    apply();
 
     return {
         nodesMerged   : plan.nodeActions.length,
