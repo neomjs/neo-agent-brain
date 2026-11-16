@@ -5,6 +5,7 @@ import {
     RUNTIME_GENERATION_RECORD,
     completeRuntimeGenerationRecord,
     createRuntimeGenerationRecord,
+    describeCodexWakeArtifact,
     inventoryRuntimePayload,
     runtimeGenerationIdentity
 } from '../../../../../../../ai/services/fleet/runtimeGeneration.mjs';
@@ -21,31 +22,40 @@ import {
  * @param {String} [options.revision='a'] One hex digit of the product revision, so one root can hold distinct generations.
  * @param {Boolean} [options.codexWake=false] Include a sealed test hook and its protocol declaration.
  * @param {String|null} [options.codexWire='neo-codex-primary-wake-v1'] The declared protocol, or null to omit it.
+ * @param {String} [options.artifactConsumer] Stage a declared shared artifact with these consumer bytes.
  * @returns {Promise<{directory: String, runtimeRoot: String, executable: String, retainedVerifier: String, record: Object}>}
  */
 export async function sealRuntimeGeneration(root, {revision = 'a', codexWake = false,
-    codexWire = 'neo-codex-primary-wake-v1'} = {}) {
+    codexWire = 'neo-codex-primary-wake-v1', artifactConsumer} = {}) {
     const receipt = {electronVersion: '43.5.0', owners: {
         product: {revision: revision.repeat(40)}, brain: {revision: 'b'.repeat(40)}, engine: {revision: 'c'.repeat(40)}
     }};
     const identity         = runtimeGenerationIdentity(receipt), directory = path.join(root, identity.id);
     const payloadRoot      = path.join(directory, RUNTIME_GENERATION_PAYLOAD);
     const runtimeRoot      = path.join(payloadRoot, 'Contents/Resources/organism');
-    const executable       = path.join(payloadRoot, 'Contents/MacOS/Host');
+    const executable       = path.join(payloadRoot, 'Contents/MacOS', artifactConsumer ? 'Neo Harness' : 'Host');
     const retainedVerifier = path.join(runtimeRoot, 'ai/services/fleet/runtimeGeneration.mjs');
     await fs.mkdir(path.dirname(retainedVerifier), {recursive: true});
     await fs.mkdir(path.dirname(executable), {recursive: true});
     await fs.writeFile(path.join(runtimeRoot, 'organism-build-info.json'), JSON.stringify(receipt));
     await fs.writeFile(executable, 'fixture executable', {mode: 0o755});
     await fs.writeFile(retainedVerifier, 'throw Error("the retained verifier must never be loaded");');
-    if (codexWake) {
+    let declaration;
+    if (codexWake || artifactConsumer) {
         const wake = path.join(runtimeRoot, 'ai/daemons/wake');
         await fs.mkdir(wake, {recursive: true});
         await fs.writeFile(path.join(wake, 'codexWakeHook.mjs'), '// sealed test hook\n');
-        await fs.writeFile(path.join(wake, 'fleetPrimarySessionWake.mjs'), '// sealed test consumer\n');
+        await fs.writeFile(path.join(wake, 'fleetPrimarySessionWake.mjs'), artifactConsumer || '// sealed test consumer\n');
         if (codexWire !== null) {
             await fs.writeFile(path.join(wake, 'codexWakeProtocol.json'), JSON.stringify({wire: codexWire}))
         }
+    }
+    if (artifactConsumer) {
+        declaration = {version:1, wire:codexWire, files:['ai/daemons/wake/codexWakeHook.mjs','ai/daemons/wake/fleetPrimarySessionWake.mjs'], packages:[]};
+        await fs.writeFile(path.join(runtimeRoot, 'codex-wake-artifact.json'), JSON.stringify(declaration));
+        await fs.writeFile(path.join(runtimeRoot, 'package.json'), JSON.stringify({productRevision:revision}));
+        await fs.mkdir(path.join(payloadRoot, 'Contents/Frameworks'));
+        for (const file of ['Info.plist','PkgInfo']) await fs.writeFile(path.join(payloadRoot,'Contents',file),file)
     }
     const payload = await inventoryRuntimePayload(payloadRoot, true);
     for (const [relative, kind, mode] of [...payload.entries].reverse()) {
@@ -62,7 +72,23 @@ export async function sealRuntimeGeneration(root, {revision = 'a', codexWake = f
     });
     await fs.writeFile(path.join(directory, RUNTIME_GENERATION_RECORD), JSON.stringify(record), {mode: 0o400});
     await fs.chmod(directory, 0o500);
-    return {directory, runtimeRoot, executable, retainedVerifier, record};
+    let artifactRoot;
+    if (declaration) {
+        const {entries,digest} = describeCodexWakeArtifact({declaration,entries:payload.entries});
+        artifactRoot = path.join(root, 'wake-artifacts-v1', digest);
+        try {
+            await fs.access(artifactRoot)
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+            for (const [name,kind] of entries) {
+                const file = path.join(artifactRoot,name);
+                if (kind === 'directory') await fs.mkdir(file,{recursive:true});
+                else await fs.copyFile(path.join(payloadRoot,name),file)
+            }
+            for (const [name,,mode] of [...entries].reverse()) await fs.chmod(path.join(artifactRoot,name),mode)
+        }
+    }
+    return {directory, runtimeRoot, executable, retainedVerifier, record, artifactRoot};
 }
 
 /** @summary Rewrites the executable after publication with its mode kept: only a payload re-hash can tell. */

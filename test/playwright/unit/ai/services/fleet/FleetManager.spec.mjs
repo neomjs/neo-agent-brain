@@ -1533,6 +1533,38 @@ test.describe('FleetManager native wake canary', () => {
         FleetManager.provisionAndStartFn = null; FleetManager.managedRoot = null; FleetManager.seatHomeHolds.clear();
     });
 
+    test('a Codex send proves the artifact from the original live Start after a host restart, and detects subsequent changes', async () => {
+        const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'wake-send-custody-')));
+        try {
+            const sealed  = await sealRuntimeGeneration(root,{revision:'a',artifactConsumer:'consumer'});
+            const runtime = {...runtimeGenerationPin(await readRuntimeGenerationRecord({directory:sealed.directory})),pin:'held'};
+            const config  = {agentId:'fixture',family:'codex-desktop',instanceHome:path.join(root,'seat'),appBundle:'/app',
+                hookNodePath:path.join(sealed.artifactRoot,'Contents/MacOS/Neo Harness'),
+                hookModulePath:path.join(sealed.artifactRoot,'Contents/Resources/organism/ai/daemons/wake/codexWakeHook.mjs')};
+            const status = {id:'fixture',pid:42,startedAt:'start',running:true,instanceHome:config.instanceHome,
+                harnessGeneration:{generationId:'vendor'},runtimeGeneration:runtime,launchCommand:'/app/bin'};
+            const record = {cwd:root,pidStartedAt:'birth',runtimeStart:{id:'original'}};
+            FleetManager.lifecycleService = lifecycleWithStarts({
+                status:() => status, processes:new Map([['fixture',record]]), probeSeat:() => 'live',
+                matchesRuntimeStart:(candidate,original) => candidate === record && original === record.runtimeStart,
+                harnessGenerationsOf:() => [{id:'vendor',binaryPath:'/app/bin',appBundle:'/app'}]
+            });
+            FleetManager.wakeStateOptions = {wakeReceiverManifestPath:path.join(root,'manifest'),wakeReceiverStateDir:root};
+            const resident = {pid:42,startedAt:'birth',workspaceRoot:root};
+            const verify   = (route = config) => FleetManager.verifyCodexWakeRoute(route,resident);
+            expect(await verify()).toBe(true);
+            expect(await verify({...config,hookNodePath:sealed.executable})).toBe(false);
+            expect(await FleetManager.verifyCodexWakeRoute(config,{...resident,pid:43})).toBe(false);
+            const dependency = path.join(path.dirname(config.hookModulePath),'fleetPrimarySessionWake.mjs');
+            fs.chmodSync(dependency,0o644);
+            fs.writeFileSync(dependency,'modified');
+            fs.chmodSync(dependency,0o444);
+            expect(await verify()).toBe(false);
+            status.runtimeGeneration = {...runtime,pin:'unknown'};
+            await expect(verify()).rejects.toThrow()
+        } finally { await removeSealed(root) }
+    });
+
     test('normal re-arm of a verified surviving Codex seat prepares and publishes its retained A hook', async () => {
         const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-wake-survivor-')));
         let retained, vintage, incompatible;

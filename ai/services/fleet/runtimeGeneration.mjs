@@ -6,6 +6,7 @@ import {isDeepStrictEqual}         from 'node:util';
 import {LAUNCH_ADMISSION_PROTOCOL} from './mcpLaunchAdmission.mjs';
 
 export {LAUNCH_ADMISSION_PROTOCOL};
+export {describeCodexWakeArtifact} from './codexWakeArtifact.mjs';
 
 /**
  * @module ai/services/fleet/runtimeGeneration

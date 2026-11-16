@@ -311,6 +311,37 @@ function assertOnSeatForge(repo, seat, caller) {
  * vs settings-pane wiring) is a separate leaf that consumes this facade — it is not part of it.
  */
 class FleetManager extends Base {
+    // The original process record owns the proof. A different Start or a new Fleet process verifies afresh.
+    #codexWakeRoutes = new WeakMap();
+
+    /**
+     * @summary Verifies a pending Codex send against its live original Start and the tree that Start selected.
+     * @param {Object} config The host route offered to the receiver.
+     * @param {Object} resident The receiver's freshly inspected vendor process.
+     * @returns {Promise<Boolean>}
+     */
+    async verifyCodexWakeRoute(config, resident) {
+        const lifecycle                  = this.getLifecycleService(), id = config.agentId;
+        const {live, record, generation} = nativeWakeLaunch(lifecycle, id, lifecycle.status(id), 'codex-desktop');
+        if (live.pid !== resident.pid || record.cwd !== resident.workspaceRoot || config.instanceHome !== live.instanceHome ||
+            generation.appBundle !== config.appBundle || (record.pidStartedAt && record.pidStartedAt !== resident.startedAt)) return false;
+        assertCodexRuntimeStart(lifecycle, record, live.runtimeGeneration);
+        let route = this.#codexWakeRoutes.get(record);
+        if (!route || !isDeepStrictEqual(route.runtime, live.runtimeGeneration)) {
+            const options = this.wakeStateOptions;
+            let unchanged;
+            const selected = await resolveCodexWakeRuntime({agentId:id, instanceHome:live.instanceHome, workspaceRoot:record.cwd,
+                manifestPath:options.wakeReceiverManifestPath, stateDir:options.wakeReceiverStateDir, runtime:live.runtimeGeneration,
+                enrolled:true, retainArtifact:check => { unchanged = check }});
+            route = {...selected, runtime:live.runtimeGeneration, unchanged};
+            this.#codexWakeRoutes.set(record, route)
+        }
+        if (route.nodePath !== config.hookNodePath || route.hookModulePath !== config.hookModulePath ||
+            (route.unchanged && !await route.unchanged())) return false;
+        recheckCodexRuntimeStart(lifecycle, id, live, record, live.runtimeGeneration);
+        return true
+    }
+
     static config = {
         /**
          * @member {String} className='Neo.ai.services.fleet.FleetManager'
@@ -811,11 +842,13 @@ class FleetManager extends Base {
                     primarySession = {instanceHome: live.instanceHome, appBundle: generation.appBundle, agentId, family: agent.harnessType};
                     if (agent.harnessType === 'codex-desktop') {
                         assertCodexRuntimeStart(lifecycle, record, live.runtimeGeneration);
+                        let unchanged;
                         const {nodePath:hookNodePath, hookModulePath} = await resolveCodexWakeRuntime({agentId, instanceHome:live.instanceHome,
                             workspaceRoot:record.cwd, manifestPath:options.wakeReceiverManifestPath, stateDir:optIn.stateDir,
-                            runtime:live.runtimeGeneration, enrolled:true, verifyRuntime});
+                            runtime:live.runtimeGeneration, enrolled:true, verifyRuntime, retainArtifact:check => { unchanged = check }});
                         if (!(await fs.stat(hookModulePath)).isFile()) throw new Error('native wake hook module is unavailable');
                         primarySession = {...primarySession, hookNodePath, hookModulePath};
+                        this.#codexWakeRoutes.set(record, {nodePath:hookNodePath, hookModulePath, runtime:live.runtimeGeneration, unchanged});
                     }
                     if (agent.harnessType === 'antigravity') {
                         const receiptFile = path.join(live.instanceHome, '.neo-fleet-project-binding.json'),

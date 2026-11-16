@@ -9,6 +9,8 @@ import {deriveAgentInstanceHome}                   from '../../../../ai/services
 import {readCodexModelCatalog}                     from '../../../../ai/services/fleet/codexModelCatalog.mjs';
 import {createManagedAgentWorkspacePlan}           from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {startAgentProvisioned as startProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {readRuntimeGeneration}                     from '../../../../ai/services/fleet/runtimeGeneration.mjs';
+import {sealRuntimeGeneration, removeSealed}       from './services/fleet/fixtures/sealedRuntimeGeneration.mjs';
 import {resolveSeatGitIdentity}                    from '../../../../ai/services/fleet/seatGitIdentity.mjs';
 import {supportsTenantMcpTarget}                   from '../../../../src/fleet/contract/harnessTypes.mjs';
 import {holdRuntimeGenerationReferences, RUNTIME_REFERENCE_START_WAIT_MS,
@@ -307,6 +309,29 @@ function makeTenantService({
 }
 
 test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning)', () => {
+    test('a fresh packaged Codex Start prepares the hook selected by its own generation', async () => {
+        const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'wake-fresh-start-')));
+        try {
+            let pair;
+            for (const revision of ['a','b']) {
+                const sealed     = await sealRuntimeGeneration(root,{revision,artifactConsumer:'shared consumer'});
+                const generation = await readRuntimeGeneration({directory:sealed.directory});
+                const agents     = repoAgent('a');
+                agents.a.harnessType = 'codex-desktop';
+                const lifecycle = makeLifecycle({agents});
+                lifecycle.installedRuntime = {...generation,generation};
+                let actual;
+                const result = await startAgentProvisioned({lifecycleService:lifecycle,agentId:'a',managedRoot:'/managed',
+                    ensureRepo:makeEnsureRepo(),prepareWorkspace:makePrepareWorkspace(),
+                    prepareNativeWake:async input => { actual = [input.nodePath,input.hookModulePath]; return {state:'prepared'} }});
+                expect(result.nativeWakePreparation).toEqual({state:'prepared'});
+                expect(actual[0]).toBe(path.join(sealed.artifactRoot,'Contents/MacOS/Neo Harness'));
+                expect(actual[1]).toBe(path.join(sealed.artifactRoot,'Contents/Resources/organism/ai/daemons/wake/codexWakeHook.mjs'));
+                if (pair) expect(actual).toEqual(pair);
+                pair = actual
+            }
+        } finally { await removeSealed(root) }
+    });
     test('prepares a native wake after workspace preparation and before the first spawn', async () => {
         const events = [], agents = repoAgent('a');
         agents.a.harnessType = 'codex-desktop';

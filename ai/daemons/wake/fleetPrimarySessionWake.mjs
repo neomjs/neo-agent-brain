@@ -170,7 +170,7 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
  * @returns {Promise<Object>} Delivered only on recipient evidence. Uncertain sends stay pending for reconciliation.
  */
 export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, manifestPath, sidecar, currentRoute, inspectResident = observePrimaryWakeResident,
-    codexTransport = codex, antigravityTransport = antigravity, appDataDir = path.join(os.homedir(), '.gemini', 'antigravity')} = {}) {
+    verifyCodexRoute, codexTransport = codex, antigravityTransport = antigravity, appDataDir = path.join(os.homedir(), '.gemini', 'antigravity')} = {}) {
     const route = record?.route, config = route?.adapterConfig?.primarySession, seat = route?.agentIdentity;
     if (!config || !bareFamily.has(config.family) || !isKey(record.recordKey)) return pending('invalid native route');
     const {family, instanceHome, appBundle, projectId} = config;
@@ -292,6 +292,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
             if (binding.generation !== generation || (currentRoute && !await currentRoute())) return {status:'not-sent'};
             const {threadId} = binding, text = wakeText(nonce), root = await select();
             if (root?.threadId !== threadId) return {status:'not-sent'};
+            if (isCodex && verifyCodexRoute && !await verifyCodexRoute(config, live).catch(() => false)) return {status:'not-sent'};
             const cursor = isCodex ? root.receiptOffset : antigravityTransport.captureAntigravityWakeCursor({appDataDir,threadId});
             await writeFileAtomic(cursorPathFor(slotUrgent), JSON.stringify({nonce,cursor}), {mode:0o600,fsync:true});
             const activeTurn = (attempt?.deliveryMode || target?.deliveryMode) === 'active-turn';
@@ -360,7 +361,7 @@ export async function dispatchAntigravitySidecarRecords({manifestPath,stateDir,e
 }
 
 /** @summary Revalidates the host route, drains urgent spool pointers before ordinary ones, and publishes correlated receipt fields. */
-export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route,sidecar,dispatch = dispatchFleetPrimarySessionWake}) {
+export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route,sidecar,verifyCodexRoute,dispatch = dispatchFleetPrimarySessionWake}) {
     if (route.harnessTargetMetadata?.adapter !== 'primary-session') return;
     const config = route.adapterConfig?.primarySession;
     if (!config || (await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family}))?.stateDir !== stateDir) return;
@@ -379,7 +380,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         if (!['pending','dispatching'].includes(record.state) || record.subscriptionId !== subscriptionId ||
             record.envelope?.subscriptionId !== subscriptionId || record.route?.agentIdentity !== route.agentIdentity ||
             record.envelope?.agentIdentity !== route.agentIdentity || record.envelope?.eventType !== 'wake/digest') return {active:false};
-        const result = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute});
+        const result = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute,verifyCodexRoute});
         if (result?.status === 'delivered' && hasPrimaryWakeRecipient(result.recipient, {seat:route.agentIdentity, recordKey:record.recordKey})) {
             const {recordKey} = record;
             await writeFileAtomic(pointerPath+'.result', JSON.stringify({
@@ -422,7 +423,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
  * independently consumes its requests. An inactive host reads only its enrollment directory.
  * @returns {{stop:Function}} Stops scheduling and waits for an in-flight pass.
  */
-export function startFleetPrimaryWakePump({manifestPath,intervalMs=5000,logger=console,drainRecord=drainFleetPrimaryWakeRecord}) {
+export function startFleetPrimaryWakePump({manifestPath,verifyCodexRoute = async () => false,intervalMs=5000,logger=console,drainRecord=drainFleetPrimaryWakeRecord}) {
     let timer, stopped=false, running=Promise.resolve();
     async function tick() {
         try {
@@ -437,7 +438,7 @@ export function startFleetPrimaryWakePump({manifestPath,intervalMs=5000,logger=c
                         const enrollment = await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family});
                         if (!enrollment) continue;
                         const stateDir = enrollment.stateDir, state=new WakeReceiverState({stateDir});
-                        await drainRecord({state,stateDir,manifestPath,subscriptionId,route})
+                        await drainRecord({state,stateDir,manifestPath,subscriptionId,route,verifyCodexRoute})
                     } catch {
                         logger.warn?.(`Native wake route ${subscriptionId} could not reconcile; its signed record remains pending.`)
                     }
