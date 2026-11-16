@@ -877,7 +877,8 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(tenantService.calls.probe).toEqual([{
             tenantId        : 'tenant-a',
             credential      : planePat,
-            expectedIdentity: '@a'
+            expectedIdentity: '@a',
+            servedPlane     : true
         }]);
         expect(prepareWorkspace.calls[0].mcpTarget).toEqual({
             kind            : 'tenant',
@@ -939,6 +940,53 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         }])
     });
 
+    test('a tenant Start retains the complete authenticated bootstrap target before preparation', async () => {
+        const plane         = {id: 'tenant-bootstrap-plane', dataRoot: '/tenant/accepted-store'},
+              target        = {planeId: plane.id, dataRoot: plane.dataRoot},
+              lifecycle     = makeLifecycle({agents: remoteRepoAgent('a')}),
+              tenantService = makeTenantService({readiness: {ok: true, resources: {
+                  'memory-core': {ok: true, identity: '@a', plane}, 'knowledge-base': {ok: true, plane}
+              }}}),
+              prepare = makePrepareWorkspace();
+
+        await startAgentProvisioned({lifecycleService: lifecycle, tenantService, agentId: 'a', managedRoot: '/managed',
+            ensureRepo: makeEnsureRepo(), prepareWorkspace: args => {
+                plane.id = 'changed-after-proof';
+                plane.dataRoot = '/changed-after-proof';
+                return prepare(args)
+            }});
+
+        expect(tenantService.calls.probe).toEqual([{tenantId: 'tenant-a', credential: 'glpat_exact_plane_credential',
+            expectedIdentity: '@a', servedPlane: true}]);
+        expect(lifecycle.calls.start[0].opts.resolvedMcpTarget).toEqual(target);
+        expect(Object.isFrozen(lifecycle.calls.start[0].opts.resolvedMcpTarget)).toBe(true)
+    });
+
+    test('a tenant without optional plane proof keeps ordinary readiness and carries no target', async () => {
+        for (const failedPlaneRead of [false, true]) {
+            const lifecycle     = makeLifecycle({agents: remoteRepoAgent('a')}),
+                  tenantService = makeTenantService(),
+                  probe         = tenantService.probeSeatCredential;
+
+            tenantService.probeSeatCredential = async args => {
+                const readiness = await probe(args);
+                return args.servedPlane && failedPlaneRead ? {ok: false, resources: {
+                    'memory-core'   : {ok: true, identity: '@a', plane: {id: 'discarded-plane', dataRoot: '/discarded'}},
+                    'knowledge-base': {ok: false, plane: {id: 'discarded-plane', dataRoot: '/discarded'}}
+                }} : readiness
+            };
+            await startAgentProvisioned({lifecycleService: lifecycle, tenantService, agentId: 'a', managedRoot: '/managed',
+                ensureRepo: makeEnsureRepo(), prepareWorkspace: makePrepareWorkspace()});
+
+            expect(tenantService.calls.probe).toEqual([
+                {tenantId: 'tenant-a', credential: 'glpat_exact_plane_credential', expectedIdentity: '@a', servedPlane: true},
+                ...(failedPlaneRead ? [{tenantId: 'tenant-a', credential: 'glpat_exact_plane_credential', expectedIdentity: '@a'}] : [])
+            ]);
+            expect(lifecycle.calls.start).toHaveLength(1);
+            expect(lifecycle.calls.start[0].opts).not.toHaveProperty('resolvedMcpTarget')
+        }
+    });
+
     test('remote readiness binds the provider AgentIdentity, not the per-instance fleet id', async () => {
         const agents = remoteRepoAgent('codex-2');
 
@@ -962,7 +1010,8 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(tenantService.calls.probe).toEqual([{
             tenantId        : 'tenant-a',
             credential      : 'glpat_exact_plane_credential',
-            expectedIdentity: '@neo-gpt'
+            expectedIdentity: '@neo-gpt',
+            servedPlane     : true
         }])
     });
 
@@ -1484,7 +1533,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
     test('a packaged tenant Start requires matching served-plane facts before preparation and binds their owner', async () => {
         const plane = {id: 'original-plane', dataRoot: '/tenant/data'};
-        for (const kbPlane of [null, {...plane, id: 'other-plane'}, {...plane}]) {
+        for (const [kbPlane, ok] of [[null, true], [{...plane, id: 'other-plane'}, true], [{...plane}, true], [{...plane}, false]]) {
             const agents = remoteRepoAgent('seat');
             agents.seat.harnessType = 'claude-desktop';
             const lifecycle  = makeLifecycle({agents}), ensure = makeEnsureRepo(), prepare = makePrepareWorkspace();
@@ -1492,12 +1541,12 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             lifecycle.installedRuntime = {...generation, generation};
             const inputOwners = {'neural-link': {binding: {kind: 'fixture'}, read: () => ({})}};
             lifecycle.captureResidentMcpInputs = () => ({environment: {}, owners: inputOwners});
-            const tenantService = makeTenantService({readiness: {ok: true, resources: {
+            const tenantService = makeTenantService({readiness: {ok, resources: {
                 'memory-core': {ok: true, identity: '@seat', plane}, 'knowledge-base': {ok: true, plane: kbPlane}
             }}});
             const start = startAgentProvisioned({lifecycleService: lifecycle, tenantService, agentId: 'seat',
                 managedRoot: '/managed', ensureRepo: ensure, prepareWorkspace: prepare});
-            if (kbPlane?.id === plane.id) {
+            if (ok && kbPlane?.id === plane.id) {
                 await start;
                 expect(lifecycle.calls.start[0].opts.launchAdmission.residentInputs).toBe(inputOwners);
                 expect(lifecycle.calls.start[0].opts.launchAdmission.owners.plane.binding).toMatchObject({
@@ -1505,10 +1554,11 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                     endpoint: 'https://tenant.example.com', plane
                 });
             } else {
-                await expect(start).rejects.toThrow(/did not prove one original plane/);
+                await expect(start).rejects.toThrow(ok ? /did not prove one original plane/ : /credential readiness failed/);
                 expect([ensure.calls.length, prepare.calls.length, lifecycle.calls.start.length]).toEqual([0, 0, 0]);
             }
             expect(tenantService.calls.probe[0].servedPlane).toBe(true);
+            expect(tenantService.calls.probe).toHaveLength(1);
         }
     });
 
@@ -2132,8 +2182,9 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
     test('a seat starts with its own plane credential, proven on its plane before any checkout', async () => {
         const
             events           = [],
+            boundPlane       = {id: 'independently-bound-plane', dataRoot: '/remote/accepted-store'},
             lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: 'ghp_seat_checkout'}, events}),
-            planeService     = makePlaneService({events}),
+            planeService     = makePlaneService({events, stored: {credential: 'seat-plane-pat', plane: boundPlane}}),
             prepareWorkspace = makePrepareWorkspace(events);
 
         await start({lifecycle, planeService, ensureRepo: makeEnsureRepo('/managed/a/neomjs-neo', events), prepareWorkspace});
@@ -2145,12 +2196,13 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
             planeBase       : PLANE,
             credential      : 'seat-plane-pat',
             expectedIdentity: '@a',
-            expectedPlane   : SERVED
+            expectedPlane   : boundPlane
         }]);
         expect(planeService.calls.store).toEqual([]);
         expect(prepareWorkspace.calls[0].mcpTarget).toEqual({kind: 'tenant', credentialEnvVar: 'NEO_MCP_REMOTE_TOKEN', resources: RESOURCES});
         expect(lifecycle.calls.inspection[0].mcpTarget).toEqual({kind: 'tenant', resources: RESOURCES});
         // An existing explicit plane binding remains separate and is only re-proven.
+        expect(lifecycle.calls.start[0].opts.resolvedMcpTarget).toEqual({planeId: boundPlane.id, dataRoot: boundPlane.dataRoot});
         expect(lifecycle.calls.start[0].opts).toEqual({
             startSignal           : lifecycle.calls.signals[0],
             cwd                   : '/managed/a/neomjs-neo',
@@ -2159,6 +2211,7 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
             gitIdentity           : {name: 'Seat Agent', email: 'seat@example.test'},
             resolvedMcpCredential : 'seat-plane-pat',
             resolvedMcpEndpoint   : PLANE,
+            resolvedMcpTarget     : {planeId: boundPlane.id, dataRoot: boundPlane.dataRoot},
             remoteMcpCapability   : CAPABILITY
         })
     });

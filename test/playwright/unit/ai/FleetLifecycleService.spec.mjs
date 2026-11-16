@@ -1876,7 +1876,9 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(Object.keys(records['knowledge-base'])).toContain('NEO_KB_LOG_PATH');
         expect(Object.keys(records['neural-link'])).toContain('NEO_NL_LOG_PATH');
         expect(records['neural-link'].NEO_NL_PORT).toBe(String(neuralLinkConfig.port));
-        expect(Object.values(records).every(values => !Object.keys(values).some(key => ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY'].includes(key)))).toBe(true);
+        expect(Object.values(records).every(values => !Object.keys(values).some(key => [
+            'GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY', 'NEO_MCP_REMOTE_TOKEN', 'NEO_SEAT_PLANE_BASE', 'NEO_SEAT_PLANE_TARGET'
+        ].includes(key)))).toBe(true);
     });
 
     test('packaged input capture reads one resolved export and keeps only its original config binding', () => {
@@ -2653,17 +2655,35 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
     // The seat's hooks reach its plane as the seat (AiConfig.seat), so the plane travels with the
     // credential proven on it, and a seat is never told a plane it holds no credential for.
     test('the seat plane rides with the plane credential, never alone, and a launch env cannot pre-load it', () => {
-        const spawn = install({agents: {a: agentDef('a'), b: agentDef('b')}, creds: {a: 'ghp_a', b: 'ghp_b'}});
+        const target = {planeId: 'independently-bound-plane', dataRoot: '/remote/accepted-store'},
+              spawn  = install({agents: {a: agentDef('a'), b: agentDef('b'), c: agentDef('c')}, creds: {a: 'ghp_a', b: 'ghp_b', c: 'ghp_c'}});
 
-        FleetLifecycleService.start('a', {resolvedMcpCredential: 'seat-plane-pat', resolvedMcpEndpoint: 'http://127.0.0.1:3102'});
-        FleetLifecycleService.start('b', {resolvedMcpEndpoint: 'http://127.0.0.1:3102'});
+        FleetLifecycleService.start('a', {resolvedMcpCredential: 'seat-plane-pat', resolvedMcpEndpoint: 'http://127.0.0.1:3102', resolvedMcpTarget: target});
+        FleetLifecycleService.start('b', {resolvedMcpEndpoint: 'http://127.0.0.1:3102', resolvedMcpTarget: target});
+        FleetLifecycleService.start('c', {resolvedMcpCredential: 'legacy-tenant-pat', resolvedMcpEndpoint: 'https://tenant.example.com'});
 
         expect(spawn.calls[0].opts.env).toMatchObject({NEO_MCP_REMOTE_TOKEN: 'seat-plane-pat', NEO_SEAT_PLANE_BASE: 'http://127.0.0.1:3102'});
+        expect(JSON.parse(spawn.calls[0].opts.env.NEO_SEAT_PLANE_TARGET)).toEqual(target);
         expect(spawn.calls[1].opts.env).not.toHaveProperty('NEO_SEAT_PLANE_BASE');
         expect(spawn.calls[1].opts.env).not.toHaveProperty('NEO_MCP_REMOTE_TOKEN');
+        expect(spawn.calls[1].opts.env).not.toHaveProperty('NEO_SEAT_PLANE_TARGET');
+        expect(spawn.calls[2].opts.env).not.toHaveProperty('NEO_SEAT_PLANE_TARGET');
 
-        install({agents: {c: agentDef('c', {metadata: {launch: {command: 'x', args: [], env: {NEO_SEAT_PLANE_BASE: 'https://elsewhere.example'}}}})}, creds: {}});
-        expect(() => FleetLifecycleService.start('c')).toThrow(/collides with a reserved env slot/)
+        for (const [key, value] of [['NEO_SEAT_PLANE_BASE', 'https://elsewhere.example'], ['NEO_SEAT_PLANE_TARGET', JSON.stringify(target)]]) {
+            const blocked = install({agents: {c: agentDef('c', {metadata: {launch: {...LAUNCH, env: {[key]: value}}}})}, creds: {}});
+            expect(() => FleetLifecycleService.start('c')).toThrow(/collides with a reserved env slot/);
+            expect(blocked.calls).toHaveLength(0)
+        }
+    });
+
+    test('a malformed supplied plane target refuses before the spawn', () => {
+        for (const resolvedMcpTarget of [undefined, null, {}, {id: 'plane', dataRoot: '/remote/store'},
+            {planeId: 'plane', dataRoot: 'relative'}, {planeId: 'plane', dataRoot: '/remote/store', extra: true}]) {
+            const spawn = install({agents: {a: agentDef('a')}});
+            expect(() => FleetLifecycleService.start('a', {resolvedMcpCredential: 'seat-plane-pat',
+                resolvedMcpEndpoint: 'http://127.0.0.1:3102', resolvedMcpTarget})).toThrow(/invalid resolved MCP plane target/);
+            expect(spawn.calls).toHaveLength(0)
+        }
     });
 
     // The seat's Stop hook reads the Fleet's host record of the operator's presence (AiConfig.seat): every start

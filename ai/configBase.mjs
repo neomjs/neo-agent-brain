@@ -262,6 +262,12 @@ class ConfigBase extends ConfigProvider {
                  */
                 planeBearer: leaf('', 'NEO_MCP_REMOTE_TOKEN', 'string'),
                 /**
+                 * Atomic JSON target bound by authenticated bootstrap; partial overlays cannot inherit authority fields.
+                 * The consuming server validates it; this process's local plane is never its default.
+                 * @type {String|null}
+                 */
+                planeTarget: leaf(null, 'NEO_SEAT_PLANE_TARGET', 'string'),
+                /**
                  * The Fleet's host record of the operator's presence (`{mode, since, until, writtenAt}`), which
                  * the Stop hook reads with one local file read instead of a plane call. Empty: no record, and
                  * the hook keeps its prompting classifier.

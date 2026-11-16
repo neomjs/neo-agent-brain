@@ -161,6 +161,120 @@ x-neo-exact-tool-profiles:
                 description: Zero-based pagination offset.
 
 paths:
+  /identity/family-snapshot:
+    post:
+      summary: "Read one protected founding and admitted family snapshot; use for family decisions bound to this plane."
+      operationId: get_identity_publication_snapshot
+      x-neo-tool-tier: read
+      x-pass-as-object: true
+      x-annotations:
+        readOnlyHint: true
+      description: "Returns one coherent physical observation with admission revision and founding digest/provenance. Missing, malformed or fenced authority returns explicit unavailability. Callers cannot select trust, target or time."
+      tags: [Identity Publication]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+      responses:
+        '200':
+          description: Complete protected observation or named unavailability.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state]
+                properties:
+                  state:
+                    type: string
+                    enum: [available, unavailable]
+                  code:
+                    type: string
+                  snapshot:
+                    type: object
+                    required: [version, target, revision, founding, foundingRevision, foundingProvenance, baselineSince, counts, subjects]
+                    additionalProperties: false
+                    properties:
+                      version: {type: integer, enum: [1]}
+                      target:
+                        type: object
+                        required: [planeId, dataRoot]
+                        additionalProperties: false
+                        properties:
+                          planeId: {type: string}
+                          dataRoot: {type: string}
+                      revision: {type: integer, minimum: 1}
+                      founding: {type: object, additionalProperties: true}
+                      foundingRevision: {type: integer, enum: [1]}
+                      foundingProvenance: {type: object, additionalProperties: true}
+                      baselineSince: {type: integer, minimum: 0}
+                      counts:
+                        type: object
+                        required: [subjects, admittedSubjects, memberships, declarations, corrections]
+                        additionalProperties: false
+                        properties:
+                          subjects: {type: integer, minimum: 0}
+                          admittedSubjects: {type: integer, minimum: 0}
+                          memberships: {type: integer, minimum: 0}
+                          declarations: {type: integer, minimum: 0}
+                          corrections: {type: integer, minimum: 0}
+                      subjects:
+                        type: array
+                        items: {type: object, additionalProperties: true}
+
+  /identity/publication-lineage:
+    post:
+      summary: "Read the protected publication reservation and consumed trust witness; use to reconcile an original setup attempt."
+      operationId: get_identity_publication_lineage
+      x-neo-tool-tier: read
+      x-pass-as-object: true
+      x-annotations:
+        readOnlyHint: true
+      description: "Reads current target-bound lineage without reserving, generating keys, repairing history or clearing a restore fence. A witness is current evidence, never host consent or permission to mint replacement custody."
+      tags: [Identity Publication]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+      responses:
+        '200':
+          description: Reserved, bound, fenced, conflicting or unavailable lineage.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state]
+                properties:
+                  state:
+                    type: string
+                    enum: [reserved, bound, fenced, conflict, unadmitted, unavailable]
+                  code: {type: string}
+                  target:
+                    type: object
+                    required: [planeId, dataRoot]
+                    additionalProperties: false
+                    properties:
+                      planeId: {type: string}
+                      dataRoot: {type: string}
+                  issuer: {type: string}
+                  reservation:
+                    type: object
+                    required: [attemptId, kid, originRunId]
+                    additionalProperties: false
+                    properties:
+                      attemptId: {type: string}
+                      kid: {type: string}
+                      originRunId: {type: string}
+                  head: {type: string}
+                  fingerprint: {type: string, nullable: true}
+
   /community/batches/admit:
     post:
       summary: "Ingest a bounded community event batch over streamable-http; use when a hosted connector pushes new source events."

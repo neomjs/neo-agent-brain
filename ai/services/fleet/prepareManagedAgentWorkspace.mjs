@@ -1187,7 +1187,8 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
         projectPath        = path.join(targetRepoRoot, '.codex', 'config.toml'),
         legacyContent      = renderCodexProjectConfig(localizePlan(plan)),
         runtimePrevious    = previousNodeRuntimePlan(plan),
-        vocabularyPrevious = previousVocabularyPlan(plan),
+        placementPrevious  = previousPlacementPlan(plan),
+        vocabularyPrevious = [projectPlan, formerPlan, placementPrevious].flatMap(previousVocabularyPlans),
         homeRoot           = harnessHomeRoot(agent.harnessType, instanceHome),
         homePath           = path.join(homeRoot, 'config.toml'),
         memoriesPath       = path.join(homeRoot, 'memories'),
@@ -1208,7 +1209,7 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
         filePath              : projectPath,
         desiredContent        : contextSeed + renderCodexProjectConfig(projectPlan),
         legacyContent,
-        placementLegacyContent: [previousPlacementPlan(plan), vocabularyPrevious, formerPlan]
+        placementLegacyContent: [placementPrevious, ...vocabularyPrevious, formerPlan]
             .filter(Boolean).map(rows => renderCodexProjectConfig(rows)),
         runtimeLegacyContent     : runtimePrevious && renderCodexProjectConfig(runtimePrevious),
         runtimeLegacyStdioContent: runtimePrevious && renderCodexProjectConfig(localizePlan(runtimePrevious)),
@@ -1216,7 +1217,7 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
             const prior = priorPackagedCodexRuntime(existing, plan);
 
             // the launched shape too: a seat whose Neural Link runs through the launcher renders `projectPlan`
-            return prior ? [projectPlan, plan, vocabularyPrevious, formerPlan].filter(Boolean).map(rows => renderCodexProjectConfig(rebindRuntime(rows, prior))) : []
+            return prior ? [projectPlan, plan, ...vocabularyPrevious, formerPlan].filter(Boolean).map(rows => renderCodexProjectConfig(rebindRuntime(rows, prior))) : []
         },
         ownedProjection: projectCodexOwnedProjection,
         mergeTransport : mergeCodexTransport,
@@ -1498,28 +1499,19 @@ async function prepareClaudeJsonArtifact({
     interpolateEnv
 }) {
     const
-        runtimePrevious = previousNodeRuntimePlan(plan),
-        renderPrevious  = previous => renderClaudeJsonContent({agent, plan: previousPlacementPlan(previous), remoteMcpCapability, interpolateEnv, placement: false}),
-        desiredContent  = renderClaudeJsonContent({
-            agent,
-            plan,
-            remoteMcpCapability,
-            instanceHome: trustedRoot,
-            interpolateEnv
-        }),
-        legacyContent  = renderClaudeJsonContent({
-            agent,
-            plan        : localizePlan(plan),
-            remoteMcpCapability,
-            instanceHome: trustedRoot,
-            interpolateEnv
-        });
+        runtimePrevious    = previousNodeRuntimePlan(plan),
+        renderPrevious     = previous => renderClaudeJsonContent({agent, plan: previousPlacementPlan(previous), remoteMcpCapability, interpolateEnv, placement: false}),
+        render             = rows => renderClaudeJsonContent({agent, plan: rows, remoteMcpCapability, instanceHome: trustedRoot, interpolateEnv}),
+        desiredContent     = render(plan),
+        legacyContent      = render(localizePlan(plan)),
+        vocabularyPrevious = previousVocabularyPlans(plan)
+            .flatMap(rows => [rows, previousNodeRuntimePlan(rows)].filter(Boolean));
 
     return convergeTransportArtifact({
         filePath,
         desiredContent,
         legacyContent,
-        placementLegacyContent   : [renderPrevious(plan), runtimePrevious && renderClaudeJsonContent({agent, plan: runtimePrevious, interpolateEnv})].filter(Boolean),
+        placementLegacyContent   : [renderPrevious(plan), runtimePrevious && render(runtimePrevious), ...vocabularyPrevious.map(render)].filter(Boolean),
         runtimeLegacyContent     : runtimePrevious && renderPrevious(runtimePrevious),
         runtimeLegacyStdioContent: runtimePrevious && renderPrevious(localizePlan(runtimePrevious)),
         ownedProjection          : claudeJsonOwnedProjection,
@@ -3160,31 +3152,30 @@ function previousPlacementPlan(plan) {
 }
 
 /**
- * @summary The current plan in each server's vocabulary before its latest addition (`previousRuntimeEnv`):
- * the added names leave the row and the resident names stay, so a row Fleet rendered before the addition
- * is recognised exactly.
+ * @summary Enumerate independent prior vocabularies declared by the fixed server catalog. Each server
+ * keeps its current row or drops only its latest added names, preserving resident placement and all
+ * other bytes. This recognizes mixed generations without accepting an arbitrary edited row.
  * Retirement trigger: delete once every active seat has recorded `PROJECT_MCP_RECEIPT_FILE` past the pre-receipt rollback horizon.
  * @param {Object[]} plan Bound current plan.
- * @returns {Object[]|null} `null` when the plan carries no declared addition.
+ * @returns {Object[][]} Prior generated plans; empty when no server declares an applicable addition.
  * @private
  */
-function previousVocabularyPlan(plan) {
-    const added = server => {
+function previousVocabularyPlans(plan) {
+    const variants = [plan];
+
+    for (const server of plan) {
         const {previousRuntimeEnv, runtimeEnv} = MCP_SERVER_DESCRIPTORS[server.key];
+        const dropped                          = previousRuntimeEnv ? runtimeEnv.filter(name => !previousRuntimeEnv.includes(name)) : [];
 
-        return previousRuntimeEnv ? runtimeEnv.filter(name => !previousRuntimeEnv.includes(name)) : []
-    };
+        if (!dropped.some(name => server.runtimeEnv.includes(name))) continue;
 
-    if (!plan.some(server => added(server).some(name => server.runtimeEnv.includes(name)))) return null;
+        variants.push(...variants.map(candidate => candidate.map(row => row.key === server.key ? {...row,
+            runtimeEnv        : row.runtimeEnv.filter(name => !dropped.includes(name)),
+            requiredRuntimeEnv: row.requiredRuntimeEnv.filter(name => !dropped.includes(name))
+        } : row)))
+    }
 
-    return plan.map(server => {
-        const dropped = added(server);
-
-        return dropped.length ? {...server,
-            runtimeEnv        : server.runtimeEnv.filter(name => !dropped.includes(name)),
-            requiredRuntimeEnv: server.requiredRuntimeEnv.filter(name => !dropped.includes(name))
-        } : server
-    })
+    return variants.slice(1)
 }
 
 /**
