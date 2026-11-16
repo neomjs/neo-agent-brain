@@ -417,8 +417,9 @@ test.describe('session-rotation lane (#1383)', () => {
         // The plane knows only that no successor marker came, so the note says that and nothing more.
         expect(notes[0].subject).toBe(`defect-note: session rotation broke ${SEAT}: no successor marker within 180 min of its sunset handover MESSAGE:receipt`);
         expect(parseDefectNote(notes[0].subject)).toMatchObject({parseable: true, surface: 'session rotation'});
-        // A session may have opened without its marker: the seat's window is checked before a second one starts.
-        expect(notes[0].body).toContain('Check the seat\'s window first: a fresh session there needs no second one.');
+        // A session may have opened without its marker, or the released wake may have resumed the old one: the
+        // seat's window is checked before a second one starts.
+        expect(notes[0].body).toContain('Check the seat\'s window first. A session working there needs no second one: a fresh one, or the old one a released wake resumed, which writes `[sunset rescinded]`.');
         // A hand start says it was one, never that the plane opened the session.
         expect(notes[0].body).toContain(`/context-recovery Fresh session for ${SEAT}, started by hand after your sunset handover MESSAGE:receipt`);
         expect(notes[0].body).not.toMatch(/opened by the plane|opened none/);

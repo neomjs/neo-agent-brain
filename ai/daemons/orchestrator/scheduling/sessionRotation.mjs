@@ -36,8 +36,9 @@ import {
  * - **`incomplete` is told:** the plane cannot read the receiver's records, so a rotation that failed on the
  *   host surfaces only here, and an ERROR line alone reaches nobody. One `defect-note:` per receipt reports
  *   what the plane knows, that no successor marker arrived, and asks for the seat's window to be checked
- *   before anyone starts a session by hand: a session may have opened without sending its marker. Its
- *   hand-start prompt says the session was started by hand, never that the plane opened it.
+ *   before anyone starts a session by hand: a session may have opened without sending its marker, or the
+ *   wake the window's end released may have resumed the old one. Its hand-start prompt says the session
+ *   was started by hand, never that the plane opened it.
  */
 
 /**
@@ -59,7 +60,7 @@ export function composeIncompleteRotationNote({identity, receipt, rotation, reas
             `- handover: ${receipt.id}, sent ${receipt.sentAt}`,
             `- rotation: requested ${rotation?.requestedAt ?? 'never'}, delivered ${rotation?.deliveredAt ?? 'never'}`,
             '',
-            'Check the seat\'s window first: a fresh session there needs no second one.',
+            'Check the seat\'s window first. A session working there needs no second one: a fresh one, or the old one a released wake resumed, which writes `[sunset rescinded]`.',
             'If there is none, start one by hand, with a first prompt that says so, e.g.:',
             `/context-recovery Fresh session for ${identity}, started by hand after your sunset handover ${receipt.id}: the plane saw no successor marker for it. Read the handover first.`
         ].join('\n'),
