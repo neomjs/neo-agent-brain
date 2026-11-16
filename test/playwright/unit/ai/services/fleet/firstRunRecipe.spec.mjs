@@ -9,7 +9,7 @@ import {
     exitCodeFor,
     recommendPlacement
 } from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
-import {presets} from '../../../../../../ai/services/fleet/placementPresets.mjs';
+import {presets}             from '../../../../../../ai/services/fleet/placementPresets.mjs';
 import {GiB, probePlacement} from '../../../../../../ai/services/fleet/probePlacement.mjs';
 import {
     RECEIPT_OUTCOMES,
@@ -586,5 +586,58 @@ test.describe('firstRunRecipe', () => {
         });
 
         expect(byId(upgradeEval.steps)['start-wake-receiver']).toMatchObject({status: STEP_STATUSES.pending, reason: 'runtime changed'});
+        expect(upgradeEval.terminal.status).toBe(STEP_STATUSES.pending);
+        expect(exitCodeFor(upgradeEval)).toBe(2);
+
+        // enabled supported host cannot finish with absent, unknown, or conflicted wake receiver even when witness exists
+        const enabledWitness = fullRecord(targetA, {desktopWake: 'enabled'});
+
+        const absentEval = await evaluateRecipe({
+            target   : targetA,
+            record   : enabledWitness,
+            observers: {...greenObservers(), desktopWake: async () => ({supported: true, action: 'start'}), wakeReceiver: absentWake},
+            presets,
+            now      : () => NOW
+        });
+
+        expect(byId(absentEval.steps)['start-wake-receiver'].status).toBe(STEP_STATUSES.failed);
+        expect(absentEval.terminal.status).toBe(STEP_STATUSES.failed);
+        expect(exitCodeFor(absentEval)).toBe(1);
+
+        const unstartedEval = await evaluateRecipe({
+            target   : targetA,
+            record   : withConsent(createSetupRecord({runId: RUN_ID, target: targetA, recipeVersion: RECIPE_VERSION, now: () => NOW}), {stepId: 'desktop-wake', answer: 'enabled', consentedAt: 't'}),
+            observers: {...greenObservers(), desktopWake: async () => ({supported: true, action: 'install and start'}), wakeReceiver: absentWake},
+            presets,
+            now      : () => NOW
+        });
+
+        expect(byId(unstartedEval.steps)['start-wake-receiver'].status).toBe(STEP_STATUSES.pending);
+        expect(unstartedEval.terminal.status).toBe(STEP_STATUSES.pending);
+        expect(exitCodeFor(unstartedEval)).toBe(2);
+
+        const thrownEval = await evaluateRecipe({
+            target   : targetA,
+            record   : enabledWitness,
+            observers: {...greenObservers(), desktopWake: async () => ({supported: true, action: 'adopt'}), wakeReceiver: async () => { throw new Error('launchd query failed') }},
+            presets,
+            now      : () => NOW
+        });
+
+        expect(byId(thrownEval.steps)['start-wake-receiver'].status).toBe(STEP_STATUSES.unknown);
+        expect(thrownEval.terminal.status).toBe(STEP_STATUSES.unknown);
+        expect(exitCodeFor(thrownEval)).toBe(2);
+
+        const conflictEval = await evaluateRecipe({
+            target   : targetA,
+            record   : enabledWitness,
+            observers: {...greenObservers(), desktopWake: async () => ({supported: true, action: 'resolve'}), wakeReceiver: async () => ({present: true, running: true, problem: 'foreign program'})},
+            presets,
+            now      : () => NOW
+        });
+
+        expect(byId(conflictEval.steps)['start-wake-receiver'].status).toBe(STEP_STATUSES.failed);
+        expect(conflictEval.terminal.status).toBe(STEP_STATUSES.failed);
+        expect(exitCodeFor(conflictEval)).toBe(1);
     });
 });

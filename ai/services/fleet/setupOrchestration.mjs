@@ -16,14 +16,14 @@
  * preset is checked against arrives as `configSourcePath`, from the entrypoint.
  */
 
-import path                                                          from 'node:path';
-import {composeCredentialEffects, presetEnvRefusals}                 from './credentialStep.mjs';
-import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}                     from './firstRunRecipe.mjs';
-import {EFFECT_IDS, applyEffect, readForgeStatus, settleReceipt} from './hostEffects.mjs';
-import {presets}                                                     from './placementPresets.mjs';
-import {createPlaneWitnessClient}                                    from './planeWitnessClient.mjs';
-import {RECEIPT_OUTCOMES, findReceipt}                               from './setupRunRecord.mjs';
-import {performVerify, verifyExits}                                  from './verifyEffect.mjs';
+import path                                                                     from 'node:path';
+import {composeCredentialEffects, presetEnvRefusals}                            from './credentialStep.mjs';
+import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}                                from './firstRunRecipe.mjs';
+import {EFFECT_IDS, applyEffect, readForgeStatus, renderEnvFile, settleReceipt} from './hostEffects.mjs';
+import {presets}                                                                from './placementPresets.mjs';
+import {createPlaneWitnessClient}                                               from './planeWitnessClient.mjs';
+import {RECEIPT_OUTCOMES, contentDigest, findReceipt}                           from './setupRunRecord.mjs';
+import {performVerify, verifyExits}                                             from './verifyEffect.mjs';
 import {
     resolveWakeSetupPaths,
     selectWakeRecordsStateDir
@@ -190,9 +190,8 @@ export async function performEffects({record, recordPath, host, layout, target, 
         return record;
     }
 
-    const inputs = {
-        [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
-        [EFFECT_IDS.writeEnv]    : {
+    const
+        writeEnvInput = {
             path   : layout.envFile,
             entries: {
                 ...preset.env,
@@ -203,8 +202,13 @@ export async function performEffects({record, recordPath, host, layout, target, 
             },
             ...(recordsStateDir ? {recordsStateDir} : {})
         },
-        [EFFECT_IDS.composeUp]   : composeContextOf(layout)
-    };
+        inputs        = {
+            [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
+            [EFFECT_IDS.writeEnv]    : writeEnvInput,
+            [EFFECT_IDS.composeUp]   : {...composeContextOf(layout), envDigest: contentDigest(renderEnvFile(writeEnvInput.entries))}
+        };
+
+    let envMutated = false;
 
     for (const effectId of EFFECT_ORDER) {
         const stepDef = RECIPE_STEPS.find(row => row.effectId === effectId);
@@ -216,7 +220,7 @@ export async function performEffects({record, recordPath, host, layout, target, 
 
         const step = stepOf(effectId), stepStatus = step?.status;
 
-        if (stepStatus === STEP_STATUSES.ok && !(effectId === EFFECT_IDS.verify && newAttempt)) {
+        if (stepStatus === STEP_STATUSES.ok && !(effectId === EFFECT_IDS.verify && newAttempt) && !(effectId === EFFECT_IDS.composeUp && envMutated)) {
             continue;
         }
 
@@ -236,7 +240,13 @@ export async function performEffects({record, recordPath, host, layout, target, 
             break;
         }
 
-        if (stepStatus === STEP_STATUSES.reconcileRequired) {
+        const canRecoverOwnedWake = effectId === EFFECT_IDS.startWakeReceiver &&
+            stepStatus === STEP_STATUSES.reconcileRequired &&
+            stepOf('served-plane')?.status === STEP_STATUSES.ok &&
+            step?.observed?.owned === true &&
+            !step?.observed?.problem;
+
+        if (stepStatus === STEP_STATUSES.reconcileRequired && !canRecoverOwnedWake) {
             const reason = unsettledReason({
                 effectId,
                 observed      : step.observed,
@@ -268,12 +278,31 @@ export async function performEffects({record, recordPath, host, layout, target, 
             break;
         }
 
-        const result = await applyEffect({effectId, input, record: current, recordPath, host});
+        const reapplyAccepted = [
+            EFFECT_IDS.writeSecrets,
+            EFFECT_IDS.writeEnv,
+            EFFECT_IDS.composeUp,
+            EFFECT_IDS.startWakeReceiver
+        ].includes(effectId);
+
+        const result = await applyEffect({
+            effectId,
+            input,
+            record                : current,
+            recordPath,
+            host,
+            reapplyAccepted,
+            allowReconcileRecovery: canRecoverOwnedWake
+        });
 
         current = result.record;
 
         if (result.receipt.outcome !== RECEIPT_OUTCOMES.accepted) {
             break;
+        }
+
+        if (effectId === EFFECT_IDS.writeEnv && result.applied) {
+            envMutated = true;
         }
 
         mutated = true;
@@ -328,6 +357,9 @@ async function startWakeReceiverInput(layout, target, host, report) {
         const templateXml = await host.fsModule.readFile(paths.templatePath, 'utf8');
 
         return {
+            stateRoot        : paths.stateRoot,
+            homeDir          : paths.homeDir,
+            envFile          : paths.envFile,
             plistPath        : paths.plistPath,
             manifestPath     : paths.manifestPath,
             custodyPath      : paths.custodyPath,

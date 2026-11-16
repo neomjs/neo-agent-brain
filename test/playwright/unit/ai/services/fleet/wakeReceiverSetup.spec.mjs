@@ -1,21 +1,21 @@
-import {expect, test} from '@playwright/test';
-import {execFile}     from 'node:child_process';
-import crypto         from 'node:crypto';
-import fs             from 'node:fs/promises';
-import http           from 'node:http';
-import net            from 'node:net';
-import os             from 'node:os';
-import path           from 'node:path';
+import {expect, test}  from '@playwright/test';
+import {execFile}      from 'node:child_process';
+import crypto          from 'node:crypto';
+import fs              from 'node:fs/promises';
+import http            from 'node:http';
+import net             from 'node:net';
+import os              from 'node:os';
+import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {promisify}    from 'node:util';
+import {promisify}     from 'node:util';
 import {
     buildWakeReceiverManifest,
     writeValidatedManifest
 } from '../../../../../../ai/daemons/wake/buildReceiverManifest.mjs';
 import {parseWakeReceiverArgs, startWakeReceiver} from '../../../../../../ai/daemons/wake/receiver.mjs';
-import {createHost}                             from '../../../../../../ai/services/fleet/hostEffects.mjs';
-import {RUNTIME_GENERATION_PAYLOAD}             from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
-import {contentDigest}                          from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {createHost}                               from '../../../../../../ai/services/fleet/hostEffects.mjs';
+import {RUNTIME_GENERATION_PAYLOAD}               from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
+import {contentDigest}                            from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
 import {
     WAKE_RECEIVER_ENTRYPOINT,
     WAKE_RECEIVER_LABEL,
@@ -29,6 +29,7 @@ import {
     prepareWakeRecordsDir,
     probeWakeReceiverHttp,
     reconcileWakeReceiverService,
+    resolveWakeSetupPaths,
     selectWakeRecordsStateDir,
     serializeWakeReceiverPlist
 } from '../../../../../../ai/services/fleet/wakeReceiverSetup.mjs';
@@ -54,33 +55,49 @@ async function freeLoopbackPort() {
 }
 
 function createScriptedLaunchdHost({
-    platform        = 'darwin',
-    uid             = CURRENT_UID,
-    initialLaunchd  = {},
-    foreignPorts    = [],
-    beforeBootstrap = null
+    platform          = 'darwin',
+    uid               = CURRENT_UID,
+    initialLaunchd    = {},
+    foreignPorts      = [],
+    beforeBootstrap   = null,
+    readyAfterProbes  = 0,
+    readinessAttempts = null,
+    readinessDelayMs  = 0
 } = {}) {
     const
-        calls = [],
-        state = {
-            loaded   : false,
-            running  : false,
-            plistPath: null,
-            host     : null,
-            port     : null,
+        calls           = [],
+        probedEndpoints = [],
+        state           = {
+            loaded    : false,
+            running   : false,
+            plistPath : null,
+            program   : null,
+            host      : null,
+            port      : null,
+            probesLeft: readyAfterProbes,
             ...initialLaunchd
         };
 
     const host = createHost({
-        now              : () => NOW,
-        platform         : () => platform,
-        uid              : () => uid,
-        probeWakeListener: async ({host: probeHost, port: probePort}) => {
+        now                  : () => NOW,
+        platform             : () => platform,
+        uid                  : () => uid,
+        wakeReadinessAttempts: readinessAttempts,
+        wakeReadinessDelayMs : readinessDelayMs,
+        probeWakeListener    : async ({host: probeHost, port: probePort}) => {
+            probedEndpoints.push({host: probeHost, port: probePort});
+
             if (foreignPorts.includes(probePort)) {
                 return {listening: true, wakeReceiver: false, statusCode: 200, reason: `foreign listener on ${probeHost}:${probePort}`};
             }
 
             if (state.loaded && state.running && (state.host ?? '127.0.0.1') === probeHost && state.port === probePort) {
+                if (state.probesLeft > 0) {
+                    state.probesLeft--;
+
+                    return {listening: false, wakeReceiver: false, statusCode: null, reason: `connect ECONNREFUSED ${probeHost}:${probePort}`};
+                }
+
                 return {listening: true, wakeReceiver: true, statusCode: 404, reason: null};
             }
 
@@ -98,6 +115,7 @@ function createScriptedLaunchdHost({
                     stdout: [
                         `\tstate = ${state.running ? 'running' : 'not running'}`,
                         ...(state.running ? ['\tpid = 4242'] : []),
+                        ...(state.program ? [`\tprogram = ${state.program}`] : []),
                         ...(state.plistPath ? [`\tpath = ${state.plistPath}`] : [])
                     ].join('\n'),
                     stderr: ''
@@ -123,6 +141,7 @@ function createScriptedLaunchdHost({
                 state.loaded    = true;
                 state.running   = true;
                 state.plistPath = args[2];
+                state.program   = decl.executable;
                 state.host      = decl.host;
                 state.port      = decl.port;
 
@@ -133,7 +152,7 @@ function createScriptedLaunchdHost({
         }
     });
 
-    return {host, state, calls};
+    return {host, state, calls, probedEndpoints};
 }
 
 async function setupWorkspace() {
@@ -200,11 +219,11 @@ test.describe('wakeReceiverSetup', () => {
 
         // packaged runtime generation pin appends `--neo-runtime-generation=<dir>` cleanly alongside receiver CLI args
         const
-            genId        = 'a'.repeat(64),
-            genDir       = `/Applications/Neo.app/Contents/Resources/${genId}`,
-            runtimeRoot  = `${genDir}/${RUNTIME_GENERATION_PAYLOAD}/brain`,
-            executable   = `${genDir}/${RUNTIME_GENERATION_PAYLOAD}/bin/node`,
-            packagedXml  = serializeWakeReceiverPlist({
+            genId       = 'a'.repeat(64),
+            genDir      = `/Applications/Neo.app/Contents/Resources/${genId}`,
+            runtimeRoot = `${genDir}/${RUNTIME_GENERATION_PAYLOAD}/brain`,
+            executable  = `${genDir}/${RUNTIME_GENERATION_PAYLOAD}/bin/node`,
+            packagedXml = serializeWakeReceiverPlist({
                 templateXml,
                 executable,
                 runtimeRoot,
@@ -383,7 +402,10 @@ test.describe('wakeReceiverSetup', () => {
         try {
             const
                 {host, state, calls} = createScriptedLaunchdHost(),
-                baseInput = {
+                baseInput            = {
+                    stateRoot   : layout.stateRoot,
+                    homeDir     : layout.homeDir,
+                    envFile     : layout.envFile,
                     plistPath   : layout.wakePlistPath,
                     manifestPath: layout.wakeManifestPath,
                     custodyPath : layout.wakeCustodyPath,
@@ -475,7 +497,75 @@ test.describe('wakeReceiverSetup', () => {
             await expect(reconcileWakeReceiverService(rebindInput, createScriptedLaunchdHost({uid: CURRENT_UID + 1, initialLaunchd: {...state}}).host)).rejects.toThrow(/foreign ownership|UID/);
             await expect(reconcileWakeReceiverService({...rebindInput, port: 3399}, createScriptedLaunchdHost({initialLaunchd: {...state}, foreignPorts: [3399]}).host)).rejects.toThrow(/foreign listener|refusing takeover/);
 
-            // 7. Corroborated vs uncorroborated legacy plist (no setup-custody.json)
+            // 7. Corroborated vs invalid/unrelated legacy adoption & stale-custody conflicts
+            const
+                rebindLayout   = {...layout, wakePort: 3299},
+                writeLegacyEnv = async (planeId = target.planeId, recordsDir = path.join(layout.wakeStateDir, 'records')) => {
+                    await fs.mkdir(path.dirname(layout.envFile), {recursive: true, mode: 0o700});
+                    await fs.writeFile(
+                        layout.envFile,
+                        `NEO_PLANE_ID=${planeId}\nNEO_PLANE_DATA_ROOT=${target.dataRoot}\nNEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${recordsDir}\n`,
+                        {mode: 0o600}
+                    );
+                },
+                seatDir = path.join(layout.stateRoot, 'agents', 'neo-gemini-maryam', 'harness', 'antigravity');
+
+            await fs.mkdir(seatDir, {recursive: true, mode: 0o700});
+            await writeLegacyEnv();
+
+            // 7a. Stale sidecar + changed loaded program must report conflict and perform zero supervisor mutations
+            const wrongProgramHost = createScriptedLaunchdHost({initialLaunchd: {...state, program: '/usr/local/bin/foreign-node'}});
+
+            expect(await observeWakeReceiverEffect({layout: rebindLayout, target, host: wrongProgramHost.host})).toMatchObject({
+                present: true,
+                problem: expect.stringMatching(/unproven or foreign program/)
+            });
+            await expect(reconcileWakeReceiverService(rebindInput, wrongProgramHost.host)).rejects.toThrow(/unproven or foreign program/);
+            expect(wrongProgramHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
+            expect(wrongProgramHost.probedEndpoints).toEqual([]);
+
+            // 7b. Stale sidecar + changed on-disk executable must refuse upgrade without bootout/bootstrap or endpoint probe
+            const custodySnapshot = await fs.readFile(layout.wakeCustodyPath, 'utf8');
+
+            await fs.writeFile(layout.wakePlistPath, serializeWakeReceiverPlist({
+                templateXml,
+                executable  : '/usr/local/bin/foreign-node',
+                runtimeRoot : layout.repoRoot,
+                manifestPath: layout.wakeManifestPath,
+                stateDir    : layout.wakeStateDir,
+                host        : '127.0.0.1',
+                port        : 9999
+            }), {mode: 0o600});
+            const tamperedHost = createScriptedLaunchdHost({initialLaunchd: {...state, program: '/usr/local/bin/foreign-node'}});
+
+            expect(await observeWakeReceiverEffect({layout: rebindLayout, target, host: tamperedHost.host})).toMatchObject({
+                present: true,
+                problem: expect.stringMatching(/diverges from owned custody record/)
+            });
+            await expect(reconcileWakeReceiverService({...rebindInput, executable: gen2Exec, runtimeRoot: gen2Root, runtimeGeneration: upgradedGen}, tamperedHost.host))
+                .rejects.toThrow(/diverges from owned custody record/);
+            expect(tamperedHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
+            expect(tamperedHost.probedEndpoints).toEqual([]);
+
+            // Unproven loaded program (null) with matching custody plist
+            await fs.writeFile(layout.wakePlistPath, serializeWakeReceiverPlist({
+                templateXml,
+                executable       : gen2Exec,
+                runtimeRoot      : gen2Root,
+                runtimeGeneration: upgradedGen,
+                manifestPath     : layout.wakeManifestPath,
+                stateDir         : layout.wakeStateDir,
+                host             : '127.0.0.1',
+                port             : 3299
+            }), {mode: 0o600});
+            await fs.writeFile(layout.wakeCustodyPath, custodySnapshot, {mode: 0o600});
+
+            const unprovenHost = createScriptedLaunchdHost({initialLaunchd: {...state, program: null}});
+
+            await expect(reconcileWakeReceiverService({...rebindInput, executable: gen2Exec, runtimeRoot: gen2Root, runtimeGeneration: upgradedGen}, unprovenHost.host))
+                .rejects.toThrow(/diverges from owned custody record|unproven or foreign program/);
+
+            // 7c. Legacy plist (no sidecar) tests: invalid schema, unrelated route, wrong deployment env, foreign endpoint never probed, valid legacy adoption
             await fs.rm(layout.wakeCustodyPath, {force: true});
             await fs.writeFile(layout.wakePlistPath, serializeWakeReceiverPlist({
                 templateXml,
@@ -486,22 +576,78 @@ test.describe('wakeReceiverSetup', () => {
                 host        : '127.0.0.1',
                 port        : 3299
             }), {mode: 0o600});
+
+            const legacyHost = createScriptedLaunchdHost({initialLaunchd: {loaded: true, running: true, plistPath: layout.wakePlistPath, program: layout.nodeBin, host: '127.0.0.1', port: 3299}});
+
             // Empty routes manifest -> uncorroborated legacy plist refused!
-            await expect(reconcileWakeReceiverService(rebindInput, host)).rejects.toThrow(/no signed seat routes|refusing automatic takeover/);
-            expect(await observeWakeReceiverEffect({layout: {...layout, wakePort: 3299}, target, host})).toMatchObject({present: true, problem: expect.stringMatching(/no signed seat routes/)});
+            await fs.writeFile(layout.wakeManifestPath, JSON.stringify({schemaVersion: 1, routes: {}}), {mode: 0o600});
+            await expect(reconcileWakeReceiverService(rebindInput, legacyHost.host)).rejects.toThrow(/no signed seat routes|refusing automatic takeover/);
+            expect(await observeWakeReceiverEffect({layout: rebindLayout, target, host: legacyHost.host})).toMatchObject({present: true, problem: expect.stringMatching(/no signed seat routes/)});
 
-            // Non-empty route manifest + running service + matching declaration -> corroborated legacy adoption!
-            await fs.writeFile(layout.wakeManifestPath, JSON.stringify({
-                schemaVersion: 1,
-                routes       : {'WAKE_SUB:legacy-1': {agentIdentity: '@neo-gpt', signingKey: 'f'.repeat(64)}}
-            }), {mode: 0o600});
+            // Invalid schema version rejected by receiver's loader
+            await fs.writeFile(layout.wakeManifestPath, JSON.stringify({schemaVersion: 999, routes: {foreign: {}}}), {mode: 0o600});
+            await expect(reconcileWakeReceiverService(rebindInput, legacyHost.host)).rejects.toThrow(/schemaVersion=1/);
+            expect(legacyHost.probedEndpoints).toEqual([]);
 
-            const legacyAdopted = await reconcileWakeReceiverService(rebindInput, host);
+            // Loader-valid route outside stateRoot -> unrelated route refused
+            const outsideSeat = path.join(root, 'outside-seat');
+
+            await fs.mkdir(outsideSeat, {recursive: true, mode: 0o700});
+            const outsideBuilt = buildWakeReceiverManifest({
+                subscriptions: [{
+                    id                   : 'WAKE_SUB:00000000-0000-4000-8000-000000000077',
+                    status               : 'active',
+                    agentIdentity        : '@neo-gemini-maryam',
+                    trigger              : 'SENT_TO_ME',
+                    harnessTarget        : 'a2a-webhook',
+                    harnessTargetMetadata: {
+                        adapter        : 'osascript',
+                        appName        : 'Antigravity',
+                        addressType    : 'userDataDir',
+                        instanceAddress: outsideSeat,
+                        signingKey     : 'f'.repeat(64)
+                    }
+                }],
+                instance: {type: 'userDataDir', address: outsideSeat}
+            });
+
+            await writeValidatedManifest({manifest: outsideBuilt.manifest, targetPath: layout.wakeManifestPath});
+            await expect(reconcileWakeReceiverService(rebindInput, legacyHost.host)).rejects.toThrow(/outside deployment state root/);
+            expect(legacyHost.probedEndpoints).toEqual([]);
+
+            // Valid seat route under stateRoot with mismatched env carrier plane -> refused before probing
+            const validBuilt = buildWakeReceiverManifest({
+                subscriptions: [{
+                    id                   : 'WAKE_SUB:00000000-0000-4000-8000-000000000088',
+                    status               : 'active',
+                    agentIdentity        : '@neo-gemini-maryam',
+                    trigger              : 'SENT_TO_ME',
+                    harnessTarget        : 'a2a-webhook',
+                    harnessTargetMetadata: {
+                        adapter        : 'osascript',
+                        appName        : 'Antigravity',
+                        addressType    : 'userDataDir',
+                        instanceAddress: seatDir,
+                        signingKey     : 'f'.repeat(64)
+                    }
+                }],
+                instance: {type: 'userDataDir', address: seatDir}
+            });
+
+            await writeValidatedManifest({manifest: validBuilt.manifest, targetPath: layout.wakeManifestPath});
+            await writeLegacyEnv('other-plane');
+            await expect(reconcileWakeReceiverService(rebindInput, legacyHost.host)).rejects.toThrow(/env carrier binds plane 'other-plane'/);
+            expect(legacyHost.probedEndpoints).toEqual([]);
+
+            // Corroborated legacy adoption succeeds with matching env + loader-valid route under stateRoot + running matching supervisor!
+            await writeLegacyEnv(target.planeId);
+            const legacyAdopted = await reconcileWakeReceiverService(rebindInput, legacyHost.host);
 
             expect(legacyAdopted.action).toBe('adopted-legacy');
             expect(JSON.parse(await fs.readFile(layout.wakeCustodyPath, 'utf8')).adoptedFrom).toBe('corroborated-legacy');
+            expect(legacyHost.calls.filter(c => ['bootout', 'bootstrap'].includes(c.args[0]))).toEqual([]);
 
-            // Foreign same-label plist pointing to a different stateDir is always refused
+            // Foreign same-label plist declaring a different host/port/stateDir never reaches the foreign HTTP endpoint
             await fs.rm(layout.wakeCustodyPath, {force: true});
             await fs.writeFile(layout.wakePlistPath, serializeWakeReceiverPlist({
                 templateXml,
@@ -510,9 +656,87 @@ test.describe('wakeReceiverSetup', () => {
                 manifestPath: '/srv/foreign/manifest.json',
                 stateDir    : '/srv/foreign/state',
                 host        : '127.0.0.1',
-                port        : 3299
+                port        : 9999
             }), {mode: 0o600});
-            await expect(reconcileWakeReceiverService(rebindInput, host)).rejects.toThrow(/foreign LaunchAgent/);
+            const foreignHost = createScriptedLaunchdHost();
+
+            await expect(reconcileWakeReceiverService(rebindInput, foreignHost.host)).rejects.toThrow(/foreign LaunchAgent/);
+            expect(foreignHost.probedEndpoints).toEqual([]);
+        } finally {
+            await fs.rm(root, {recursive: true, force: true});
+        }
+    });
+
+    test('persists installing custody before plist mutation, honors production readiness budget beyond 2 probes, and resolves LaunchAgents from user home independently of stateRoot', async () => {
+        const
+            {root, layout, target} = await setupWorkspace(),
+            templateXml            = await fs.readFile(templatePath, 'utf8');
+
+        try {
+            // Path resolution: default homeDir is independent of stateRoot; explicit homeDir overrides for fixtures
+            const customStatePaths = resolveWakeSetupPaths({stateRoot: '/fixture/volume/data/fleet'});
+
+            expect(customStatePaths.wakeStateDir).toBe('/fixture/volume/data/fleet/wake-receiver');
+            expect(customStatePaths.plistPath).toBe(path.join(os.homedir(), 'Library', 'LaunchAgents', WAKE_RECEIVER_PLIST_NAME));
+            expect(resolveWakeSetupPaths({stateRoot: '/fixture/volume/data/fleet', homeDir: '/fixture/users/op'}).plistPath)
+                .toBe(path.join('/fixture/users/op', 'Library', 'LaunchAgents', WAKE_RECEIVER_PLIST_NAME));
+
+            // Seed a queued record prior to interrupted install
+            const queued = path.join(layout.wakeStateDir, 'records', 'queued-before-interrupt.json');
+
+            await prepareWakeRecordsDir(layout.wakeStateDir, createScriptedLaunchdHost().host);
+            await fs.writeFile(queued, '{"queued":true}\n', {mode: 0o600});
+
+            // 1. Interrupt during launchctl bootstrap after plist creation -> custody already persists as 'installing'
+            const failingHost = createScriptedLaunchdHost({
+                beforeBootstrap: async () => { throw new Error('simulated bootstrap interruption') }
+            });
+
+            await expect(reconcileWakeReceiverService({
+                stateRoot   : layout.stateRoot,
+                homeDir     : layout.homeDir,
+                envFile     : layout.envFile,
+                plistPath   : layout.wakePlistPath,
+                manifestPath: layout.wakeManifestPath,
+                custodyPath : layout.wakeCustodyPath,
+                stateDir    : layout.wakeStateDir,
+                host        : layout.wakeHost,
+                port        : layout.wakePort,
+                executable  : layout.nodeBin,
+                runtimeRoot : layout.repoRoot,
+                templateXml,
+                target
+            }, failingHost.host)).rejects.toThrow(/simulated bootstrap interruption/);
+
+            const interruptedCustody = JSON.parse(await fs.readFile(layout.wakeCustodyPath, 'utf8'));
+
+            expect(interruptedCustody.installState).toBe('installing');
+            expect(await fs.access(layout.wakePlistPath).then(() => true, () => false)).toBe(true);
+
+            // 2. Resume with 4-probe delayed readiness (> old 2-attempt cap even with injected probeWakeListener)
+            const delayedHost = createScriptedLaunchdHost({readyAfterProbes: 3});
+
+            expect(delayedHost.host.wakeReadinessAttempts).toBeUndefined();
+            const recovered = await reconcileWakeReceiverService({
+                stateRoot   : layout.stateRoot,
+                homeDir     : layout.homeDir,
+                envFile     : layout.envFile,
+                plistPath   : layout.wakePlistPath,
+                manifestPath: layout.wakeManifestPath,
+                custodyPath : layout.wakeCustodyPath,
+                stateDir    : layout.wakeStateDir,
+                host        : layout.wakeHost,
+                port        : layout.wakePort,
+                executable  : layout.nodeBin,
+                runtimeRoot : layout.repoRoot,
+                templateXml,
+                target
+            }, delayedHost.host);
+
+            expect(recovered.action).toBe('started');
+            expect(JSON.parse(await fs.readFile(layout.wakeCustodyPath, 'utf8')).installState).toBe('active');
+            expect(await fs.readFile(queued, 'utf8')).toBe('{"queued":true}\n');
+            expect(delayedHost.probedEndpoints.length).toBeGreaterThanOrEqual(4);
         } finally {
             await fs.rm(root, {recursive: true, force: true});
         }
@@ -598,13 +822,13 @@ test.describe('wakeReceiverSetup', () => {
             await runtime.reload();
 
             const envelope = {
-                schemaVersion : '1.0',
-                eventType     : 'wake/digest',
-                eventId       : 'wake-digest:cold-to-enrolled-1',
+                schemaVersion: '1.0',
+                eventType    : 'wake/digest',
+                eventId      : 'wake-digest:cold-to-enrolled-1',
                 subscriptionId,
-                agentIdentity : '@neo-gemini-maryam',
-                payload       : {totalEvents: 1, sourceEventIds: ['MESSAGE:setup-test-1']},
-                emittedAt     : '2026-11-16T02:00:00.000Z'
+                agentIdentity: '@neo-gemini-maryam',
+                payload      : {totalEvents: 1, sourceEventIds: ['MESSAGE:setup-test-1']},
+                emittedAt    : '2026-11-16T02:00:00.000Z'
             };
             const body = JSON.stringify(envelope);
             const sig  = crypto.createHmac('sha256', signingKey).update(body).digest('hex');
@@ -637,6 +861,7 @@ test.describe('wakeReceiverSetup', () => {
             if (runtime?.server) {
                 await new Promise(resolve => runtime.server.close(resolve));
             }
+            await runtime?.drain?.().catch(() => null);
             await fs.rm(root, {recursive: true, force: true});
         }
     });

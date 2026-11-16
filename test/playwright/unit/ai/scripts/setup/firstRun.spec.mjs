@@ -9,7 +9,9 @@ import {PLANE_MEMORY_CORE_PATH, fakeHostObservers, hostLayout, parseArgs, produc
 import {RECIPE_VERSION, evaluateRecipe}                                                                    from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
 import {createHost}                                                                                        from '../../../../../../ai/services/fleet/hostEffects.mjs';
 import {presets}                                                                                           from '../../../../../../ai/services/fleet/placementPresets.mjs';
+import {RUNTIME_GENERATION_PAYLOAD}                                                                        from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
 import {contentDigest, createSetupRecord, runTarget, withConsent, withReceipt}                             from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {WAKE_RECEIVER_ENTRYPOINT, WAKE_RECEIVER_PLIST_NAME}                                                from '../../../../../../ai/services/fleet/wakeReceiverSetup.mjs';
 
 // The CLI on a fake host: a child process per arm, stdin closed (never a TTY), the record under a temp setup root.
 
@@ -24,13 +26,15 @@ const
 async function scratch() {
     const
         root      = await fs.mkdtemp(path.join(os.tmpdir(), 'first-run-cli-')),
+        homeDir   = path.join(root, 'home'),
         setupRoot = path.join(root, 'state', 'setup'),
         patPath   = path.join(root, 'operator', 'plane-pat');
 
+    await fs.mkdir(homeDir, {recursive: true, mode: 0o700});
     await fs.mkdir(path.dirname(patPath), {recursive: true});
     await fs.writeFile(patPath, `${PAT}\n`, {mode: 0o600});
 
-    return {root, setupRoot, patPath, stateRoot: path.join(root, 'state')};
+    return {root, homeDir, setupRoot, patPath, stateRoot: path.join(root, 'state')};
 }
 
 /**
@@ -57,9 +61,10 @@ function greenFake({patPath, planeId = 'plane-a', dataRoot = '/srv/plane-a', ser
  * One CLI run; `dataRoot: null` omits `--data-root` (the resume that names only the identity), and
  * `named: false` omits all three target flags (the run that names no plane).
  */
-async function runCli({setupRoot, stateRoot, fake, extra = [], dataRoot = '/srv/plane-a', named = true}) {
+async function runCli({setupRoot, stateRoot, homeDir = path.join(path.dirname(stateRoot), 'home'), fake, extra = [], dataRoot = '/srv/plane-a', named = true}) {
     const fakePath = path.join(stateRoot, 'fake-host.json');
 
+    await fs.mkdir(homeDir, {recursive: true});
     await fs.mkdir(stateRoot, {recursive: true});
     await fs.writeFile(fakePath, JSON.stringify(fake));
 
@@ -68,7 +73,7 @@ async function runCli({setupRoot, stateRoot, fake, extra = [], dataRoot = '/srv/
         args   = [script, '--json', '--setup-root', setupRoot, '--state-root', stateRoot, '--run-id', RUN_ID, ...target, '--fake-host', fakePath, ...extra];
 
     try {
-        const {stdout, stderr} = await execFileAsync(process.execPath, args, {cwd: brainRoot, encoding: 'utf8', env: {...process.env, NEO_HOST_SETUP_RECORD_ROOT: ''}});
+        const {stdout, stderr} = await execFileAsync(process.execPath, args, {cwd: brainRoot, encoding: 'utf8', env: {...process.env, HOME: homeDir, NEO_HOST_SETUP_RECORD_ROOT: ''}});
 
         return {code: 0, stdout, stderr};
     } catch (error) {
@@ -79,9 +84,9 @@ async function runCli({setupRoot, stateRoot, fake, extra = [], dataRoot = '/srv/
 test.describe('firstRun CLI', () => {
     test('AC-5: a cold run on a fake host answers the questions, performs the effects, lists every step with status and reason, and exits 0 on a green terminal step', async () => {
         const
-            {setupRoot, stateRoot, patPath} = await scratch(),
-            result                          = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
-            output                          = JSON.parse(result.stdout);
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            result                                   = await runCli({homeDir, setupRoot, stateRoot, fake: greenFake({patPath})}),
+            output                                   = JSON.parse(result.stdout);
 
         expect(result.code, result.stderr).toBe(0);
         expect(output.runId).toBe(RUN_ID);
@@ -101,7 +106,7 @@ test.describe('firstRun CLI', () => {
         const
             recordText = await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8'),
             record     = JSON.parse(recordText),
-            layout     = hostLayout({stateRoot});
+            layout     = hostLayout({stateRoot, homeDir});
 
         expect(recordText).not.toContain(PAT);
         expect(record.consents.map(consent => consent.stepId).sort()).toEqual(['desktop-wake', 'plane-credential', 'preset']);
@@ -302,15 +307,15 @@ test.describe('firstRun CLI', () => {
 
     test('an interrupted hosted secret write that left one of its three files stays unsettled and names the missing files; the complete set settles it', async () => {
         const
-            {root, setupRoot, stateRoot, patPath} = await scratch(),
-            keyPath                               = path.join(root, 'operator', 'gemini-key'),
-            recordPath                            = path.join(setupRoot, `${RUN_ID}.json`),
-            layout                                = hostLayout({stateRoot}),
-            fake                                  = greenFake({patPath}),
-            hosted                                = servedPlane => ({...fake, observers: {...fake.observers, servedPlane, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}),
-            cold                                  = {throw: 'connect ECONNREFUSED 127.0.0.1:3102'},
-            secrets                               = async () => (await fs.readdir(layout.secretsDir)).sort(),
-            stepOf                                = run => JSON.parse(run.stdout).steps.find(step => step.id === 'write-secrets');
+            {root, homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            keyPath                                        = path.join(root, 'operator', 'gemini-key'),
+            recordPath                                     = path.join(setupRoot, `${RUN_ID}.json`),
+            layout                                         = hostLayout({stateRoot, homeDir}),
+            fake                                           = greenFake({patPath}),
+            hosted                                         = servedPlane => ({...fake, observers: {...fake.observers, servedPlane, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}),
+            cold                                           = {throw: 'connect ECONNREFUSED 127.0.0.1:3102'},
+            secrets                                        = async () => (await fs.readdir(layout.secretsDir)).sort(),
+            stepOf                                         = run => JSON.parse(run.stdout).steps.find(step => step.id === 'write-secrets');
 
         await fs.writeFile(keyPath, 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh\n', {mode: 0o600});
 
@@ -390,17 +395,17 @@ test.describe('firstRun CLI', () => {
 
     test('AC-2 end to end: a hosted preset writes the provider key as an owner-only secret and points the leaf at the mount; the key is in no record, carrier or log', async () => {
         const
-            {root, setupRoot, stateRoot, patPath} = await scratch(),
-            KEY                                   = 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh',
-            keyPath                               = path.join(root, 'operator', 'gemini-key');
+            {root, homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            KEY                                            = 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh',
+            keyPath                                        = path.join(root, 'operator', 'gemini-key');
 
         await fs.writeFile(keyPath, `${KEY}\n`, {mode: 0o600});
 
         const
             fake   = greenFake({patPath}),
-            hosted = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}}),
+            hosted = await runCli({homeDir, setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath, 'desktop-wake': 'enabled'}}}),
             output = JSON.parse(hosted.stdout),
-            layout = hostLayout({stateRoot}),
+            layout = hostLayout({stateRoot, homeDir}),
             env    = await fs.readFile(layout.envFile, 'utf8');
 
         expect(hosted.code, hosted.stderr).toBe(0);
@@ -428,10 +433,10 @@ test.describe('firstRun CLI', () => {
         // a hosted answer without a provider key on a host where nothing serves yet: the credential step
         // refuses, no secret and no carrier appear, the run stays pending
         const
-            {setupRoot, stateRoot, patPath} = await scratch(),
-            fake                            = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
-            result                          = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {throw: 'no plane to ask'}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'desktop-wake': 'enabled'}}}),
-            layout                          = hostLayout({stateRoot});
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            fake                                     = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
+            result                                   = await runCli({homeDir, setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {throw: 'no plane to ask'}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'desktop-wake': 'enabled'}}}),
+            layout                                   = hostLayout({stateRoot, homeDir});
 
         expect(result.code).toBe(2);
         expect(result.stderr).toMatch(/credentials refused before any write:\n\s+the 'hosted' preset requires a provider key and none was given/);
@@ -461,10 +466,14 @@ test.describe('firstRun CLI', () => {
         const defaults = parseArgs([], {});
 
         expect(defaults.setupRoot).toBe(path.join(os.homedir(), '.neo-ai', 'setup'));
+        expect(defaults.homeDir).toBe(os.homedir());
         expect(defaults.endpoint).toBe('http://127.0.0.1:3102');
         expect(parseArgs(['--setup-root', '/x/setup'], {NEO_HOST_SETUP_RECORD_ROOT: '/env/setup'}).setupRoot).toBe('/x/setup');
         expect(parseArgs([], {NEO_HOST_SETUP_RECORD_ROOT: '/env/setup'}).setupRoot).toBe('/env/setup');
         expect(parseArgs([], {NEO_HOST_STATE_ROOT: '/srv/state'}).setupRoot).toBe('/srv/state/setup');
+        expect(parseArgs(['--state-root', '/fixture/volume/data/fleet'], {HOME: '/fixture/users/op'}).homeDir).toBe('/fixture/users/op');
+        expect(hostLayout({stateRoot: '/fixture/volume/data/fleet'}).wakePlistPath)
+            .toBe(path.join(os.homedir(), 'Library', 'LaunchAgents', WAKE_RECEIVER_PLIST_NAME));
         expect(() => parseArgs(['--bogus'], {})).toThrow(/unknown flag '--bogus'/);
         expect(() => parseArgs(['--plane-id'], {})).toThrow(/needs a value/);
         expect(hostLayout({stateRoot: '/srv/state'}).envFile).toBe('/srv/state/config/local-agent-os.env');
@@ -678,12 +687,12 @@ test.describe('firstRun CLI', () => {
 
     test('a cold run that names no plane binds the profile\'s target and gets past write-env; the flags still override it', async () => {
         const
-            {setupRoot, stateRoot, patPath} = await scratch(),
-            profile                         = hostLayout({stateRoot}).target,
-            cold                            = await runCli({setupRoot, stateRoot, named: false, fake: greenFake({patPath, planeId: profile.planeId, dataRoot: profile.dataRoot})}),
-            output                          = JSON.parse(cold.stdout),
-            record                          = JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8')),
-            env                             = await fs.readFile(hostLayout({stateRoot}).envFile, 'utf8');
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            profile                                  = hostLayout({stateRoot, homeDir}).target,
+            cold                                     = await runCli({homeDir, setupRoot, stateRoot, named: false, fake: greenFake({patPath, planeId: profile.planeId, dataRoot: profile.dataRoot})}),
+            output                                   = JSON.parse(cold.stdout),
+            record                                   = JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8')),
+            env                                      = await fs.readFile(hostLayout({stateRoot, homeDir}).envFile, 'utf8');
 
         expect(output.target).toEqual(profile);
         expect(record.target).toEqual(profile);
@@ -705,12 +714,13 @@ test.describe('firstRun CLI', () => {
         const
             declinedRun = await scratch(),
             declined    = await runCli({
+                homeDir  : declinedRun.homeDir,
                 setupRoot: declinedRun.setupRoot,
                 stateRoot: declinedRun.stateRoot,
                 fake     : {...greenFake({patPath: declinedRun.patPath}), answers: {preset: 'local-small', 'plane-credential': declinedRun.patPath, 'desktop-wake': 'declined'}}
             }),
             declinedOut    = JSON.parse(declined.stdout),
-            declinedLayout = hostLayout({stateRoot: declinedRun.stateRoot});
+            declinedLayout = hostLayout({stateRoot: declinedRun.stateRoot, homeDir: declinedRun.homeDir});
 
         expect(declined.code, declined.stderr).toBe(0);
         expect(declinedOut.steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false, answer: 'declined'});
@@ -723,12 +733,13 @@ test.describe('firstRun CLI', () => {
         const
             linuxRun = await scratch(),
             linux    = await runCli({
+                homeDir  : linuxRun.homeDir,
                 setupRoot: linuxRun.setupRoot,
                 stateRoot: linuxRun.stateRoot,
                 fake     : {...greenFake({patPath: linuxRun.patPath, answers: false}), platform: 'linux', answers: {preset: 'local-small', 'plane-credential': linuxRun.patPath}}
             }),
             linuxOut    = JSON.parse(linux.stdout),
-            linuxLayout = hostLayout({stateRoot: linuxRun.stateRoot});
+            linuxLayout = hostLayout({stateRoot: linuxRun.stateRoot, homeDir: linuxRun.homeDir});
 
         expect(linux.code, linux.stderr).toBe(0);
         expect(linuxOut.steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'ok', skipped: true, wakeDeliveryAvailable: false});
@@ -748,7 +759,7 @@ test.describe('firstRun CLI', () => {
         await fs.writeFile(path.join(legacyRun.setupRoot, `${RUN_ID}.json`), `${JSON.stringify(legacyRec, null, 2)}\n`, {mode: 0o600});
 
         const
-            migrated    = await runCli({setupRoot: legacyRun.setupRoot, stateRoot: legacyRun.stateRoot, fake: greenFake({patPath: legacyRun.patPath, answers: false, done: {persisted: false, queryAnswered: false}})}),
+            migrated    = await runCli({homeDir: legacyRun.homeDir, setupRoot: legacyRun.setupRoot, stateRoot: legacyRun.stateRoot, fake: greenFake({patPath: legacyRun.patPath, answers: false, done: {persisted: false, queryAnswered: false}})}),
             migratedOut = JSON.parse(migrated.stdout),
             savedRec    = JSON.parse(await fs.readFile(path.join(legacyRun.setupRoot, `${RUN_ID}.json`), 'utf8'));
 
@@ -757,5 +768,213 @@ test.describe('firstRun CLI', () => {
         expect(migratedOut.steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'pending', answer: null});
         expect(savedRec.recipeVersion).toBe(RECIPE_VERSION);
         expect(savedRec.history).toHaveLength(1);
+    });
+
+    test('consent changes (decline -> enable, enable -> decline, unchanged resume) validate and rebind the running Compose stack, while incomplete wake evidence blocks exit 0', async () => {
+        const
+            {homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            layout                                   = hostLayout({stateRoot, homeDir}),
+            callsPath                                = path.join(setupRoot, 'fake-run.json'),
+            launchdPath                              = path.join(setupRoot, 'fake-launchd.json'),
+            enabledRecords                           = path.join(layout.wakeStateDir, 'records'),
+            disabledRecords                          = path.join(layout.receiverlessWakeStateDir, 'records');
+
+        // 1. Start declined -> disabled bind, 1 compose call, 0 bootstraps
+        const declined = await runCli({
+            homeDir,
+            setupRoot,
+            stateRoot,
+            fake: {...greenFake({patPath}), answers: {preset: 'local-small', 'plane-credential': patPath, 'desktop-wake': 'declined'}}
+        });
+
+        expect(declined.code, declined.stderr).toBe(0);
+        expect(await fs.readFile(layout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${disabledRecords}\n`);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+
+        // 2. Unchanged declined resume -> compose count stays 1, bootstrap count 0
+        const pausedResume = await runCli({homeDir, setupRoot, stateRoot, fake: greenFake({patPath, answers: false})});
+
+        expect(pausedResume.code, pausedResume.stderr).toBe(0);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+
+        // 3. Flip declined -> enabled on the same run -> .env switches to wake-receiver/records, Compose re-applies, receiver bootstraps
+        const enabled = await runCli({
+            homeDir,
+            setupRoot,
+            stateRoot,
+            extra: ['--desktop-wake', 'enabled'],
+            fake : greenFake({patPath, answers: false})
+        });
+
+        expect(enabled.code, enabled.stderr).toBe(0);
+        expect(await fs.readFile(layout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${enabledRecords}\n`);
+        expect((await fs.stat(enabledRecords)).mode & 0o777).toBe(0o700);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(2);
+        expect(JSON.parse(await fs.readFile(launchdPath, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap')).toHaveLength(1);
+
+        // 4. Unchanged enabled resume -> compose stays 2, bootstrap stays 1
+        const enabledResume = await runCli({homeDir, setupRoot, stateRoot, fake: greenFake({patPath, answers: false})});
+
+        expect(enabledResume.code, enabledResume.stderr).toBe(0);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(2);
+        expect(JSON.parse(await fs.readFile(launchdPath, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap')).toHaveLength(1);
+
+        // 5. While enabled, absent, pending-upgrade, or unknown receiver evidence prevents exit 0 even with green witness
+        for (const [overrideObs, expectedCode, expectedStatus] of [
+            [{present: false, running: false, reason: 'stopped after start'}, 1, 'failed'],
+            [{present: true, running: true, upgradePending: true, reason: 'upgrade still pending'}, 2, 'pending'],
+            [{throw: 'launchd unavailable'}, 2, 'unknown']
+        ]) {
+            const blocked = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: {
+                    ...greenFake({patPath, answers: false}),
+                    observers: {...greenFake({patPath}).observers, wakeReceiver: overrideObs}
+                }
+            });
+
+            expect(blocked.code).toBe(expectedCode);
+            expect(JSON.parse(blocked.stdout).terminal.status).toBe(expectedStatus);
+        }
+
+        // 6. Reverse change: enabled -> declined -> .env switches back to wake-receiver-disabled/records and Compose re-applies
+        const reversed = await runCli({
+            homeDir,
+            setupRoot,
+            stateRoot,
+            extra: ['--desktop-wake', 'declined'],
+            fake : greenFake({patPath, answers: false})
+        });
+
+        expect(reversed.code, reversed.stderr).toBe(0);
+        expect(JSON.parse(reversed.stdout).steps.find(step => step.id === 'desktop-wake')).toMatchObject({status: 'ok', skipped: true, answer: 'declined'});
+        expect(JSON.parse(reversed.stdout).steps.find(step => step.id === 'start-wake-receiver')).toMatchObject({status: 'ok', skipped: true});
+        expect(await fs.readFile(layout.envFile, 'utf8')).toContain(`NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${disabledRecords}\n`);
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(3);
+    });
+
+    test('CLI recovers interrupted install, waits through 250ms delayed readiness, restarts stopped receiver, upgrades runtime generation, preserves queued records, and places LaunchAgent under user HOME independently of --state-root', async () => {
+        const
+            root        = await fs.mkdtemp(path.join(os.tmpdir(), 'first-run-recovery-')),
+            userHome    = path.join(root, 'user-home'),
+            external    = path.join(root, 'external-volume', 'data', 'fleet'),
+            setupRoot   = path.join(external, 'setup'),
+            patPath     = path.join(root, 'operator', 'plane-pat'),
+            layout      = hostLayout({stateRoot: external, homeDir: userHome}),
+            queuedFile  = path.join(layout.wakeStateDir, 'records', 'queued-wake-1.json'),
+            launchdPath = path.join(setupRoot, 'fake-launchd.json');
+
+        try {
+            await fs.mkdir(userHome, {recursive: true, mode: 0o700});
+            await fs.mkdir(path.dirname(patPath), {recursive: true});
+            await fs.writeFile(patPath, `${PAT}\n`, {mode: 0o600});
+            await fs.mkdir(path.dirname(queuedFile), {recursive: true, mode: 0o700});
+            await fs.writeFile(queuedFile, '{"id":"queued-wake-1"}\n', {mode: 0o600});
+
+            // 1. Interrupt first install right before bootstrap -> pre-mutation custody persisted, exits 1
+            const interrupted = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {
+                    ...greenFake({patPath}),
+                    launchd: {interruptBeforeBootstrap: true}
+                }
+            });
+
+            expect(interrupted.code).toBe(1);
+            expect(await fs.access(layout.wakePlistPath).then(() => true, () => false)).toBe(true);
+            expect(layout.wakePlistPath).toBe(path.join(userHome, 'Library', 'LaunchAgents', WAKE_RECEIVER_PLIST_NAME));
+            expect(layout.wakePlistPath.startsWith(external)).toBe(false);
+            expect(JSON.parse(await fs.readFile(path.join(layout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('installing');
+
+            // 2. Resume through ordinary CLI with 250ms delayed listener readiness (exceeds old 2-attempt cap)
+            const recovered = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {
+                    ...greenFake({patPath, answers: false}),
+                    launchd: {readyDelayMs: 250}
+                }
+            });
+
+            expect(recovered.code, recovered.stderr).toBe(0);
+            expect(JSON.parse(await fs.readFile(path.join(layout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('active');
+            expect(await fs.readFile(queuedFile, 'utf8')).toBe('{"id":"queued-wake-1"}\n');
+
+            // 3. Stop the previously accepted service -> ordinary CLI restarts it and preserves queued records
+            const stoppedState = JSON.parse(await fs.readFile(launchdPath, 'utf8'));
+
+            stoppedState.loaded  = false;
+            stoppedState.running = false;
+            await fs.writeFile(launchdPath, `${JSON.stringify(stoppedState, null, 2)}\n`, {mode: 0o600});
+
+            const restarted = await runCli({homeDir: userHome, setupRoot, stateRoot: external, fake: greenFake({patPath, answers: false})});
+
+            expect(restarted.code, restarted.stderr).toBe(0);
+            expect(await fs.readFile(queuedFile, 'utf8')).toBe('{"id":"queued-wake-1"}\n');
+
+            const bootstrapsAfterRestart = JSON.parse(await fs.readFile(launchdPath, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap').length;
+
+            // 4. Interrupted runtime generation upgrade -> pre-mutation custody preserves previousOwned and ordinary CLI recovers cleanly
+            const
+                gen2Id      = 'd'.repeat(64),
+                gen2Dir     = path.join(root, 'gen2', gen2Id),
+                gen2Root    = path.join(gen2Dir, RUNTIME_GENERATION_PAYLOAD, 'brain'),
+                gen2Exec    = path.join(gen2Dir, RUNTIME_GENERATION_PAYLOAD, 'bin', 'node'),
+                runtimeSpec = {generation: {id: gen2Id, directory: gen2Dir, runtimeRoot: gen2Root, executable: gen2Exec, payloadDigest: 'e'.repeat(64)}};
+
+            await fs.mkdir(path.join(gen2Root, 'ai', 'daemons', 'wake'), {recursive: true});
+            await fs.writeFile(path.join(gen2Root, WAKE_RECEIVER_ENTRYPOINT), '// gen2 receiver\n');
+
+            const interruptedUpgrade = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {
+                    ...greenFake({patPath, answers: false}),
+                    runtime: runtimeSpec,
+                    launchd: {interruptBeforeBootstrap: true}
+                }
+            });
+
+            expect(interruptedUpgrade.code).toBe(1);
+            expect(JSON.parse(await fs.readFile(path.join(layout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('installing');
+
+            const upgraded = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {...greenFake({patPath, answers: false}), runtime: runtimeSpec}
+            });
+
+            expect(upgraded.code, upgraded.stderr).toBe(0);
+            expect(JSON.parse(await fs.readFile(path.join(layout.wakeStateDir, 'setup-custody.json'), 'utf8')).installState).toBe('active');
+            expect(await fs.readFile(queuedFile, 'utf8')).toBe('{"id":"queued-wake-1"}\n');
+
+            const
+                launchdAfterUpgrade    = JSON.parse(await fs.readFile(launchdPath, 'utf8')),
+                bootstrapsAfterUpgrade = launchdAfterUpgrade.calls.filter(c => c.args[0] === 'bootstrap').length;
+
+            expect(bootstrapsAfterUpgrade).toBe(bootstrapsAfterRestart + 2);
+            expect(launchdAfterUpgrade).toMatchObject({loaded: true, running: true, program: gen2Exec});
+
+            // 5. Second unchanged resume -> 0 duplicate bootstraps, 1 listener, queued records intact
+            const secondResume = await runCli({
+                homeDir  : userHome,
+                setupRoot,
+                stateRoot: external,
+                fake     : {...greenFake({patPath, answers: false}), runtime: runtimeSpec}
+            });
+
+            expect(secondResume.code, secondResume.stderr).toBe(0);
+            expect(JSON.parse(await fs.readFile(launchdPath, 'utf8')).calls.filter(c => c.args[0] === 'bootstrap')).toHaveLength(bootstrapsAfterUpgrade);
+            expect(await fs.readFile(queuedFile, 'utf8')).toBe('{"id":"queued-wake-1"}\n');
+        } finally {
+            await fs.rm(root, {recursive: true, force: true});
+        }
     });
 });

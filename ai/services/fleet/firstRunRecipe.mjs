@@ -309,6 +309,10 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
         return status(step, STEP_STATUSES.pending, observed.reason ?? 'the host declaration requires an update for this run', {...extra, observed});
     }
 
+    if (step.id === 'start-wake-receiver' && observed.running === false) {
+        return status(step, STEP_STATUSES.failed, observed.reason ?? 'the wake receiver service is not running', extra);
+    }
+
     if (receipt?.outcome === RECEIPT_OUTCOMES.accepted && receipt.digest && observed.digest && receipt.digest !== observed.digest) {
         return status(step, STEP_STATUSES.failed, 'the host content changed after the effect was accepted', extra);
     }
@@ -438,7 +442,7 @@ function staleGate(steps, ids) {
     return null;
 }
 
-function evaluateDone(step, read, {steps, observedAt}) {
+function evaluateDone(step, read, {steps, record, bound, observers, observedAt}) {
     if (!read.ok) {
         return status(step, STEP_STATUSES.unknown, read.reason, {observedAt});
     }
@@ -461,12 +465,23 @@ function evaluateDone(step, read, {steps, observedAt}) {
         return status(step, STEP_STATUSES.pending, `${at}; the witness was not recalled yet`, {observedAt, witnessedAt: value.at});
     }
 
-    // the historical witness never completes a run on its own: completion is the witness AND the plane it
-    // was written through still answering as the target, validated, in this evaluation
-    const stale = staleGate(steps, ['served-plane', 'validation']);
+    // completion requires fresh served-plane & validation plus active wake posture & host env/compose bind
+    const
+        hasDesktopWakeConsent = Boolean(bound && findConsent(record, 'desktop-wake')),
+        checkDesktopWake      = hasDesktopWakeConsent || typeof observers?.desktopWake === 'function',
+        checkWakeReceiver     = checkDesktopWake || typeof observers?.wakeReceiver === 'function',
+        requiredGates         = [
+            'served-plane',
+            'validation',
+            ...(checkDesktopWake ? ['desktop-wake'] : []),
+            ...(checkWakeReceiver ? ['start-wake-receiver'] : []),
+            ...(typeof observers?.envCarrier === 'function' ? ['write-env'] : []),
+            ...(typeof observers?.runningPlane === 'function' ? ['compose-up'] : [])
+        ],
+        stale = staleGate(steps, requiredGates);
 
     if (stale) {
-        // the gate's own status is mirrored: a failed plane fails the run, an unanswered one keeps it open
+        // the gate's own status is mirrored: a failed prerequisite fails the run, an unanswered one keeps it open
         return status(step, stale.status, `${at}; ${stale.reason}`, {observedAt, witnessedAt: value.at});
     }
 
@@ -541,7 +556,7 @@ export async function evaluateRecipe({target, record = null, observers = {}, pre
                 steps.push(evaluateValidation(step, read, {record, bound, presets, observedAt}));
                 break;
             default:
-                steps.push(evaluateDone(step, read, {steps, observedAt}));
+                steps.push(evaluateDone(step, read, {steps, record, bound, observers, observedAt}));
         }
     }
 

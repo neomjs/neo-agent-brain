@@ -8,6 +8,7 @@ import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe}
 import {presets}                                                                                       from '../../../../../../ai/services/fleet/placementPresets.mjs';
 import {EFFECT_ORDER, performEffects, settlePending}                                                   from '../../../../../../ai/services/fleet/setupOrchestration.mjs';
 import {RECEIPT_OUTCOMES, contentDigest, createSetupRecord, findReceipt, setupRecordPath, withReceipt} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {extractReceiverDeclaration, parseLaunchAgentPlist}                                             from '../../../../../../ai/services/fleet/wakeReceiverSetup.mjs';
 
 // The orchestration over a real temp layout and the checkout's own config and Compose files; the command
 // runner, the clock and every observation are scripted, and each run's file reads are recorded.
@@ -62,20 +63,21 @@ const forgeCommands = calls => calls.filter(call => call.args.includes(FORGE_CLI
  */
 async function consentedRun({preset = 'local-small', forge = scriptedForge(), desktopWake = 'declined'} = {}) {
     const
-        root        = await fs.mkdtemp(path.join(os.tmpdir(), 'setup-orchestration-')),
-        stateRoot   = path.join(root, 'state'),
-        homeDir     = path.join(root, 'home'),
-        recordPath  = setupRecordPath(path.join(stateRoot, 'setup'), RUN_ID),
-        patPath     = path.join(root, 'operator', 'plane-pat'),
-        calls       = [],
-        reads       = [],
-        launchd     = {loaded: false, running: false, plistPath: null},
-        fsModule    = {...fs, readFile: (file, ...rest) => { reads.push(String(file)); return fs.readFile(file, ...rest) }},
-        host        = createHost({
+        root       = await fs.mkdtemp(path.join(os.tmpdir(), 'setup-orchestration-')),
+        stateRoot  = path.join(root, 'state'),
+        homeDir    = path.join(root, 'home'),
+        recordPath = setupRecordPath(path.join(stateRoot, 'setup'), RUN_ID),
+        patPath    = path.join(root, 'operator', 'plane-pat'),
+        calls      = [],
+        reads      = [],
+        launchd    = {loaded: false, running: false, plistPath: null, program: null},
+        fsModule   = {...fs, readFile: (file, ...rest) => { reads.push(String(file)); return fs.readFile(file, ...rest) }},
+        host       = createHost({
             fsModule,
-            platform         : () => 'darwin',
-            uid              : () => typeof process.getuid === 'function' ? process.getuid() : 501,
-            probeWakeListener: async ({host: h, port: p}) => launchd.loaded && launchd.running && h === '127.0.0.1' && p === 3199
+            platform            : () => 'darwin',
+            uid                 : () => typeof process.getuid === 'function' ? process.getuid() : 501,
+            wakeReadinessDelayMs: 0,
+            probeWakeListener   : async ({host: h, port: p}) => launchd.loaded && launchd.running && h === '127.0.0.1' && p === 3199
                 ? {listening: true, wakeReceiver: true, statusCode: 404, reason: null}
                 : {listening: false, wakeReceiver: false, statusCode: null, reason: 'ECONNREFUSED'},
             run: async (command, args, options) => {
@@ -87,7 +89,15 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
                             throw Object.assign(new Error('Could not find service'), {stderr: 'Could not find service'});
                         }
 
-                        return {stdout: `\tstate = ${launchd.running ? 'running' : 'not running'}\n\tpid = ${launchd.running ? 4242 : 0}\n\tpath = ${launchd.plistPath}\n`, stderr: ''};
+                        return {
+                            stdout: [
+                                `\tstate = ${launchd.running ? 'running' : 'not running'}`,
+                                `\tpid = ${launchd.running ? 4242 : 0}`,
+                                ...(launchd.program ? [`\tprogram = ${launchd.program}`] : []),
+                                ...(launchd.plistPath ? [`\tpath = ${launchd.plistPath}`] : [])
+                            ].join('\n'),
+                            stderr: ''
+                        };
                     }
 
                     if (args[0] === 'bootout') {
@@ -98,9 +108,12 @@ async function consentedRun({preset = 'local-small', forge = scriptedForge(), de
                     }
 
                     if (args[0] === 'bootstrap') {
+                        const decl = extractReceiverDeclaration(parseLaunchAgentPlist(await fs.readFile(args[2], 'utf8'), {allowComments: false}));
+
                         launchd.loaded    = true;
                         launchd.running   = true;
                         launchd.plistPath = args[2];
+                        launchd.program   = decl.executable;
 
                         return {stdout: '', stderr: ''};
                     }
@@ -568,9 +581,9 @@ test.describe('setupOrchestration', () => {
         expect(waited.reports).toEqual(["'write-secrets' waits for 'desktop-wake': it is pending (unanswered)"]);
 
         const
-            enabled    = await consentedRun({desktopWake: 'enabled'}),
-            gatedEval  = await evaluate(enabled.record, {[EFFECT_IDS.writeSecrets]: true, [EFFECT_IDS.writeEnv]: true, [EFFECT_IDS.composeUp]: true, [EFFECT_IDS.registerForge]: true}, COLD),
-            gatedRun   = await perform(enabled, {evaluation: gatedEval, effectIds: [EFFECT_IDS.startWakeReceiver]});
+            enabled   = await consentedRun({desktopWake: 'enabled'}),
+            gatedEval = await evaluate(enabled.record, {[EFFECT_IDS.writeSecrets]: true, [EFFECT_IDS.writeEnv]: true, [EFFECT_IDS.composeUp]: true, [EFFECT_IDS.registerForge]: true}, COLD),
+            gatedRun  = await perform(enabled, {evaluation: gatedEval, effectIds: [EFFECT_IDS.startWakeReceiver]});
 
         expect(gatedRun.reports).toEqual(["'start-wake-receiver' waits for 'served-plane': it is unknown (connect ECONNREFUSED 127.0.0.1:3102)"]);
 

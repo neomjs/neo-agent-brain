@@ -27,19 +27,37 @@ import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe,
 import {secretFileNames}                                                                      from '../../services/fleet/credentialStep.mjs';
 import {ANY_FORGE_NAME}                                                                       from '../../services/fleet/forgeProviders.mjs';
 import {
-    admitCredentialReference, createHost, forgeObservation, persistSetupRecord, readForgeStatus, recordConsent
+    EFFECT_IDS,
+    admitCredentialReference,
+    composeInvocationDigest,
+    createHost,
+    forgeObservation,
+    persistSetupRecord,
+    readForgeStatus,
+    recordConsent
 } from '../../services/fleet/hostEffects.mjs';
 import {PLANE_MEMORY_CORE_PATH}               from '../../services/fleet/mcpWireParsing.mjs';
 import {presets}                              from '../../services/fleet/placementPresets.mjs';
 import {createDefaultReaders, probePlacement} from '../../services/fleet/probePlacement.mjs';
 import {probeValidation}                      from '../../services/fleet/providerValidation.mjs';
 import {
-    RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, findConsent, readSetupRecord, retireCurrentProof, runTarget, setupRecordPath
+    RECEIPT_OUTCOMES,
+    RETIRE_REASONS,
+    contentDigest,
+    createSetupRecord,
+    describeBinding,
+    findConsent,
+    findReceipt,
+    readSetupRecord,
+    retireCurrentProof,
+    runTarget,
+    setupRecordPath
 } from '../../services/fleet/setupRunRecord.mjs';
 import {composeContextOf, performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
 import {VERIFY_EXITS}                                    from '../../services/fleet/verifyEffect.mjs';
 import {
     DESKTOP_WAKE_CHOICES,
+    SUPPORTED_WAKE_PLATFORMS,
     WAKE_RECEIVER_DEFAULT_HOST,
     WAKE_RECEIVER_DEFAULT_PORT,
     WAKE_RECEIVER_LABEL,
@@ -48,11 +66,12 @@ import {
     inspectWakeRecordsDir,
     observeDesktopWakeQuestion,
     observeWakeReceiverEffect,
-    parseLaunchAgentPlist
+    parseLaunchAgentPlist,
+    selectWakeRecordsStateDir
 } from '../../services/fleet/wakeReceiverSetup.mjs';
-import {CANONICAL_PLANE_ID, resolvePlaneDataRoot}        from '../../planeConfig.mjs';
-import {runHealthcheck}                                  from '../diagnostics/mcpHealthcheck.mjs';
-import {isEntryModule}                                   from '../../services/shared/isEntryModule.mjs';
+import {CANONICAL_PLANE_ID, resolvePlaneDataRoot} from '../../planeConfig.mjs';
+import {runHealthcheck}                           from '../diagnostics/mcpHealthcheck.mjs';
+import {isEntryModule}                            from '../../services/shared/isEntryModule.mjs';
 
 const
     brainRoot       = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
@@ -63,8 +82,8 @@ const
     // the plane this profile's compose files bring up: the canonical local plane, rooted where its image holds the
     // Brain (/app), behind the ingress the profile publishes on the loopback
     PROFILE_TARGET  = Object.freeze({planeId: CANONICAL_PLANE_ID, dataRoot: resolvePlaneDataRoot({rootDir: '/app'}), endpoint: 'http://127.0.0.1:3102'}),
-    USAGE           = `usage: node ai/scripts/setup/firstRun.mjs [--json] [--setup-root <dir>] [--state-root <dir>] [--run-id <uuid>]
-       [--plane-id <id>] [--data-root <path>] [--endpoint <url>] [--fake-host <file>] [--new-attempt] [--help]
+    USAGE           = `usage: node ai/scripts/setup/firstRun.mjs [--json] [--setup-root <dir>] [--state-root <dir>] [--home-dir <dir>] [--run-id <uuid>]
+       [--plane-id <id>] [--data-root <path>] [--endpoint <url>] [--desktop-wake enabled|declined] [--fake-host <file>] [--new-attempt] [--help]
 
   Evaluates the first-run recipe live, asks the pending questions, performs the effects, re-evaluates.
   A run that names no plane binds the one this profile declares: ${PROFILE_TARGET.planeId} at ${PROFILE_TARGET.dataRoot},
@@ -77,25 +96,38 @@ const
 /**
  * @summary Parses the flags; unknown flags are refused.
  * @param {String[]} argv
- * @param {Object} [env=process.env] The host environment — read here only, for the two root defaults.
+ * @param {Object} [env=process.env] The host environment — read here only, for home and root defaults.
  * @returns {Object}
  */
 export function parseArgs(argv, env = process.env) {
     const
-        stateRoot = env.NEO_HOST_STATE_ROOT || path.join(os.homedir(), '.neo-ai'),
+        homeDir   = env.HOME ? path.resolve(env.HOME) : os.homedir(),
+        stateRoot = env.NEO_HOST_STATE_ROOT || path.join(homeDir, '.neo-ai'),
         options   = {
-            json      : false,
-            help      : false,
+            json       : false,
+            help       : false,
+            homeDir,
             stateRoot,
-            setupRoot : env.NEO_HOST_SETUP_RECORD_ROOT || path.join(stateRoot, 'setup'),
-            runId     : null,
-            planeId   : null,
-            dataRoot  : null,
-            endpoint  : PROFILE_TARGET.endpoint,
-            fakeHost  : null,
-            newAttempt: false
+            setupRoot  : env.NEO_HOST_SETUP_RECORD_ROOT || path.join(stateRoot, 'setup'),
+            runId      : null,
+            planeId    : null,
+            dataRoot   : null,
+            endpoint   : PROFILE_TARGET.endpoint,
+            desktopWake: null,
+            fakeHost   : null,
+            newAttempt : false
         },
-        valued    = {'--setup-root': 'setupRoot', '--state-root': 'stateRoot', '--run-id': 'runId', '--plane-id': 'planeId', '--data-root': 'dataRoot', '--endpoint': 'endpoint', '--fake-host': 'fakeHost'};
+        valued    = {
+            '--setup-root'  : 'setupRoot',
+            '--state-root'  : 'stateRoot',
+            '--home-dir'    : 'homeDir',
+            '--run-id'      : 'runId',
+            '--plane-id'    : 'planeId',
+            '--data-root'   : 'dataRoot',
+            '--endpoint'    : 'endpoint',
+            '--desktop-wake': 'desktopWake',
+            '--fake-host'   : 'fakeHost'
+        };
 
     for (let index = 0; index < argv.length; index++) {
         const flag = argv[index];
@@ -119,6 +151,7 @@ export function parseArgs(argv, env = process.env) {
         }
     }
 
+    options.homeDir   = path.resolve(options.homeDir);
     options.setupRoot = path.resolve(options.setupRoot);
     options.stateRoot = path.resolve(options.stateRoot);
 
@@ -129,37 +162,40 @@ export function parseArgs(argv, env = process.env) {
  * @summary The host layout every production observer and effect shares, and the one statement of the
  * profile it provisions: its compose project and files, and `target`, the plane those files bring up. A
  * run that names no plane binds that target (`setupRunRecord.runTarget`), whichever renderer starts it.
- * @param {Object} options
+ * LaunchAgents always resolve from `homeDir ?? os.homedir()` independently of `stateRoot`.
+ * @param {Object} [options={}]
  * @returns {Object}
  */
 export function hostLayout({stateRoot, homeDir, wakeHost, wakePort, runtime} = {}) {
     const
+        resolvedHome             = homeDir ? path.resolve(homeDir) : os.homedir(),
         wakeStateDir             = path.join(stateRoot, 'wake-receiver'),
         receiverlessWakeStateDir = path.join(stateRoot, 'wake-receiver-disabled');
 
     return {
+        homeDir         : resolvedHome,
         stateRoot,
-        repoRoot                : brainRoot,
-        nodeBin                 : process.execPath,
-        envFile                 : path.join(stateRoot, 'config', 'local-agent-os.env'),
-        secretsDir              : path.join(stateRoot, 'secrets'),
-        composeDir              : path.join(brainRoot, 'deploy', 'cloud'),
-        composeFiles            : COMPOSE_FILES,
-        composeProject          : COMPOSE_PROJECT,
-        composeProfiles         : COMPOSE_PROFILES,
-        target                  : PROFILE_TARGET,
+        repoRoot        : brainRoot,
+        nodeBin         : process.execPath,
+        envFile         : path.join(stateRoot, 'config', 'local-agent-os.env'),
+        secretsDir      : path.join(stateRoot, 'secrets'),
+        composeDir      : path.join(brainRoot, 'deploy', 'cloud'),
+        composeFiles    : COMPOSE_FILES,
+        composeProject  : COMPOSE_PROJECT,
+        composeProfiles : COMPOSE_PROFILES,
+        target          : PROFILE_TARGET,
         wakeStateDir,
         receiverlessWakeStateDir,
-        wakeManifestPath        : path.join(wakeStateDir, 'manifest.json'),
-        wakePlistPath           : path.join(homeDir ?? path.dirname(stateRoot), 'Library', 'LaunchAgents', WAKE_RECEIVER_PLIST_NAME),
-        wakeTemplatePath        : path.join(brainRoot, 'deploy', 'host', WAKE_RECEIVER_PLIST_NAME),
-        wakeHost                : wakeHost ?? WAKE_RECEIVER_DEFAULT_HOST,
-        wakePort                : wakePort ?? WAKE_RECEIVER_DEFAULT_PORT,
+        wakeManifestPath: path.join(wakeStateDir, 'manifest.json'),
+        wakePlistPath   : path.join(resolvedHome, 'Library', 'LaunchAgents', WAKE_RECEIVER_PLIST_NAME),
+        wakeTemplatePath: path.join(brainRoot, 'deploy', 'host', WAKE_RECEIVER_PLIST_NAME),
+        wakeHost        : wakeHost ?? WAKE_RECEIVER_DEFAULT_HOST,
+        wakePort        : wakePort ?? WAKE_RECEIVER_DEFAULT_PORT,
         ...(runtime ? {runtime} : {})
     };
 }
 
-async function observeEnvCarrier(layout, host) {
+async function observeEnvCarrier(layout, host, {record = null, supported = true} = {}) {
     let content;
 
     try {
@@ -184,11 +220,64 @@ async function observeEnvCarrier(layout, host) {
         return {present: true, digest, problem: `NEO_WAKE_RECEIVER_RECORDS_HOST_DIR '${recordsPath}' must end with '/records'`};
     }
 
+    const consentAnswer = record ? findConsent(record, 'desktop-wake')?.answer ?? null : null;
+
+    if (!supported || consentAnswer === DESKTOP_WAKE_CHOICES.enabled || consentAnswer === DESKTOP_WAKE_CHOICES.declined) {
+        const expectedRecordsPath = path.join(selectWakeRecordsStateDir(layout, {consentAnswer, supported}), 'records');
+
+        if (recordsPath !== expectedRecordsPath) {
+            return {
+                present      : true,
+                digest,
+                inputMismatch: true,
+                problem      : null,
+                reason       : `env carrier binds '${recordsPath}', current desktop-wake choice requires '${expectedRecordsPath}'`
+            };
+        }
+    }
+
     const dirCheck = await inspectWakeRecordsDir(path.dirname(recordsPath), host);
 
     return dirCheck.ok
         ? {present: true, digest, problem: null}
         : {present: true, digest, problem: dirCheck.reason};
+}
+
+async function observeRunningCompose({layout, host, record = null, running = false}) {
+    if (!running) {
+        return {present: false, digest: null, reason: 'the compose project is not running'};
+    }
+
+    const
+        platform  = typeof host.platform === 'function' ? host.platform() : process.platform,
+        supported = SUPPORTED_WAKE_PLATFORMS.includes(platform),
+        envObs    = await observeEnvCarrier(layout, host, {record, supported});
+
+    if (envObs.problem || envObs.inputMismatch) {
+        return {
+            present      : true,
+            digest       : null,
+            inputMismatch: true,
+            reason       : envObs.reason ?? envObs.problem ?? 'compose stack env carrier requires update'
+        };
+    }
+
+    const
+        expectedDigest = envObs.present && envObs.digest
+            ? composeInvocationDigest({...composeContextOf(layout), envDigest: envObs.digest})
+            : null,
+        composeReceipt = record ? findReceipt(record, EFFECT_IDS.composeUp) : null;
+
+    if (composeReceipt?.outcome === RECEIPT_OUTCOMES.accepted && expectedDigest && composeReceipt.digest !== expectedDigest) {
+        return {
+            present      : true,
+            digest       : composeReceipt.digest,
+            inputMismatch: true,
+            reason       : 'the env carrier changed since compose-up ran; compose-up must re-apply it'
+        };
+    }
+
+    return {present: true, digest: expectedDigest, problem: null};
 }
 
 export {PLANE_MEMORY_CORE_PATH};
@@ -255,7 +344,11 @@ export function productionObservers({layout, host, probe = probePlacement, healt
 
     return {
         placement,
-        envCarrier  : () => observeEnvCarrier(layout, host),
+        envCarrier  : (target, {record = null} = {}) => {
+            const platform = typeof host.platform === 'function' ? host.platform() : process.platform;
+
+            return observeEnvCarrier(layout, host, {record, supported: SUPPORTED_WAKE_PLATFORMS.includes(platform)});
+        },
         desktopWake : target => observeDesktopWakeQuestion({layout, host, target}),
         wakeReceiver: (target, {record = null} = {}) => observeWakeReceiverEffect({layout, target, record, host}),
         // present means the WHOLE set the consented preset needs: the files are written one at a time,
@@ -284,10 +377,15 @@ export function productionObservers({layout, host, probe = probePlacement, healt
 
             return {present: true, digest: null, problem: null};
         },
-        runningPlane: async () => {
+        runningPlane: async (target, {record = null} = {}) => {
             const result = probed ?? await placement();
 
-            return {present: result.runningPlane?.project === layout.composeProject, digest: null, reason: 'the compose project is not running'};
+            return observeRunningCompose({
+                layout,
+                host,
+                record,
+                running: result.runningPlane?.project === layout.composeProject
+            });
         },
         // read inside the plane's Fleet service: a plane that is not running has no registry to read, which is
         // unknown — never an empty one, and never an accepted registration gone
@@ -520,25 +618,35 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         return 0;
     }
 
+    if (options.desktopWake !== null && !Object.values(DESKTOP_WAKE_CHOICES).includes(options.desktopWake)) {
+        throw new Error(`--desktop-wake must be '${DESKTOP_WAKE_CHOICES.enabled}' or '${DESKTOP_WAKE_CHOICES.declined}'`);
+    }
+
     const
-        interactive = !options.json && (io.isTTY ?? Boolean(stdin.isTTY)) && !options.fakeHost,
-        layout      = hostLayout(options);
+        fake        = options.fakeHost ? JSON.parse(await fsPromises.readFile(options.fakeHost, 'utf8')) : null,
+        interactive = !options.json && (io.isTTY ?? Boolean(stdin.isTTY)) && !fake,
+        layout      = hostLayout({
+            ...options,
+            ...(fake?.homeDir ? {homeDir: path.resolve(fake.homeDir)} : {}),
+            ...(fake?.wakePort !== undefined ? {wakePort: fake.wakePort} : {}),
+            ...(fake?.wakeHost ? {wakeHost: fake.wakeHost} : {}),
+            ...(fake?.runtime ? {runtime: fake.runtime} : {})
+        });
 
     const named = {planeId: options.planeId, dataRoot: options.dataRoot, endpoint: options.endpoint};
 
     let target, host = createHost(), observers, answers = {};
 
-    if (options.fakeHost) {
+    if (fake) {
         // the fake host: a recording runner (docker calls in `fake-run.json`, simulated launchd state in
         // `fake-launchd.json`), the real file observers over the temp layout, and the fixture's remaining observers
         const
-            fake            = JSON.parse(await fsPromises.readFile(options.fakeHost, 'utf8')),
-            callsPath       = path.join(options.setupRoot, 'fake-run.json'),
-            launchdPath     = path.join(options.setupRoot, 'fake-launchd.json'),
-            defaultUid      = typeof process.getuid === 'function' ? process.getuid() : 501,
-            readCalls       = () => fsPromises.readFile(callsPath, 'utf8').then(JSON.parse, () => []),
-            initialLaunchd  = () => ({loaded: false, running: false, plistPath: null, host: null, port: null, calls: [], ...(fake.launchd ?? {})}),
-            readLaunchd     = async () => {
+            callsPath      = path.join(options.setupRoot, 'fake-run.json'),
+            launchdPath    = path.join(options.setupRoot, 'fake-launchd.json'),
+            defaultUid     = typeof process.getuid === 'function' ? process.getuid() : 501,
+            readCalls      = () => fsPromises.readFile(callsPath, 'utf8').then(JSON.parse, () => []),
+            initialLaunchd = () => ({loaded: false, running: false, plistPath: null, program: null, host: null, port: null, readyAt: null, calls: [], ...(fake.launchd ?? {})}),
+            readLaunchd    = async () => {
                 if (fake.launchd?.forceSeed) {
                     return initialLaunchd();
                 }
@@ -551,9 +659,11 @@ export async function main(argv = process.argv.slice(2), io = {}) {
             };
 
         host = createHost({
-            platform         : () => fake.platform ?? 'darwin',
-            uid              : () => fake.uid ?? defaultUid,
-            probeWakeListener: async ({host: probeHost, port: probePort}) => {
+            platform             : () => fake.platform ?? 'darwin',
+            uid                  : () => fake.uid ?? defaultUid,
+            wakeReadinessAttempts: fake.launchd?.wakeReadinessAttempts ?? null,
+            wakeReadinessDelayMs : fake.launchd?.wakeReadinessDelayMs ?? null,
+            probeWakeListener    : async ({host: probeHost, port: probePort}) => {
                 if (Array.isArray(fake.foreignPorts) && fake.foreignPorts.includes(probePort)) {
                     return {listening: true, wakeReceiver: false, statusCode: 200, reason: `foreign listener on ${probeHost}:${probePort}`};
                 }
@@ -561,6 +671,10 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                 const state = await readLaunchd();
 
                 if (state.loaded && state.running && (state.host ?? WAKE_RECEIVER_DEFAULT_HOST) === probeHost && state.port === probePort) {
+                    if (state.readyAt && Date.now() < state.readyAt) {
+                        return {listening: false, wakeReceiver: false, statusCode: null, reason: `connect ECONNREFUSED ${probeHost}:${probePort}`};
+                    }
+
                     return {listening: true, wakeReceiver: true, statusCode: 404, reason: null};
                 }
 
@@ -583,6 +697,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                             stdout: [
                                 `\tstate = ${state.running ? 'running' : 'not running'}`,
                                 ...(state.running ? [`\tpid = ${state.pid ?? 4242}`] : []),
+                                ...(state.program ? [`\tprogram = ${state.program}`] : []),
                                 ...(state.plistPath ? [`\tpath = ${state.plistPath}`] : [])
                             ].join('\n'),
                             stderr: ''
@@ -598,6 +713,11 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                     }
 
                     if (args[0] === 'bootstrap') {
+                        if (fake.launchd?.interruptBeforeBootstrap === true) {
+                            await writeLaunchd(state);
+                            throw new Error('simulated interruption before launchctl bootstrap');
+                        }
+
                         const
                             plistPath = args[2],
                             xml       = await fsPromises.readFile(plistPath, 'utf8'),
@@ -607,8 +727,12 @@ export async function main(argv = process.argv.slice(2), io = {}) {
                         state.running   = true;
                         state.pid       = 4242;
                         state.plistPath = plistPath;
+                        state.program   = decl.executable;
                         state.host      = decl.host;
                         state.port      = decl.port;
+                        state.readyAt   = Number.isInteger(fake.launchd?.readyDelayMs) && fake.launchd.readyDelayMs > 0
+                            ? Date.now() + fake.launchd.readyDelayMs
+                            : null;
                         await writeLaunchd(state);
 
                         return {stdout: '', stderr: ''};
@@ -627,8 +751,12 @@ export async function main(argv = process.argv.slice(2), io = {}) {
 
         observers = {
             ...productionObservers({layout, host}),
-            placement      : async () => { throw new Error('no placement on the fake host') },
-            runningPlane   : async () => ({present: (await readCalls()).some(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up')), digest: null, reason: 'the compose project is not running'}),
+            placement   : async () => { throw new Error('no placement on the fake host') },
+            runningPlane: async (t, {record: boundRecord = null} = {}) => {
+                const running = (await readCalls()).some(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up'));
+
+                return observeRunningCompose({layout, host, record: boundRecord, running});
+            },
             forgeConnection: async () => { throw new Error('no forge registry on the fake host') },
             ...fakeHost.observers
         };
@@ -664,6 +792,18 @@ export async function main(argv = process.argv.slice(2), io = {}) {
             record = retireCurrentProof(record, {target, recipeVersion: RECIPE_VERSION, reason: binding === 'version-mismatch' ? RETIRE_REASONS.versionChanged : RETIRE_REASONS.targetChanged, now: host.now});
             await persistSetupRecord(recordPath, record, host);
             stderr.write(`record ${recordPath}: ${binding}; prior consents and receipts retired into history\n`);
+        }
+    }
+
+    const desiredDesktopWake = options.desktopWake ?? fake?.consentOverride?.['desktop-wake'] ?? null;
+
+    if (desiredDesktopWake !== null) {
+        const
+            platform  = typeof host.platform === 'function' ? host.platform() : process.platform,
+            supported = SUPPORTED_WAKE_PLATFORMS.includes(platform);
+
+        if (supported && findConsent(record, 'desktop-wake')?.answer !== desiredDesktopWake) {
+            record = (await recordConsent({stepId: 'desktop-wake', answer: desiredDesktopWake, record, recordPath, host})).record;
         }
     }
 

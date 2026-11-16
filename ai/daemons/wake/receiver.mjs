@@ -159,19 +159,21 @@ const STEP_WATCHDOG_INTERVAL_MS = 5 * 1000;
  * @summary Loads a 0600 route manifest without leaking signing keys into logs or state records.
  *
  * @param {String} manifestPath Absolute JSON manifest path.
+ * @param {Object} [options={}]
+ * @param {Object} [options.fsModule=fs] Filesystem adapter (`stat`, `readFile`).
  * @returns {Promise<Object>}
  */
-export async function loadWakeReceiverManifest(manifestPath) {
+export async function loadWakeReceiverManifest(manifestPath, {fsModule = fs} = {}) {
     if (!path.isAbsolute(manifestPath || '')) {
         throw new Error('Wake receiver requires an absolute manifest path');
     }
 
-    const stat = await fs.stat(manifestPath);
+    const stat = await fsModule.stat(manifestPath);
     if ((stat.mode & 0o077) !== 0) {
         throw new Error(`Wake receiver manifest '${manifestPath}' must be mode 0600`);
     }
 
-    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    const manifest = JSON.parse(await fsModule.readFile(manifestPath, 'utf8'));
     if (manifest?.schemaVersion !== 1 || !manifest.routes || typeof manifest.routes !== 'object') {
         throw new Error('Wake receiver manifest requires schemaVersion=1 and a routes object');
     }
