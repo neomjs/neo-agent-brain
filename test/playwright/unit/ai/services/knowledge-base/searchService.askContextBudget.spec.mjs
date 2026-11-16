@@ -1,5 +1,6 @@
-import {expect, test}       from '@playwright/test';
-import {assembleAskContext} from '../../../../../../ai/services/knowledge-base/helpers/askContextBudget.mjs';
+import {expect, test}                from '@playwright/test';
+import {assembleAskContext}          from '../../../../../../ai/services/knowledge-base/helpers/askContextBudget.mjs';
+import {prioritizeOversizedDocument} from '../../../../../../ai/services/knowledge-base/helpers/prioritizeOversizedDocument.mjs';
 
 /**
  * @summary Convicts the ask-synthesis context budget.
@@ -121,5 +122,155 @@ test.describe('assembleAskContext — ask context budget (#16999)', () => {
               result    = assembleAskContext({documents, budgetChars: budget, maxCharsPerDocument: 0});
 
         expect(result.context.length).toBeLessThanOrEqual(budget);
+    });
+
+    test('honors pre-windowed doc.shortened when included, without claiming it if dropped outright', () => {
+        const result = assembleAskContext({
+            documents: [
+                {name: 'IssueService', source: 'ai/services/github-workflow/IssueService.mjs', content: 'windowed code', shortened: true},
+                {name: 'Other', source: 'ai/other.mjs', content: 'y'.repeat(120), shortened: true}
+            ],
+            budgetChars        : 110,
+            maxCharsPerDocument: 12000
+        });
+
+        expect(result.includedCount).toBe(1);
+        expect(result.droppedCount).toBe(1);
+        expect(result.truncated).toBe(true);
+        expect(result.notice).toContain('Document(s) 1 were shortened.');
+        expect(result.notice).toContain('1 lower-ranked document(s) were omitted entirely.');
+    });
+});
+
+test.describe('prioritizeOversizedDocument — code and guide windowing', () => {
+    test('windows an oversized .mjs class past byte 45,000 around its matched AST method', () => {
+        const fillerMethods = Array.from({length: 140}, (_, index) => [
+            '    /**',
+            `     * @summary Helper operation ${index}.`,
+            '     */',
+            `    helperMethod${index}(value) {`,
+            `        return '${'filler-payload-'.repeat(20)}' + value;`,
+            '    }'
+        ].join('\n')).join('\n\n');
+
+        const source = [
+            "import Base from 'neo.mjs/src/core/Base.mjs';",
+            '',
+            'class SampleIssueService extends Base {',
+            fillerMethods,
+            '',
+            '    /**',
+            '     * @summary Links parent and child issues across repositories.',
+            '     */',
+            '    async updateIssueRelationship({childIssue, parentIssue, parentRepo}) {',
+            '        const targetRepo = parentRepo || "neomjs/neo-agent-brain";',
+            '        return {childIssue, parentIssue, targetRepo};',
+            '    }',
+            '}',
+            '',
+            'export default SampleIssueService;',
+            ''
+        ].join('\n');
+
+        expect(source.length).toBeGreaterThan(55000);
+        expect(source.indexOf('updateIssueRelationship')).toBeGreaterThan(45000);
+
+        const windowed = prioritizeOversizedDocument(source, {
+            query              : 'Where does updateIssueRelationship resolve childIssue and parentRepo?',
+            source             : 'ai/services/github-workflow/IssueService.mjs',
+            maxCharsPerDocument: 12000
+        });
+
+        expect(windowed.shortened).toBe(true);
+        expect(windowed.content.length).toBeLessThanOrEqual(12000);
+        expect(windowed.content).toContain("import Base from 'neo.mjs/src/core/Base.mjs';");
+        expect(windowed.content).toContain('class SampleIssueService extends Base');
+        expect(windowed.content).toContain('// ... [lines');
+        expect(windowed.content).toContain('async updateIssueRelationship({childIssue, parentIssue, parentRepo})');
+    });
+
+    test('windows oversized single-section Markdown and prioritizes distant multi-section headings', () => {
+        const distantGuide = [
+            '# TreeStore Overview',
+            '',
+            'Introductory tree notes. '.repeat(720),
+            '',
+            '#### Ancestor-Aware Filtering',
+            '',
+            'Keep matching leaves alongside their ancestor chain while projecting UI menus.',
+            ''
+        ].join('\n');
+
+        expect(distantGuide.indexOf('Ancestor-Aware Filtering')).toBeGreaterThan(15000);
+
+        const guideResult = prioritizeOversizedDocument(distantGuide, {
+            query              : 'How does ancestor-aware filtering keep tree nodes?',
+            source             : 'learn/guides/datahandling/TreeStore.md',
+            maxCharsPerDocument: 12000
+        });
+
+        expect(guideResult.content.indexOf('#### Ancestor-Aware Filtering')).toBeLessThan(12000);
+
+        const singleSectionDoc = [
+            '# Architecture Reference',
+            '',
+            'Background narrative paragraph with general setup details. '.repeat(350),
+            '',
+            'Needle method updateIssueRelationship resolves parentRepo cleanly at the bottom.',
+            ''
+        ].join('\n');
+
+        expect(singleSectionDoc.indexOf('Needle method updateIssueRelationship')).toBeGreaterThan(15000);
+
+        const singleResult = prioritizeOversizedDocument(singleSectionDoc, {
+            query              : 'How does updateIssueRelationship resolve parentRepo?',
+            source             : 'learn/Architecture.md',
+            maxCharsPerDocument: 12000
+        });
+
+        expect(singleResult.shortened).toBe(true);
+        expect(singleResult.content.length).toBeLessThanOrEqual(12000);
+        expect(singleResult.content).toContain('Needle method updateIssueRelationship resolves parentRepo cleanly');
+        expect(singleResult.content).toContain('omitted]');
+    });
+
+    test('windows many-member JS modules with O(N) offset indexing while preserving exact line omission markers', () => {
+        const methodCount = 1500;
+        const methods     = Array.from({length: methodCount}, (_, index) => [
+            `    helper_${index}(v) {`,
+            `        return v + ${index};`,
+            '    }'
+        ].join('\n')).join('\n\n');
+
+        const largeModule = [
+            "import Base from 'neo.mjs/src/core/Base.mjs';",
+            '',
+            'class MassiveService extends Base {',
+            methods,
+            '',
+            '    resolveFinalTargetQuota() {',
+            '        return "FINAL_TARGET_SENTINEL";',
+            '    }',
+            '}',
+            '',
+            'export default MassiveService;',
+            ''
+        ].join('\n');
+
+        const firstKeptLine    = largeModule.slice(0, largeModule.indexOf('helper_1498(v)')).split('\n').length;
+        const targetLineNumber = largeModule.slice(0, largeModule.indexOf('resolveFinalTargetQuota()')).split('\n').length;
+        const startedAt        = performance.now();
+        const result           = prioritizeOversizedDocument(largeModule, {
+            query              : 'Where is resolveFinalTargetQuota defined?',
+            source             : 'ai/services/MassiveService.mjs',
+            maxCharsPerDocument: 12000
+        });
+        const elapsedMs = performance.now() - startedAt;
+
+        expect(result.shortened).toBe(true);
+        expect(result.content).toContain('resolveFinalTargetQuota()');
+        expect(result.content).toContain(`// ... [lines 4-${firstKeptLine - 1} omitted] ...`);
+        expect(result.content).toContain(`// ... [lines ${targetLineNumber - 1}-${targetLineNumber - 1} omitted] ...`);
+        expect(elapsedMs).toBeLessThan(250);
     });
 });

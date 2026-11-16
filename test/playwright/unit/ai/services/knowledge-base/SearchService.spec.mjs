@@ -878,5 +878,323 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
         expect(assembledPositive.notice).toContain('Document(s) 1 were shortened.');
         expect(assembledPositive.context).toContain('## Layout reset example\n\nThis example is obsolete; do not use it.\n\n```sh\n# layout reset\nprintf \'illustrative only\\n\'\n```');
     });
+
+    test('windows oversized local .mjs source files past character 45,000 in SearchService.ask', async () => {
+        let capturedPrompt = null;
+
+        const fillerMethods = Array.from({length: 140}, (_, index) => [
+            '    /**',
+            `     * @summary Unrelated workflow helper ${index}.`,
+            '     */',
+            `    unrelatedHelper${index}(input) {`,
+            `        return '${'padding-block-'.repeat(24)}' + input;`,
+            '    }'
+        ].join('\n')).join('\n\n');
+
+        const serviceSource = [
+            "import Base from 'neo.mjs/src/core/Base.mjs';",
+            '',
+            'class OversizedIssueService extends Base {',
+            fillerMethods,
+            '',
+            '    /**',
+            '     * @summary Resolves cross-repository parent and child issue links.',
+            '     */',
+            '    async updateIssueRelationship({childIssue, parentIssue, parentRepo}) {',
+            '        const effectiveParentRepo = parentRepo || "neomjs/neo-agent-brain";',
+            '        return {childIssue, parentIssue, effectiveParentRepo};',
+            '    }',
+            '}',
+            '',
+            'export default OversizedIssueService;',
+            ''
+        ].join('\n');
+
+        expect(serviceSource.length).toBeGreaterThan(55000);
+        expect(serviceSource.indexOf('async updateIssueRelationship')).toBeGreaterThan(45000);
+
+        const serviceFile = path.join(path.dirname(tmpFilePath), 'oversized-service.mjs');
+        await fs.writeFile(serviceFile, serviceSource, 'utf8');
+        const serviceRelative = path.relative(aiConfig.neoRootDir, serviceFile);
+
+        QueryService.queryDocuments = async () => ({
+            topResult: serviceRelative,
+            results  : [{
+                source  : serviceRelative,
+                score   : '9055',
+                metadata: {
+                    type    : 'ai-infrastructure',
+                    tenantId: 'neo-shared',
+                    repoSlug: 'neo',
+                    content : 'async updateIssueRelationship({childIssue, parentIssue, parentRepo}) {'
+                }
+            }]
+        });
+
+        SearchService.model = {
+            generateContent: async prompt => {
+                capturedPrompt = prompt;
+                return {response: {text: () => 'Synthesized updateIssueRelationship answer.'}};
+            }
+        };
+
+        try {
+            const hydrated = await SearchService.hydrateReferenceContent({
+                source  : serviceRelative,
+                metadata: {
+                    type   : 'src',
+                    content: 'async updateIssueRelationship({childIssue, parentIssue, parentRepo}) {'
+                }
+            }, {
+                query: 'Where does updateIssueRelationship resolve childIssue and parentRepo?'
+            });
+
+            expect(hydrated.length).toBeLessThanOrEqual(aiConfig.askSynthesis.contextMaxCharsPerDocument);
+            expect(hydrated).toContain('async updateIssueRelationship({childIssue, parentIssue, parentRepo})');
+
+            const result = await SearchService.ask({
+                query: 'Where does updateIssueRelationship resolve childIssue and parentRepo?',
+                type : 'src'
+            });
+
+            expect(capturedPrompt).toContain('async updateIssueRelationship({childIssue, parentIssue, parentRepo})');
+            expect(capturedPrompt).toContain('// ... [lines');
+            expect(result.answer).toContain('Synthesized updateIssueRelationship answer.');
+            expect(result.answer).toContain('Context note:');
+            expect(result.answer).toContain('Document(s) 1 were shortened.');
+        } finally {
+            await fs.remove(serviceFile).catch(() => {});
+        }
+    });
+
+    test('prioritizes distant headings and oversized single-section local Markdown guides in hydrateReferenceContent', async () => {
+        const guideSource = [
+            '# TreeStore Guide',
+            '',
+            'General introduction prose. '.repeat(720),
+            '',
+            '#### Ancestor-Aware Filtering',
+            '',
+            'Filters retain ancestor branches down to kept leaf records.'
+        ].join('\n');
+
+        const guideFile = path.join(path.dirname(tmpFilePath), 'oversized-tree-guide.md');
+        await fs.writeFile(guideFile, guideSource, 'utf8');
+        const guideRelative = path.relative(aiConfig.neoRootDir, guideFile);
+
+        const singleSource = [
+            '# Flat Architecture Note',
+            '',
+            'Introductory architectural details. '.repeat(520),
+            '',
+            'Key invariant: ancestors remain navigable whenever filtered.'
+        ].join('\n');
+
+        const singleFile = path.join(path.dirname(tmpFilePath), 'oversized-single-note.md');
+        await fs.writeFile(singleFile, singleSource, 'utf8');
+        const singleRelative = path.relative(aiConfig.neoRootDir, singleFile);
+
+        try {
+            const hydratedGuide = await SearchService.hydrateReferenceContent({
+                source  : guideRelative,
+                metadata: {
+                    type   : 'guide',
+                    content: 'Filters retain ancestor branches down to kept leaf records.'
+                }
+            }, {
+                query: 'How does ancestor-aware filtering retain ancestor branches?'
+            });
+
+            expect(hydratedGuide.indexOf('#### Ancestor-Aware Filtering')).toBeLessThan(aiConfig.askSynthesis.contextMaxCharsPerDocument);
+
+            const hydratedSingle = await SearchService.hydrateReferenceContent({
+                source  : singleRelative,
+                metadata: {
+                    type   : 'guide',
+                    content: 'Key invariant: ancestors remain navigable whenever filtered.'
+                }
+            }, {
+                query: 'What invariant keeps ancestors navigable when filtered?'
+            });
+
+            expect(hydratedSingle.length).toBeLessThanOrEqual(aiConfig.askSynthesis.contextMaxCharsPerDocument);
+            expect(hydratedSingle).toContain('Key invariant: ancestors remain navigable whenever filtered.');
+        } finally {
+            await Promise.all([
+                fs.remove(guideFile).catch(() => {}),
+                fs.remove(singleFile).catch(() => {})
+            ]);
+        }
+    });
+
+    test('reserves bounded windows for oversized winning JS methods and late single-paragraph Markdown evidence in SearchService.ask', async () => {
+        let capturedPrompt = null;
+
+        const oversizedMethodLines = Array.from({length: 260}, (_, index) =>
+            `        const policyStep${index} = "${'quota-envelope-padding-'.repeat(2)}${index}";`
+        ).join('\n');
+
+        const competingJsSource = [
+            "import Base from 'neo.mjs/src/core/Base.mjs';",
+            '',
+            'class ThermalPolicyService extends Base {',
+            '    auditStatus() {',
+            '        return "audit-ok";',
+            '    }',
+            '',
+            '    resolveThermalQuota(envelope) {',
+            oversizedMethodLines,
+            '        return "THERMAL_SPARE_CAPACITY";',
+            '    }',
+            '}',
+            '',
+            'export default ThermalPolicyService;',
+            ''
+        ].join('\n');
+
+        expect(competingJsSource.length).toBeGreaterThan(16000);
+
+        const competingJsFile     = path.join(path.dirname(tmpFilePath), 'competing-quota-service.mjs');
+        const singleParagraphBody = `${'Background architectural summary covering configuration rules. '.repeat(280)}CRITICAL_PARAGRAPH_TAIL_INVARIANT: preserve ancestor custody.`;
+        const lateParagraphGuide  = `# Policy Guide\n\n${singleParagraphBody}\n`;
+        const lateGuideFile       = path.join(path.dirname(tmpFilePath), 'late-single-paragraph-guide.md');
+
+        expect(singleParagraphBody.length).toBeGreaterThan(16000);
+        await Promise.all([
+            fs.writeFile(competingJsFile, competingJsSource, 'utf8'),
+            fs.writeFile(lateGuideFile, lateParagraphGuide, 'utf8')
+        ]);
+
+        const jsRelative    = path.relative(aiConfig.neoRootDir, competingJsFile);
+        const guideRelative = path.relative(aiConfig.neoRootDir, lateGuideFile);
+
+        try {
+            QueryService.queryDocuments = async () => ({
+                topResult: jsRelative,
+                results  : [{
+                    source  : jsRelative,
+                    score   : '9400',
+                    metadata: {
+                        type    : 'src',
+                        tenantId: 'neo-shared',
+                        repoSlug: 'neo',
+                        content : '        return "THERMAL_SPARE_CAPACITY";'
+                    }
+                }]
+            });
+
+            SearchService.model = {
+                generateContent: async prompt => {
+                    capturedPrompt = prompt;
+                    return {response: {text: () => 'Quota answer.'}};
+                }
+            };
+
+            const jsAnswer = await SearchService.ask({
+                query: 'Which policy controls resolveThermalQuota for the audit?',
+                type : 'src'
+            });
+
+            expect(capturedPrompt).toContain('resolveThermalQuota(envelope)');
+            expect(capturedPrompt).toContain('THERMAL_SPARE_CAPACITY');
+            expect(capturedPrompt).toContain('// ... [lines');
+            expect(jsAnswer.answer).toContain('Document(s) 1 were shortened.');
+
+            capturedPrompt = null;
+            QueryService.queryDocuments = async () => ({
+                topResult: guideRelative,
+                results  : [{
+                    source  : guideRelative,
+                    score   : '9300',
+                    metadata: {
+                        type    : 'guide',
+                        tenantId: 'neo-shared',
+                        repoSlug: 'neo',
+                        content : 'CRITICAL_PARAGRAPH_TAIL_INVARIANT: preserve ancestor custody.'
+                    }
+                }]
+            });
+
+            const guideAnswer = await SearchService.ask({
+                query: 'What does CRITICAL_PARAGRAPH_TAIL_INVARIANT require?',
+                type : 'guide'
+            });
+
+            expect(capturedPrompt).toContain('# Policy Guide');
+            expect(capturedPrompt).toContain('CRITICAL_PARAGRAPH_TAIL_INVARIANT: preserve ancestor custody.');
+            expect(guideAnswer.answer).toContain('Document(s) 1 were shortened.');
+        } finally {
+            await Promise.all([
+                fs.remove(competingJsFile).catch(() => {}),
+                fs.remove(lateGuideFile).catch(() => {})
+            ]);
+        }
+    });
+
+    test('distinguishes embedded chunk coordinates from filesystem line ranges for tenant and revision-bound references', async () => {
+        let capturedPrompt = null;
+
+        const sameNamedLocalFile = path.join(path.dirname(tmpFilePath), 'custody-collision-target.md');
+        const collisionRelative  = path.relative(aiConfig.neoRootDir, sameNamedLocalFile);
+        const embeddedPayload    = [
+            '# Embedded Section A',
+            'Introductory chunk details from Chroma metadata. '.repeat(320),
+            '',
+            'EMBEDDED_CUSTODY_TARGET: isolated metadata chunk reached synthesis cleanly.'
+        ].join('\n');
+
+        await fs.writeFile(sameNamedLocalFile, 'LOCAL_FILESYSTEM_SENTINEL must never leak for tenant or revision rows.\n', 'utf8');
+
+        SearchService.model = {
+            generateContent: async prompt => {
+                capturedPrompt = prompt;
+                return {response: {text: () => 'Embedded custody verified.'}};
+            }
+        };
+
+        try {
+            const tenantMetadata = {
+                type      : 'guide',
+                tenantId  : 'tenant-external',
+                repoSlug  : 'external-repo',
+                line_start: 9000,
+                content   : embeddedPayload
+            };
+            const revisionMetadata = {
+                type              : 'guide',
+                tenantId          : 'neo-shared',
+                repoSlug          : 'neo',
+                rootKind          : 'neo-workspace',
+                extractionIdentity: 'neo.mjs@13.2.0',
+                line_start        : 9000,
+                content           : `${'Early unrelated embedded paragraph. '.repeat(450)}\n\nEMBEDDED_CUSTODY_TARGET: isolated metadata chunk reached synthesis cleanly.`
+            };
+
+            for (const metadata of [tenantMetadata, revisionMetadata]) {
+                capturedPrompt = null;
+                QueryService.queryDocuments = async () => ({
+                    topResult: collisionRelative,
+                    results  : [{
+                        source: collisionRelative,
+                        score : '8800',
+                        metadata
+                    }]
+                });
+
+                const result = await SearchService.ask({
+                    query: 'What does EMBEDDED_CUSTODY_TARGET establish?',
+                    type : 'guide'
+                });
+
+                expect(capturedPrompt).not.toContain('LOCAL_FILESYSTEM_SENTINEL');
+                expect(capturedPrompt).toContain('EMBEDDED_CUSTODY_TARGET: isolated metadata chunk reached synthesis cleanly.');
+                expect(capturedPrompt).not.toMatch(/\[lines \d+-\d+ omitted\]/);
+                expect(capturedPrompt).toContain('[embedded chunk content omitted]');
+                expect(result.answer).toContain('Embedded custody verified.');
+            }
+        } finally {
+            await fs.remove(sameNamedLocalFile).catch(() => {});
+        }
+    });
 });
 
