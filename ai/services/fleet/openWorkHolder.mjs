@@ -157,7 +157,8 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         named        = eligible && Array.isArray(disclosedFamilies) && disclosedFamilies.length > 0,
         // On a named outside PR an approval counts only from a seat of a known family the PR does not name
         counts       = reviewer => !named || typeof seatFamilies?.[reviewer] === 'string' && !disclosedFamilies.includes(seatFamilies[reviewer]),
-        approved     = (opinions ?? []).some(opinion => opinion.onHead && opinion.state === 'APPROVED' && counts(opinion.reviewer)),
+        approved     = (opinions ?? []).some(opinion => opinion.onHead && opinion.state === 'APPROVED' && counts(opinion.reviewer) &&
+            (ci !== 'red' || !opinion.bot && isSeat(opinion.reviewer) && opinion.reviewer !== owner?.seat)),
         // A close target with an open blocker holds the merge for the author; an unread target cannot certify it
         merge        = blockedTargets.length ? {role: 'author', kind: 'await-prerequisite', ids: owner?.seat ? [owner.seat] : [], targets: [...blockedTargets]}
             : targetsComplete ? {role: 'operator', kind: 'merge', ids: []} : {role: 'unknown', kind: null, ids: []};
@@ -173,6 +174,13 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         return {role: 'author', kind: 'address-changes', ids: []}
     }
 
+    // A confirmed conflict can itself turn CI red. Integrate the approved head first, then assess the new head's checks.
+    const canIntegrate = ci === 'green' || ci === 'red' && !draft && (eligible || owner?.kind === 'seat' && isSeat(owner.seat));
+    if (canIntegrate && !incomplete && mergeable === 'CONFLICTING' && approved && !onHead('CHANGES_REQUESTED')) {
+        return eligible ? {role: 'rotation', kind: 'rebase', ids: []}
+            : {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
+    }
+
     if (eligible && ci === 'red' && classification?.kind !== 'content') {
         return {role: 'rotation', kind: 'repair-ci', ids: []}
     }
@@ -183,11 +191,6 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
 
     if (incomplete) {
         return {role: 'unknown', kind: null, ids: []}
-    }
-
-    if (ci === 'green' && approved && mergeable === 'CONFLICTING') {
-        return eligible ? {role: 'rotation', kind: 'rebase', ids: []}
-            : {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
     }
 
     // A green outside head pushed past a seat's review is that seat's Round 2; a seat's standing change request joins

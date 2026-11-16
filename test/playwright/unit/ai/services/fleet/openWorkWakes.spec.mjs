@@ -321,7 +321,7 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
         const cases = [
             [{ci: 'red'}, 'repair-ci', 'CI is red on your head'],
             [{ci: 'pending', ...judged('CHANGES_REQUESTED')}, 'address-changes', 'changes are requested on your head'],
-            [{ci: 'green', ...judged('APPROVED'), mergeable: 'CONFLICTING'}, 'rebase', 'your approved head has conflicts to rebase'],
+            [{ci: 'red', ...judged('APPROVED'), mergeable: 'CONFLICTING'}, 'rebase', 'your approved head has conflicts to rebase'],
             [{ci: 'green', requested: [GPT]}, 'review', 'your review is due on the current head'],
             [{ci: 'green'}, 'route-review', 'CI is green; request a reviewer for your head'],
             [{ci: 'green', ...judged('APPROVED'), blockedTargets: ['acme/app#9']}, 'await-prerequisite',
@@ -703,7 +703,7 @@ test.describe('openWorkWakes — outside CI evidence episodes', () => {
     test('a standing native on-head author packet suppresses classification, and approved outside rebase reaches rotation', () => {
         const run = journey();
         expect(step(run, 0, red({...judged('CHANGES_REQUESTED'), ciRepairClassification: classification('mechanical')})).wakes).toEqual([]);
-        expect(step(run, 1, red({ci: 'green', ...judged('APPROVED'), mergeable: 'CONFLICTING'})).wakes)
+        expect(step(run, 1, red({...judged('APPROVED'), mergeable: 'CONFLICTING'})).wakes)
             .toEqual([expect.objectContaining({role: 'rotation', kind: 'rebase'})]);
     });
 });
