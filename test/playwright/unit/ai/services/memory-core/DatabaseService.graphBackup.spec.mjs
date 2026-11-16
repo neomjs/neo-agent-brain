@@ -133,6 +133,107 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
         }
     });
 
+    test('the graph bundle carries the subject-binding relation through export and import (#1812)', async () => {
+        const tmpDir    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-graph-backup-binding-'));
+        const graphPath = path.join(tmpDir, 'memory-core-graph.sqlite');
+        const script    = String.raw`
+            await import('neo.mjs/src/Neo.mjs');
+            await import('neo.mjs/src/core/_export.mjs');
+            await import('neo.mjs/src/manager/Instance.mjs');
+            await import('./ai/mcp/server/memory-core/config.template.mjs');
+
+            const GraphService          = (await import('./ai/services/memory-core/GraphService.mjs')).default;
+            const MemoryDatabaseService = (await import('./ai/services/memory-core/DatabaseService.mjs')).default;
+            const binding               = await import('./ai/services/memory-core/helpers/subjectBinding.mjs');
+            const fs                    = (await import('node:fs')).default;
+            const path                  = (await import('node:path')).default;
+
+            await GraphService.ready();
+            await MemoryDatabaseService.ready();
+
+            await GraphService.db.storage.clear();
+            GraphService.db.storage.db.exec('DELETE FROM GraphLog');
+            GraphService.db.nodes.clear();
+            GraphService.db.edges.clear();
+            GraphService.db.vicinityLoadedNodes.clear();
+
+            GraphService.upsertNode({id: 'graph-backup-identity', type: 'TestNode'});
+
+            const db      = GraphService.db.storage.db;
+            const subject = {authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '1001'};
+
+            db.transaction(() => {
+                binding.bindAtFirstAdmission(db, {subject, identityId: 'graph-backup-identity', at: 10});
+                binding.activateSubjectBinding(db, {cutoverRevision: 'cut-1', at: 11});
+            })();
+
+            const nodeCount    = db.prepare('SELECT count(*) AS c FROM Nodes').get().c;
+            const exportResult = await MemoryDatabaseService.manageDatabaseBackup({
+                action    : 'export',
+                include   : ['graph'],
+                backupPath: ${JSON.stringify(tmpDir)}
+            });
+            const backupFile = path.join(${JSON.stringify(tmpDir)}, fs.readdirSync(${JSON.stringify(tmpDir)})
+                .find(file => file.startsWith('graph-backup-') && file.endsWith('.jsonl')));
+            const records    = fs.readFileSync(backupFile, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
+
+            db.exec('DROP TABLE ' + binding.SUBJECT_BINDING_TABLE + '; DROP TABLE ' + binding.SUBJECT_BINDING_ACTIVATION_TABLE + ';');
+
+            await MemoryDatabaseService.manageDatabaseBackup({action: 'import', file: backupFile, mode: 'merge'});
+
+            console.log('GRAPH_BINDING_RESULT:' + JSON.stringify({
+                activation       : binding.readSubjectBindingActivation(db),
+                activationRecords: records.filter(record => record.type === binding.SUBJECT_BINDING_ACTIVATION_RECORD).map(record => record.data),
+                bindingRecords   : records.filter(record => record.type === binding.SUBJECT_BINDING_RECORD).map(record => record.data),
+                graphStats       : exportResult.graph,
+                nodeCount,
+                recordCount      : records.length,
+                restored         : binding.readSubjectBinding(db, subject)
+            }));
+        `;
+
+        try {
+            const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+                cwd     : process.cwd(),
+                encoding: 'utf8',
+                env     : {
+                    ...process.env,
+                    NEO_MEMORY_DB_PATH_TEST: graphPath,
+                    UNIT_TEST_MODE         : 'true'
+                },
+                timeout: 30_000
+            });
+
+            expect(result.error, `${result.stderr}\n${result.stdout}`).toBeUndefined();
+            expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0);
+
+            const output = result.stdout.match(/^GRAPH_BINDING_RESULT:(.+)$/m);
+
+            expect(output, result.stdout).toBeTruthy();
+
+            const proof = JSON.parse(output[1]),
+                  bound = {
+                      authProvider    : 'github',
+                      providerBaseUrl : 'https://api.github.com',
+                      providerUserId  : '1001',
+                      identityId      : 'graph-backup-identity',
+                      writer          : 'first-admission',
+                      foundingRevision: null,
+                      boundAt         : 10
+                  };
+
+            expect(proof.bindingRecords).toEqual([bound]);
+            expect(proof.activationRecords).toEqual([{cutoverRevision: 'cut-1', activatedAt: 11}]);
+            expect(proof.recordCount).toBe(proof.nodeCount + 2);
+            expect(proof.graphStats.expected).toBe(proof.recordCount);
+            expect(proof.graphStats.exported).toBe(proof.recordCount);
+            expect(proof.restored).toEqual(bound);
+            expect(proof.activation).toEqual({cutoverRevision: 'cut-1', activatedAt: 11});
+        } finally {
+            fs.rmSync(tmpDir, {recursive: true, force: true});
+        }
+    });
+
     test('fails loud when graph rows or source counts cannot be read (#16407)', async () => {
         const tmpDir    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-graph-backup-completeness-'));
         const graphPath = path.join(tmpDir, 'memory-core-graph.sqlite');

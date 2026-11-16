@@ -241,8 +241,9 @@ test('merge fences once across batches while preserving insert, skip and failure
         }});
     expect(called).toBe(1);
     expect(receipt).toEqual({imported: 6, mode: 'merge', maxBatchSize: 2, counts: {
-        nodes: {inserted: 1, skippedExisting: 1, failed: 1},
-        edges: {inserted: 1, skippedExisting: 0, failed: 1}
+        nodes          : {inserted: 1, skippedExisting: 1, failed: 1},
+        edges          : {inserted: 1, skippedExisting: 0, failed: 1},
+        subjectBindings: {inserted: 0, skippedExisting: 0, failed: 0}
     }});
     expect(warnings).toHaveLength(2);
     expect(readIdentityPublicationFence(db, target).state).toBe('fenced');

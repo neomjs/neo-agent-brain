@@ -8,12 +8,17 @@
  * exactly and never normalized here.
  *
  * The relation lives in its own table on the graph's physical connection, outside Nodes/Edges, so no
- * graph write, edge cascade, decay or cold-storage pass reaches it. Exactly two writers exist:
+ * graph write, edge cascade, decay or cold-storage pass reaches it. Exactly two writers create a binding:
  * - {@link bindAtFirstAdmission}, Memory Core's request boundary, inside the transaction that creates
  *   the identity. It binds only an identity that transaction created.
  * - {@link bindAdministratively}, the plane-local administrative path, whose authority is host access to
  *   the data root. It records the retained founding source revision and is the only route that binds an
  *   existing identity or moves a binding to a new endpoint.
+ *
+ * Two more carry existing bindings and create none: a migration moves each binding with its renamed
+ * identity ({@link renameBoundIdentities}), and a graph bundle restore re-inserts exactly the rows the
+ * bundle's export read from this table ({@link readSubjectBindingRecords},
+ * {@link restoreSubjectBindingRecord}), under the restore's own operator admission.
  *
  * A subject binds one identity and an identity one subject. A conflicting claim refuses by name and
  * writes nothing; re-presenting a matching binding returns it without a write.
@@ -31,6 +36,18 @@ export const SUBJECT_BINDING_ACTIVATION_TABLE = 'SubjectBindingActivation';
 
 /** @type {ReadonlyArray<String>} The subject key, in key order. */
 export const SUBJECT_KEY = Object.freeze(['authProvider', 'providerBaseUrl', 'providerUserId']);
+
+/** @type {String} The graph bundle record type that carries one binding row. */
+export const SUBJECT_BINDING_RECORD = 'subject-binding';
+
+/** @type {String} The graph bundle record type that carries the activation record. */
+export const SUBJECT_BINDING_ACTIVATION_RECORD = 'subject-binding-activation';
+
+/**
+ * @type {ReadonlyArray<String>} The bundle record types only this module's export produces. Their own
+ * types, never `node`, keep their provenance: no ordinary graph row can be exported as one.
+ */
+export const SUBJECT_BINDING_RECORD_TYPES = Object.freeze([SUBJECT_BINDING_RECORD, SUBJECT_BINDING_ACTIVATION_RECORD]);
 
 const
     ROW_KEYS   = [...SUBJECT_KEY, 'identityId', 'writer', 'foundingRevision', 'boundAt'],
@@ -97,15 +114,25 @@ function hasTable(db, name) {
     return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 }
 
-/** @summary Freezes one row after checking its exact shape; a malformed row never reads as a binding. */
+/** @summary Tests a row's exact shape: the subject, the identity, a known writer with its revision rule, a time. */
+function wellFormed(row) {
+    return Boolean(row) && typeof row === 'object' &&
+        Object.keys(row).length === ROW_KEYS.length && ROW_KEYS.every(key => Object.hasOwn(row, key)) &&
+        [...SUBJECT_KEY, 'identityId'].every(key => text(row[key])) && WRITERS.includes(row.writer) &&
+        (row.writer === 'administrative' ? text(row.foundingRevision) : row.foundingRevision === null) &&
+        Number.isSafeInteger(row.boundAt);
+}
+
+/** @summary Tests the activation record's exact shape. */
+function wellFormedActivation(record) {
+    return Boolean(record) && typeof record === 'object' && Object.keys(record).length === 2 &&
+        text(record.cutoverRevision) && Number.isSafeInteger(record.activatedAt);
+}
+
+/** @summary Freezes one stored row after checking its exact shape; a malformed row never reads as a binding. */
 function freezeRow(row) {
     if (!row) return null;
-    if (Object.keys(row).length !== ROW_KEYS.length || !ROW_KEYS.every(key => Object.hasOwn(row, key)) ||
-        ![...SUBJECT_KEY, 'identityId'].every(key => text(row[key])) || !WRITERS.includes(row.writer) ||
-        (row.writer === 'administrative' ? !text(row.foundingRevision) : row.foundingRevision !== null) ||
-        !Number.isSafeInteger(row.boundAt)) {
-        throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'A stored subject binding is malformed.');
-    }
+    if (!wellFormed(row)) throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'A stored subject binding is malformed.');
     return Object.freeze({...row});
 }
 
@@ -170,10 +197,29 @@ export function readSubjectBindingActivation(db) {
         const row = db.prepare(`SELECT cutoverRevision, activatedAt FROM ${SUBJECT_BINDING_ACTIVATION_TABLE} WHERE gate = ?`)
             .get(ACTIVATION);
         if (!row) return null;
-        if (!text(row.cutoverRevision) || !Number.isSafeInteger(row.activatedAt)) {
-            throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'The activation record is malformed.');
-        }
+        if (!wellFormedActivation(row)) throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'The activation record is malformed.');
         return Object.freeze({...row});
+    });
+}
+
+/**
+ * @summary Lists the relation as graph bundle records: one per binding in identity order, then the
+ * activation record when the cutover wrote one.
+ * @param {Object} db The graph's physical SQLite connection.
+ * @returns {Object[]} `{type, data}` records; empty for a plane with no relation.
+ * @throws {Error} `SUBJECT_BINDING_UNAVAILABLE` for a malformed stored row, so a backup never drops one silently.
+ */
+export function readSubjectBindingRecords(db) {
+    return read(() => {
+        const
+            rows       = hasTable(db, SUBJECT_BINDING_TABLE)
+                ? db.prepare(`SELECT ${ROW_KEYS.join(', ')} FROM ${SUBJECT_BINDING_TABLE} ORDER BY identityId`).all()
+                : [],
+            records    = rows.map(row => ({type: SUBJECT_BINDING_RECORD, data: freezeRow(row)})),
+            activation = readSubjectBindingActivation(db);
+
+        if (activation) records.push({type: SUBJECT_BINDING_ACTIVATION_RECORD, data: activation});
+        return records;
     });
 }
 
@@ -309,6 +355,17 @@ export function renameBoundIdentities(db, rename) {
 }
 
 /**
+ * @summary Inserts the activation record unless one exists: the gate only moves forward.
+ * @returns {Boolean} Whether this call recorded it.
+ */
+function insertActivation(db, cutoverRevision, at) {
+    db.exec(SCHEMA);
+    db.exec(ACTIVATION_SCHEMA);
+    return db.prepare(`INSERT INTO ${SUBJECT_BINDING_ACTIVATION_TABLE} (gate, cutoverRevision, activatedAt) VALUES (?, ?, ?)
+        ON CONFLICT(gate) DO NOTHING`).run(ACTIVATION, cutoverRevision, at).changes === 1;
+}
+
+/**
  * @summary Records the cutover's activation, which turns selection by subject on for every leaf.
  * The cutover calls this after it has bound the legacy identities; re-recording keeps the first record.
  * @param {Object} db The graph's physical SQLite connection, already in a transaction.
@@ -321,9 +378,45 @@ export function activateSubjectBinding(db, {cutoverRevision, at = Date.now()} = 
     if (!text(cutoverRevision)) throw refusal('SUBJECT_BINDING_INVALID', 'Activation names its cutover revision.');
     if (!Number.isSafeInteger(at) || at < 0) throw refusal('SUBJECT_BINDING_INVALID', 'Activation needs its time.');
     checkTransaction(db);
-    db.exec(SCHEMA);
-    db.exec(ACTIVATION_SCHEMA);
-    db.prepare(`INSERT INTO ${SUBJECT_BINDING_ACTIVATION_TABLE} (gate, cutoverRevision, activatedAt) VALUES (?, ?, ?)
-        ON CONFLICT(gate) DO NOTHING`).run(ACTIVATION, cutoverRevision, at);
+    insertActivation(db, cutoverRevision, at);
     return readSubjectBindingActivation(db);
+}
+
+/**
+ * @summary Deletes every binding row ahead of a replace restore whose bundle carries the relation, so the
+ * restored rows are the bundle's. The activation record stays: a restore never turns selection off.
+ * @param {Object} db The graph's physical SQLite connection, already in the restore's transaction.
+ */
+export function clearSubjectBindingsForReplace(db) {
+    checkTransaction(db);
+    if (hasTable(db, SUBJECT_BINDING_TABLE)) db.prepare(`DELETE FROM ${SUBJECT_BINDING_TABLE}`).run();
+}
+
+/**
+ * @summary Restores one graph bundle record as {@link readSubjectBindingRecords} exported it. A binding
+ * identical to the stored one is skipped; one whose subject or identity is bound elsewhere refuses by name
+ * and writes nothing, so a restore never overwrites a binding. An activation record only moves the gate
+ * forward: a stored one holds.
+ * @param {Object} db The graph's physical SQLite connection, already in the restore's transaction.
+ * @param {Object} record `{type, data}` with a {@link SUBJECT_BINDING_RECORD_TYPES} type.
+ * @returns {'inserted'|'skippedExisting'}
+ * @throws {Error} `SUBJECT_BINDING_INVALID` for a malformed record; `SUBJECT_BINDING_SUBJECT_CLAIMED` or
+ * `SUBJECT_BINDING_IDENTITY_CLAIMED` for a conflict.
+ */
+export function restoreSubjectBindingRecord(db, record) {
+    checkTransaction(db);
+
+    if (record?.type === SUBJECT_BINDING_ACTIVATION_RECORD) {
+        if (!wellFormedActivation(record.data)) throw refusal('SUBJECT_BINDING_INVALID', 'A bundle activation record is malformed.');
+        return insertActivation(db, record.data.cutoverRevision, record.data.activatedAt) ? 'inserted' : 'skippedExisting';
+    }
+
+    if (record?.type !== SUBJECT_BINDING_RECORD || !wellFormed(record.data)) {
+        throw refusal('SUBJECT_BINDING_INVALID', 'A bundle subject-binding record is malformed.');
+    }
+
+    db.exec(SCHEMA);
+    if (existingClaim(db, record.data, record.data.identityId)) return 'skippedExisting';
+    insert(db, record.data);
+    return 'inserted';
 }

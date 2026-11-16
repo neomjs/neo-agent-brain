@@ -3,7 +3,10 @@ import Database       from 'better-sqlite3';
 import fs             from 'node:fs';
 import os             from 'node:os';
 import path           from 'node:path';
+import {importGraphJsonl} from '../../../../../../../ai/services/memory-core/helpers/graphJsonlImport.mjs';
 import {
+    SUBJECT_BINDING_ACTIVATION_RECORD,
+    SUBJECT_BINDING_RECORD,
     SUBJECT_BINDING_TABLE,
     activateSubjectBinding,
     bindAdministratively,
@@ -11,7 +14,9 @@ import {
     readIdentityBinding,
     readSubjectBinding,
     readSubjectBindingActivation,
-    renameBoundIdentities
+    readSubjectBindingRecords,
+    renameBoundIdentities,
+    restoreSubjectBindingRecord
 } from '../../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 
 const
@@ -21,11 +26,17 @@ const
 
 let root, db;
 
+/** @summary Opens a graph file with the Nodes/Edges populations a restore writes. */
+const openGraph = name => {
+    const graph = new Database(path.join(root, name));
+    graph.exec(`CREATE TABLE Nodes (id TEXT PRIMARY KEY, user_id TEXT, data TEXT NOT NULL);
+        CREATE TABLE Edges (id TEXT PRIMARY KEY, user_id TEXT, source TEXT, target TEXT, type TEXT, data TEXT NOT NULL);`);
+    return graph;
+};
+
 test.beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'subject-binding-'));
-    db   = new Database(path.join(root, 'graph.sqlite'));
-    db.exec(`CREATE TABLE Nodes (id TEXT PRIMARY KEY, user_id TEXT, data TEXT NOT NULL);
-        CREATE TABLE Edges (id TEXT PRIMARY KEY, user_id TEXT, source TEXT, target TEXT, type TEXT, data TEXT NOT NULL);`);
+    db   = openGraph('graph.sqlite');
 });
 
 test.afterEach(() => {
@@ -38,6 +49,20 @@ const inTransaction = fn => db.transaction(fn)();
 
 /** @summary Counts stored bindings, so a refusal can prove it wrote nothing. */
 const count = () => db.prepare(`SELECT COUNT(*) AS n FROM ${SUBJECT_BINDING_TABLE}`).get().n;
+
+/** @summary A binding row as a bundle carries it. */
+const row = (subject, identityId, boundAt = 10) => ({...subject, identityId, writer: 'first-admission', foundingRevision: null, boundAt});
+
+/** @summary Writes records as a graph bundle file and returns its path. */
+const bundle = records => {
+    const file = path.join(root, `bundle-${fs.readdirSync(root).length}.jsonl`);
+    fs.writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+    return file;
+};
+
+/** @summary Restores a bundle through the graph importer with a no-op fence, as disposable staging does. */
+const restore = (filePath, mode, warnings = []) =>
+    importGraphJsonl({db, filePath, mode, beforeMutation: () => {}, warn: message => warnings.push(message)});
 
 test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
     test('a plane with no relation reads every subject and identity as unbound, and selection as dormant', () => {
@@ -200,5 +225,104 @@ test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
         db.prepare(`UPDATE ${SUBJECT_BINDING_TABLE} SET foundingRevision = 'forged'`).run();
 
         expect(() => readSubjectBinding(db, S)).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_UNAVAILABLE'}));
+        expect(() => readSubjectBindingRecords(db)).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_UNAVAILABLE'}));
+    });
+
+    test.describe('a graph bundle carries the relation', () => {
+        test('the relation exports as its own records: every binding, then the activation', () => {
+            expect(readSubjectBindingRecords(db)).toEqual([]);
+
+            inTransaction(() => {
+                bindAtFirstAdmission(db, {subject: S, identityId: '@ada', at: 10});
+                bindAdministratively(db, {subject: T, identityId: '@grace', foundingRevision: 'rev-1', at: 11});
+                activateSubjectBinding(db, {cutoverRevision: 'cut-1', at: 12});
+            });
+
+            expect(readSubjectBindingRecords(db)).toEqual([
+                {type: SUBJECT_BINDING_RECORD, data: row(S, '@ada')},
+                {type: SUBJECT_BINDING_RECORD, data: {...T, identityId: '@grace', writer: 'administrative', foundingRevision: 'rev-1', boundAt: 11}},
+                {type: SUBJECT_BINDING_ACTIVATION_RECORD, data: {cutoverRevision: 'cut-1', activatedAt: 12}}
+            ]);
+        });
+
+        test('a round trip into a fresh graph keeps every binding and the activation', async () => {
+            inTransaction(() => {
+                bindAtFirstAdmission(db, {subject: S, identityId: '@ada', at: 10});
+                activateSubjectBinding(db, {cutoverRevision: 'cut-1', at: 12});
+            });
+
+            const file = bundle([{type: 'node', data: {id: '@ada'}}, ...readSubjectBindingRecords(db)]);
+
+            db.close();
+            db = openGraph('fresh.sqlite');
+
+            const {counts} = await restore(file, 'replace');
+
+            expect(counts.subjectBindings).toEqual({inserted: 2, skippedExisting: 0, failed: 0});
+            expect(readSubjectBinding(db, S)).toEqual(row(S, '@ada'));
+            expect(readSubjectBindingActivation(db)).toEqual({cutoverRevision: 'cut-1', activatedAt: 12});
+        });
+
+        test('replace keeps the target relation when the bundle carries none, as an older bundle does', async () => {
+            inTransaction(() => bindAtFirstAdmission(db, {subject: S, identityId: '@ada', at: 10}));
+
+            const {counts} = await restore(bundle([{type: 'node', data: {id: '@ada'}}]), 'replace');
+
+            expect(counts.subjectBindings).toEqual({inserted: 0, skippedExisting: 0, failed: 0});
+            expect(readSubjectBinding(db, S).identityId).toBe('@ada');
+        });
+
+        test('replace swaps the binding rows for the bundle\'s, and the activation only ever moves forward', async () => {
+            inTransaction(() => {
+                bindAtFirstAdmission(db, {subject: S, identityId: '@ada', at: 10});
+                activateSubjectBinding(db, {cutoverRevision: 'cut-1', at: 12});
+            });
+
+            await restore(bundle([
+                {type: SUBJECT_BINDING_RECORD, data: row(T, '@grace', 20)},
+                {type: SUBJECT_BINDING_ACTIVATION_RECORD, data: {cutoverRevision: 'cut-0', activatedAt: 5}}
+            ]), 'replace');
+
+            expect(readSubjectBinding(db, S)).toBeNull();
+            expect(readSubjectBinding(db, T)).toEqual(row(T, '@grace', 20));
+            expect(readSubjectBindingActivation(db)).toEqual({cutoverRevision: 'cut-1', activatedAt: 12});
+        });
+
+        test('merge never overwrites a binding: a conflict fails by name, an identical row is skipped', async () => {
+            const warnings = [];
+
+            inTransaction(() => bindAtFirstAdmission(db, {subject: S, identityId: '@ada', at: 10}));
+
+            const {counts} = await restore(bundle([
+                {type: SUBJECT_BINDING_RECORD, data: row(S, '@ada', 10)},
+                {type: SUBJECT_BINDING_RECORD, data: row(S, '@mallory', 11)},
+                {type: SUBJECT_BINDING_RECORD, data: row(T, '@ada', 12)},
+                {type: SUBJECT_BINDING_RECORD, data: row(T, '@grace', 13)}
+            ]), 'merge', warnings);
+
+            expect(counts.subjectBindings).toEqual({inserted: 1, skippedExisting: 1, failed: 2});
+            expect(readSubjectBinding(db, S).identityId).toBe('@ada');
+            expect(readSubjectBinding(db, T).identityId).toBe('@grace');
+            expect(readIdentityBinding(db, '@mallory')).toBeNull();
+            expect(warnings).toHaveLength(2);
+            expect(warnings.every(warning => warning.includes('@ada'))).toBe(true);
+        });
+
+        test('a malformed record never becomes a binding or an activation', async () => {
+            expect(() => restoreSubjectBindingRecord(db, {type: SUBJECT_BINDING_RECORD, data: row(S, '@ada')}))
+                .toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_TRANSACTION_REQUIRED'}));
+
+            const {counts} = await restore(bundle([
+                {type: SUBJECT_BINDING_RECORD, data: {...row(S, '@ada'), foundingRevision: 'forged'}},
+                {type: SUBJECT_BINDING_RECORD, data: {...row(S, '@ada'), writer: 'tool-payload'}},
+                {type: SUBJECT_BINDING_RECORD, data: {...row(S, '@ada'), extra: true}},
+                {type: SUBJECT_BINDING_RECORD, data: {authProvider: 'github', identityId: '@ada', writer: 'first-admission', foundingRevision: null, boundAt: 10}},
+                {type: SUBJECT_BINDING_ACTIVATION_RECORD, data: {cutoverRevision: '', activatedAt: 10}}
+            ]), 'merge');
+
+            expect(counts.subjectBindings).toEqual({inserted: 0, skippedExisting: 0, failed: 5});
+            expect(readSubjectBinding(db, S)).toBeNull();
+            expect(readSubjectBindingActivation(db)).toBeNull();
+        });
     });
 });
