@@ -273,6 +273,42 @@ export function bindAdministratively(db, {subject, identityId, foundingRevision,
 }
 
 /**
+ * @summary Carries every binding across a migration that renames identity ids: each binding follows its
+ * identity to the id the migration gives it. A rename that would leave two subjects on one identity
+ * refuses, so the caller's transaction rolls the whole migration back.
+ * @param {Object} db The graph's physical SQLite connection, already in the migration's transaction.
+ * @param {Function} rename Maps an identity id to its id after the migration; unchanged ids map to themselves.
+ * @returns {Number} The number of bindings that moved.
+ * @throws {Error} `SUBJECT_BINDING_IDENTITY_CLAIMED` for a merge of two bound identities.
+ */
+export function renameBoundIdentities(db, rename) {
+    checkTransaction(db);
+    if (!hasTable(db, SUBJECT_BINDING_TABLE)) return 0;
+
+    const
+        rows     = db.prepare(`SELECT ${ROW_KEYS.join(', ')} FROM ${SUBJECT_BINDING_TABLE}`).all().map(freezeRow),
+        targetOf = new Map(rows.map(row => [row.identityId, rename(row.identityId)])),
+        moves    = [...targetOf].filter(([from, to]) => from !== to),
+        claimed  = new Set();
+
+    for (const [, to] of targetOf) {
+        if (!text(to)) throw refusal('SUBJECT_BINDING_INVALID', 'A renamed identity needs a valid id.');
+        if (claimed.has(to)) {
+            throw refusal('SUBJECT_BINDING_IDENTITY_CLAIMED',
+                `${to} would bind two subjects after this rename; the migration stops and nothing changes.`, {identityId: to});
+        }
+        claimed.add(to);
+    }
+
+    // Two passes, so a swap or a chain never meets the uniqueness constraint halfway.
+    const update = db.prepare(`UPDATE ${SUBJECT_BINDING_TABLE} SET identityId = ? WHERE identityId = ?`);
+    moves.forEach(([from], index) => update.run(`renaming:${index}`, from));
+    moves.forEach(([, to], index) => update.run(to, `renaming:${index}`));
+
+    return moves.length;
+}
+
+/**
  * @summary Records the cutover's activation, which turns selection by subject on for every leaf.
  * The cutover calls this after it has bound the legacy identities; re-recording keeps the first record.
  * @param {Object} db The graph's physical SQLite connection, already in a transaction.

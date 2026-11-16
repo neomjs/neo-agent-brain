@@ -23,6 +23,7 @@
 import {normalizeAgentIdentityNodeId}                                             from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {isEntryModule}                                                            from '../../services/shared/isEntryModule.mjs';
 import {readIdentityPublicationPreservation, runWithIdentityPublicationPreserved} from '../../graph/identityPublicationProtection.mjs';
+import {renameBoundIdentities}                                                    from '../../services/memory-core/helpers/subjectBinding.mjs';
 
 export const MAILBOX_IDENTITY_EDGE_TYPES = new Set(['DELIVERED_TO', 'SENT_BY', 'SENT_TO']);
 export const PERMISSION_IDENTITY_EDGE_TYPES = new Set([
@@ -251,12 +252,12 @@ function buildCanonicalStoragePlan(db, protection) {
     }
 
     const plannedEdges = edgeRows.map(row => {
-        const data       = parseGraphData(row.data, row.id);
+        const data = parseGraphData(row.data, row.id);
         if (protection.isProtectedEdge(row.id)) {
             return {...row, data, nextSource: row.source, nextTarget: row.target};
         }
         let   nextSource = aliasMap.get(row.source) || row.source,
-            nextTarget = aliasMap.get(row.target) || row.target;
+            nextTarget   = aliasMap.get(row.target) || row.target;
 
         if (MAILBOX_IDENTITY_EDGE_TYPES.has(row.type)) {
             // Current MailboxService contract: MESSAGE is the source; identity is the target.
@@ -433,6 +434,8 @@ function executeCanonicalStorageMigration(db, apply, protection) {
         throw new Error(`Canonical identity migration blocked: ${plan.blockers.join(', ')}`);
     }
 
+    let subjectBindingsMoved = 0;
+
     if (apply) {
         for (const edge of plan.edgeDeletes) {
             db.prepare('DELETE FROM Edges WHERE id = ?').run(edge.id);
@@ -447,6 +450,10 @@ function executeCanonicalStorageMigration(db, apply, protection) {
         for (const [alias] of plan.aliasNodes) {
             db.prepare('DELETE FROM Nodes WHERE id = ?').run(alias);
         }
+
+        // A binding on an alias follows it to the canonical id; a merge of two bound identities aborts the run.
+        const canonicalOf = new Map(plan.aliasNodes);
+        subjectBindingsMoved = renameBoundIdentities(db, id => canonicalOf.get(id) ?? id);
     }
 
     const after = apply ? auditCanonicalStorage(db) : before,
@@ -463,6 +470,7 @@ function executeCanonicalStorageMigration(db, apply, protection) {
         edgesUpdated       : plan.edgeUpdates.length,
         messageNodesUpdated: plan.messageNodeUpdates.length,
         skipped            : plan.skipped,
+        subjectBindingsMoved,
         before,
         after
     };

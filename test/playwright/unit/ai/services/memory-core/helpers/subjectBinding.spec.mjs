@@ -10,7 +10,8 @@ import {
     bindAtFirstAdmission,
     readIdentityBinding,
     readSubjectBinding,
-    readSubjectBindingActivation
+    readSubjectBindingActivation,
+    renameBoundIdentities
 } from '../../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 
 const
@@ -159,6 +160,39 @@ test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
         db.exec('DELETE FROM Nodes; DELETE FROM Edges;');
 
         expect(readSubjectBinding(db, S).identityId).toBe('@ada');
+    });
+
+    test('an identity rename carries each binding to its new id, and a swap passes', () => {
+        const U = {...S, providerUserId: '3003'};
+
+        expect(inTransaction(() => renameBoundIdentities(db, id => id))).toBe(0);
+
+        inTransaction(() => {
+            bindAtFirstAdmission(db, {subject: S, identityId: '@a', at: 10});
+            bindAtFirstAdmission(db, {subject: T, identityId: '@b', at: 10});
+            bindAtFirstAdmission(db, {subject: U, identityId: '@c', at: 10});
+        });
+
+        const swap  = {'@a': '@b', '@b': '@a'},
+              moved = inTransaction(() => renameBoundIdentities(db, id => swap[id] ?? id));
+
+        expect(moved).toBe(2);
+        expect(readSubjectBinding(db, S).identityId).toBe('@b');
+        expect(readSubjectBinding(db, T).identityId).toBe('@a');
+        expect(readSubjectBinding(db, U).identityId).toBe('@c');
+        expect(() => renameBoundIdentities(db, id => id)).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_TRANSACTION_REQUIRED'}));
+    });
+
+    test('a rename that merges two bound identities refuses, and the migration changes nothing', () => {
+        inTransaction(() => {
+            bindAtFirstAdmission(db, {subject: S, identityId: '@a', at: 10});
+            bindAtFirstAdmission(db, {subject: T, identityId: '@b', at: 10});
+        });
+
+        expect(() => inTransaction(() => renameBoundIdentities(db, id => id === '@a' ? '@b' : id)))
+            .toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_IDENTITY_CLAIMED', identityId: '@b'}));
+        expect(readSubjectBinding(db, S).identityId).toBe('@a');
+        expect(readSubjectBinding(db, T).identityId).toBe('@b');
     });
 
     test('a malformed stored row reads as unavailable, never as a binding', () => {
