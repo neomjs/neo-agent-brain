@@ -9,6 +9,7 @@ import Base                                                                     
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}                                     from '../../../src/fleet/contract/mcpServers.mjs';
 import {listHarnessTypes, resolveHarnessSeatSettings}                                     from '../../../src/fleet/contract/harnessTypes.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}                           from './mcpServers.mjs';
+import {normalizeExpectedPlaneTarget}                                                     from './mcpWireParsing.mjs';
 import {OPERATOR_PRESENCE_PATH_ENV_VAR, operatorPresenceRecordPath}                       from './operatorPresenceRecord.mjs';
 import {deriveAgentInstanceHome}                                                          from './deriveAgentInstanceHome.mjs';
 import {toBareIdentity}                                                                   from '../../daemons/wake/armSeatWakeRoute.mjs';
@@ -436,7 +437,7 @@ function runsSeatLaunch(command, {launchCommand, launchInterpreter, profileArg})
  * **Child env (minimal by construction):** the child receives ONLY the `AMBIENT_ENV_ALLOWLIST`
  * process-runtime vars — never a full parent-env copy, so ambient operator secrets cannot leak into
  * a peer — plus the launch spec's own env (its isolation home var), plus the reserved injections.
- * A `launch.env` key naming a reserved slot (`credentialEnvVar`, `NEO_MCP_REMOTE_TOKEN`, `NEO_SEAT_PLANE_BASE`,
+ * A `launch.env` key naming a reserved slot (`credentialEnvVar`, `NEO_MCP_REMOTE_TOKEN`, `NEO_SEAT_PLANE_BASE`, `NEO_SEAT_PLANE_TARGET`,
  * `NEO_OPERATOR_PRESENCE_PATH`, `bridgeTokenEnvVar`, `NEO_NL_TOOL_PROJECTION_MODE`, `NEO_AGENT_IDENTITY`, the GitLab seat slots, the four
  * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identity slots) or a prototype-mutating key
  * (`__proto__` / `constructor` / `prototype`) is rejected fail-fast, naming the offending key.
@@ -885,6 +886,8 @@ class FleetLifecycleService extends Base {
      * @param {String|null} [opts.resolvedMcpCredential] Already-probed remote MC/KB plane credential.
      * @param {String|null} [opts.resolvedMcpEndpoint] The plane that credential was proven against;
      *     injected only with it.
+     * @param {Object} [opts.resolvedMcpTarget] Retained `{planeId, dataRoot}` target, serialized only alongside
+     *     the plane endpoint and credential. Omission supplies no inferred target.
      * @param {Object} [opts.remoteMcpCapability] Exact capability proof returned by
      *     {@link assertRemoteMcpCapability}; binds the curated launch to the same resolved binary
      *     snapshot instead of re-reading a mutable AiConfig path after preparation.
@@ -975,6 +978,12 @@ class FleetLifecycleService extends Base {
         const agent = this.getRegistry().getDefinition(id);
         if (!agent) throw new Error(`FleetLifecycleService.start: unknown agent '${id}'.`);
 
+        const resolvedMcpTarget = Object.hasOwn(opts, 'resolvedMcpTarget')
+            ? normalizeExpectedPlaneTarget(opts.resolvedMcpTarget) : null;
+        if (Object.hasOwn(opts, 'resolvedMcpTarget') && !resolvedMcpTarget) {
+            throw new Error('FleetLifecycleService.start: invalid resolved MCP plane target.')
+        }
+
         // A Start that brings no capability proof (no repository, or no remote MCP) launches an opted-in family's
         // selected generation all the same, and refuses with the family when it holds none.
         const generation = opts.remoteMcpCapability === undefined && !agent.metadata?.launch && this.selectedHarnessGeneration(agent.harnessType);
@@ -1041,6 +1050,7 @@ class FleetLifecycleService extends Base {
             this.credentialEnvVar,
             REMOTE_MCP_CREDENTIAL_ENV_VAR,
             SEAT_PLANE_BASE_ENV_VAR,
+            'NEO_SEAT_PLANE_TARGET',
             OPERATOR_PRESENCE_PATH_ENV_VAR,
             this.bridgeTokenEnvVar,
             TOOL_PROJECTION_MODE_ENV_VAR,
@@ -1049,7 +1059,7 @@ class FleetLifecycleService extends Base {
             ...GIT_IDENTITY_ENV
         ];
         if (envKeys.some(key => !key) || new Set(envKeys).size !== envKeys.length) {
-            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential, seat plane-base and operator-presence slots, bridgeTokenEnvVar, the NL-policy var, the agent-identity var, the GitLab seat slots and the Git identity slots must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
+            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential, seat plane-base/target and operator-presence slots, bridgeTokenEnvVar, the NL-policy var, the agent-identity var, the GitLab seat slots and the Git identity slots must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
         }
 
         // The launch env may not name a reserved slot: allowing it would either let registry-authored
@@ -1184,7 +1194,10 @@ class FleetLifecycleService extends Base {
             : null;
         if (remoteMcpCredential != null) {
             env[REMOTE_MCP_CREDENTIAL_ENV_VAR] = remoteMcpCredential;
-            if (opts.resolvedMcpEndpoint) env[SEAT_PLANE_BASE_ENV_VAR] = opts.resolvedMcpEndpoint
+            if (opts.resolvedMcpEndpoint) {
+                env[SEAT_PLANE_BASE_ENV_VAR] = opts.resolvedMcpEndpoint;
+                if (resolvedMcpTarget) env.NEO_SEAT_PLANE_TARGET = JSON.stringify(resolvedMcpTarget)
+            }
         }
 
         // The Fleet's host record of the operator's presence: the seat's Stop hook reads it with one local file
@@ -1791,15 +1804,15 @@ class FleetLifecycleService extends Base {
 
         return {
             id,
-            state            : record.state,
-            running          : record.state === 'running',
-            adopted          : Boolean(record.adopted),
-            pid              : record.pid,
-            startedAt        : record.startedAt,
-            uptimeMs         : record.state === 'running' && record.startedAt ? Date.now() - Date.parse(record.startedAt) : null,
-            exitCode         : record.exitCode,
-            exitedAt         : record.exitedAt,
-            stderrBytes      : record.stderrBytes ?? 0,
+            state      : record.state,
+            running    : record.state === 'running',
+            adopted    : Boolean(record.adopted),
+            pid        : record.pid,
+            startedAt  : record.startedAt,
+            uptimeMs   : record.state === 'running' && record.startedAt ? Date.now() - Date.parse(record.startedAt) : null,
+            exitCode   : record.exitCode,
+            exitedAt   : record.exitedAt,
+            stderrBytes: record.stderrBytes ?? 0,
             // A recorded auth failure outranks the marker, which proves a credential exists, not that it works.
             authRequired     : this.authRequiredFromListener(record.runtimeStart?.identity) || this.authRequiredForHome(record.harnessType, record.authHome),
             instanceHome     : record.instanceHome ?? null,

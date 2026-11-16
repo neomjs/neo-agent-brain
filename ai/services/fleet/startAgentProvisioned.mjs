@@ -8,6 +8,7 @@ import {createSeatPatOwner, createSeatPlaneOwner, createTenantBearerOwner, serve
 import {launchRefusalOf}                      from '../../../src/fleet/contract/launchAuthority.mjs';
 import {prepareManagedAgentWorkspace}         from './prepareManagedAgentWorkspace.mjs';
 import {resolveSeatPlaneTarget}               from './resolveSeatPlaneTarget.mjs';
+import {normalizeExpectedPlaneTarget}         from './mcpWireParsing.mjs';
 import {importSeatMemory, MEMORY_IMPORT_NONE} from './seatMemoryImport.mjs';
 import {
     convergeSeatGitIdentity,
@@ -139,7 +140,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * credential. On the default plane, a start binds the seat PAT already held by the registry only when
  * no plane binding exists; `FleetTenantService` proves the seat identity and served plane before it
  * stores that PAT encrypted. A start that proceeds to provisioning re-reads and re-proves the binding
- * before checkout; wake arming re-proves it before subscription. A seat that cannot get there refuses to
+ * before checkout and carries its target to the child. A tenant can capture its authenticated bootstrap
+ * target; unavailable optional plane proof leaves that target absent. Wake arming re-proves its binding
+ * before subscription. A seat that cannot get there refuses to
  * start and says why: no managed repo to render the remote servers into, a harness with no remote Memory
  * Core, a failed identity/plane proof, or failed persistence. A private per-seat store is no fallback.
  * Only a Fleet that serves no plane keeps the per-seat servers.
@@ -537,6 +540,7 @@ async function provisionAgent({
     let
         remotePlan                   = null,
         resolvedMcpCredential,
+        resolvedMcpTarget,
         remoteCapability             = antigravityStartContext?.capability ?? null,
         planeOwner                   = null;
 
@@ -562,13 +566,22 @@ async function provisionAgent({
         });
         startSignal.throwIfAborted();
 
-        const expectedIdentity = expectedAgentIdentity(agent);
-        const readiness        = await activeTenantService.probeSeatCredential({
+        const expectedIdentity = expectedAgentIdentity(agent),
+              requirePlane     = installedRuntime && desktopRows;
+        const probeArgs = {
             tenantId  : target.tenantId,
             credential: resolvedMcpCredential,
-            expectedIdentity,
-            ...(installedRuntime && desktopRows ? {servedPlane: true} : {})
-        });
+            expectedIdentity
+        };
+        let readiness = await activeTenantService.probeSeatCredential({...probeArgs, servedPlane: true});
+        startSignal.throwIfAborted();
+
+        const provenPlane = tenantProvesSeat(readiness, expectedIdentity) ? servedPlaneBinding(readiness) : null;
+
+        // Optional plane reads can fail after ordinary readiness; a second ordinary proof carries no target.
+        if (!requirePlane && !tenantProvesSeat(readiness, expectedIdentity)) {
+            readiness = await activeTenantService.probeSeatCredential(probeArgs)
+        }
         startSignal.throwIfAborted();
 
         if (!tenantProvesSeat(readiness, expectedIdentity)) {
@@ -579,8 +592,8 @@ async function provisionAgent({
             )
         }
 
-        const provenPlane = servedPlaneBinding(readiness);
-        if (installedRuntime && desktopRows && !provenPlane) throw new Error('startAgentProvisioned: the tenant did not prove one original plane for runtime recovery.');
+        if (requirePlane && !provenPlane) throw new Error('startAgentProvisioned: the tenant did not prove one original plane for runtime recovery.');
+        if (provenPlane) resolvedMcpTarget = normalizeExpectedPlaneTarget({planeId: provenPlane.id, dataRoot: provenPlane.dataRoot});
         if (desktopRows) planeOwner = createTenantBearerOwner({tenantService: activeTenantService, agentId, tenantId: target.tenantId,
             endpoint: remotePlan.endpoint, expectedIdentity, provenPlane});
     } else if (placement?.kind === 'plane') {
@@ -648,6 +661,9 @@ async function provisionAgent({
 
         // proved against the plane this Start met, so a binding moved to another plane does not carry over
         const provenPlane = stored.plane;
+        resolvedMcpTarget = normalizeExpectedPlaneTarget({planeId: provenPlane.id, dataRoot: provenPlane.dataRoot});
+
+        if (!resolvedMcpTarget) throw new Error('startAgentProvisioned: invalid stored MCP plane target.');
 
         if (desktopRows) planeOwner = createSeatPlaneOwner({tenantService: activeTenantService, agentId,
             planeBase: placement.endpoint, expectedIdentity, provenPlane});
@@ -904,6 +920,7 @@ async function provisionAgent({
                 ...(remote
                     ? {resolvedMcpCredential, resolvedMcpEndpoint: remotePlan.endpoint, remoteMcpCapability: remoteCapability}
                     : antigravityStartContext ? {remoteMcpCapability: remoteCapability} : {}),
+                ...(resolvedMcpTarget ? {resolvedMcpTarget} : {}),
                 ...(antigravityStartContext ? {resolvedProcessEnvironment: antigravityStartContext.processEnvironment} : {}),
                 ...(bindProjectCallback ? {bindAntigravityProject: bindProjectCallback} : {}),
                 ...(reservation ? {launchAdmission: {

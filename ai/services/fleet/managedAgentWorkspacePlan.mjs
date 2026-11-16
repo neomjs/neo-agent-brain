@@ -67,11 +67,14 @@ export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
         seatEnv           : Object.freeze(['NEO_FLEET_BRIDGE_TOKEN'])
     }),
     'github-workflow': Object.freeze({
-        entrypoint        : 'ai/mcp/server/github-workflow/mcp-server.mjs',
-        runtimeEnv        : Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY']),
+        entrypoint: 'ai/mcp/server/github-workflow/mcp-server.mjs',
+        runtimeEnv: Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY',
+            REMOTE_MCP_CREDENTIAL_ENV_VAR, 'NEO_SEAT_PLANE_BASE', 'NEO_SEAT_PLANE_TARGET']),
+        previousRuntimeEnv: Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY']),
         requiredRuntimeEnv: Object.freeze(['GH_TOKEN', 'NEO_AGENT_IDENTITY']),
         secretEnv         : Object.freeze(['GH_TOKEN']),
-        seatEnv           : Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN'])
+        seatEnv           : Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN',
+            REMOTE_MCP_CREDENTIAL_ENV_VAR, 'NEO_SEAT_PLANE_BASE', 'NEO_SEAT_PLANE_TARGET'])
     }),
     'gitlab-workflow': Object.freeze({
         entrypoint        : 'ai/mcp/server/gitlab-workflow/mcp-server.mjs',

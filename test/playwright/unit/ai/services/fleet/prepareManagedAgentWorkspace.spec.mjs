@@ -1307,7 +1307,11 @@ test.describe('prepareManagedAgentWorkspace', () => {
                   configPath = path.join(first.targetRepoRoot, '.codex/config.toml');
 
             expect(tomlMcpTable(await read(configPath), 'neo-mjs-neural-link')).toBe('');
-            await fs.writeFile(configPath, await read(configPath) + resident);
+            let prior = await read(configPath);
+            for (const name of ['NEO_MCP_REMOTE_TOKEN', 'NEO_SEAT_PLANE_BASE', 'NEO_SEAT_PLANE_TARGET']) {
+                prior = prior.replace(`"${name}",`, '')
+            }
+            await fs.writeFile(configPath, prior + resident);
             await fs.rm(path.join(root, 'Neo Harness.app'), {recursive: true});
 
             const moved  = await prepareManagedAgentWorkspace(launched(generation)),
@@ -1317,6 +1321,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             expect(result).not.toContain(bundled.agentosRuntimeRoot);
             expect(result).toContain(generation.nodePath);
             expect(tomlMcpTable(result, 'neo-mjs-neural-link')).toBe('');
+            expect(tomlMcpTable(result, 'neo-mjs-github-workflow')).toContain('NEO_SEAT_PLANE_TARGET');
             expect(result).toContain(resident);
         });
 
@@ -1340,6 +1345,38 @@ test.describe('prepareManagedAgentWorkspace', () => {
                 expect(await read(configPath)).toContain(resident);
 
                 await fs.rm(first.targetRepoRoot, {recursive: true})
+            }
+        });
+
+        test('independent prior GitHub and Neural Link vocabularies upgrade across receipts and packaged runtime moves', async () => {
+            const bundled    = await packagedRuntime('Neo Harness.app'),
+                  generation = await packagedRuntime('runtime/gen-b/host.runtime'),
+                  planeNames = ['NEO_MCP_REMOTE_TOKEN', 'NEO_SEAT_PLANE_BASE', 'NEO_SEAT_PLANE_TARGET'];
+
+            for (const [from, to] of [[generation, generation], [bundled, generation]]) {
+                for (const prior of [['github-workflow'], ['neural-link'], ['github-workflow', 'neural-link']]) {
+                    for (const missingReceipt of [false, true]) {
+                        const first       = await prepareManagedAgentWorkspace(startFrom(from)),
+                              configPath  = path.join(first.targetRepoRoot, '.codex/config.toml'),
+                              receiptPath = path.join(first.instanceHome, '.neo-fleet-mcp-project.json'),
+                              current     = await read(configPath);
+                        for (const name of planeNames) expect(tomlMcpTable(current, 'neo-mjs-github-workflow')).toContain(name);
+                        let previous = current;
+                        if (prior.includes('github-workflow')) for (const name of planeNames) previous = previous.replace(`"${name}",`, '');
+                        if (prior.includes('neural-link')) previous = previous.replace('"NEO_NL_PORT",', '');
+                        await fs.writeFile(configPath, previous + resident);
+                        if (missingReceipt) await fs.unlink(receiptPath);
+
+                        const upgraded = await prepareManagedAgentWorkspace(startFrom(to)), restored = await read(configPath);
+                        expect(upgraded.artifacts.find(item => item.path === configPath).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+                        for (const name of planeNames) expect(tomlMcpTable(restored, 'neo-mjs-github-workflow')).toContain(name);
+                        expect(tomlMcpTable(restored, 'neo-mjs-neural-link')).toContain('NEO_NL_PORT');
+                        expect(restored).toContain(resident);
+                        expect(restored).toContain(to.nodePath);
+                        expect(JSON.parse(await read(receiptPath)).sha256).toMatch(/^[a-f0-9]{64}$/);
+                        await fs.rm(first.targetRepoRoot, {recursive: true})
+                    }
+                }
             }
         });
 
@@ -2252,6 +2289,40 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect(config.mcpServers['neo-mjs-github-workflow'].env.GH_TOKEN).toBe('${GH_TOKEN}');
         expect(raw).not.toContain('secret-token-value');
         await expect(fs.stat(path.join(opts.targetRepoRoot, '.mcp.json'))).rejects.toMatchObject({code: 'ENOENT'});
+    });
+
+    test('Claude Code recognizes independent prior GitHub and Neural Link vocabularies without accepting operator edits', async () => {
+        const planeNames = ['NEO_MCP_REMOTE_TOKEN', 'NEO_SEAT_PLANE_BASE', 'NEO_SEAT_PLANE_TARGET'];
+        let   sequence   = 0;
+        for (const prior of [['github-workflow'], ['neural-link'], ['github-workflow', 'neural-link']]) {
+            for (const missingReceipt of [false, true]) {
+                const opts        = options(makeAgent('claude-code', {id: `prior-${++sequence}`})),
+                      first       = await prepareManagedAgentWorkspace(opts),
+                      configPath  = path.join(first.instanceHome, 'mcp-config.json'),
+                      receiptPath = path.join(first.instanceHome, '.neo-fleet-mcp-project.json'),
+                      previous    = JSON.parse(await read(configPath));
+                for (const name of planeNames) expect(previous.mcpServers['neo-mjs-github-workflow'].env[name]).toBe(`\${${name}:-}`);
+                if (prior.includes('github-workflow')) for (const name of planeNames) delete previous.mcpServers['neo-mjs-github-workflow'].env[name];
+                if (prior.includes('neural-link')) delete previous.mcpServers['neo-mjs-neural-link'].env.NEO_NL_PORT;
+                previous.residentSetting = 'keep';
+                previous.mcpServers.foreign = {command: '/resident/keep'};
+                await fs.writeFile(configPath, JSON.stringify(previous));
+                if (missingReceipt) await fs.unlink(receiptPath);
+
+                const upgraded = await prepareManagedAgentWorkspace(opts), restored = JSON.parse(await read(configPath));
+                expect(upgraded.artifacts.find(item => item.path === configPath).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+                for (const name of planeNames) expect(restored.mcpServers['neo-mjs-github-workflow'].env[name]).toBe(`\${${name}:-}`);
+                expect(restored.mcpServers['neo-mjs-neural-link'].env.NEO_NL_PORT).toBe('${NEO_NL_PORT:-}');
+                expect(restored).toMatchObject({residentSetting: 'keep', mcpServers: {foreign: {command: '/resident/keep'}}});
+                expect(JSON.parse(await read(receiptPath)).sha256).toMatch(/^[a-f0-9]{64}$/);
+
+                restored.mcpServers['neo-mjs-github-workflow'].command = '/operator-edited';
+                const edited = JSON.stringify(restored);
+                await fs.writeFile(configPath, edited);
+                await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+                expect(await read(configPath)).toBe(edited)
+            }
+        }
     });
 
     test('Claude Desktop: default profile includes Neural Link without persisting its optional Bridge token', async () => {

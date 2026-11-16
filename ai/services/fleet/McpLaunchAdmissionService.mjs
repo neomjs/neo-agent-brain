@@ -12,6 +12,7 @@ import {
 }                                 from '../../../src/fleet/contract/launchAdmission.mjs';
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}                                        from '../../../src/fleet/contract/mcpServers.mjs';
 import {launchRowEnvNames}                                                                   from './managedAgentWorkspacePlan.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                                                       from './mcpServers.mjs';
 import {isAdmissionSnapshot, openLaunchAdmissionJournal, RUNTIME_REFERENCE_SNAPSHOT_VERSION} from './launchAdmissionJournal.mjs';
 import {runtimeGenerationPin}                                                                from './runtimeGeneration.mjs';
 import {assertRuntimeGenerationReferences}                                                   from './runtimeGenerationLease.mjs';
@@ -31,7 +32,8 @@ import {
 }                                 from './mcpLaunchAdmission.mjs';
 
 // What a tenant row's launcher starts: the stdio bridge to the row's remote URL.
-const BRIDGE_ENTRYPOINT = 'ai/mcp/client/stdioToStreamableHttp.mjs';
+const BRIDGE_ENTRYPOINT   = 'ai/mcp/client/stdioToStreamableHttp.mjs';
+const PLANE_READER_INPUTS = new Set(['NEO_SEAT_PLANE_BASE', 'NEO_SEAT_PLANE_TARGET']);
 
 /**
  * @class Neo.ai.services.fleet.McpLaunchAdmissionService
@@ -68,7 +70,8 @@ const BRIDGE_ENTRYPOINT = 'ai/mcp/client/stdioToStreamableHttp.mjs';
  * selected, proves that value, and hands over exactly the proved bytes. A missing or unproved value
  * refuses the child and never falls back to another credential class, so a changed registry PAT never
  * stands in for a plane credential. Packaged generations renew Bridge tokens under the original signer
- * and read resident inputs from their original config owners. Unclassified Start-held values cannot be
+ * and read resident inputs from their original config owners. The family reader's endpoint and target
+ * come from its original plane credential binding; other unclassified Start-held values cannot be
  * recovered. No new credential is persisted.
  *
  * **Audit.** Each redemption whose proof holds is recorded against its seat, server and generation. A
@@ -367,19 +370,25 @@ class McpLaunchAdmissionService extends Base {
             const capability = capabilities[row.key], grant = parseLaunchCapability(capability), expected = start.profile.grants[row.key];
             if (!grant || grant.id !== row.grantId || expected.id !== row.grantId || expected.sha256 !== row.capabilityHash ||
                 crypto.createHash('sha256').update(capability).digest('hex') !== row.capabilityHash) throw new Error(`capability changed: ${row.key}`);
-            const target = start.targets.find(target => target.key === row.key);
-            const owned  = [], resident = [], required = target.slots.filter(slot => slot.required).map(slot => slot.name);
+            const target      = start.targets.find(target => target.key === row.key);
+            const owned       = [], resident = [], env = {}, required = target.slots.filter(slot => slot.required).map(slot => slot.name);
+            const planeInputs = row.key === 'github-workflow' && target.slots.some(slot =>
+                slot.name === REMOTE_MCP_CREDENTIAL_ENV_VAR && slot.state === 'owner') ? boundPlaneReaderInputs(owners) : {};
             if (row.state !== STATES.REVOKED) {
                 if (row.state !== STATES.ACTIVE) throw new Error(`server state changed: ${row.key}`);
                 for (const slot of target.slots) {
                     if (slot.state === 'owner' && owners[slot.name]) owned.push(slot.name);
+                    else if (slot.state === 'held' && row.key === 'github-workflow' && PLANE_READER_INPUTS.has(slot.name)) {
+                        if (typeof planeInputs[slot.name] !== 'string') throw new Error(`original plane input missing: ${slot.name}`);
+                        env[slot.name] = planeInputs[slot.name];
+                    }
                     else if (slot.state === 'held' && residentInputs[row.key]?.names.includes(slot.name)) resident.push(slot.name);
                     else if (slot.state === 'owner') throw new Error(`credential owner missing: ${slot.name}`);
                     else if (slot.state === 'held') throw new Error(`resident input missing: ${slot.name}`);
                     else if (slot.state !== 'absent' || slot.required) throw new Error(`slot unaccounted: ${slot.name}`);
                 }
             }
-            return [row.key, {...row, secret: grant.secret, args: [...target.args], env: {}, owned, resident, required}];
+            return [row.key, {...row, secret: grant.secret, args: [...target.args], env, owned, resident, required}];
         }));
     }
 
@@ -697,6 +706,16 @@ class McpLaunchAdmissionService extends Base {
                 names = launchRowEnvNames(row),
                 owned = names.redeemed.filter(name => typeof owners[name]?.resolve === 'function' && typeof owners[name].prove === 'function'),
                 held  = names.redeemed.filter(name => !owned.includes(name) && typeof env[name] === 'string');
+
+            if (row.key === 'github-workflow') {
+                if (held.includes(REMOTE_MCP_CREDENTIAL_ENV_VAR)) throw new Error('Family reader plane bearer requires its original credential owner.');
+                const planeInputs = boundPlaneReaderInputs(owners);
+                for (const name of held.filter(name => PLANE_READER_INPUTS.has(name))) {
+                    if (!owned.includes(REMOTE_MCP_CREDENTIAL_ENV_VAR) || planeInputs[name] !== env[name]) {
+                        throw new Error(`Family reader plane input does not match its original credential binding: ${name}`);
+                    }
+                }
+            }
 
             if (names.required.some(name => !owned.includes(name) && !held.includes(name))) {
                 revokeServer(server, REASONS.CREDENTIAL_MISSING);
@@ -1245,6 +1264,23 @@ function readOwner(owner) {
     } catch {
         return null
     }
+}
+
+/**
+ * @summary Reconstructs only public family-reader inputs from the original classified credential binding.
+ * Activation checks Start's bytes against this binding; recovery uses only slots originally present.
+ * Credentials still resolve and prove through their owner on every redemption.
+ * @param {Object} owners Original credential callbacks, already checked against retained custody on recovery.
+ * @returns {Object} The bound endpoint and, when originally proved, atomic target text. Never a bearer.
+ * @private
+ */
+function boundPlaneReaderInputs(owners) {
+    const binding = owners[REMOTE_MCP_CREDENTIAL_ENV_VAR]?.binding;
+    if (!isLaunchCredentialBinding(binding) || !['tenant-bearer', 'seat-plane-bearer'].includes(binding.kind)) return {};
+    return {
+        NEO_SEAT_PLANE_BASE: binding.endpoint,
+        ...(binding.plane ? {NEO_SEAT_PLANE_TARGET: JSON.stringify({planeId: binding.plane.id, dataRoot: binding.plane.dataRoot})} : {})
+    };
 }
 
 /** @summary Return a fixed credential-type label, never an owner-supplied value. @param {Object} owner @returns {String|undefined} */

@@ -2,6 +2,8 @@ import BaseServer                              from '../BaseServer.mjs';
 import logger                                  from './logger.mjs';
 import {buildToolCatalog, listTools, callTool} from './toolService.mjs';
 import AuthMiddleware                          from '../shared/services/AuthMiddleware.mjs';
+import AuthService                             from '../shared/services/AuthService.mjs';
+import IdentityPublicationService              from '../../../services/memory-core/IdentityPublicationService.mjs';
 import RequestContextService                   from '../shared/services/RequestContextService.mjs';
 import StdioIdentityResolver                   from '../shared/services/StdioIdentityResolver.mjs';
 import BootEnvelopeResolver                    from '../shared/services/BootEnvelopeResolver.mjs';
@@ -70,6 +72,9 @@ class Server extends BaseServer {
 
     aiConfig = aiConfig
     logger   = logger
+
+    /** @member {Promise|null} identityPublicationStartup Observed boot work that never holds the WAL-local listener. */
+    identityPublicationStartup = null
 
     /**
      * Resolved agent identity for stdio transport sessions. Populated by `boot()` via
@@ -196,6 +201,8 @@ class Server extends BaseServer {
             'grant_permission',
             'revoke_permission',
             'list_permissions',
+            'get_identity_publication_snapshot',
+            'get_identity_publication_lineage',
             'manage_wake_subscription',
             'record_turn_presence',
             // a one-node graph write: the operator can still say they are away during an embedder outage
@@ -300,6 +307,13 @@ class Server extends BaseServer {
     async boot() {
         await this.loadCustomConfig();
 
+        const publicationBoundary = IdentityPublicationService.configureBoot();
+        if (publicationBoundary !== null && aiConfig.transport !== 'streamable-http') {
+            throw new Error('Memory Core: provisioned identity publication requires streamable-http transport.');
+        }
+        AuthService.validateIdentityPublication({aiConfig, boundary: publicationBoundary});
+        if (publicationBoundary !== null) this.assertPlaneIdentity();
+
         const wakeDispatch = aiConfig.orchestrator.wakeDispatch;
 
         // The digest reconciles against read-state through an INJECTED reader, so the coalescing
@@ -318,6 +332,15 @@ class Server extends BaseServer {
         WebhookDeliveryService.configure(wakeDispatch);
 
         this.mcpServer = this.createMcpServer();
+
+        if (publicationBoundary !== null) {
+            this.identityPublicationStartup = this.prepareStartupDependency({
+                name      : 'identity-publication',
+                dependency: IdentityPublicationService,
+                start     : () => IdentityPublicationService.start(),
+                degraded  : 'identity publication is unavailable; WAL-local tools remain available'
+            });
+        }
 
         await this.prepareStartupDependency({
             name      : 'wake-subscription',
@@ -495,16 +518,29 @@ class Server extends BaseServer {
     async prepareStartupDependency({name, dependency, start, degraded}) {
         try {
             await start();
+            if (this.isDestroying || this.isDestroyed) return;
             HealthService.recordStartupDependency(name, 'ready', {
                 className: dependency?.className || dependency?.constructor?.name || name
             });
         } catch (error) {
+            if (this.isDestroying || this.isDestroyed) return;
             logger.warn(`[neo-memory-core MCP] ${name} startup degraded: ${error.message}. ${degraded}.`);
             HealthService.recordStartupDependency(name, 'degraded', {
                 className: dependency?.className || dependency?.constructor?.name || name,
                 error    : error.message
             });
         }
+    }
+
+    /** @summary Supplies the validated MC public boot generation to the shared HTTP boundary. */
+    createIdentityPublicationBoundary() {
+        return IdentityPublicationService.getBoundary();
+    }
+
+    /** @summary Prevents delayed graph readiness from admitting authority after this Server has ended. @param {...*} args */
+    destroy(...args) {
+        IdentityPublicationService.cancelBoot();
+        super.destroy(...args);
     }
 
     /**

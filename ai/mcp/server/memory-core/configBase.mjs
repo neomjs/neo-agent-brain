@@ -1,8 +1,21 @@
-import os                     from 'os';
-import path                   from 'path';
-import ConfigProvider, {leaf} from '../../../ConfigProvider.mjs';
-import {fileURLToPath}        from 'url';
-import {resolvePlaneDataRoot} from '../../../planeConfig.mjs';
+import os                                  from 'os';
+import path                                from 'path';
+import ConfigProvider, {leaf}              from '../../../ConfigProvider.mjs';
+import {fileURLToPath}                     from 'url';
+import {resolvePlaneDataRoot}              from '../../../planeConfig.mjs';
+import {decodeIdentityPublicationBootJson} from '../../../services/memory-core/helpers/identityPublicationBoot.mjs';
+
+/** @summary Parses atomic canonical public boot data without echoing malformed input or resolving it twice. */
+function parseIdentityPublicationBootEnv(envVarName, {env = process.env} = {}) {
+    const value = env[envVarName];
+    if (value === undefined) return;
+    try {
+        decodeIdentityPublicationBootJson(value);
+        return value;
+    } catch {
+        throw new Error(`[Config] Invalid ${envVarName}: expected canonical identity-publication boot JSON.`);
+    }
+}
 
 /**
  * @summary Parses a liveness-window override, refusing values a window cannot have.
@@ -105,6 +118,20 @@ class ConfigBase extends ConfigProvider {
              * @type {boolean}
              */
             debug: leaf(false, 'NEO_DEBUG', 'boolean'),
+            /**
+             * Trusted public reservation and key-generation input, consumed only at MC boot.
+             * Atomic canonical text prevents Provider object merging from changing signed authority.
+             * Null is unprovisioned; this leaf never contains a private key.
+             * @type {String|null}
+             */
+            identityPublicationBoot: leaf(null, 'NEO_IDENTITY_PUBLICATION_BOOT', 'string', {parse: parseIdentityPublicationBootEnv}),
+            /**
+             * Reviewed complete founding input {sourceRevision, seed}, installed only at trusted boot
+             * after bound lineage. Null installs nothing; retained physical source remains authoritative.
+             * Canonical text keeps the payload atomic. Ordinary requests cannot supply this input.
+             * @type {String|null}
+             */
+            identityPublicationFounding: leaf(null, 'NEO_IDENTITY_PUBLICATION_FOUNDING', 'string', {parse: parseIdentityPublicationBootEnv}),
             /**
              * Server transport protocol. Supported values are exactly `stdio` and `streamable-http`.
              * @type {string}

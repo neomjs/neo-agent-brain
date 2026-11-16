@@ -118,7 +118,8 @@ test.describe('launchRowEnvNames: one name is literal or redeemed, never both', 
         // a provider key the descriptor declares is redeemed, and required once Start resolved it
         expect(mc.redeemed).toContain('GEMINI_API_KEY');
         expect(mc.required).toEqual(['GEMINI_API_KEY']);
-        expect(gw).toEqual({placement: ['NEO_PLANE_DATA_ROOT', 'NEO_MEMORY_WAL_DIR'], redeemed: ['GH_TOKEN', 'GITHUB_TOKEN'], required: ['GH_TOKEN']});
+        expect(gw).toEqual({placement: ['NEO_PLANE_DATA_ROOT', 'NEO_MEMORY_WAL_DIR'],
+            redeemed: ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_MCP_REMOTE_TOKEN', 'NEO_SEAT_PLANE_BASE', 'NEO_SEAT_PLANE_TARGET'], required: ['GH_TOKEN']});
         expect(nl.redeemed).toEqual(['NEO_NL_PORT', 'NEO_FLEET_BRIDGE_TOKEN']);
 
         for (const names of [mc, gw, nl]) {

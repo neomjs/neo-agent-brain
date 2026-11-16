@@ -247,8 +247,48 @@ mismatch; ordinary identity convergence cannot rewrite or cascade away protected
 Every new raw Nodes/Edges writer must either prove that its namespace cannot reach protected rows,
 incident edges or historical endpoints, or use this preservation boundary.
 
-These are physical source methods. Production HTTP/MCP wiring, authenticated caller binding and boot
-orchestration remain a separate integration step; this contract does not establish installed acceptance.
+### Memory Core service composition
+
+[IdentityPublicationService](../../ai/services/memory-core/IdentityPublicationService.mjs) binds those
+physical methods to one configured MC boot generation. After custom configuration loads, the server
+validates the public descriptor against its own resolved plane identity and root. The supported
+provisioned profile is Streamable HTTP with the standard GitHub-PAT authentication composition;
+unsupported custom/proxy or stdio profiles fail before storage consumption. Unprovisioned servers
+keep their ordinary startup behavior.
+
+Two atomic canonical-JSON configuration leaves supply trusted inputs:
+
+| MC input | Purpose |
+| --- | --- |
+| `identityPublicationBoot` / `NEO_IDENTITY_PUBLICATION_BOOT` | The public reservation and trust descriptor validated by the [boot compiler](../../ai/services/memory-core/helpers/identityPublicationBoot.mjs). Null is unprovisioned; `trust: null` reserves without a signing key. |
+| `identityPublicationFounding` / `NEO_IDENTITY_PUBLICATION_FOUNDING` | `{sourceRevision, seed}`, where `seed` is the complete validated founding compiler payload. After bound lineage, boot invokes the existing immutable installer. Null installs nothing and never falls back to the current roster. |
+
+The trusted host provisioning composition supplies these inputs; the ordinary MCP caller cannot.
+Neither leaf contains a private key. A changed founding payload refuses as `founding-source-conflict`;
+an exact retry retains its original installation provenance. A failed boot consumption keeps
+publication and snapshot reads unavailable, while the read-only lineage witness remains available
+for reconciliation. Graph failures do not remove the server's WAL-local tools.
+
+[AuthService](../../ai/mcp/server/shared/services/AuthService.mjs) owns
+`POST /identity/family-publications`, after the common host/origin/CORS guards and before ordinary
+bearer middleware. Its fixed vendor-media parser admits the complete bounded compact carrier without
+changing the ordinary JSON limit. It checks the boot trust, then passes the **original signed bytes**
+to the physical owner, which rechecks consumed trust, the restore fence and delivery time inside its
+transaction. An earlier authentication result is not publication authority.
+
+The registered read operations are `get_identity_publication_snapshot` and
+`get_identity_publication_lineage`. They take no target, clock or trust arguments and bypass the
+embedding health gate because their source is the protected SQLite owner. The snapshot carries the
+admission revision and the founding digest/provenance as distinct coordinates; the founding digest
+does not claim to hash all admitted history. Lineage reports the original attempt, issuer and consumed
+fingerprint without provisioning or repairing state.
+
+`publication-not-provisioned` calls for the trusted provisioning path; `publication-trust-unavailable`
+means the reservation has not consumed its matching public trust. `membership-unknown` requires the
+publisher's complete admitted baseline. `founding-source-conflict` requires reviewed reconciliation,
+and `publication-restore-fenced` requires the separately admitted recovery path, which ordinary
+setup and retry cannot provide. Unknown or corrupt storage is unavailable, not a promise that a retry
+will repair it. These source contracts and their fixtures do not establish installed acceptance.
 
 ## Test Pollution Hazard
 

@@ -1,11 +1,12 @@
-import path                      from 'path';
-import {fileURLToPath}           from 'url';
-import AiConfig                  from '../../../config.mjs';
-import mcConfig                  from './config.mjs';
-import {readDeployedRevision}    from '../../../services/shared/deployedRevision.mjs';
-import ToolService               from '../../ToolService.mjs';
-import PullRequestHistoryService from '../../../services/github-workflow/PullRequestHistoryService.mjs';
-import GraphService              from '../../../services/memory-core/GraphService.mjs';
+import path                       from 'path';
+import {fileURLToPath}            from 'url';
+import AiConfig                   from '../../../config.mjs';
+import mcConfig                   from './config.mjs';
+import {readDeployedRevision}     from '../../../services/shared/deployedRevision.mjs';
+import ToolService                from '../../ToolService.mjs';
+import PullRequestHistoryService  from '../../../services/github-workflow/PullRequestHistoryService.mjs';
+import GraphService               from '../../../services/memory-core/GraphService.mjs';
+import IdentityPublicationService from '../../../services/memory-core/IdentityPublicationService.mjs';
 import HealthService, {
     foldHeavyMaintenanceStarvation,
     foldServiceMemoryPressure,
@@ -658,28 +659,30 @@ const serviceMapping = {
     get_rem_pipeline_state                 : HealthService          .getRemPipelineState     .bind(HealthService),
     get_sqlite_holder_diagnostics:
                               HealthService          .getSqliteHolderDiagnostics.bind(HealthService),
-    get_deployment_state_snapshot: readDeploymentInspection,
-    inspect_deployment           : inspectDeployment,
-    get_sandman_handoff          : readSandmanHandoffTool,
-    get_computed_route           : readComputedRouteTool,
-    get_pr_lane_activity         : readPrLaneActivityTool,
-    mark_read                    : MailboxService         .markRead                .bind(MailboxService),
-    archive_message              : MailboxService         .archiveMessage          .bind(MailboxService),
-    delete_message               : MailboxService         .deleteMessage           .bind(MailboxService),
-    transition_task              : MailboxService         .transitionTask          .bind(MailboxService),
-    grant_permission             : PermissionService      .grantPermission         .bind(PermissionService),
-    revoke_permission            : PermissionService      .revokePermission        .bind(PermissionService),
-    list_permissions             : PermissionService      .listPermissions         .bind(PermissionService),
-    manage_wake_subscription     : WakeSubscriptionService.manage                  .bind(WakeSubscriptionService),
-    claim_community_activity_task: claimCommunityActivityTask,
-    mark_community_activity_seen : markCommunityActivitySeen,
-    record_turn_presence         : TurnPresenceService    .recordTurnPresence      .bind(TurnPresenceService),
-    set_operator_presence        : OperatorPresenceService.setOperatorPresence     .bind(OperatorPresenceService),
-    admit_community_batch        : admitCommunityBatch,
-    who_is_online                : WakeSubscriptionService.whoIsOnline             .bind(WakeSubscriptionService),
-    purge_session                : SessionService         .purgeSession            .bind(SessionService),
-    resume_session               : SessionService         .validateSessionForResume.bind(SessionService),
-    set_session_id               : SessionService         .setSessionId            .bind(SessionService),
+    get_deployment_state_snapshot    : readDeploymentInspection,
+    inspect_deployment               : inspectDeployment,
+    get_sandman_handoff              : readSandmanHandoffTool,
+    get_computed_route               : readComputedRouteTool,
+    get_pr_lane_activity             : readPrLaneActivityTool,
+    mark_read                        : MailboxService         .markRead                .bind(MailboxService),
+    archive_message                  : MailboxService         .archiveMessage          .bind(MailboxService),
+    delete_message                   : MailboxService         .deleteMessage           .bind(MailboxService),
+    transition_task                  : MailboxService         .transitionTask          .bind(MailboxService),
+    grant_permission                 : PermissionService      .grantPermission         .bind(PermissionService),
+    revoke_permission                : PermissionService      .revokePermission        .bind(PermissionService),
+    list_permissions                 : PermissionService      .listPermissions         .bind(PermissionService),
+    get_identity_publication_snapshot: IdentityPublicationService.getIdentityPublicationSnapshot.bind(IdentityPublicationService),
+    get_identity_publication_lineage : IdentityPublicationService.getIdentityPublicationLineage.bind(IdentityPublicationService),
+    manage_wake_subscription         : WakeSubscriptionService.manage                  .bind(WakeSubscriptionService),
+    claim_community_activity_task    : claimCommunityActivityTask,
+    mark_community_activity_seen     : markCommunityActivitySeen,
+    record_turn_presence             : TurnPresenceService    .recordTurnPresence      .bind(TurnPresenceService),
+    set_operator_presence            : OperatorPresenceService.setOperatorPresence     .bind(OperatorPresenceService),
+    admit_community_batch            : admitCommunityBatch,
+    who_is_online                    : WakeSubscriptionService.whoIsOnline             .bind(WakeSubscriptionService),
+    purge_session                    : SessionService         .purgeSession            .bind(SessionService),
+    resume_session                   : SessionService         .validateSessionForResume.bind(SessionService),
+    set_session_id                   : SessionService         .setSessionId            .bind(SessionService),
     // Neural Link's durable data, relocated off the host's own SQLite file onto the one graph.
     // NL itself stays host-resident — it drives a real browser — so every one of these is
     // HOST-INITIATED: the host asks, the container answers. `admit_nl_actions` is additionally WRITE-ONLY

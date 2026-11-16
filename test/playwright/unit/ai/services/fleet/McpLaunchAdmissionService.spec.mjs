@@ -28,14 +28,14 @@ import {fileURLToPath} from 'node:url';
 import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 
-import McpLaunchAdmissionService                         from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
-import FleetTenantService                                from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
-import aiConfig                                          from '../../../../../../ai/config.template.mjs';
-import {writeFileAtomicSync}                             from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
-import {createSeatPatOwner, createResidentMcpInputOwner} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
-import {createManagedAgentWorkspacePlan}                 from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
-import {createSeatRuntimeRecord}                         from '../../../../../../ai/services/fleet/seatRuntimeRecord.mjs';
-import {createDesktopLaunchBinding}                      from '../../../../../../ai/services/fleet/launchProfileCustody.mjs';
+import McpLaunchAdmissionService                                               from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
+import FleetTenantService                                                      from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
+import aiConfig                                                                from '../../../../../../ai/config.template.mjs';
+import {writeFileAtomicSync}                                                   from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
+import {createSeatPatOwner, createSeatPlaneOwner, createResidentMcpInputOwner} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
+import {createManagedAgentWorkspacePlan}                                       from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import {createSeatRuntimeRecord}                                               from '../../../../../../ai/services/fleet/seatRuntimeRecord.mjs';
+import {createDesktopLaunchBinding}                                            from '../../../../../../ai/services/fleet/launchProfileCustody.mjs';
 import {
     LAUNCH_ADMISSION_PATH,
     createLaunchRequest,
@@ -182,12 +182,24 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
     });
 
     /** @summary Produces original records through reserve/activate, then opens a real fenced successor journal. */
-    async function predecessor({clean = true, revoke = false} = {}) {
-        const matrix           = {'memory-core': false, 'knowledge-base': false, 'neural-link': false, 'github-workflow': true, 'gitlab-workflow': false};
-        const agent            = seatDefinition({mcpServers: matrix});
-        const state            = {agent, credential: PAT, observed: 'live', seats: []};
-        const registry         = {getDataDir: () => directory, getDefinition: () => state.agent, resolveCredential: () => state.credential};
-        const owner            = createSeatPatOwner({registry, agent, proveForgeAccount: async () => ({verdict: 'proved'})});
+    async function predecessor({clean = true, revoke = false, familySource = false, familyEnv} = {}) {
+        const matrix = {'memory-core': false, 'knowledge-base': false, 'neural-link': false, 'github-workflow': true, 'gitlab-workflow': false};
+        const agent  = seatDefinition({mcpServers: matrix});
+        const state  = {agent, credential: PAT, observed: 'live', seats: [],
+            planeCredential: BEARER, planeProof: 'proved', plane: {id: 'original-family-plane', dataRoot: path.join(directory, 'plane')}};
+        const registry   = {getDataDir: () => directory, getDefinition: () => state.agent, resolveCredential: () => state.credential};
+        const owner      = createSeatPatOwner({registry, agent, proveForgeAccount: async () => ({verdict: 'proved'})});
+        const planeOwner = familySource ? createSeatPlaneOwner({agentId: agent.id, planeBase: 'https://plane.example.test',
+            expectedIdentity: '@' + LOGIN, provenPlane: state.plane, tenantService: {
+                getDataDir                : () => directory,
+                resolveSeatPlaneCredential: () => ({credential: state.planeCredential, plane: state.plane}),
+                probeSeatPlaneCredential  : async () => ({verdict: state.planeProof})
+            }}) : null;
+        const owners = {GH_TOKEN: owner, ...(planeOwner ? {NEO_MCP_REMOTE_TOKEN: planeOwner} : {})};
+        const env    = {...START_ENV, ...(familySource ? familyEnv ?? {
+            NEO_SEAT_PLANE_BASE  : planeOwner.binding.endpoint,
+            NEO_SEAT_PLANE_TARGET: JSON.stringify({planeId: planeOwner.binding.plane.id, dataRoot: planeOwner.binding.plane.dataRoot})
+        } : {})};
         const runtimeDirectory = path.join(directory, 'a'.repeat(64));
         const runtime          = {id: 'a'.repeat(64), directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
             runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
@@ -204,10 +216,10 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
             instanceHome       : '/managed/seat', launchCommand: '/vendor/Claude', profileArg: '--user-data-dir=/managed/seat',
             admissionGeneration: reservation.generation, runtimeGeneration: runtime,
             bridgeAuthority    : {version: 1, source: 'registry-file', registryRoot: directory, publicKeySha256: 'c'.repeat(64)}},
-            identity           : LOGIN, plan, profile, leaseRequired: true, owners: {GH_TOKEN: owner}, env: START_ENV});
+            identity           : LOGIN, plan, profile, leaseRequired: true, owners, env});
         state.seats = [{start, state: 'running', ownershipUnresolved: false, cleanupUnresolved: false}];
-        service.activate({generation: reservation.generation, agentId: 'seat', plan, env: START_ENV,
-            owners: {GH_TOKEN: owner}, probe: () => state.observed});
+        service.activate({generation: reservation.generation, agentId: 'seat', plan, env,
+            owners, probe: () => state.observed});
         if (revoke) service.revoke('seat', 'stop-requested');
         if (clean) await service.handoff({verifySeats: async () => {}});
         else { await closeListener(); service.journal.close(); }
@@ -216,8 +228,8 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         service.generations.clear(); service.grants.clear();
         service.continuityPhase = 'ready'; service.handoffPromise = null;
         const previous    = service.openJournal({directory: custody, readSeatStarts: () => state.seats});
-        const restoreSeat = async () => ({capabilities: reservation.grants, owners: {GH_TOKEN: owner}, residentInputs: {}, probe: () => state.observed});
-        return {state, registry, reservation, previous, restoreSeat, custody, runtime};
+        const restoreSeat = async () => ({capabilities: reservation.grants, owners, residentInputs: {}, probe: () => state.observed});
+        return {state, registry, reservation, previous, restoreSeat, custody, runtime, owners, env};
     }
 
     test('a clean successor rebinds the original origin and redeems the same capability with current owner bytes', async () => {
@@ -233,6 +245,77 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         expect(raw).not.toContain('rotated-fixture-pat');
         expect(raw).not.toContain(f.reservation.grants['github-workflow']);
     });
+
+    test('clean recovery reconstructs the original family endpoint and target for the same GitHub capability', async () => {
+        const f = await predecessor({familySource: true});
+        f.state.planeCredential = 'rotated-family-bearer';
+        expect(await recoverWithRuntimeReferences(f)).toEqual([{agentId: 'seat', state: 'active', reason: null, detail: null}]);
+        const answer = await redeem(f.reservation.grants['github-workflow'], {server: 'github-workflow'});
+        expect(answer).toMatchObject({outcome: 'admitted'});
+        expect(answer.env).toEqual({GH_TOKEN: PAT, NEO_MCP_REMOTE_TOKEN: 'rotated-family-bearer',
+            NEO_SEAT_PLANE_BASE: f.env.NEO_SEAT_PLANE_BASE, NEO_SEAT_PLANE_TARGET: f.env.NEO_SEAT_PLANE_TARGET});
+        expect(f.state.seats[0].start.targets[0].slots).toEqual(expect.arrayContaining([
+            {name: 'NEO_MCP_REMOTE_TOKEN', required: false, state: 'owner'},
+            {name: 'NEO_SEAT_PLANE_BASE', required: false, state: 'held'},
+            {name: 'NEO_SEAT_PLANE_TARGET', required: false, state: 'held'}
+        ]));
+        const raw = fs.readFileSync(path.join(f.custody, 'issuer.json'), 'utf8');
+        for (const secret of [PAT, BEARER, 'rotated-family-bearer', f.reservation.grants['github-workflow']]) expect(raw).not.toContain(secret);
+        expect(raw).not.toContain('"env"');
+    });
+
+    test('an initially absent family source stays absent after recovery and GitHub still admits', async () => {
+        const f = await predecessor();
+        expect((await recoverWithRuntimeReferences(f))[0].state).toBe('active');
+        expect((await redeem(f.reservation.grants['github-workflow'], {server: 'github-workflow'})).env).toEqual({GH_TOKEN: PAT});
+        expect(f.state.seats[0].start.targets[0].slots.filter(slot => slot.name.startsWith('NEO_'))).toEqual([
+            {name: 'NEO_MCP_REMOTE_TOKEN', required: false, state: 'absent'},
+            {name: 'NEO_SEAT_PLANE_BASE', required: false, state: 'absent'},
+            {name: 'NEO_SEAT_PLANE_TARGET', required: false, state: 'absent'}
+        ]);
+    });
+
+    for (const name of [null, 'NEO_SEAT_PLANE_BASE', 'NEO_SEAT_PLANE_TARGET']) {
+        test(`recovery preserves original family metadata absence with ${name || 'no metadata'} held`, async () => {
+            const familyEnv = name ? {[name]: name === 'NEO_SEAT_PLANE_BASE' ? 'https://plane.example.test'
+                : JSON.stringify({planeId: 'original-family-plane', dataRoot: path.join(directory, 'plane')})} : {};
+            const f = await predecessor({familySource: true, familyEnv});
+            expect((await recoverWithRuntimeReferences(f))[0].state).toBe('active');
+            expect((await redeem(f.reservation.grants['github-workflow'], {server: 'github-workflow'})).env)
+                .toEqual({GH_TOKEN: PAT, NEO_MCP_REMOTE_TOKEN: BEARER, ...familyEnv});
+        });
+    }
+
+    test('a selected family source that goes missing, changes binding, refuses proof or is revoked never falls back', async () => {
+        const f = await predecessor({familySource: true});
+        expect((await recoverWithRuntimeReferences(f))[0].state).toBe('active');
+        const github        = () => redeem(f.reservation.grants['github-workflow'], {server: 'github-workflow'}),
+              originalPlane = f.state.plane;
+        expect((await github()).outcome).toBe('admitted');
+        f.state.planeCredential = null;
+        expect(await github()).toMatchObject({outcome: 'refused', code: 'credential-missing', reason: 'plane-bearer'});
+        f.state.planeCredential = BEARER;
+        f.state.plane = {...originalPlane, id: 'changed-plane'};
+        expect(await github()).toMatchObject({outcome: 'refused', code: 'credential-missing', reason: 'plane-bearer'});
+        f.state.plane = originalPlane;
+        f.state.planeProof = 'refused';
+        expect(await github()).toMatchObject({outcome: 'refused', code: 'credential-unproven', reason: 'plane-bearer'});
+        f.state.planeProof = 'proved';
+        expect((await github()).outcome).toBe('admitted');
+        service.revoke('seat', 'stop-requested');
+        expect(await github()).toMatchObject({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+    });
+
+    for (const [label, name, value] of [
+        ['endpoint', 'NEO_SEAT_PLANE_BASE', 'https://other-plane.example.test'],
+        ['plane identity', 'NEO_SEAT_PLANE_TARGET', JSON.stringify({planeId: 'other-plane', dataRoot: '/other-store'})],
+        ['same identity over another root', 'NEO_SEAT_PLANE_TARGET', JSON.stringify({planeId: 'original-family-plane', dataRoot: '/other-store'})]
+    ]) {
+        test(`activation refuses family metadata outside its original owner binding: ${label}`, async () => {
+            await expect(predecessor({familySource: true, familyEnv: {[name]: value}}))
+                .rejects.toThrow(`Family reader plane input does not match its original credential binding: ${name}`);
+        });
+    }
 
     test('an unclean predecessor preserves hashes and pins but restores no capability or endpoint', async () => {
         const f     = await predecessor({clean: false});
@@ -729,7 +812,7 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
         expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).toEqual({
             outcome       : 'admitted',
             generationRoot: '/installed/neo',
-            env           : {GH_TOKEN: PAT},
+            env           : {GH_TOKEN: PAT, NEO_MCP_REMOTE_TOKEN: BEARER},
             args          : ['/installed/neo/ai/mcp/server/github-workflow/mcp-server.mjs']
         });
         expect(await redeem(reservation.grants['neural-link'], {server: 'neural-link'})).toEqual({
@@ -751,6 +834,12 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
 
         await activeSeat({owners: {...planeOnly, GH_TOKEN: {credential: 'seat-pat', resolve: () => PAT}}});
         expect(service.statusOf('seat').servers, 'an owner that cannot prove owns nothing').toContainEqual({key: 'github-workflow', state: 'revoked', reason: 'credential-missing'})
+    });
+
+    test('a raw family plane bearer cannot substitute for an original selected owner', async () => {
+        const {GH_TOKEN} = makeOwners().owners;
+        await expect(activeSeat({owners: {GH_TOKEN}, env: {...START_ENV, NEO_MCP_REMOTE_TOKEN: BEARER}}))
+            .rejects.toThrow(/Family reader.*owner/);
     });
 
     test('redemptions repeat and run concurrently for as long as the generation is active', async () => {
@@ -1064,11 +1153,12 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
             reservation = await activeSeat({owners: owners.owners}),
             github      = () => redeem(reservation.grants['github-workflow'], {server: 'github-workflow'});
 
-        expect((await github()).env).toEqual({GH_TOKEN: PAT});
+        expect((await github()).env).toEqual({GH_TOKEN: PAT, NEO_MCP_REMOTE_TOKEN: BEARER});
 
         owners.held.GH_TOKEN = 'ghp_fixture_rebound';
-        expect((await github()).env).toEqual({GH_TOKEN: 'ghp_fixture_rebound'});
-        expect(owners.proofs).toEqual([['GH_TOKEN', PAT], ['GH_TOKEN', 'ghp_fixture_rebound']]);
+        expect((await github()).env).toEqual({GH_TOKEN: 'ghp_fixture_rebound', NEO_MCP_REMOTE_TOKEN: BEARER});
+        expect(owners.proofs).toEqual([['GH_TOKEN', PAT], ['NEO_MCP_REMOTE_TOKEN', BEARER],
+            ['GH_TOKEN', 'ghp_fixture_rebound'], ['NEO_MCP_REMOTE_TOKEN', BEARER]]);
 
         // the issuer keeps neither value
         expect(JSON.stringify([...service.generations.get('seat').servers.values()])).not.toMatch(/ghp_fixture/)
@@ -1120,7 +1210,7 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
                 reservation = await activeSeat({registry, owners: owners.owners, probe: () => seat.observed}),
                 answer      = redeem(reservation.grants['github-workflow'], {server: 'github-workflow'});
 
-            await expect.poll(() => owners.proofs.length).toBe(1);
+            await expect.poll(() => owners.proofs.length).toBe(2);
             interrupt(registry, seat, reservation);
             proof.resolve(true);
 
@@ -1135,11 +1225,11 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
             reservation = await activeSeat({owners: owners.owners}),
             answer      = redeem(reservation.grants['github-workflow'], {server: 'github-workflow'});
 
-        await expect.poll(() => owners.proofs.length).toBe(1);
+        await expect.poll(() => owners.proofs.length).toBe(2);
         owners.held.GH_TOKEN = 'ghp_fixture_written_meanwhile';
         proof.resolve(true);
 
-        expect((await answer).env).toEqual({GH_TOKEN: PAT})
+        expect((await answer).env).toEqual({GH_TOKEN: PAT, NEO_MCP_REMOTE_TOKEN: BEARER})
     });
 
     test('concurrent redemptions of one value share its proof, the next one proves again, and a proof past its bound has not proved', async () => {
