@@ -208,6 +208,57 @@ the context cleaner.
 That is the promise: every serious agent run can make the codebase more
 understandable than it was when the run began.
 
+## Does The Ranking Earn Its Weights?
+
+Anyone looking at `queryScoreWeights` inside `QueryService` for the first time
+rightly asks how the weighted, inheritance-aware retrieval compares against two
+simpler baselines: plain unweighted nearest chunks from the same Chroma
+collection, or `ripgrep` over the checkouts.
+
+On `2026-11-16`, `@neo-fable-clio` sampled `49` verified real queries from
+`kb_query_log` (`ai/scripts/diagnostics/fixtures/kbRankingQuestions.json`) and
+`@neo-gemini-maryam` verified all answer files and measured the baselines at
+horizon `100` against the live `92,257`-chunk `neo-knowledge-base` index
+(`openAiCompatible` / `text-embedding-qwen3-embedding-8b`; synthesis on
+`google/gemma-4-26b-a4b`; base commits `neomjs/neo` `459371e353`,
+`neomjs/neo-agent-brain` `a2a621cb78`):
+
+```bash
+node ai/scripts/diagnostics/measureKbRanking.mjs --neo-root ../neo --with-ask
+```
+
+| Slice | n | Shipped (`QueryService`) | Nearest Chunks | `ripgrep` (distinct words, count) | `ripgrep` (summed count, pre-reg) |
+|---|---:|---|---|---|---|
+| Balanced-40: Overall | 40 | 26/40 (65%) · med 2 · MRR 0.481 | 15/40 (38%) · med 5.5 · MRR 0.259 | **30/40 (75%) · med 3 · MRR 0.497** | 10/40 (25%) · med 11 · MRR 0.132 |
+| Index: >=1 answer file in Chroma | 34 | **26/34 (76%) · med 2 · MRR 0.564** | 15/34 (44%) · med 5.5 · MRR 0.304 | 25/34 (74%) · med 2.5 · MRR 0.539 | 9/34 (26%) · med 11.5 · MRR 0.137 |
+| Index: 0 answer files in Chroma | 6 | 0/6 (0%) · med 13 · MRR 0.013 | 0/6 (0%) · med miss · MRR 0.000 | **5/6 (83%) · med 4.5 · MRR 0.254** | 1/6 (17%) · med 10.5 · MRR 0.106 |
+| All-49 sensitivity: Overall | 49 | 28/49 (57%) · med 2.5 · MRR 0.438 | 19/49 (39%) · med 5.5 · MRR 0.256 | **36/49 (73%) · med 3 · MRR 0.499** | 13/49 (27%) · med 11 · MRR 0.152 |
+
+Measured findings across both subsets and the `10`-question second-seat
+`ask_knowledge_base` audit (`5/10` right, `5/10` wrong with `0/10` fabricated):
+
+- Shipped `QueryService` outperforms unweighted `nearestChunks` across balanced-40
+  (`65%` vs `38%`) and all-49 (`57%` vs `39%`), and roughly ties distinct-word
+  `ripgrep` when at least one answer file is indexed in Chroma (`26/34 = 76%`,
+  MRR `0.564` vs `25/34 = 74%`, MRR `0.539`) while ranking `guide-covered`
+  (`MRR 0.597` vs `0.374`) and strict inherited `parent-class` (`3/3`, MRR `0.733`
+  vs `2/3`, MRR `0.492`) higher.
+- Distinct-word `ripgrep` leads overall (`30/40` vs `26/40`; `36/49` vs `28/49`),
+  driven by three ticketed gaps: unconditional per-word `guideMatch` boosts,
+  unbounded `src/core/Base.mjs` inheritance accumulation, and `neoRootDir`-only
+  lexical rescue causing `QueryService` to trail on `source-only` (`4/11` vs
+  `8/11`) and all-49 `source-with-guide-mention` (`10/18` vs `11/18` nearest
+  chunks and `13/18` distinct-word `ripgrep`, **`#1806`**); the absence of a
+  canonical profile manifest or `repoSlug: neo-agent-brain` rows in
+  `neo-knowledge-base` (`0/6` balanced-40 and `0/7` all-49 on post-`2026-08-21`
+  unindexed files vs `5/6` and `6/7` for distinct-word `ripgrep`, **`#419`** /
+  `#1507`); and blind `12,000`-character head truncation in `ask_knowledge_base`
+  dropping `#1`-ranked source methods deep in a file (**`#1807`**).
+
+Full per-slice numbers (`13` slices across balanced-40 and all-49), synthesis
+verdicts, and declared limits live in
+[Knowledge Base Ranking Measurement](./measurements/kb-ranking-2026-11-16.md).
+
 ## Tooling Reference
 
 The precise tool catalog, admin routes, sync commands, provider boundaries, and
@@ -229,3 +280,5 @@ options that need to stay exact.
   cloud-facing source ingestion contract.
 - [Deploying the Agent OS](../benefits/brain/DeployingTheAgentOS.md) for the operator
   story around running the Brain on external codebases.
+- [Knowledge Base Ranking Measurement](./measurements/kb-ranking-2026-11-16.md) for the
+  three-arm retrieval benchmark, ten-question synthesis audit, and follow-up tickets.
