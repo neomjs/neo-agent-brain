@@ -2025,7 +2025,10 @@ export class Orchestrator extends Base {
         let   client;
         try {
             const target = normalizeSeatPlaneTarget(AiConfig.seat.planeTarget);
-            if (!endpoint || !target || !AiConfig.seat.planeBearer || !viewer?.login) {
+            if (AiConfig.seat.planeBearer === '') {
+                return {state: 'unavailable', code: 'family-source-configuration-unavailable'};
+            }
+            if (!endpoint || !target || !viewer?.login) {
                 return {state: 'unavailable', code: 'family-source-configuration-unavailable'};
             }
             client = createClient({baseUrl: planeMcpResources(endpoint)['memory-core'].url, credential: AiConfig.seat.planeBearer,
