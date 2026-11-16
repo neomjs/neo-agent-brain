@@ -439,7 +439,7 @@ export function createOpenWorkProducer({
                     credentialRefusal: null,
                     tokenExpiresAt   : answeredAny ? latestTokenExpiresAt : (state.seatReads?.[seat]?.tokenExpiresAt ?? null)
                 };
-                reads.push({seat, login, apiBase, mark, window, nodes: [...authored.nodes, ...held.nodes], complete: authored.complete && held.complete, ended})
+                reads.push({seat, login, apiBase, mark, window, nodes: [...authored.nodes, ...held.nodes], authoredComplete: authored.complete, heldComplete: held.complete, complete: authored.complete && held.complete, ended})
             } catch (error) {
                 // a message-less error still failed: without the fallback it would count as answered
                 const
@@ -473,7 +473,8 @@ export function createOpenWorkProducer({
             owes          = seat => !benched.has(seat),
             outsideReader = seats.find(seat => owes(seat.seat) && answered.some(read => read.seat === seat.seat))
                 ?? seats.find(seat => answered.some(read => read.seat === seat.seat)),
-            excluded      = [...new Set(seats.map(seat => seat.login).filter(Boolean))].map(login => `-author:${login}`).join(' '),
+            seatLogins    = [...new Set(seats.map(seat => seat.login).filter(Boolean))],
+            excluded      = seatLogins.map(login => `-author:${login}`).join(' '),
             outside       = {complete: false, rows: 0},
             outsideNodes  = [];
 
@@ -488,14 +489,22 @@ export function createOpenWorkProducer({
         }
 
         const
-            missed = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)).concat(outside.complete ? [] : ['outside']),
-            byKey  = rows => [...new Map(rows.map(row => [row.key, row])).values()],
-            rows   = byKey([
+            missed          = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)).concat(outside.complete ? [] : ['outside']),
+            authoredLogins  = [...new Set(answered.filter(read => read.authoredComplete).map(read => read.login).filter(Boolean))],
+            missedReviewers = [...new Set(seats.filter(seat => !answered.some(read => read.seat === seat.seat && read.heldComplete))
+                .flatMap(seat => [seat.seat, seat.login && identities.byLogin(seat.login), seat.login && `login:${seat.login}`])
+                .filter(Boolean))],
+            terminalIncompleteLogins = [...new Set(seats.filter(seat => !answered.some(read => read.seat === seat.seat && read.ended.complete))
+                .map(seat => seat.login)
+                .filter(Boolean))],
+            searches         = {seatLogins, authoredLogins, outsideComplete: outside.complete, missedReviewers, ...(terminalIncompleteLogins.length ? {terminalIncompleteLogins} : {})},
+            byKey            = rows => [...new Map(rows.map(row => [row.key, row])).values()],
+            rows             = byKey([
                 ...answered.flatMap(read => read.nodes.map(node => normalizePullRequest(node, identities, {apiBase: read.apiBase}))),
                 ...outsideNodes.map(node => normalizePullRequest(node, identities, {apiBase: outsideReader?.apiBase}))
             ]),
-            terminal = {rows: byKey(answered.flatMap(read => read.ended.nodes).map(node => normalizeTerminal(node, identities))), complete: !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.ended.complete)},
-            complete = !unread.some(owes) && !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.complete),
+            terminal         = {rows: byKey(answered.flatMap(read => read.ended.nodes).map(node => normalizeTerminal(node, identities))), complete: !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.ended.complete)},
+            complete         = !unread.some(owes) && !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.complete),
             // a seat unread or failed this pulse keeps its mark for when it reads again, and one with no mark yet holds
             // the boundary it would inherit now, so a seat that did read cannot carry the aggregate past a close the
             // other has not read; a seat no longer registered drops out
@@ -516,7 +525,7 @@ export function createOpenWorkProducer({
         const
             // the earliest seat's watermark bounds what is still closing, and seeds a seat that joins later
             watermark = Object.values(marks).map(mark => mark.watermark).filter(Boolean).sort()[0] ?? null,
-            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed}, terminal, since: state.watermark ?? null, id: at}),
+            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed, searches}, terminal, since: state.watermark ?? null, id: at}),
             coverage  = complete && outside.complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial',
             readerOf  = new Map(seats.filter(seat => seat.query && answered.some(read => read.seat === seat.seat)).map(seat => [seat.seat, seat])),
             retained  = await readUnblocked({
@@ -525,7 +534,7 @@ export function createOpenWorkProducer({
             });
 
         return finish({
-            snapshot   : {rows: next.rows, closed: next.closed, complete: next.complete, missed: next.missed},
+            snapshot   : {rows: next.rows, closed: next.closed, complete: next.complete, missed: next.missed, ...(next.searches ? {searches: next.searches} : {})},
             observedAt : at,
             coverage,
             readers    : marks,
