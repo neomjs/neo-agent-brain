@@ -718,11 +718,19 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
     });
 
     test('a rotation\'s end is one receiver line beside its record, and a skip keeps its reason', async () => {
-        const lines  = [],
-              logger = {log: line => lines.push(line), warn: line => lines.push(line), error() {}},
-              reason = 'instance-unresolved: No running Claude instance found for userDataDir=\'/seats/ada\'.',
-              second = 'session-rotate:MESSAGE:r2',
-              ended  = () => lines.filter(line => line.startsWith('[Wake Receiver] rotation '));
+        const lines   = [],
+              logger  = {log: line => lines.push(line), warn: line => lines.push(line), error() {}},
+              reason  = 'instance-unresolved: No running Claude instance found for userDataDir=\'/seats/ada\'.',
+              ended   = () => lines.filter(line => line.startsWith('[Wake Receiver] rotation ')),
+              another = async (receipt, result) => {
+                  const eventId = `session-rotate:MESSAGE:${receipt}`;
+
+                  await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId, envelope: rotationEnvelope({
+                      eventId,
+                      payload: {receiptMessageId: `MESSAGE:${receipt}`, oldSessionId: 'session-old', reason: 'sunset_restart', prompt: PROMPT}
+                  })});
+                  await rotationReceiver([result], {logger}).drain()
+              };
 
         await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: rotationEnvelope()});
         await rotationReceiver([{outcome: 'skipped', outcomeReason: reason}], {logger}).drain();
@@ -730,13 +738,14 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
         expect(await state.read(rotationKey)).toMatchObject({state: 'skipped', outcomeReason: reason});
         expect(ended()).toEqual([`[Wake Receiver] rotation skipped WAKE_SUB:rotate (${reason})`]);
 
-        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: second, envelope: rotationEnvelope({
-            eventId: second,
-            payload: {receiptMessageId: 'MESSAGE:r2', oldSessionId: 'session-old', reason: 'sunset_restart', prompt: PROMPT}
-        })});
-        await rotationReceiver(['delivered'], {logger}).drain();
+        await another('r2', 'delivered');
+        await another('r3', {outcome: 'failed', outcomeReason: 'Seat holder changed before the fresh session'});
 
-        expect(ended()).toEqual([`[Wake Receiver] rotation skipped WAKE_SUB:rotate (${reason})`, '[Wake Receiver] rotation delivered WAKE_SUB:rotate'])
+        expect(ended()).toEqual([
+            `[Wake Receiver] rotation skipped WAKE_SUB:rotate (${reason})`,
+            '[Wake Receiver] rotation delivered WAKE_SUB:rotate',
+            '[Wake Receiver] rotation failed WAKE_SUB:rotate (Seat holder changed before the fresh session)'
+        ])
     });
 
     test('Emmy\'s control: a session opened by hand during a defer supersedes the rotation, with no second dispatch', async () => {
