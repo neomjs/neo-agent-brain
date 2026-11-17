@@ -1925,5 +1925,84 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
                 serverInstance.destroy();
             }
         });
+
+        test('once active, a lookup-only plane selects by subject too: a bound subject acts as its identity, an unbound one is refused by name', async () => {
+            await GraphService.initAsync();
+            const serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: []});
+
+            try {
+                GraphService.createBoundIdentity({id: '@subject-1812-lookup', type: 'AgentIdentity', name: 'lookup', properties: {accountType: 'agent'}},
+                    {subject: subject('18120061')});
+
+                // dormant: the login selects, so a renamed login finds no identity
+                expect(await serverInstance.buildRequestContext(pat('subject-1812-lookup-renamed', '18120061')))
+                    .toMatchObject({userId: 'subject-1812-lookup-renamed', agentIdentityNodeId: null});
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                expect(await serverInstance.buildRequestContext(pat('subject-1812-lookup-renamed', '18120061')), 'the subject decides, not the login')
+                    .toMatchObject({userId: 'subject-1812-lookup', agentIdentityNodeId: '@subject-1812-lookup'});
+
+                // a re-registered login and a newcomer both reach nothing, and nothing is created
+                for (const [login, providerUserId] of [['subject-1812-lookup', '18120062'], ['subject-1812-lookup-new', '18120063']]) {
+                    await expect(serverInstance.buildRequestContext(pat(login, providerUserId)))
+                        .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNBOUND'});
+                    expect(readSubjectBinding(sqlite(), subject(providerUserId))).toBeNull();
+                }
+                expect(rawGraphNode('@subject-1812-lookup-new')).toBeNull();
+
+                await expect(serverInstance.buildRequestContext({...pat('subject-1812-lookup', '18120061'), providerUserId: undefined}))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_REQUIRED'});
+            } finally {
+                cleanUp(['18120061', '18120062', '18120063'], ['@subject-1812-lookup', '@subject-1812-lookup-renamed', '@subject-1812-lookup-new']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('once active, the bound identity keys the request: a renamed login reads its own rows, never the new login\'s', async () => {
+            await GraphService.initAsync();
+            const
+                [{default: RequestContextService}, {default: MemoryService}, {default: StorageRouter}] = await Promise.all([
+                    import('../../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs'),
+                    import('../../../../../../../ai/services/memory-core/MemoryService.mjs'),
+                    import('../../../../../../../ai/services/memory-core/managers/StorageRouter.mjs')
+                ]),
+                serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                collection     = StorageRouter.getMemoryCollection,
+                // one private row of the identity, and one an earlier holder of the login it renames to wrote
+                rows           = [['own', 'subject-1812-keyed'], ['earlier holder', 'subject-1812-keyed-renamed']].map(([prompt, userId], index) => ({
+                    id: `memory-1812-${index}`, metadata: {sessionId: 'session-1812', prompt, response: prompt, userId, timestamp: new Date(1000 + index).toISOString()}
+                })),
+                read = async context => {
+                    const view = await RequestContextService.run(context, () =>
+                        MemoryService.listMemories({sessionId: 'session-1812', limit: 10, memorySharing: 'private'}));
+                    return view.memories?.map(memory => memory.prompt) ?? view;
+                };
+
+            // the read's where clause, applied the way Chroma applies it
+            StorageRouter.getMemoryCollection = async () => ({get: async ({where}) => {
+                const found = rows.filter(({metadata}) => (where.$and ?? [where]).every(clause =>
+                    Object.entries(clause).every(([key, value]) => metadata[key] === value)));
+                return {ids: found.map(row => row.id), metadatas: found.map(row => row.metadata)};
+            }});
+
+            try {
+                expect(await read(await serverInstance.buildRequestContext(pat('subject-1812-keyed', '18120071')))).toEqual(['own']);
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                const renamed = await serverInstance.buildRequestContext(pat('subject-1812-keyed-renamed', '18120071'));
+                expect(renamed).toMatchObject({userId: 'subject-1812-keyed', agentIdentityNodeId: '@subject-1812-keyed'});
+                expect(await read(renamed)).toEqual(['own']);
+
+                // another account registering the released login is refused, so it holds no key at all
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-keyed', '18120072')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT'});
+            } finally {
+                StorageRouter.getMemoryCollection = collection;
+                cleanUp(['18120071', '18120072'], ['@subject-1812-keyed', '@subject-1812-keyed-renamed']);
+                serverInstance.destroy();
+            }
+        });
     });
 });
