@@ -684,6 +684,40 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitHub-PAT veri
         expect(info.scopes).toEqual([]);
     });
 
+    test('a bare-login entry is weaker than a subject-pinned one on a fresh process, on a cache miss and at a reclaimed login\'s first presentation', async () => {
+        // The account behind `neo-gpt` (id 1) renamed, and a newcomer (id 2) registered the released login
+        const users = {'ghp-original': {id: 1, login: 'neo-gpt-renamed'}, 'ghp-reclaimer': {id: 2, login: 'neo-gpt'}};
+
+        globalThis.fetch = async (_url, {headers}) => ({ok: true, json: async () => users[headers.Authorization.replace(/^Bearer /, '')]});
+
+        const
+            verifier = allowedUsers => AuthService.createGithubPatVerifier({aiConfig: withAuth({allowedUsers}), logger, InvalidTokenError: FakeInvalidTokenError}),
+            outcome  = (instance, token) => instance.verifyAccessToken(token).then(info => info.providerUserId, () => 'refused');
+
+        // Fresh processes meet the reclaimed login's first presentation
+        expect(await outcome(verifier(['neo-gpt']), 'ghp-reclaimer')).toBe('2');
+        expect(await outcome(verifier(['neo-gpt:1']), 'ghp-reclaimer')).toBe('refused');
+
+        // In running processes the reclaimer's token is a cache miss: the bare entry admits the
+        // wrong account and refuses the renamed one, the pinned entry does the opposite
+        const bare = verifier(['neo-gpt']), pinned = verifier(['neo-gpt:1']);
+
+        expect(await outcome(pinned, 'ghp-original')).toBe('1');
+        expect(await outcome(pinned, 'ghp-reclaimer')).toBe('refused');
+        expect(await outcome(bare, 'ghp-original')).toBe('refused');
+        expect(await outcome(bare, 'ghp-reclaimer')).toBe('2');
+
+        // A config overlay may write the pinned form as an object
+        expect(await outcome(verifier([{login: 'neo-gpt', providerUserId: 1}]), 'ghp-original')).toBe('1')
+    });
+
+    test('a malformed allowedUsers entry refuses setup instead of degrading to a weaker form', () => {
+        for (const allowedUsers of [['neo-gpt:'], ['neo-gpt:abc'], [':1'], ['a:b:c'], [{login: 'neo-gpt'}], [{providerUserId: '1'}]]) {
+            expect(() => AuthService.createGithubPatVerifier({aiConfig: withAuth({allowedUsers}), logger, InvalidTokenError: FakeInvalidTokenError}))
+                .toThrow('auth.allowedUsers entries are')
+        }
+    });
+
     test('allows a configured GitHub login and rejects an unlisted user without caching the failure', async () => {
         let calls = 0;
 
@@ -1336,7 +1370,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — first provider 
             return {
                 ok     : true,
                 headers: {get: () => ''},
-                json   : async () => ({login: 'neo-gpt'})
+                json   : async () => ({id: 1, login: 'neo-gpt'})
             }
         };
 
@@ -1434,7 +1468,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — first provider 
             return {
                 ok     : true,
                 headers: {get: () => ''},
-                json   : async () => ({login: token})
+                json   : async () => ({id: 1, login: token})
             }
         };
 
@@ -1492,6 +1526,71 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — first provider 
         expect(loggerEntries.join('\n')).not.toContain('ghp-outsider')
     });
 
+    test('the pin keys on the subject: a renamed account keeps its process, and a reclaimed login gets none', async () => {
+        // The bootstrap account renames, and a newcomer registers its released login
+        const users = {
+            'ghp-bootstrap': {id: 1, login: 'neo-gpt'},
+            'ghp-renamed'  : {id: 1, login: 'neo-gpt-renamed'},
+            'ghp-reclaimer': {id: 2, login: 'neo-gpt'}
+        };
+
+        globalThis.fetch = async (_url, {headers}) => ({
+            ok     : true,
+            headers: {get: () => ''},
+            json   : async () => users[headers.Authorization.replace(/^Bearer /, '')]
+        });
+
+        const options = createOptions();
+
+        await AuthService.setup(options);
+
+        const renamed = await runMiddleware(options.app.middlewares[0], 'ghp-renamed');
+
+        expect(renamed.nextError).toBeUndefined();
+        expect(renamed.req.auth?.providerUserId).toBe('1');
+
+        const reclaimer = await runMiddleware(options.app.middlewares[0], 'ghp-reclaimer');
+
+        expect(reclaimer.res.statusCode).toBe(401);
+        expect(reclaimer.req.auth).toBeUndefined()
+    });
+
+    test('a bootstrap response without an account id cannot establish the process pin', async () => {
+        globalThis.fetch = async () => ({ok: true, headers: {get: () => ''}, json: async () => ({login: 'neo-gpt'})});
+
+        const options = createOptions();
+
+        await expect(AuthService.setup(options)).rejects.toThrow('GitHub PAT validation returned no provider subject');
+        expect(options.app.middlewares).toHaveLength(0)
+    });
+
+    test('GitLab-PAT pins the bootstrap subject when opted in, and keeps its shipped admit-any default otherwise', async () => {
+        const users = {
+            'glpat-bootstrap': {id: 7, username: 'neo-gl'},
+            'glpat-renamed'  : {id: 7, username: 'neo-gl-renamed'},
+            'glpat-reclaimer': {id: 8, username: 'neo-gl'}
+        };
+
+        globalThis.fetch = async (_url, {headers}) => ({ok: true, json: async () => users[headers.Authorization.replace(/^Bearer /, '')]});
+
+        const gitlab = overrides => createOptions({
+            mode: 'gitlab-pat', gitlabApiBaseUrl: 'https://gitlab.example.com', providerBootstrapPat: 'glpat-bootstrap', ...overrides
+        });
+
+        const pinned = gitlab();
+
+        await AuthService.setup(pinned);
+
+        expect((await runMiddleware(pinned.app.middlewares[0], 'glpat-renamed')).nextError).toBeUndefined();
+        expect((await runMiddleware(pinned.app.middlewares[0], 'glpat-reclaimer')).res.statusCode).toBe(401);
+
+        const shipped = gitlab({pinFirstProviderSubject: false});
+
+        await AuthService.setup(shipped);
+
+        expect((await runMiddleware(shipped.app.middlewares[0], 'glpat-reclaimer')).nextError).toBeUndefined()
+    });
+
     test('restart creates a fresh process pin and revalidates the current bootstrap PAT', async () => {
         const calls = [];
 
@@ -1505,7 +1604,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — first provider 
             return {
                 ok     : true,
                 headers: {get: () => ''},
-                json   : async () => ({login})
+                json   : async () => ({id: login === 'first-user' ? 1 : 2, login})
             }
         };
 
@@ -2107,6 +2206,39 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitHub-PAT outa
         // Policy eviction is durable too — the stale identity cannot come back on the next outage.
         const {entries} = await patCache.readPatValidationCache(file);
         expect(entries.size).toBe(0)
+    });
+
+    test('a subject-pinned entry reapplies on disk admission by account id: the renamed account enters, a reclaimed login stays out', async () => {
+        const verifier = (file, allowedUsers) => AuthService.createGithubPatVerifier({
+            aiConfig: {auth: {...baseAuth, patDiskCachePath: file, allowedUsers}}, logger, InvalidTokenError: FakeInvalidTokenError
+        });
+
+        stubOutage(200);
+
+        const renamed = await writeSeed('original-token', {id: 1, login: 'neo-gpt-renamed'}, Date.now());
+        expect((await verifier(renamed, ['neo-gpt:1']).verifyAccessToken('original-token')).providerUserId).toBe('1');
+
+        const pinned = await writeSeed('reclaimer-token', {id: 2, login: 'neo-gpt'}, Date.now());
+        await expect(verifier(pinned, ['neo-gpt:1']).verifyAccessToken('reclaimer-token')).rejects.toThrow(/not allowed/);
+
+        const bare = await writeSeed('reclaimer-token', {id: 2, login: 'neo-gpt'}, Date.now());
+        expect((await verifier(bare, ['neo-gpt']).verifyAccessToken('reclaimer-token')).providerUserId).toBe('2')
+    });
+
+    test('a disk entry without the account id fails closed and leaves the store', async () => {
+        const file     = await writeSeed('legacy-token', {login: 'eos', name: 'Eos'}, Date.now());
+        const verifier = AuthService.createGithubPatVerifier({
+            aiConfig         : {auth: {...baseAuth, patDiskCachePath: file}},
+            logger,
+            InvalidTokenError: FakeInvalidTokenError
+        });
+
+        stubOutage(200);
+
+        await expect(verifier.verifyAccessToken('legacy-token')).rejects.toBeInstanceOf(FakeInvalidTokenError);
+
+        const {entries} = await patCache.readPatValidationCache(file);
+        expect(entries.has(tokenHash('legacy-token'))).toBe(false)
     });
 
     test('only the minimal normalized subject reaches disk — provider response extras never persist', async () => {

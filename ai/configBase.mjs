@@ -881,14 +881,16 @@ class ConfigBase extends ConfigProvider {
                 patDiskCachePath      : leaf('', 'NEO_AUTH_PAT_DISK_CACHE_PATH', 'string'),
                 // Optional GitLab OAuth app binding for 'gitlab-pat' mode. Empty means no app gate.
                 allowedClientIds  : leaf([], 'NEO_AUTH_ALLOWED_CLIENT_IDS', 'csv'),
-                // Optional username allowlist for PAT modes ('gitlab-pat' / 'github-pat'). Empty means any resolved user.
+                // Optional user allowlist for PAT modes ('gitlab-pat' / 'github-pat'). Empty means any resolved user.
+                // `login:providerUserId` pins an entry to the account id; a bare `login` admits whoever holds it now.
                 allowedUsers      : leaf([], 'NEO_AUTH_ALLOWED_USERS', 'csv'),
                 /**
                  * @summary Optional deployment override for the auth-mode-derived provider pin.
                  *
                  * Null preserves the safe mode default: GitHub-PAT pins the bootstrap provider
-                 * subject, while auth modes without a provider bootstrap do not. A plural-resident
-                 * GitHub-PAT plane explicitly sets this false; no Compose profile restates true.
+                 * subject, while auth modes without a provider bootstrap do not. GitLab-PAT pins
+                 * only when this is true. A plural-resident GitHub-PAT plane explicitly sets this
+                 * false; no Compose profile restates true.
                  * @type {Boolean|null}
                  */
                 pinFirstProviderSubjectOverride: leaf(null, 'NEO_AUTH_PIN_FIRST_PROVIDER_SUBJECT', 'boolean'),
