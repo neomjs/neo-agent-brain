@@ -751,6 +751,22 @@ test.describe('composed Fleet S1 server', () => {
         }
     });
 
+    test('an OIDC subject names no forge, so its admission resolves no owner', async () => {
+        const forge = await useForgeConnections();
+
+        try {
+            const context = createFleetRequestContext({
+                userId: 'oidc-user', source: 'oidc', authProvider: 'oidc', providerBaseUrl: 'https://idp.example/realms/neo', providerUserId: 'f3b2c1'
+            });
+
+            expect(context).toMatchObject({authProvider: 'oidc', providerUserId: 'f3b2c1'});
+            expect(context).not.toHaveProperty('ownerPrincipal');
+            expect(context, 'no forge registration can own it, so nothing to explain').not.toHaveProperty('ownerResolution')
+        } finally {
+            await forge.restore()
+        }
+    });
+
     test('a lifecycle write whose owner does not resolve is refused with the reason, and the Fleet service logs it', async () => {
         const
             dir    = await mkdtemp(path.join(os.tmpdir(), 'fleet-forge-')),

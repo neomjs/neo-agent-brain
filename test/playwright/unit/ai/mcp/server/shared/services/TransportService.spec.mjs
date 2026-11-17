@@ -617,14 +617,15 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
 
                 return {
                     ok  : true,
-                    json: async () => token === 'valid-oidc'
+                    json: async () => token === 'valid-oidc' || token === 'valid-oidc-iss'
                         ? {
                             active            : true,
                             aud               : oidcAudience,
                             preferred_username: 'oidc-user',
                             sub               : 'oidc-subject',
                             client_id         : 'neo-mcp',
-                            exp               : Math.floor(Date.now() / 1000) + 3600
+                            exp               : Math.floor(Date.now() / 1000) + 3600,
+                            ...(token === 'valid-oidc-iss' && {iss: 'https://oidc.test/realms/neo'})
                         }
                         : {active: false}
                 }
@@ -688,9 +689,20 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             expect(response.status).toBe(200);
             expect(response.headers.get('mcp-session-id')).toBeTruthy();
             expect(capturedAuth).toHaveLength(1);
+            // host-trusted, exactly: a proxy identity carries no subject-bound proof
+            expect(capturedAuth[0]).toEqual({
+                userId  : 'proxy-user',
+                username: 'proxy-user',
+                source  : 'proxy-header'
+            })
+        });
+
+        test('an OIDC bearer carries its (issuer, sub) subject', async () => {
+            const port = await setupOidcProxy();
+
+            expect((await initialize(port, {Authorization: 'Bearer valid-oidc-iss'})).status).toBe(200);
             expect(capturedAuth[0]).toMatchObject({
-                userId: 'proxy-user',
-                source: 'proxy-header'
+                userId: 'oidc-user', source: 'oidc', authProvider: 'oidc', providerBaseUrl: 'https://oidc.test/realms/neo', providerUserId: 'oidc-subject'
             })
         });
 

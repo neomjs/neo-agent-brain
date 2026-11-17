@@ -2075,6 +2075,47 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             }
         });
 
+        test('once active, an OIDC request acts as its (issuer, sub) identity: no other issuer and no login stands in, and a proxy keeps its host-trusted login', async () => {
+            await GraphService.initAsync();
+            const
+                serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: []}),
+                ISSUER         = 'https://idp.example/realms/neo',
+                oidcSubjectOf  = (iss, sub) => ({authProvider: 'oidc', providerBaseUrl: iss, providerUserId: sub}),
+                oidc           = (login, iss, sub) => ({userId: login, username: login, source: 'oidc', ...oidcSubjectOf(iss, sub)});
+
+            try {
+                GraphService.createBoundIdentity({id: '@subject-1813-oidc', type: 'AgentIdentity', name: 'oidc', properties: {accountType: 'agent'}},
+                    {subject: oidcSubjectOf(ISSUER, '18130021')});
+                GraphService.upsertNode({id: '@subject-1813-oidc-legacy', type: 'AgentIdentity', name: 'bound by preferred_username'});
+                GraphService.upsertNode({id: '@subject-1813-proxied', type: 'AgentIdentity', name: 'proxied'});
+
+                // dormant: preferred_username selects as before, and nothing is bound ahead of the gate
+                expect(await serverInstance.buildRequestContext(oidc('subject-1813-oidc-legacy', ISSUER, '18130022')))
+                    .toMatchObject({userId: 'subject-1813-oidc-legacy', agentIdentityNodeId: '@subject-1813-oidc-legacy'});
+                expect(readSubjectBinding(sqlite(), oidcSubjectOf(ISSUER, '18130022'))).toBeNull();
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                expect(await serverInstance.buildRequestContext(oidc('renamed', ISSUER, '18130021')))
+                    .toMatchObject({userId: 'subject-1813-oidc', agentIdentityNodeId: '@subject-1813-oidc'});
+
+                // the same sub under another issuer is another subject; the legacy identity waits for its cutover bind
+                for (const request of [oidc('subject-1813-oidc', 'https://other.example/realms/neo', '18130021'), oidc('subject-1813-oidc-legacy', ISSUER, '18130022')]) {
+                    await expect(serverInstance.buildRequestContext(request)).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNBOUND'});
+                }
+
+                // an issuer the verifier could not confirm leaves the subject incomplete
+                await expect(serverInstance.buildRequestContext({...oidc('subject-1813-oidc', ISSUER, '18130021'), providerBaseUrl: undefined}))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_REQUIRED'});
+
+                expect(await serverInstance.buildRequestContext({userId: 'subject-1813-proxied', username: 'subject-1813-proxied', source: 'proxy-header'}))
+                    .toMatchObject({userId: 'subject-1813-proxied', agentIdentityNodeId: '@subject-1813-proxied'});
+            } finally {
+                cleanUp(['18130021', '18130022'], ['@subject-1813-oidc', '@subject-1813-oidc-legacy', '@subject-1813-proxied']);
+                serverInstance.destroy();
+            }
+        });
+
         test('once active, NEO_AGENT_IDENTITY keeps the login binding and never reads the activation', async () => {
             await GraphService.initAsync();
             const

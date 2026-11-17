@@ -2483,3 +2483,25 @@ test.describe('AuthService — the forge facts an admission stamps', () => {
         }
     })
 });
+
+test.describe('oidcSubject: the (issuer, sub) an OIDC introspection proves', () => {
+    test('keys on (issuer, sub), compares the issuer exactly, and leaves a field it cannot confirm absent', async () => {
+        const
+            {oidcSubject} = await import('../../../../../../../ai/mcp/server/shared/services/AuthService.mjs'),
+            ISS           = 'https://idp.example/realms/neo';
+
+        for (const [introspection, discovered, expected] of [
+            [{iss: ISS, sub: 's-1'},                              ISS,       {providerBaseUrl: ISS,       providerUserId: 's-1'}],
+            [{iss: ISS, sub: 's-1'},                              undefined, {providerBaseUrl: ISS,       providerUserId: 's-1'}],
+            [{sub: 's-1'},                                        ISS,       {providerBaseUrl: ISS,       providerUserId: 's-1'}],
+            // compared exactly, never normalized: a trailing slash or a host's case is another issuer
+            [{iss: `${ISS}/`, sub: 's-1'},                        ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
+            [{iss: 'https://IDP.example/realms/neo', sub: 's-1'}, ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
+            [{sub: 's-1'},                                        undefined, {providerBaseUrl: undefined, providerUserId: 's-1'}],
+            [{iss: ISS, sub: ''},                                 ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}],
+            [{iss: ISS, preferred_username: 's-1'},               ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}]
+        ]) {
+            expect(oidcSubject(introspection, discovered), JSON.stringify([introspection, discovered])).toEqual({authProvider: 'oidc', ...expected})
+        }
+    })
+});

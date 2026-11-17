@@ -24,6 +24,7 @@ import TransportService                                     from '../../mcp/serv
 import FleetControlBridge                                   from './FleetControlBridge.mjs';
 import FleetManager                                         from './FleetManager.mjs';
 import ForgeConnectionRegistryService                       from './ForgeConnectionRegistryService.mjs';
+import {FORGE_PROVIDER_NAMES}                               from './forgeProviders.mjs';
 import {createFleetWakeFanout}                              from './fleetWakeFanout.mjs';
 import {createFleetWakeReceiver}                            from './fleetWakeReceiver.mjs';
 import {createPlaneMailboxClient}                           from './planeMailboxClient.mjs';
@@ -115,7 +116,7 @@ export function assertFleetPlaneReady({aiConfig=AiConfig, rootDir=REPO_ROOT}={})
  * neither `ownerPrincipal` nor `ownerResolution` can arrive from the outside: both exist on a context
  * ONLY as this function's own resolution. A forge-authenticated context whose owner does not resolve
  * carries `ownerResolution` (`{state, reason}`) instead, so a refused lifecycle write can say why. A
- * context without a subject stays admitted (possession-proven identity can still read); the
+ * context without a forge subject (possession, or an OIDC subject) resolves no owner and stays admitted (it can still read); the
  * verb-class policy decides what such a context may do.
  * @param {Object|undefined} authInfo AuthService-populated `req.auth`.
  * @returns {Readonly<Object>|null} Frozen safe projection, or null when admission proved no identity.
@@ -135,7 +136,8 @@ export function createFleetRequestContext(authInfo) {
         }
     }
 
-    if (context.authProvider) {
+    // an owner is a forge connection's (ADR 0038 §2.2 fact 2): an OIDC subject names none
+    if (Object.hasOwn(FORGE_PROVIDER_NAMES, context.authProvider ?? '')) {
         const resolution = ForgeConnectionRegistryService.resolveOwner(context);
 
         if (resolution.state === 'admitted') {
