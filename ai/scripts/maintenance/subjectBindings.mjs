@@ -59,8 +59,8 @@ function sameFile(a, b) {
 
 /** @summary Whether the graph holds `identityId` as an `AgentIdentity` node. */
 function holdsIdentity(db, identityId) {
-    const row = typeof identityId === 'string' ? db.prepare('SELECT data FROM Nodes WHERE id = ?').get(identityId) : null;
-    let node = null;
+    const row  = typeof identityId === 'string' ? db.prepare('SELECT data FROM Nodes WHERE id = ?').get(identityId) : null;
+    let   node = null;
 
     try {
         node = row && JSON.parse(row.data);

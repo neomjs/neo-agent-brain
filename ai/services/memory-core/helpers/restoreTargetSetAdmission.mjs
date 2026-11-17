@@ -69,10 +69,10 @@ export async function admitRestoreTargetSetBundle({
             rowCount       : summaries.rowCount
         },
         graph: {
-            fileFingerprint  : graph.fileFingerprint,
-            rowCount         : graph.rowCount,
-            nodeCount        : graph.nodeCount,
-            edgeCount        : graph.edgeCount,
+            fileFingerprint: graph.fileFingerprint,
+            rowCount       : graph.rowCount,
+            nodeCount      : graph.nodeCount,
+            edgeCount      : graph.edgeCount,
             ...(graph.bindingCount !== undefined && {bindingCount: graph.bindingCount}),
             recordFingerprint: graph.recordFingerprint
         }
@@ -244,10 +244,10 @@ async function inspectGraphFile(filePath) {
     }
 
     return {
-        fileFingerprint  : await fingerprintFile(filePath),
-        rowCount         : nodes.length + edges.length,
-        nodeCount        : nodes.length,
-        edgeCount        : edges.length,
+        fileFingerprint: await fingerprintFile(filePath),
+        rowCount       : nodes.length + edges.length,
+        nodeCount      : nodes.length,
+        edgeCount      : edges.length,
         ...(bindings.length > 0 && {bindingCount: bindings.length}),
         recordFingerprint: fingerprintCanonical(bindings.length > 0
             ? {nodes: nodes.sort(), edges: edges.sort(), bindings: bindings.sort()}
@@ -288,10 +288,10 @@ function fingerprintAdmissionDescriptor({expectedDimension, components}) {
                 rowCount       : components.summaries.rowCount
             },
             graph: {
-                fileFingerprint  : components.graph.fileFingerprint,
-                rowCount         : components.graph.rowCount,
-                nodeCount        : components.graph.nodeCount,
-                edgeCount        : components.graph.edgeCount,
+                fileFingerprint: components.graph.fileFingerprint,
+                rowCount       : components.graph.rowCount,
+                nodeCount      : components.graph.nodeCount,
+                edgeCount      : components.graph.edgeCount,
                 ...(components.graph.bindingCount !== undefined && {bindingCount: components.graph.bindingCount}),
                 recordFingerprint: components.graph.recordFingerprint
             }

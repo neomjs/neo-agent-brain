@@ -44,9 +44,9 @@ import {
     resolveAgentIdentityAlias,
     resolveResidentFamilyById
 } from '../graph/agentFamilyResolution.mjs';
-import {getMissingMemoryWalLeaves}    from './helpers/memoryWalStore.mjs';
-import {isSubjectSelectionActive}     from './helpers/subjectBinding.mjs';
-import {writerStamp}                  from '../../daemons/wake/sunsetReceipt.mjs';
+import {getMissingMemoryWalLeaves} from './helpers/memoryWalStore.mjs';
+import {isSubjectSelectionActive}  from './helpers/subjectBinding.mjs';
+import {writerStamp}               from '../../daemons/wake/sunsetReceipt.mjs';
 import {
     classifyMailboxReadState,
     normalizeMailboxIdentityForComparison,

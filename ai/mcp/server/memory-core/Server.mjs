@@ -1,13 +1,13 @@
-import BaseServer                              from '../BaseServer.mjs';
-import logger                                  from './logger.mjs';
-import {buildToolCatalog, listTools, callTool} from './toolService.mjs';
-import AuthMiddleware                          from '../shared/services/AuthMiddleware.mjs';
-import AuthService                             from '../shared/services/AuthService.mjs';
-import IdentityPublicationService              from '../../../services/memory-core/IdentityPublicationService.mjs';
+import BaseServer                               from '../BaseServer.mjs';
+import logger                                   from './logger.mjs';
+import {buildToolCatalog, listTools, callTool}  from './toolService.mjs';
+import AuthMiddleware                           from '../shared/services/AuthMiddleware.mjs';
+import AuthService                              from '../shared/services/AuthService.mjs';
+import IdentityPublicationService               from '../../../services/memory-core/IdentityPublicationService.mjs';
 import RequestContextService, {normalizeUserId} from '../shared/services/RequestContextService.mjs';
-import StdioIdentityResolver                   from '../shared/services/StdioIdentityResolver.mjs';
-import BootEnvelopeResolver                    from '../shared/services/BootEnvelopeResolver.mjs';
-import {formatHostEndpoint}                    from '../shared/helpers/hostEndpoint.mjs';
+import StdioIdentityResolver                    from '../shared/services/StdioIdentityResolver.mjs';
+import BootEnvelopeResolver                     from '../shared/services/BootEnvelopeResolver.mjs';
+import {formatHostEndpoint}                     from '../shared/helpers/hostEndpoint.mjs';
 import {
     buildSqliteHolderDiagnostics,
     formatHarnessGroups

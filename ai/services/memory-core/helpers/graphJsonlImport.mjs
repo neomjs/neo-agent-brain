@@ -95,8 +95,8 @@ export async function importGraphJsonl({
             subjectBindings: {inserted: 0, skippedExisting: 0, failed: 0}
         };
 
-    let imported        = 0;
-    let maxObserved     = 0;
+    let imported    = 0;
+    let maxObserved = 0;
     let mergeFenced = false;
 
     const relation = [];

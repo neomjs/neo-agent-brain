@@ -1,14 +1,14 @@
-import {test, expect}                                from '@playwright/test';
-import Database                                      from 'better-sqlite3';
-import {generateKeyPairSync, sign}                   from 'node:crypto';
-import fs                                            from 'node:fs';
-import os                                            from 'node:os';
-import path                                          from 'node:path';
-import {compileFoundingFamilySeed}                   from '../../../../../../ai/graph/identityFoundingSeed.mjs';
-import {stringifyCanonicalJson}                      from '../../../../../../ai/services/shared/canonicalJson.mjs';
-import {consumeIdentityPublicationBoot}              from '../../../../../../ai/services/memory-core/helpers/identityPublicationLineage.mjs';
-import {installIdentityFoundingSource}               from '../../../../../../ai/services/memory-core/helpers/identityFoundingStorage.mjs';
-import {familySubjectStateKey}                       from '../../../../../../ai/services/shared/identityPublicationKeys.mjs';
+import {test, expect}                   from '@playwright/test';
+import Database                         from 'better-sqlite3';
+import {generateKeyPairSync, sign}      from 'node:crypto';
+import fs                               from 'node:fs';
+import os                               from 'node:os';
+import path                             from 'node:path';
+import {compileFoundingFamilySeed}      from '../../../../../../ai/graph/identityFoundingSeed.mjs';
+import {stringifyCanonicalJson}         from '../../../../../../ai/services/shared/canonicalJson.mjs';
+import {consumeIdentityPublicationBoot} from '../../../../../../ai/services/memory-core/helpers/identityPublicationLineage.mjs';
+import {installIdentityFoundingSource}  from '../../../../../../ai/services/memory-core/helpers/identityFoundingStorage.mjs';
+import {familySubjectStateKey}          from '../../../../../../ai/services/shared/identityPublicationKeys.mjs';
 import {
     admitIdentityPublication,
     readIdentityPublicationSnapshot
@@ -94,7 +94,7 @@ function admitHistory(subject) {
         expect(admit({kind: 'baseline', operationId: 'baseline-ada', effectiveAt: 90, expectedPlaneRevision: 0, bindings: [binding]}, 100)).toBe('accepted');
         expect(admit({kind: 'confirm', operationId: 'confirm-ada', binding, effectiveAt: 100, expectedMembershipRevision: 1,
             expectedAdmissionRevision: 0, operatorPrincipal: 'owner-a', family: 'claude', model: null,
-            unattestedReason: 'No model attested', newFamily: false}, 110)).toBe('accepted');
+            unattestedReason         : 'No model attested', newFamily: false}, 110)).toBe('accepted');
     } finally {
         db.close();
     }
@@ -149,14 +149,14 @@ test.describe('ai/scripts/maintenance/subjectBindings', () => {
 
     test('an endpoint move keeps the identity and the endpoint it leaves, so the family history admitted there stays reachable', () => {
         const
-            moved   = {...S, providerBaseUrl: 'https://github.example.com/api/v3'},
-            again   = {...S, providerBaseUrl: 'https://github.internal/api/v3'},
-            keyOf   = subject => familySubjectStateKey({planeId: target.planeId, subject}),
+            moved = {...S, providerBaseUrl: 'https://github.example.com/api/v3'},
+            again = {...S, providerBaseUrl: 'https://github.internal/api/v3'},
+            keyOf = subject => familySubjectStateKey({planeId: target.planeId, subject}),
             // the family history the binding reaches: every subject tuple its row names, read by the family-history reader
             history = () => stored(db => {
                 const
-                    binding  = readIdentityBinding(db, '@ada'),
-                    keys     = [binding.providerBaseUrl, ...binding.formerBaseUrls ?? []].map(providerBaseUrl => keyOf({...S, providerBaseUrl})),
+                    binding           = readIdentityBinding(db, '@ada'),
+                    keys              = [binding.providerBaseUrl, ...binding.formerBaseUrls ?? []].map(providerBaseUrl => keyOf({...S, providerBaseUrl})),
                     {state, snapshot} = readIdentityPublicationSnapshot(db, {bootText, target});
 
                 expect(state).toBe('available');
@@ -244,7 +244,7 @@ test.describe('ai/scripts/maintenance/subjectBindings', () => {
 
     test('seed binds each subject the founding record maps to one held identity, and names the rest without choosing', () => {
         expect(seed()).toEqual({
-            ok: true, command: 'seed', applied: false, foundingRevision: 'reviewed-source:fixture',
+            ok   : true, command: 'seed', applied: false, foundingRevision: 'reviewed-source:fixture',
             bound: [{subject: S, identityId: '@ada'}], matching: [], held: [], refused: [], unresolved: UNRESOLVED
         });
         expect(stored(readSubjectBindingRecords)).toEqual([]);
