@@ -1,6 +1,6 @@
 import {test, expect}                                from '@playwright/test';
 import Database                                      from 'better-sqlite3';
-import {generateKeyPairSync}                         from 'node:crypto';
+import {generateKeyPairSync, sign}                   from 'node:crypto';
 import fs                                            from 'node:fs';
 import os                                            from 'node:os';
 import path                                          from 'node:path';
@@ -8,8 +8,14 @@ import {compileFoundingFamilySeed}                   from '../../../../../../ai/
 import {stringifyCanonicalJson}                      from '../../../../../../ai/services/shared/canonicalJson.mjs';
 import {consumeIdentityPublicationBoot}              from '../../../../../../ai/services/memory-core/helpers/identityPublicationLineage.mjs';
 import {installIdentityFoundingSource}               from '../../../../../../ai/services/memory-core/helpers/identityFoundingStorage.mjs';
+import {familySubjectStateKey}                       from '../../../../../../ai/services/shared/identityPublicationKeys.mjs';
+import {
+    admitIdentityPublication,
+    readIdentityPublicationSnapshot
+} from '../../../../../../ai/services/memory-core/helpers/identityPublicationAdmission.mjs';
 import {
     readFoundingIdentities,
+    readIdentityBinding,
     readSubjectBinding,
     readSubjectBindingRecords
 } from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
@@ -24,8 +30,9 @@ const
     target     = {planeId: 'binding-admin-fixture', dataRoot: '/fixture/binding-admin'},
     descriptor = (trust, kid = 'kid-a') => ({version: 1, target: {...target}, issuer: 'fixture-fleet',
         reservation: {attemptId: 'attempt-a', kid, originRunId: '123e4567-e89b-42d3-a456-426614174000'}, trust}),
-    publicKey  = () => generateKeyPairSync('ed25519').publicKey.export({type: 'spki', format: 'der'}).toString('base64url'),
-    bootText   = stringifyCanonicalJson(descriptor([{kid: 'kid-a', publicKey: publicKey()}])),
+    key        = generateKeyPairSync('ed25519'),
+    publicKey  = (pair = generateKeyPairSync('ed25519')) => pair.publicKey.export({type: 'spki', format: 'der'}).toString('base64url'),
+    bootText   = stringifyCanonicalJson(descriptor([{kid: 'kid-a', publicKey: publicKey(key)}])),
     S          = Object.freeze({authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '1001'}),
     T          = Object.freeze({...S, providerUserId: '2002'}),
     U          = Object.freeze({...S, providerUserId: '3003'});
@@ -62,6 +69,32 @@ function seedGraph({founding = true} = {}) {
         const node = db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, NULL, ?)');
         ['@ada', '@grace', '@vega'].forEach(id => node.run(id, JSON.stringify({id, label: 'AgentIdentity'})));
         node.run('memory-1', JSON.stringify({id: 'memory-1', label: 'MEMORY'}));
+    } finally {
+        db.close();
+    }
+}
+
+/** @summary Signs one family-publication operation for the fixture lineage with its test-only key. */
+function token(operation, issuedAt) {
+    const payload = Buffer.from(stringifyCanonicalJson({version: 1, purpose: 'identity-family-publication',
+        audience: target.planeId, issuer: 'fixture-fleet', kid: 'kid-a', issuedAt, expiresAt: issuedAt + 300000, operation}));
+
+    return payload.toString('base64url') + '.' + sign(null,
+        Buffer.concat([Buffer.from('neo.identity-family-publication.v1\0'), payload]), key.privateKey).toString('base64url');
+}
+
+/** @summary Admits family history under one subject through the admission path: a baseline seat, then a declaration. */
+function admitHistory(subject) {
+    const
+        db      = new Database(dbPath),
+        binding = {seatId: 'seat-ada', incarnation: 'inc-ada', subject: {...subject, providerUsername: 'ada'}},
+        admit   = (operation, at) => admitIdentityPublication(db, token(operation, at), {bootText, target, clock: () => at}).state;
+
+    try {
+        expect(admit({kind: 'baseline', operationId: 'baseline-ada', effectiveAt: 90, expectedPlaneRevision: 0, bindings: [binding]}, 100)).toBe('accepted');
+        expect(admit({kind: 'confirm', operationId: 'confirm-ada', binding, effectiveAt: 100, expectedMembershipRevision: 1,
+            expectedAdmissionRevision: 0, operatorPrincipal: 'owner-a', family: 'claude', model: null,
+            unattestedReason: 'No model attested', newFamily: false}, 110)).toBe('accepted');
     } finally {
         db.close();
     }
@@ -109,19 +142,45 @@ test.describe('ai/scripts/maintenance/subjectBindings', () => {
 
         const bound = stored(db => readSubjectBinding(db, S));
 
-        expect(bound).toEqual({...S, identityId: '@ada', writer: 'administrative', foundingRevision: 'reviewed-source:fixture', boundAt: 500});
+        expect(bound).toEqual({...S, identityId: '@ada', writer: 'administrative', foundingRevision: 'reviewed-source:fixture', formerBaseUrls: [], boundAt: 500});
         expect(bind({apply: true, now: () => 900})).toMatchObject({applied: true, state: 'matching'});
         expect(stored(db => readSubjectBinding(db, S))).toEqual(bound);
     });
 
-    test('an endpoint move keeps the identity, so its history stays reachable', () => {
-        const moved = {...S, providerBaseUrl: 'https://github.example.com/api/v3'};
+    test('an endpoint move keeps the identity and the endpoint it leaves, so the family history admitted there stays reachable', () => {
+        const
+            moved   = {...S, providerBaseUrl: 'https://github.example.com/api/v3'},
+            again   = {...S, providerBaseUrl: 'https://github.internal/api/v3'},
+            keyOf   = subject => familySubjectStateKey({planeId: target.planeId, subject}),
+            // the family history the binding reaches: every subject tuple its row names, read by the family-history reader
+            history = () => stored(db => {
+                const
+                    binding  = readIdentityBinding(db, '@ada'),
+                    keys     = [binding.providerBaseUrl, ...binding.formerBaseUrls ?? []].map(providerBaseUrl => keyOf({...S, providerBaseUrl})),
+                    {state, snapshot} = readIdentityPublicationSnapshot(db, {bootText, target});
+
+                expect(state).toBe('available');
+                return snapshot.subjects.filter(entry => keys.includes(keyOf(entry.subject)) && entry.bindings.length > 0);
+            });
 
         bind({apply: true});
+        admitHistory(S);
+        expect(history()).toHaveLength(1);
 
         expect(bind({apply: true, subject: moved})).toMatchObject({applied: true, state: 'moved'});
+
+        const [reached] = history();
+        expect(reached, 'the history admitted under the endpoint the binding left').toMatchObject({subject: S, bindings: [{binding: {seatId: 'seat-ada'}}]});
+        expect(reached.source.declarations).toMatchObject([{family: 'claude', operatorPrincipal: 'owner-a'}]);
         expect(stored(db => readSubjectBinding(db, S))).toBeNull();
-        expect(stored(db => readSubjectBinding(db, moved)).identityId).toBe('@ada');
+        expect(stored(db => readSubjectBinding(db, moved))).toMatchObject({identityId: '@ada', formerBaseUrls: [S.providerBaseUrl]});
+
+        // each further move keeps every endpoint left, and a move back to one drops it from the list
+        bind({apply: true, subject: again});
+        expect(stored(db => readIdentityBinding(db, '@ada')).formerBaseUrls).toEqual([S.providerBaseUrl, moved.providerBaseUrl]);
+        bind({apply: true, subject: S});
+        expect(stored(db => readIdentityBinding(db, '@ada'))).toMatchObject({...S, formerBaseUrls: [moved.providerBaseUrl, again.providerBaseUrl]});
+        expect(history()).toHaveLength(1);
     });
 
     test('another identity bound to the subject refuses by name, and nothing changes', () => {
@@ -191,7 +250,7 @@ test.describe('ai/scripts/maintenance/subjectBindings', () => {
         expect(stored(readSubjectBindingRecords)).toEqual([]);
 
         expect(seed({apply: true})).toMatchObject({ok: true, applied: true, bound: [{subject: S, identityId: '@ada'}], unresolved: UNRESOLVED});
-        expect(stored(db => readSubjectBinding(db, S))).toEqual({...S, identityId: '@ada', writer: 'administrative', foundingRevision: 'reviewed-source:fixture', boundAt: 500});
+        expect(stored(db => readSubjectBinding(db, S))).toEqual({...S, identityId: '@ada', writer: 'administrative', foundingRevision: 'reviewed-source:fixture', formerBaseUrls: [], boundAt: 500});
         expect(stored(db => readSubjectBinding(db, T))).toBeNull();
         expect(stored(db => readSubjectBinding(db, U))).toBeNull();
 

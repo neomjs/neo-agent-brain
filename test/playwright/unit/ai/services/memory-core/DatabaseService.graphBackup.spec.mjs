@@ -237,6 +237,7 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
                       identityId      : 'graph-backup-identity',
                       writer          : 'first-admission',
                       foundingRevision: null,
+                      formerBaseUrls  : [],
                       boundAt         : 10
                   };
 

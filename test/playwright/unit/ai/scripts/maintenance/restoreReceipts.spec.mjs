@@ -374,7 +374,7 @@ test.describe('restoreReceipts maintenance script', () => {
             node('MESSAGE:m1', 'MESSAGE', {readAt: '2026-09-25T10:00:00.000Z'}),
             {type: 'subject-binding', data: {
                 authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '1001',
-                identityId  : '@ada', writer: 'first-admission', foundingRevision: null, boundAt: 10
+                identityId  : '@ada', writer: 'first-admission', foundingRevision: null, formerBaseUrls: [], boundAt: 10
             }},
             {type: 'subject-binding-activation', data: {cutoverRevision: 'cut-1', activatedAt: 11}}
         ]);

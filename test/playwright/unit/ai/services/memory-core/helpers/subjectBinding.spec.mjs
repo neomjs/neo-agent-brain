@@ -52,7 +52,7 @@ const inTransaction = fn => db.transaction(fn)();
 const count = () => db.prepare(`SELECT COUNT(*) AS n FROM ${SUBJECT_BINDING_TABLE}`).get().n;
 
 /** @summary A binding row as a bundle carries it. */
-const row = (subject, identityId, boundAt = 10) => ({...subject, identityId, writer: 'first-admission', foundingRevision: null, boundAt});
+const row = (subject, identityId, boundAt = 10) => ({...subject, identityId, writer: 'first-admission', foundingRevision: null, formerBaseUrls: [], boundAt});
 
 /** @summary Writes records as a graph bundle file and returns its path. */
 const bundle = records => {
@@ -80,7 +80,7 @@ test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
         const result = inTransaction(() => bindAtFirstAdmission(db, {subject: S, identityId: '@ada', at: 10}));
 
         expect(result.state).toBe('bound');
-        expect(result.binding).toEqual({...S, identityId: '@ada', writer: 'first-admission', foundingRevision: null, boundAt: 10});
+        expect(result.binding).toEqual({...S, identityId: '@ada', writer: 'first-admission', foundingRevision: null, formerBaseUrls: [], boundAt: 10});
         expect(Object.isFrozen(result.binding)).toBe(true);
         expect(readIdentityBinding(db, '@ada')).toEqual(result.binding);
     });
@@ -133,7 +133,7 @@ test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
         const result = inTransaction(() => bindAdministratively(db, {subject: S, identityId: '@ada', foundingRevision: 'rev-1', at: 10}));
 
         expect(result.state).toBe('bound');
-        expect(result.binding).toEqual({...S, identityId: '@ada', writer: 'administrative', foundingRevision: 'rev-1', boundAt: 10});
+        expect(result.binding).toEqual({...S, identityId: '@ada', writer: 'administrative', foundingRevision: 'rev-1', formerBaseUrls: [], boundAt: 10});
     });
 
     test('an administrative endpoint move keeps the identity; first admission never moves one', () => {
@@ -149,7 +149,8 @@ test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
         expect(result.state).toBe('moved');
         expect(result.previous.providerBaseUrl).toBe(GITHUB);
         expect(readSubjectBinding(db, S)).toBeNull();
-        expect(readSubjectBinding(db, moved).identityId).toBe('@ada');
+        expect(readSubjectBinding(db, moved), 'the row keeps the endpoint it left').toMatchObject({identityId: '@ada', formerBaseUrls: [GITHUB]});
+        expect(Object.isFrozen(readSubjectBinding(db, moved).formerBaseUrls)).toBe(true);
         expect(count()).toBe(1);
     });
 
@@ -252,7 +253,7 @@ test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
 
             expect(readSubjectBindingRecords(db)).toEqual([
                 {type: SUBJECT_BINDING_RECORD, data: row(S, '@ada')},
-                {type: SUBJECT_BINDING_RECORD, data: {...T, identityId: '@grace', writer: 'administrative', foundingRevision: 'rev-1', boundAt: 11}},
+                {type: SUBJECT_BINDING_RECORD, data: {...T, identityId: '@grace', writer: 'administrative', foundingRevision: 'rev-1', formerBaseUrls: [], boundAt: 11}},
                 {type: SUBJECT_BINDING_ACTIVATION_RECORD, data: {cutoverRevision: 'cut-1', activatedAt: 12}}
             ]);
         });
@@ -357,10 +358,14 @@ test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
                 {type: SUBJECT_BINDING_RECORD, data: {...row(S, '@ada'), writer: 'tool-payload'}},
                 {type: SUBJECT_BINDING_RECORD, data: {...row(S, '@ada'), extra: true}},
                 {type: SUBJECT_BINDING_RECORD, data: {authProvider: 'github', identityId: '@ada', writer: 'first-admission', foundingRevision: null, boundAt: 10}},
+                // only an administrative move leaves an endpoint, and never the current one or the same one twice
+                {type: SUBJECT_BINDING_RECORD, data: {...row(S, '@ada'), formerBaseUrls: ['https://old.example']}},
+                {type: SUBJECT_BINDING_RECORD, data: {...row(S, '@ada'), writer: 'administrative', foundingRevision: 'rev-1', formerBaseUrls: [S.providerBaseUrl]}},
+                {type: SUBJECT_BINDING_RECORD, data: {...row(S, '@ada'), writer: 'administrative', foundingRevision: 'rev-1', formerBaseUrls: ['https://old.example', 'https://old.example']}},
                 {type: SUBJECT_BINDING_ACTIVATION_RECORD, data: {cutoverRevision: '', activatedAt: 10}}
             ]), 'merge');
 
-            expect(counts.subjectBindings).toEqual({inserted: 0, skippedExisting: 0, failed: 5});
+            expect(counts.subjectBindings).toEqual({inserted: 0, skippedExisting: 0, failed: 8});
             expect(readSubjectBinding(db, S)).toBeNull();
             expect(readSubjectBindingActivation(db)).toBeNull();
         });

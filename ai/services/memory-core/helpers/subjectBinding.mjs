@@ -16,7 +16,8 @@ import {readIdentityPublicationAuthorityInTransaction} from './identityPublicati
  *   the identity. It binds only an identity that transaction created.
  * - {@link bindAdministratively}, the plane-local administrative path, whose authority is host access to
  *   the data root. It records the retained founding source revision and is the only route that binds an
- *   existing identity or moves a binding to a new endpoint.
+ *   existing identity or moves a binding to a new endpoint. A move keeps the endpoints it leaves on the
+ *   row (`formerBaseUrls`): family history is keyed by the full subject tuple, so they keep it reachable.
  *
  * Two more carry existing bindings and create none: a migration moves each binding with its renamed
  * identity ({@link renameBoundIdentities}), and a graph bundle restore re-inserts exactly the rows the
@@ -53,7 +54,7 @@ export const SUBJECT_BINDING_ACTIVATION_RECORD = 'subject-binding-activation';
 export const SUBJECT_BINDING_RECORD_TYPES = Object.freeze([SUBJECT_BINDING_RECORD, SUBJECT_BINDING_ACTIVATION_RECORD]);
 
 const
-    ROW_KEYS   = [...SUBJECT_KEY, 'identityId', 'writer', 'foundingRevision', 'boundAt'],
+    ROW_KEYS   = [...SUBJECT_KEY, 'identityId', 'writer', 'foundingRevision', 'formerBaseUrls', 'boundAt'],
     WRITERS    = ['first-admission', 'administrative'],
     ACTIVATION = 'acting-identity',
     SCHEMA     = `CREATE TABLE IF NOT EXISTS ${SUBJECT_BINDING_TABLE} (
@@ -63,6 +64,7 @@ const
         identityId       TEXT    NOT NULL UNIQUE,
         writer           TEXT    NOT NULL CHECK (writer IN ('first-admission', 'administrative')),
         foundingRevision TEXT,
+        formerBaseUrls   TEXT    NOT NULL,
         boundAt          INTEGER NOT NULL,
         PRIMARY KEY (authProvider, providerBaseUrl, providerUserId)
     )`,
@@ -122,13 +124,30 @@ function hasTable(db, name) {
     return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 }
 
-/** @summary Tests a row's exact shape: the subject, the identity, a known writer with its revision rule, a time. */
+/**
+ * @summary Tests a row's exact shape: the subject, the identity, a known writer with its revision rule, the
+ * endpoints a move left (distinct, never the current one, and only an administrative move leaves any), a time.
+ */
 function wellFormed(row) {
+    const former = row?.formerBaseUrls;
+
     return Boolean(row) && typeof row === 'object' &&
         Object.keys(row).length === ROW_KEYS.length && ROW_KEYS.every(key => Object.hasOwn(row, key)) &&
         [...SUBJECT_KEY, 'identityId'].every(key => text(row[key])) && WRITERS.includes(row.writer) &&
         (row.writer === 'administrative' ? text(row.foundingRevision) : row.foundingRevision === null) &&
+        Array.isArray(former) && former.every(text) && new Set(former).size === former.length &&
+        !former.includes(row.providerBaseUrl) && (row.writer === 'administrative' || former.length === 0) &&
         Number.isSafeInteger(row.boundAt);
+}
+
+/** @summary Decodes the stored endpoint list; anything but a JSON array stays malformed. */
+function decodeFormer(value) {
+    try {
+        const list = JSON.parse(value);
+        return Array.isArray(list) ? list : null;
+    } catch {
+        return null;
+    }
 }
 
 /** @summary Tests the activation record's exact shape. */
@@ -137,11 +156,14 @@ function wellFormedActivation(record) {
         text(record.cutoverRevision) && Number.isSafeInteger(record.activatedAt);
 }
 
-/** @summary Freezes one stored row after checking its exact shape; a malformed row never reads as a binding. */
+/** @summary Decodes and freezes one stored row after checking its exact shape; a malformed row never reads as a binding. */
 function freezeRow(row) {
     if (!row) return null;
-    if (!wellFormed(row)) throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'A stored subject binding is malformed.');
-    return Object.freeze({...row});
+
+    const value = {...row, formerBaseUrls: decodeFormer(row.formerBaseUrls)};
+
+    if (!wellFormed(value)) throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'A stored subject binding is malformed.');
+    return Object.freeze({...value, formerBaseUrls: Object.freeze(value.formerBaseUrls)});
 }
 
 /** @summary Runs a read, mapping storage failures to one named unavailable state. */
@@ -276,7 +298,7 @@ function existingClaim(db, subject, identityId) {
 /** @summary Inserts one row and returns it frozen. */
 function insert(db, row) {
     db.prepare(`INSERT INTO ${SUBJECT_BINDING_TABLE} (${ROW_KEYS.join(', ')}) VALUES (${ROW_KEYS.map(() => '?').join(', ')})`)
-        .run(...ROW_KEYS.map(key => row[key]));
+        .run(...ROW_KEYS.map(key => key === 'formerBaseUrls' ? JSON.stringify(row[key]) : row[key]));
     return rowBySubject(db, row);
 }
 
@@ -300,7 +322,7 @@ export function bindAtFirstAdmission(db, {subject, identityId, at = Date.now()} 
     const matching = existingClaim(db, subject, identityId);
     if (matching) return Object.freeze({state: 'matching', binding: matching});
 
-    return Object.freeze({state: 'bound', binding: insert(db, {...subject, identityId, writer: 'first-admission', foundingRevision: null, boundAt: at})});
+    return Object.freeze({state: 'bound', binding: insert(db, {...subject, identityId, writer: 'first-admission', foundingRevision: null, formerBaseUrls: [], boundAt: at})});
 }
 
 /**
@@ -402,8 +424,9 @@ export function planAdministrativeBind(db, {subject, identityId} = {}) {
 
 /**
  * @summary Binds a subject to an existing identity, or moves an identity to its subject's new endpoint.
- * Only the plane-local administrative path calls this. An endpoint move keeps the identity, so its
- * history stays reachable; any other conflict refuses by name.
+ * Only the plane-local administrative path calls this. An endpoint move keeps the identity and adds the
+ * endpoint it leaves to `formerBaseUrls`, so history keyed by an earlier subject tuple stays reachable from
+ * the binding; any other conflict refuses by name.
  * @param {Object} db The graph's physical SQLite connection, already in a transaction.
  * @param {Object} options
  * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`.
@@ -422,13 +445,18 @@ export function bindAdministratively(db, {subject, identityId, foundingRevision,
 
     const
         plan = planAdministrativeBind(db, {subject, identityId}),
-        row  = {...subject, identityId, writer: 'administrative', foundingRevision, boundAt: at};
+        row  = {...subject, identityId, writer: 'administrative', foundingRevision, formerBaseUrls: [], boundAt: at};
 
     if (plan.state === 'matching') return plan;
 
     if (plan.state === 'moved') {
+        const {previous} = plan;
+
+        row.formerBaseUrls = [...new Set([...previous.formerBaseUrls, previous.providerBaseUrl])]
+            .filter(url => url !== subject.providerBaseUrl);
+
         db.prepare(`DELETE FROM ${SUBJECT_BINDING_TABLE} WHERE identityId = ?`).run(identityId);
-        return Object.freeze({state: 'moved', binding: insert(db, row), previous: plan.previous});
+        return Object.freeze({state: 'moved', binding: insert(db, row), previous});
     }
 
     return Object.freeze({state: 'bound', binding: insert(db, row)});

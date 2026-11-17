@@ -42,7 +42,7 @@ import {
 const
     SUBJECT         = Object.freeze({authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '1001'}),
     BINDING_RECORDS = Object.freeze([
-        {type: 'subject-binding', data: {...SUBJECT, identityId: 'restored-a', writer: 'first-admission', foundingRevision: null, boundAt: 10}},
+        {type: 'subject-binding', data: {...SUBJECT, identityId: 'restored-a', writer: 'first-admission', foundingRevision: null, formerBaseUrls: [], boundAt: 10}},
         {type: 'subject-binding-activation', data: {cutoverRevision: 'cut-1', activatedAt: 11}}
     ]);
 
