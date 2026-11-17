@@ -112,6 +112,32 @@ export function forgeAdmissionFacts(auth) {
     return authProvider ? {authProvider, providerBaseUrl: forgeApiBase(auth, authProvider)} : null
 }
 
+/**
+ * @summary Parses one `auth.allowedUsers` entry: a `login` or `login:providerUserId` string, or an object
+ * with exactly `{login, providerUserId}`. The id is decimal digits, as a string or a non-negative integer.
+ * @param {*} entry
+ * @returns {Array<String|undefined>} `[login, providerUserId]`; the id is `undefined` for a bare login.
+ * @throws {Error} On any other entry.
+ */
+function allowlistEntry(entry) {
+    let match = null;
+
+    if (typeof entry === 'string') {
+        match = /^([^\s:]+)(?::(\d+))?$/.exec(entry.trim())
+    } else if (entry?.constructor === Object && Object.keys(entry).sort().join() === 'login,providerUserId') {
+        const id = Number.isSafeInteger(entry.providerUserId) ? String(entry.providerUserId) : entry.providerUserId;
+
+        match = typeof entry.login === 'string' && /^[^\s:]+$/.test(entry.login) && typeof id === 'string' && /^\d+$/.test(id)
+            ? [entry, entry.login, id] : null
+    }
+
+    if (!match) {
+        throw new Error('AuthService: auth.allowedUsers entries are `login` or `login:providerUserId` (a numeric provider id)')
+    }
+
+    return [match[1], match[2]]
+}
+
 class AuthService extends Base {
     static config = {
         /**
@@ -666,35 +692,36 @@ class AuthService extends Base {
     }
 
     /**
-     * @summary Normalizes `auth.allowedUsers` into its two entry forms.
+     * @summary Normalizes `auth.allowedUsers` into its two entry forms, and refuses setup on anything else.
      *
-     * A bare `login` admits whoever holds that login now. A forge releases a renamed login for anyone
-     * to register, so this is the weaker legacy profile. A subject-pinned entry, `login:providerUserId`
-     * in the CSV env or `{login, providerUserId}` in a config overlay, admits that account by its
-     * stable provider id, whatever its login spells now; its login is a label. A malformed entry
-     * refuses setup rather than degrade to a weaker form.
-     * @param {Array<String|Object>|String|null|undefined} value The resolved leaf.
+     * The leaf resolves to a list: the CSV env parses to one, a config overlay declares one, and a string
+     * left by an overlay written before the `csv` type is split on commas. An empty list admits any
+     * resolved user. A bare `login` admits whoever holds that login now. A forge releases a renamed login
+     * for anyone to register, so this is the weaker legacy profile. A subject-pinned entry,
+     * `login:providerUserId` in the CSV env or `{login, providerUserId}` in a config overlay, admits that
+     * account by its stable provider id, whatever its login spells now; its login is a label. Blank
+     * entries are skipped. The config layer keeps a mistyped value with only a warning, so any other value
+     * or entry refuses here rather than degrade to an empty gate or a weaker form.
+     * @param {Array<String|Object>|String} value The resolved leaf.
      * @returns {{logins: Set<String>, subjects: Set<String>, size: Number, admits: Function}} `admits(login, id)`
      * is true when a subject-pinned entry names `id` or a bare entry names `login`.
-     * @throws {Error} On an entry that is neither a login nor a login with a numeric provider id.
+     * @throws {Error} On a value that is not a list, or an entry that is neither form.
      */
     #normalizeUserAllowlist(value) {
+        if (!Array.isArray(value) && typeof value !== 'string') {
+            throw new Error('AuthService: auth.allowedUsers is a list of `login` or `login:providerUserId` entries')
+        }
+
         const
-            entries  = Array.isArray(value) ? value.filter(entry => typeof entry !== 'string' || entry.trim()) : this.#normalizePatAllowlist(value),
             logins   = new Set(),
             subjects = new Set();
 
-        for (const entry of entries) {
-            const
-                pinned = entry !== null && typeof entry === 'object',
-                match  = pinned ? null : /^([^\s:]+)(?::(\d+))?$/.exec(String(entry).trim()),
-                id     = pinned ? String(entry.providerUserId ?? '') : match?.[2];
+        for (const entry of typeof value === 'string' ? value.split(',') : value) {
+            if (typeof entry === 'string' && !entry.trim()) continue;
 
-            if (pinned ? !/^\d+$/.test(id) || typeof entry.login !== 'string' || !entry.login.trim() : !match) {
-                throw new Error('AuthService: auth.allowedUsers entries are `login` or `login:providerUserId` (a numeric provider id)')
-            }
+            const [login, id] = allowlistEntry(entry);
 
-            id ? subjects.add(id) : logins.add(match[1])
+            id ? subjects.add(id) : logins.add(login)
         }
 
         return {logins, subjects, size: logins.size + subjects.size,
@@ -1245,8 +1272,8 @@ class AuthService extends Base {
             ttlSeconds          = aiConfig.auth.patCacheTtlSeconds,
             ttlMs               = ttlSeconds * 1000,
             validationTimeoutMs = this.#validatePatValidationTimeoutMs(aiConfig.auth.patValidationTimeoutMs),
-            allowedUsers         = this.#normalizeUserAllowlist(aiConfig.auth.allowedUsers),
-            requireUser          = allowedUsers.size > 0,
+            allowedUsers        = this.#normalizeUserAllowlist(aiConfig.auth.allowedUsers),
+            requireUser         = allowedUsers.size > 0,
             // Applies the process-lifetime admission decision after provider validation but before
             // AuthInfo can reach Express; bootstrap is the only call allowed to establish the pin.
             admitProviderSubject = aiConfig.auth.pinFirstProviderSubject === true
@@ -1348,9 +1375,11 @@ class AuthService extends Base {
             }
 
             // An entry without the provider's account id names no subject: neither a subject-pinned
-            // allowlist entry, the process pin nor Memory Core's binding could check it. It fails
-            // closed and leaves the store; the next fresh validation writes a complete one.
-            if (entry.user?.id == null) {
+            // allowlist entry, the process pin nor Memory Core's binding could check it. An account id
+            // names one account per provider endpoint, so an entry the current endpoint did not verify
+            // names no subject here either. Both fail closed and leave the store; the next fresh
+            // validation writes a complete one.
+            if (entry.user?.id == null || entry.authProvider !== 'github' || entry.providerBaseUrl !== apiBaseUrl) {
                 entries.delete(tokenHash);
                 await persistDiskEntries();
                 return null
@@ -1583,14 +1612,17 @@ class AuthService extends Base {
                 // revoked token must also leave THIS store on the authoritative path below.
                 // Persisted subject is NORMALIZED to the fields buildInfo consumes — the full
                 // provider response (plan flags, profile URLs, email scopes) never reaches disk;
-                // identity-disclosure bound is exactly these three fields plus scopes + timestamp.
+                // identity-disclosure bound is exactly these three fields plus scopes + timestamp,
+                // and the endpoint that verified them.
                 if (diskCachePath) {
                     const entries = await loadDiskEntries();
 
                     entries.set(tokenHash, {
-                        user      : {id: user.id, login: user.login, name: user.name},
+                        user           : {id: user.id, login: user.login, name: user.name},
                         scopes,
-                        verifiedAt: Date.now()
+                        verifiedAt     : Date.now(),
+                        authProvider   : 'github',
+                        providerBaseUrl: apiBaseUrl
                     });
                     await persistDiskEntries()
                 }

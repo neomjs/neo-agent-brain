@@ -30,7 +30,7 @@ import {readFile}            from 'node:fs/promises';
  * @param {Object}   [options]
  * @param {Object}   [options.fsModule]    Injection seam for tests; defaults to `node:fs/promises`.
  * @param {Function} [options.now=Date.now] Injectable clock for tests.
- * @returns {{entries: Map<String, {user: Object, scopes: String[], verifiedAt: Number}>, warning: String|null}}
+ * @returns {{entries: Map<String, {user: Object, scopes: String[], verifiedAt: Number, authProvider?: String, providerBaseUrl?: String}>, warning: String|null}}
  */
 export async function readPatValidationCache(filePath, {fsModule, now = Date.now} = {}) {
     const fsPromises = fsModule ?? {readFile};
@@ -69,7 +69,11 @@ export async function readPatValidationCache(filePath, {fsModule, now = Date.now
             entries.set(tokenHash, {
                 user      : entry.user,
                 scopes    : Array.isArray(entry.scopes) ? entry.scopes : [],
-                verifiedAt: entry.verifiedAt
+                verifiedAt: entry.verifiedAt,
+                // the provider endpoint that verified the row; without it the row is unqualified, and
+                // the caller decides what that admits
+                ...(typeof entry.authProvider === 'string' && typeof entry.providerBaseUrl === 'string'
+                    ? {authProvider: entry.authProvider, providerBaseUrl: entry.providerBaseUrl} : {})
             })
         }
     }

@@ -99,6 +99,7 @@ async function produceAuthInfo({baseUrl, login = 'octocat', providerId = 4242, t
             patCacheTtlSeconds    : 300,
             patValidationTimeoutMs: 5000,
             patDiskCachePath      : '',
+            allowedUsers          : []
         }},
         logger           : {info: () => {}, warn: () => {}, error: () => {}},
         InvalidTokenError: FakeInvalidTokenError

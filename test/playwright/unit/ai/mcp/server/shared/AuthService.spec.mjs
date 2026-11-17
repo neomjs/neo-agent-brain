@@ -39,6 +39,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitLab-PAT veri
     const aiConfig = {
         auth: {
             gitlabApiBaseUrl      : 'https://gitlab.example.com/',
+            allowedUsers          : [],
             patCacheTtlSeconds    : 300,
             patDiskCachePath      : '',
             patValidationTimeoutMs: 5000
@@ -334,6 +335,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitLab-PAT veri
         const verifier = AuthService.createGitlabPatVerifier({
             aiConfig         : {auth: {
                 gitlabApiBaseUrl      : 'https://gitlab.example.com',
+                allowedUsers          : [],
                 patCacheTtlSeconds    : 0,
                 patDiskCachePath      : '',
                 patValidationTimeoutMs: 5000
@@ -367,6 +369,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitLab-PAT midd
     const aiConfig = {auth: {
         mode                  : 'gitlab-pat',
         gitlabApiBaseUrl      : 'https://gitlab.example.com',
+        allowedUsers          : [],
         patCacheTtlSeconds    : 300,
         patDiskCachePath      : '',
         patValidationTimeoutMs: 5000
@@ -561,6 +564,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitHub-PAT veri
     const aiConfig = {
         auth: {
             githubApiBaseUrl      : 'https://github.example.com/',
+            allowedUsers          : [],
             patCacheTtlSeconds    : 300,
             patDiskCachePath      : '',
             patValidationTimeoutMs: 5000
@@ -799,6 +803,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitHub-PAT midd
     const aiConfig = {auth: {
         mode                  : 'github-pat',
         githubApiBaseUrl      : 'https://api.github.com',
+        allowedUsers          : [],
         patCacheTtlSeconds    : 300,
         patDiskCachePath      : '',
         patValidationTimeoutMs: 5000
@@ -1564,6 +1569,56 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — first provider 
         expect(options.app.middlewares).toHaveLength(0)
     });
 
+    test('allowedUsers resolved through the CSV env or a config overlay mounts a verifier only when every entry is a login or a pinned subject', async () => {
+        const
+            {createConfigProxy, leaf} = await import('../../../../../../../ai/ConfigProvider.mjs'),
+            {default: RootConfigBase} = await import('../../../../../../../ai/configBase.mjs'),
+            env                       = 'NEO_AUTH_ALLOWED_USERS',
+            previous                  = process.env[env],
+            // each carrier resolves the leaf the way a deployment does; the shared config is never written
+            fromEnv     = csv => {
+                try {
+                    process.env[env] = csv;
+                    return createConfigProxy(Neo.create(RootConfigBase)).auth.allowedUsers
+                } finally {
+                    previous === undefined ? delete process.env[env] : (process.env[env] = previous)
+                }
+            },
+            fromOverlay = value => createConfigProxy(Neo.create(RootConfigBase, {data: {auth: {allowedUsers: leaf(value, env, 'csv')}}})).auth.allowedUsers,
+            mounts      = async (allowedUsers, mode = 'github-pat') => {
+                const options = createOptions({mode, gitlabApiBaseUrl: 'https://gitlab.example.com', allowedUsers, pinFirstProviderSubject: false});
+
+                try {
+                    await AuthService.setup(options)
+                } catch (error) {
+                    expect(error.message).toContain('auth.allowedUsers');
+                    expect(options.app.middlewares, 'a refusal mounts nothing').toHaveLength(0);
+                    return false
+                }
+
+                return options.app.middlewares.length === 1
+            };
+
+        // the intentional empty gate, the legacy bare login and the pinned subject, in each carrier
+        for (const allowedUsers of [fromOverlay([]), fromEnv('neo-gpt,neo-gpt-euclid:280105177'), fromOverlay('neo-gpt, neo-gpt-euclid:280105177'),
+            fromOverlay(['neo-gpt', {login: 'neo-gpt-euclid', providerUserId: 280105177}, {login: 'neo-gpt-emmy', providerUserId: '264950181'}])]) {
+            expect(await mounts(allowedUsers)).toBe(true)
+        }
+
+        expect(fromOverlay([{login: 'neo-gpt-euclid', providerUserId: 280105177}]), 'the overlay carries the object form').toEqual([{login: 'neo-gpt-euclid', providerUserId: 280105177}]);
+
+        // malformed entries through the CSV env, malformed values and entries through an overlay
+        for (const allowedUsers of [fromEnv('neo-gpt:'), fromEnv('neo-gpt:abc,neo-gpt'), fromEnv(':1'), fromEnv('a:b:c'),
+            fromOverlay(5), fromOverlay(null), fromOverlay(true),
+            fromOverlay([7]), fromOverlay([null]), fromOverlay([['neo-gpt']]), fromOverlay([{login: 'neo-gpt'}]),
+            fromOverlay([{login: 'neo-gpt', providerUserID: 1}]), fromOverlay([{login: 'neo gpt', providerUserId: 1}]),
+            fromOverlay([{login: 'neo-gpt', providerUserId: -1}]), fromOverlay([{login: 'neo-gpt', providerUserId: 1, role: 'admin'}])]) {
+            expect(await mounts(allowedUsers), JSON.stringify(allowedUsers)).toBe(false)
+        }
+
+        expect(await mounts(fromOverlay([7]), 'gitlab-pat'), 'the GitLab verifier refuses the same value').toBe(false)
+    });
+
     test('GitLab-PAT pins the bootstrap subject when opted in, and keeps its shipped admit-any default otherwise', async () => {
         const users = {
             'glpat-bootstrap': {id: 7, username: 'neo-gl'},
@@ -1764,6 +1819,7 @@ test.describe('AuthService — GitHub-PAT stale-serve boundary', () => {
     const logger  = {info: () => {}, warn: () => {}, error: () => {}},
           baseCfg = {
               githubApiBaseUrl      : 'https://api.github.com',
+              allowedUsers          : [],
               patCacheTtlSeconds    : 300,
               patDiskCachePath      : '',
               patValidationTimeoutMs: 5000,
@@ -1887,6 +1943,7 @@ test.describe('AuthService — GitHub-PAT stale-serve boundary', () => {
         const verifier = AuthService.createGitlabPatVerifier({
             aiConfig: {auth: {
                 gitlabApiBaseUrl      : 'https://gitlab.example.com/',
+                allowedUsers          : [],
                 patCacheTtlSeconds    : 0,
                 patDiskCachePath      : '',
                 patValidationTimeoutMs: 5000,
@@ -1912,6 +1969,7 @@ test.describe('AuthService — GitHub-PAT stale-serve boundary', () => {
         // evicted a valid identity. I had enumerated the awaits and not the return paths.
         const gitlabCfg = {auth: {
             gitlabApiBaseUrl      : 'https://gitlab.example.com/',
+            allowedUsers          : [],
             patCacheTtlSeconds    : 0,
             patDiskCachePath      : '',
             patValidationTimeoutMs: 5000,
@@ -2010,6 +2068,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitHub-PAT outa
     const logger   = {info: () => {}, warn: () => {}, error: () => {}};
     const baseAuth = {
         githubApiBaseUrl      : 'https://github.example.com',
+        allowedUsers          : [],
         patCacheTtlSeconds    : 300,
         patDiskCachePath      : '',
         patValidationTimeoutMs: 5000,
@@ -2018,10 +2077,11 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitHub-PAT outa
 
     const tokenHash = token => createHash('sha256').update(token).digest('hex');
 
-    const writeSeed = async (token, user, verifiedAt) => {
+    // a row as a previous process wrote it: verified at this describe's endpoint unless the test says otherwise
+    const writeSeed = async (token, user, verifiedAt, endpoint = {authProvider: 'github', providerBaseUrl: baseAuth.githubApiBaseUrl}) => {
         const file = path.join(tempDir, 'pat-validation-cache.json');
 
-        await patCache.writePatValidationCache(file, new Map([[tokenHash(token), {user, scopes: [], verifiedAt}]]));
+        await patCache.writePatValidationCache(file, new Map([[tokenHash(token), {user, scopes: [], verifiedAt, ...endpoint}]]));
 
         return file
     };
@@ -2241,6 +2301,45 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitHub-PAT outa
         expect(entries.has(tokenHash('legacy-token'))).toBe(false)
     });
 
+    test('a disk entry admits only at the endpoint that verified it: the same endpoint reuses it, a moved one revalidates', async () => {
+        const
+            moved    = 'https://ghe.example.com/api/v3',
+            stored   = async file => (await patCache.readPatValidationCache(file)).entries.get(tokenHash('endpoint-token')),
+            verifier = (file, githubApiBaseUrl) => AuthService.createGithubPatVerifier({
+                aiConfig: {auth: {...baseAuth, githubApiBaseUrl, patDiskCachePath: file}}, logger, InvalidTokenError: FakeInvalidTokenError
+            }),
+            file     = await writeSeed('endpoint-token', {id: 5, login: 'eos'}, Date.now());
+
+        stubOutage(200);
+
+        expect((await verifier(file, baseAuth.githubApiBaseUrl).verifyAccessToken('endpoint-token')).providerUserId, 'a fresh process at the same endpoint').toBe('5');
+
+        // after the move, id 5 may name another account: the entry fails closed and leaves the store
+        await expect(verifier(file, moved).verifyAccessToken('endpoint-token')).rejects.toBeInstanceOf(FakeInvalidTokenError);
+        expect(await stored(file)).toBeUndefined();
+
+        globalThis.fetch = async () => ({ok: true, headers: {get: () => ''}, json: async () => ({id: 5, login: 'eos'})});
+        await verifier(file, moved).verifyAccessToken('endpoint-token');
+        expect(await stored(file), 'the fresh validation writes its own endpoint').toMatchObject({authProvider: 'github', providerBaseUrl: moved});
+
+        stubOutage(200);
+        expect((await verifier(file, moved).verifyAccessToken('endpoint-token')).validationState, 'the next outage reuses it').toBe('stale-validated')
+    });
+
+    test('a disk entry without its endpoint fails closed and leaves the store', async () => {
+        for (const endpoint of [{}, {authProvider: 'github'}, {authProvider: 'github', providerBaseUrl: 5}, {authProvider: 'gitlab', providerBaseUrl: baseAuth.githubApiBaseUrl}]) {
+            const file     = await writeSeed('unqualified-token', {id: 6, login: 'eos'}, Date.now(), endpoint);
+            const verifier = AuthService.createGithubPatVerifier({
+                aiConfig: {auth: {...baseAuth, patDiskCachePath: file}}, logger, InvalidTokenError: FakeInvalidTokenError
+            });
+
+            stubOutage(200);
+
+            await expect(verifier.verifyAccessToken('unqualified-token'), JSON.stringify(endpoint)).rejects.toBeInstanceOf(FakeInvalidTokenError);
+            expect((await patCache.readPatValidationCache(file)).entries.has(tokenHash('unqualified-token'))).toBe(false)
+        }
+    });
+
     test('only the minimal normalized subject reaches disk — provider response extras never persist', async () => {
         const file     = path.join(tempDir, 'minimized.json');
         const verifier = AuthService.createGithubPatVerifier({
@@ -2351,7 +2450,7 @@ test.describe('AuthService — the forge facts an admission stamps', () => {
         const {default: AuthService, forgeAdmissionFacts, forgeApiBase} = await import('../../../../../../../ai/mcp/server/shared/services/AuthService.mjs');
 
         const
-            auth          = {mode: 'github-pat', githubApiBaseUrl: 'https://GHE.example.com/api/v3//', gitlabApiBaseUrl: 'https://gitlab.example.com/', patCacheTtlSeconds: 300, patDiskCachePath: '', patValidationTimeoutMs: 5000},
+            auth          = {mode: 'github-pat', githubApiBaseUrl: 'https://GHE.example.com/api/v3//', gitlabApiBaseUrl: 'https://gitlab.example.com/', allowedUsers: [], patCacheTtlSeconds: 300, patDiskCachePath: '', patValidationTimeoutMs: 5000},
             originalFetch = globalThis.fetch;
 
         expect(forgeAdmissionFacts(auth)).toEqual({authProvider: 'github', providerBaseUrl: 'https://GHE.example.com/api/v3'});
