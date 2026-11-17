@@ -566,24 +566,27 @@ class Server extends BaseServer {
 
     /**
      * @summary Streamable-HTTP-only hook: builds RequestContext for a `/mcp` request from `req.auth`.
-     * Invoked by `TransportService.setup` via duck-typed hook. Returns `{}` when no identity
-     * is present to preserve single-tenant fallthrough.
+     * Invoked by `TransportService.setup` via duck-typed hook. Returns `{}` for a request that carries
+     * neither a login nor a provider stamp, and before activation for one without a login, to preserve
+     * single-tenant fallthrough.
      *
      * Once the cutover activates selection, a request that carries a provider subject (its verifier
      * stamps `authProvider`) or may create an identity acts as the identity its verified subject is bound
-     * to, whether or not its source creates one ({@link selectAgentIdentityBySubject}). That identity's
-     * bare id then keys the request's reads and writes: a renamed login keeps its identity's rows, and a
-     * re-registered one reaches none. Before activation, and for any other request, the login selects
-     * and keys it.
+     * to, whether or not its source creates one and whether or not it carries a login
+     * ({@link selectAgentIdentityBySubject}). That identity's bare id then keys the request's reads and
+     * writes: a renamed login keeps its identity's rows, and a re-registered one reaches none. Before
+     * activation, and for any other request, the login selects and keys it.
      * @param {Object|undefined} reqAuth
      * @returns {Promise<Object>}
      */
     async buildRequestContext(reqAuth) {
-        if (!reqAuth?.userId) return {};
+        if (!reqAuth?.userId && !reqAuth?.authProvider) return {};
 
         const
             create = this.shouldAutoProvisionAgentIdentity(reqAuth),
-            active = Boolean(reqAuth.authProvider || create) && await this.readSubjectSelection(reqAuth.userId);
+            active = Boolean(reqAuth.authProvider || create) && await this.readSubjectSelection(reqAuth.userId || 'a request without a login');
+
+        if (!active && !reqAuth.userId) return {};
 
         const agentIdentityNodeId = active ? this.selectAgentIdentityBySubject({reqAuth, create})
             : create ? await this.ensureAgentIdentityForAuthContext(reqAuth) : await this.bindAgentIdentity(reqAuth.userId);
@@ -839,7 +842,7 @@ class Server extends BaseServer {
      * @protected
      */
     selectAgentIdentityBySubject({reqAuth, create}) {
-        const {userId} = reqAuth;
+        const userId = reqAuth.userId || 'a request without a login';
 
         try {
             const
@@ -877,7 +880,7 @@ class Server extends BaseServer {
             }
 
             const
-                login       = this.validateAuthProvisionUserId(userId),
+                login       = this.validateAuthProvisionUserId(reqAuth.userId),
                 graphNodeId = normalizeAgentIdentityNodeId(login),
                 existing    = this.readRawGraphNode(graphNodeId);
 

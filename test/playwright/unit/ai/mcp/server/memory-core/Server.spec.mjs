@@ -2004,5 +2004,37 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
                 serverInstance.destroy();
             }
         });
+
+        test('once active, a provider-stamped request without a login still decides by its subject', async () => {
+            await GraphService.initAsync();
+            const
+                lookup  = await createServerWithoutBoot({autoProvisionIdentitySources: []}),
+                create  = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                noLogin = providerUserId => ({...pat('unused', providerUserId), userId: undefined, username: undefined, providerUsername: undefined});
+
+            try {
+                GraphService.createBoundIdentity({id: '@subject-1812-nologin', type: 'AgentIdentity', name: 'nologin', properties: {accountType: 'agent'}},
+                    {subject: subject('18120081')});
+
+                // dormant: a request without a login keeps the single-tenant fallthrough
+                expect(await lookup.buildRequestContext(noLogin('18120081'))).toEqual({});
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                for (const server of [lookup, create]) {
+                    expect(await server.buildRequestContext(noLogin('18120081')), 'the bound identity keys it')
+                        .toMatchObject({userId: 'subject-1812-nologin', agentIdentityNodeId: '@subject-1812-nologin'});
+                }
+
+                // unbound: refused by name, never the fallthrough
+                await expect(lookup.buildRequestContext(noLogin('18120082'))).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNBOUND'});
+                await expect(create.buildRequestContext(noLogin('18120082'))).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_INVALID'});
+                expect(readSubjectBinding(sqlite(), subject('18120082'))).toBeNull();
+            } finally {
+                cleanUp(['18120081', '18120082'], ['@subject-1812-nologin']);
+                lookup.destroy();
+                create.destroy();
+            }
+        });
     });
 });
