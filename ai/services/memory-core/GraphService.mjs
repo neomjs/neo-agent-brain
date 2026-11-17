@@ -773,14 +773,21 @@ class GraphService extends Base {
      * its storage write joins this transaction. A rollback evicts the cached node, so the cache never
      * holds an identity the store refused, and restores the GraphLog cursor: the upsert acknowledged its
      * own uncommitted log row, whose id a rolled-back transaction frees for another process's write.
+     *
+     * The decision is made inside the transaction, against what the store holds once the write lock is
+     * taken, never the caller's earlier read: another writer may have created the identity or changed the
+     * subject's eligibility since. A node that exists refuses, so an existing unbound identity is never
+     * overwritten, and the caller's `admit` check runs before any write.
      * @param {Object} spec The new identity's node spec, as for {@link GraphService#upsertGlobalNode}.
      * @param {Object} options
      * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`.
+     * @param {Function} [options.admit] The caller's eligibility check; it throws to refuse.
      * @param {Number} [options.at=Date.now()]
      * @returns {{state: 'bound'|'matching', binding: Object}} The first-admission binding.
-     * @throws {Error} A named subject-binding refusal or a storage error; nothing is written.
+     * @throws {Error} `SUBJECT_BINDING_IDENTITY_EXISTS`, the `admit` refusal, another named subject-binding
+     * refusal or a storage error; nothing is written.
      */
-    createBoundIdentity(spec, {subject, at = Date.now()}) {
+    createBoundIdentity(spec, {subject, admit = () => {}, at = Date.now()}) {
         const sqlite = this.requireDb('AgentIdentity binding').storage.db;
 
         if (!sqlite || sqlite.inTransaction || this.db.isExecutingTransaction) {
@@ -791,6 +798,12 @@ class GraphService extends Base {
 
         try {
             return sqlite.transaction(() => {
+                if (sqlite.prepare('SELECT 1 FROM Nodes WHERE id = ?').get(spec.id)) {
+                    throw Object.assign(new Error(`${spec.id} exists; a first admission binds only an identity it creates.`),
+                        {code: 'SUBJECT_BINDING_IDENTITY_EXISTS', identityId: spec.id});
+                }
+
+                admit();
                 this.upsertGlobalNode(spec);
                 return bindAtFirstAdmission(sqlite, {subject, identityId: spec.id, at});
             }).immediate();

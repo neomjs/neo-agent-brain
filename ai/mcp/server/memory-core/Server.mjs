@@ -847,14 +847,18 @@ class Server extends BaseServer {
             const bound = readSubjectBinding(sqlite, subject);
             if (bound) return bound.identityId;
 
-            const founding = IdentityPublicationService.getFoundingIdentities(subject);
+            const refuseFounding = () => {
+                const founding = IdentityPublicationService.getFoundingIdentities(subject);
 
-            if (founding.length > 0) {
-                throw this.createIdentityProvisioningError(
-                    `Cannot bind ${userId}: the founding record maps this subject to ${founding.join(', ')}, and only the administrative path binds it.`,
-                    'NEO_AGENT_IDENTITY_SUBJECT_FOUNDING_MAPPED'
-                );
-            }
+                if (founding.length > 0) {
+                    throw this.createIdentityProvisioningError(
+                        `Cannot bind ${userId}: the founding record maps this subject to ${founding.join(', ')}, and only the administrative path binds it.`,
+                        'NEO_AGENT_IDENTITY_SUBJECT_FOUNDING_MAPPED'
+                    );
+                }
+            };
+
+            refuseFounding();
 
             const existing = this.readRawGraphNode(graphNodeId);
 
@@ -871,14 +875,16 @@ class Server extends BaseServer {
 
             const {spec} = this.agentIdentitySpec({reqAuth, userId, graphNodeId, existing: null, now: new Date().toISOString()});
 
-            GraphService.createBoundIdentity(spec, {subject});
+            // the founding record is read again inside the write transaction, which decides
+            GraphService.createBoundIdentity(spec, {subject, admit: refuseFounding});
             return graphNodeId;
         } catch (error) {
             if (error.code?.startsWith?.('NEO_AGENT_IDENTITY_')) throw error;
 
             throw this.createIdentityProvisioningError(
                 `Cannot bind ${userId}: ${error.message}`,
-                error.code === 'SUBJECT_BINDING_SUBJECT_CLAIMED' ? 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT' : 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'
+                ['SUBJECT_BINDING_SUBJECT_CLAIMED', 'SUBJECT_BINDING_IDENTITY_CLAIMED', 'SUBJECT_BINDING_IDENTITY_EXISTS'].includes(error.code)
+                    ? 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT' : 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'
             );
         }
     }

@@ -1722,6 +1722,67 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             }
         });
 
+        test('a first admission decides inside its own transaction: an identity another writer created meanwhile is refused and kept', async () => {
+            await GraphService.initAsync();
+            const
+                raced = JSON.stringify({id: '@subject-1812-raced', label: 'AgentIdentity', properties: {accountType: 'agent', userId: null}}),
+                spec  = id => ({id, type: 'AgentIdentity', name: id, properties: {accountType: 'agent'}});
+
+            try {
+                // another writer commits the identity after the caller's read found none: a row on the physical
+                // connection that never passed through this service or its cache
+                sqlite().prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, NULL, ?)').run('@subject-1812-raced', raced);
+
+                expect(() => GraphService.createBoundIdentity(spec('@subject-1812-raced'), {subject: subject('18120051')}))
+                    .toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_IDENTITY_EXISTS'}));
+                expect(sqlite().prepare('SELECT data FROM Nodes WHERE id = ?').get('@subject-1812-raced').data, 'kept byte for byte').toBe(raced);
+                expect(readSubjectBinding(sqlite(), subject('18120051'))).toBeNull();
+
+                // an eligibility check that refuses inside the transaction writes nothing
+                expect(() => GraphService.createBoundIdentity(spec('@subject-1812-ineligible'), {subject: subject('18120052'), admit: () => { throw new Error('founding-mapped') }}))
+                    .toThrow('founding-mapped');
+                expect(rawGraphNode('@subject-1812-ineligible')).toBeNull();
+
+                expect(GraphService.createBoundIdentity(spec('@subject-1812-genuine'), {subject: subject('18120053')}).state, 'a new identity binds').toBe('bound');
+                expect(readSubjectBinding(sqlite(), subject('18120053')).identityId).toBe('@subject-1812-genuine');
+            } finally {
+                cleanUp(['18120051', '18120052', '18120053'], ['@subject-1812-raced', '@subject-1812-ineligible', '@subject-1812-genuine']);
+            }
+        });
+
+        test('the request boundary keeps an unbound identity another writer created between its read and its write', async () => {
+            await GraphService.initAsync();
+            const
+                serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                read           = serverInstance.readRawGraphNode.bind(serverInstance),
+                raced          = JSON.stringify({id: '@subject-1812-racer', label: 'AgentIdentity', properties: {accountType: 'agent', userId: null}});
+
+            // the request's own read runs before the other writer commits
+            let stale = 0;
+            serverInstance.readRawGraphNode = id => id === '@subject-1812-racer' && stale-- > 0 ? null : read(id);
+
+            try {
+                sqlite().prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, NULL, ?)').run('@subject-1812-racer', raced);
+
+                // dormant: the login selects the existing node, and nothing binds it
+                stale = 1;
+                expect((await serverInstance.buildRequestContext(pat('subject-1812-racer', '18120054'))).agentIdentityNodeId).toBe('@subject-1812-racer');
+                expect(readSubjectBinding(sqlite(), subject('18120054'))).toBeNull();
+
+                // active: a subject conflict by name
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+                stale = 1;
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-racer', '18120054')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT'});
+
+                expect(sqlite().prepare('SELECT data FROM Nodes WHERE id = ?').get('@subject-1812-racer').data, 'kept byte for byte').toBe(raced);
+                expect(readSubjectBinding(sqlite(), subject('18120054'))).toBeNull();
+            } finally {
+                cleanUp(['18120054'], ['@subject-1812-racer']);
+                serverInstance.destroy();
+            }
+        });
+
         test('before activation, a first admission binds only the identity it creates', async () => {
             await GraphService.initAsync();
             const serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']});
