@@ -302,7 +302,7 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
 
         try {
             const auth = isGitlab
-                ? {gitlabApiBaseUrl: baseUrl, patCacheTtlSeconds: 300, patValidationTimeoutMs: 5000, patDiskCachePath: ''}
+                ? {gitlabApiBaseUrl: baseUrl, patCacheTtlSeconds: 300, patValidationTimeoutMs: 5000, allowedUsers: [], patDiskCachePath: ''}
                 : {githubApiBaseUrl: baseUrl, patCacheTtlSeconds: 300, patValidationTimeoutMs: 5000, allowedUsers: [], patDiskCachePath: ''};
 
             const verifier = isGitlab

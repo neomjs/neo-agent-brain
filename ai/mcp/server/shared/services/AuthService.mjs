@@ -112,6 +112,32 @@ export function forgeAdmissionFacts(auth) {
     return authProvider ? {authProvider, providerBaseUrl: forgeApiBase(auth, authProvider)} : null
 }
 
+/**
+ * @summary Parses one `auth.allowedUsers` entry: a `login` or `login:providerUserId` string, or an object
+ * with exactly `{login, providerUserId}`. The id is decimal digits, as a string or a non-negative integer.
+ * @param {*} entry
+ * @returns {Array<String|undefined>} `[login, providerUserId]`; the id is `undefined` for a bare login.
+ * @throws {Error} On any other entry.
+ */
+function allowlistEntry(entry) {
+    let match = null;
+
+    if (typeof entry === 'string') {
+        match = /^([^\s:]+)(?::(\d+))?$/.exec(entry.trim())
+    } else if (entry?.constructor === Object && Object.keys(entry).sort().join() === 'login,providerUserId') {
+        const id = Number.isSafeInteger(entry.providerUserId) ? String(entry.providerUserId) : entry.providerUserId;
+
+        match = typeof entry.login === 'string' && /^[^\s:]+$/.test(entry.login) && typeof id === 'string' && /^\d+$/.test(id)
+            ? [entry, entry.login, id] : null
+    }
+
+    if (!match) {
+        throw new Error('AuthService: auth.allowedUsers entries are `login` or `login:providerUserId` (a numeric provider id)')
+    }
+
+    return [match[1], match[2]]
+}
+
 class AuthService extends Base {
     static config = {
         /**
@@ -225,7 +251,7 @@ class AuthService extends Base {
         // GitLab-PAT mode installs a naked-401 bearer path (no `aud`, no PRM advertisement) and
         // returns early — the OIDC discovery + introspection flow below does not apply.
         if (auth.mode === 'gitlab-pat') {
-            this.setupGitlabPat({app, aiConfig, logger}, {requireBearerAuth, InvalidTokenError});
+            await this.setupGitlabPat({app, aiConfig, logger}, {requireBearerAuth, InvalidTokenError});
             return
         }
 
@@ -631,9 +657,14 @@ class AuthService extends Base {
      * @param {Object}   deps
      * @param {Function} deps.requireBearerAuth SDK bearer-auth middleware factory
      * @param {Function} deps.InvalidTokenError SDK error class for rejected tokens
+     * @returns {Promise<void>} Settles after the opt-in process pin is established, before mounting.
      */
-    setupGitlabPat({app, aiConfig, logger}, {requireBearerAuth, InvalidTokenError}) {
+    async setupGitlabPat({app, aiConfig, logger}, {requireBearerAuth, InvalidTokenError}) {
         const verifier = this.createGitlabPatVerifier({aiConfig, logger, InvalidTokenError});
+
+        if (aiConfig.auth.pinFirstProviderSubject) {
+            await verifier.establishPinnedProviderSubject(this.#resolveProviderBootstrapPat(aiConfig.auth))
+        }
 
         app.use(requireBearerAuth({verifier, requiredScopes: []}));
 
@@ -658,6 +689,85 @@ class AuthService extends Base {
         }
 
         return []
+    }
+
+    /**
+     * @summary Normalizes `auth.allowedUsers` into its two entry forms, and refuses setup on anything else.
+     *
+     * The leaf resolves to a list: the CSV env parses to one, a config overlay declares one, and a string
+     * left by an overlay written before the `csv` type is split on commas. An empty list admits any
+     * resolved user. A bare `login` admits whoever holds that login now. A forge releases a renamed login
+     * for anyone to register, so this is the weaker legacy profile. A subject-pinned entry,
+     * `login:providerUserId` in the CSV env or `{login, providerUserId}` in a config overlay, admits that
+     * account by its stable provider id, whatever its login spells now; its login is a label. Blank
+     * entries are skipped. The config layer keeps a mistyped value with only a warning, so any other value
+     * or entry refuses here rather than degrade to an empty gate or a weaker form.
+     * @param {Array<String|Object>|String} value The resolved leaf.
+     * @returns {{logins: Set<String>, subjects: Set<String>, size: Number, admits: Function}} `admits(login, id)`
+     * is true when a subject-pinned entry names `id` or a bare entry names `login`.
+     * @throws {Error} On a value that is not a list, or an entry that is neither form.
+     */
+    #normalizeUserAllowlist(value) {
+        if (!Array.isArray(value) && typeof value !== 'string') {
+            throw new Error('AuthService: auth.allowedUsers is a list of `login` or `login:providerUserId` entries')
+        }
+
+        const
+            logins   = new Set(),
+            subjects = new Set();
+
+        for (const entry of typeof value === 'string' ? value.split(',') : value) {
+            if (typeof entry === 'string' && !entry.trim()) continue;
+
+            const [login, id] = allowlistEntry(entry);
+
+            id ? subjects.add(id) : logins.add(login)
+        }
+
+        return {logins, subjects, size: logins.size + subjects.size,
+            admits: (login, id) => subjects.has(id == null ? '' : String(id)) || logins.has(login)}
+    }
+
+    /**
+     * @summary Builds a PAT verifier's per-process first-use pin.
+     *
+     * The bootstrap call establishes the verified subject `{authProvider, providerBaseUrl, providerUserId}`,
+     * and every later admission must present the same one. The pin keys on the subject, never the login,
+     * so a renamed account keeps its process and a reclaimed login gets none. An admission that carries
+     * no subject fails closed. Each verifier owns its pin, so a restart starts a fresh one.
+     * @param {Function} InvalidTokenError SDK error class for rejected tokens.
+     * @param {String}   provider          The forge's display name, for refusals.
+     * @returns {Function} `(info, establishPin) => info`: the admitted AuthInfo, or a thrown refusal.
+     */
+    #createProviderSubjectPin(InvalidTokenError, provider) {
+        let pinned = null;
+
+        return (info, establishPin) => {
+            const subject = info.providerUserId ? JSON.stringify([info.authProvider, info.providerBaseUrl, info.providerUserId]) : null;
+
+            if (establishPin) {
+                if (pinned !== null) {
+                    throw new InvalidTokenError('First provider subject is already established for this process')
+                }
+
+                if (!subject) {
+                    throw new InvalidTokenError(`${provider} PAT validation returned no provider subject`)
+                }
+
+                pinned = subject;
+                return info
+            }
+
+            if (!pinned) {
+                throw new InvalidTokenError('First provider subject has not been established')
+            }
+
+            if (subject !== pinned) {
+                throw new InvalidTokenError(`${provider} provider subject does not match the process pin`)
+            }
+
+            return info
+        }
     }
 
     /**
@@ -761,10 +871,11 @@ class AuthService extends Base {
     /**
      * @summary Validates the explicit first-provider-subject admission policy.
      *
-     * The baseline policy is deliberately scoped to the rosterless local GitHub profile. It must
-     * not reinterpret empty PAT allowlists mode-generally or alter GitLab-PAT's shipped admit-any-
-     * validated-user default. Custom/proxy combinations are ambiguous because they introduce a
-     * second identity authority beside the provider subject.
+     * The pin derives on for the rosterless local GitHub profile. GitLab-PAT opts in through
+     * `auth.pinFirstProviderSubjectOverride`, so its shipped admit-any-validated-user default stays
+     * unchanged, and the policy never reinterprets empty PAT allowlists mode-generally. Custom/proxy
+     * combinations are ambiguous because they introduce a second identity authority beside the
+     * provider subject.
      * @param {Object} aiConfig Resolved ConfigProvider tree
      * @returns {void}
      * @throws {Error} When the policy's legal state is not fully declared
@@ -776,11 +887,11 @@ class AuthService extends Base {
             return
         }
 
-        if (auth.mode !== 'github-pat') {
-            throw new Error('AuthService: first-provider-subject policy requires auth.mode "github-pat"')
+        if (auth.mode !== 'github-pat' && auth.mode !== 'gitlab-pat') {
+            throw new Error('AuthService: first-provider-subject policy requires auth.mode "github-pat" or "gitlab-pat"')
         }
 
-        if (this.#normalizePatAllowlist(auth.allowedUsers).length > 0) {
+        if (this.#normalizeUserAllowlist(auth.allowedUsers).size > 0) {
             throw new Error('AuthService: first-provider-subject policy cannot be combined with auth.allowedUsers')
         }
 
@@ -889,9 +1000,10 @@ class AuthService extends Base {
      * incoming bearer token to `GET {gitlabApiBaseUrl}/api/v4/user`; a `200` resolves the identity
      * (`userId` = GitLab `username`, `source` = `'gitlab-pat'`) in the same shape
      * `RequestContextService` already consumes from the OIDC path. Optional allowlists can then
-     * gate the resolved GitLab username and/or the GitLab OAuth app client id returned by
-     * `/oauth/token/info`; both gates are default-off so the shipped PAT behavior remains unchanged
-     * unless the deployment opts in. Successful validations are cached by SHA-256 token hash for
+     * gate the resolved GitLab user (by username, or by user id for a subject-pinned entry) and/or
+     * the GitLab OAuth app client id returned by `/oauth/token/info`. An opt-in process pin admits
+     * only the bootstrap PAT's subject. All three are default-off, so the shipped PAT behavior
+     * remains unchanged unless the deployment opts in. Successful validations are cached by SHA-256 token hash for
      * `auth.patCacheTtlSeconds` so a revoked PAT clears within that bounded window; failures are
      * never cached (a transient GitLab error must not lock a client out). Each cache miss uses one
      * `auth.patValidationTimeoutMs` deadline shared by `/api/v4/user` and the conditional
@@ -902,20 +1014,22 @@ class AuthService extends Base {
      * @param {Object}   options.aiConfig
      * @param {Object}   options.logger
      * @param {Function} options.InvalidTokenError
-     * @returns {{verifyAccessToken: Function}}
+     * @returns {{verifyAccessToken: Function, establishPinnedProviderSubject: Function}}
      */
     createGitlabPatVerifier({aiConfig, logger, InvalidTokenError}) {
         const
-            apiBaseUrl          = forgeApiBase(aiConfig.auth, 'gitlab'),
-            ttlSeconds          = aiConfig.auth.patCacheTtlSeconds,
-            ttlMs               = ttlSeconds * 1000,
-            validationTimeoutMs = this.#validatePatValidationTimeoutMs(aiConfig.auth.patValidationTimeoutMs),
-            allowedClientIds    = this.#normalizePatAllowlist(aiConfig.auth.allowedClientIds),
-            allowedUsers        = this.#normalizePatAllowlist(aiConfig.auth.allowedUsers),
-            requireClientId     = allowedClientIds.length > 0,
-            requireUser         = allowedUsers.length > 0,
-            staleGraceMs        = Math.max(0, Number(aiConfig.auth.patStaleGraceSeconds) || 0) * 1000,
-            cache               = new Map(); // tokenHash -> {user, tokenInfo, expiresAt} (cache-freshness, ms)
+            apiBaseUrl           = forgeApiBase(aiConfig.auth, 'gitlab'),
+            ttlSeconds           = aiConfig.auth.patCacheTtlSeconds,
+            ttlMs                = ttlSeconds * 1000,
+            validationTimeoutMs  = this.#validatePatValidationTimeoutMs(aiConfig.auth.patValidationTimeoutMs),
+            allowedClientIds     = this.#normalizePatAllowlist(aiConfig.auth.allowedClientIds),
+            allowedUsers         = this.#normalizeUserAllowlist(aiConfig.auth.allowedUsers),
+            admitProviderSubject = aiConfig.auth.pinFirstProviderSubject === true
+                ? this.#createProviderSubjectPin(InvalidTokenError, 'GitLab') : info => info,
+            requireClientId      = allowedClientIds.length > 0,
+            requireUser          = allowedUsers.size > 0,
+            staleGraceMs         = Math.max(0, Number(aiConfig.auth.patStaleGraceSeconds) || 0) * 1000,
+            cache                = new Map(); // tokenHash -> {user, tokenInfo, expiresAt} (cache-freshness, ms)
 
         /**
          * Identical contract to the GitHub verifier's: an UNREACHABLE provider may serve the last
@@ -968,121 +1082,134 @@ class AuthService extends Base {
             }
         };
 
-        return {
-            verifyAccessToken: async (token) => {
-                const
-                    tokenHash = createHash('sha256').update(token).digest('hex'),
-                    cached    = cache.get(tokenHash);
+        /**
+         * Provider validation with an explicit bootstrap-only pin establishment branch, as in the
+         * GitHub verifier.
+         * @param {String} token Presented PAT
+         * @param {Boolean} [establishPin=false] True only before middleware installation
+         * @returns {Promise<Object>} Admitted AuthInfo
+         */
+        const verify = async (token, establishPin = false) => {
+            const
+                tokenHash = createHash('sha256').update(token).digest('hex'),
+                cached    = cache.get(tokenHash);
 
-                if (cached && cached.expiresAt > Date.now()) {
-                    return buildInfo(token, cached.user, cached.tokenInfo)
+            if (cached && cached.expiresAt > Date.now()) {
+                return admitProviderSubject(buildInfo(token, cached.user, cached.tokenInfo), establishPin)
+            }
+
+            const signal = AbortSignal.timeout(validationTimeoutMs);
+
+            try {
+                const userResponse = await fetch(`${apiBaseUrl}/api/v4/user`, {
+                    headers: {Authorization: `Bearer ${token}`},
+                    signal
+                });
+
+                if (!userResponse.ok) {
+                    // Same split as the GitHub arm: only an authoritative rejection evicts. A
+                    // 5xx, a 429 or a proxy's 502 is the provider failing to ANSWER, and a
+                    // displaced identity must not be destroyed because a third party is down.
+                    if (isAuthoritativeRejection(userResponse.status)) {
+                        cache.delete(tokenHash);
+                        throw new InvalidTokenError(`GitLab PAT validation failed (HTTP ${userResponse.status})`)
+                    }
+
+                    const stale = serveStaleGitlab(cached, `HTTP ${userResponse.status}`);
+
+                    if (stale) {
+                        return admitProviderSubject(buildInfo(token, stale.user, stale.tokenInfo), establishPin)
+                    }
+
+                    throw new InvalidTokenError(`GitLab PAT validation failed (HTTP ${userResponse.status})`)
                 }
 
-                const signal = AbortSignal.timeout(validationTimeoutMs);
+                const user = await userResponse.json();
 
-                try {
-                    const userResponse = await fetch(`${apiBaseUrl}/api/v4/user`, {
+                if (requireUser && !allowedUsers.admits(user.username, user.id)) {
+                    cache.delete(tokenHash);
+                    throw new InvalidTokenError('GitLab user is not allowed')
+                }
+
+                let tokenInfo = null;
+
+                if (requireClientId) {
+                    const tokenInfoResponse = await fetch(`${apiBaseUrl}/oauth/token/info`, {
                         headers: {Authorization: `Bearer ${token}`},
                         signal
                     });
 
-                    if (!userResponse.ok) {
-                        // Same split as the GitHub arm: only an authoritative rejection evicts. A
-                        // 5xx, a 429 or a proxy's 502 is the provider failing to ANSWER, and a
-                        // displaced identity must not be destroyed because a third party is down.
-                        if (isAuthoritativeRejection(userResponse.status)) {
+                    if (!tokenInfoResponse.ok) {
+                        // The SECOND non-OK path in this verifier, and the first revision of
+                        // this fix repaired only the first. @neo-gpt caught it: a 503 here
+                        // evicted a valid identity exactly as it did on `/user`, so the arm was
+                        // half-fixed and the remaining half failed in the same way.
+                        //
+                        // I had enumerated the awaits and not the RETURN paths. One `!ok` per
+                        // fetch, two fetches — the count was available before I wrote a line.
+                        if (isAuthoritativeRejection(tokenInfoResponse.status)) {
                             cache.delete(tokenHash);
-                            throw new InvalidTokenError(`GitLab PAT validation failed (HTTP ${userResponse.status})`)
-                        }
-
-                        const stale = serveStaleGitlab(cached, `HTTP ${userResponse.status}`);
-
-                        if (stale) {
-                            return buildInfo(token, stale.user, stale.tokenInfo)
-                        }
-
-                        throw new InvalidTokenError(`GitLab PAT validation failed (HTTP ${userResponse.status})`)
-                    }
-
-                    const user = await userResponse.json();
-
-                    if (requireUser && !allowedUsers.includes(user.username)) {
-                        cache.delete(tokenHash);
-                        throw new InvalidTokenError('GitLab user is not allowed')
-                    }
-
-                    let tokenInfo = null;
-
-                    if (requireClientId) {
-                        const tokenInfoResponse = await fetch(`${apiBaseUrl}/oauth/token/info`, {
-                            headers: {Authorization: `Bearer ${token}`},
-                            signal
-                        });
-
-                        if (!tokenInfoResponse.ok) {
-                            // The SECOND non-OK path in this verifier, and the first revision of
-                            // this fix repaired only the first. @neo-gpt caught it: a 503 here
-                            // evicted a valid identity exactly as it did on `/user`, so the arm was
-                            // half-fixed and the remaining half failed in the same way.
-                            //
-                            // I had enumerated the awaits and not the RETURN paths. One `!ok` per
-                            // fetch, two fetches — the count was available before I wrote a line.
-                            if (isAuthoritativeRejection(tokenInfoResponse.status)) {
-                                cache.delete(tokenHash);
-                                throw new InvalidTokenError(`GitLab token info validation failed (HTTP ${tokenInfoResponse.status})`)
-                            }
-
-                            const stale = serveStaleGitlab(cached, `token-info HTTP ${tokenInfoResponse.status}`);
-
-                            if (stale) {
-                                return buildInfo(token, stale.user, stale.tokenInfo)
-                            }
-
                             throw new InvalidTokenError(`GitLab token info validation failed (HTTP ${tokenInfoResponse.status})`)
                         }
 
-                        tokenInfo = await tokenInfoResponse.json();
+                        const stale = serveStaleGitlab(cached, `token-info HTTP ${tokenInfoResponse.status}`);
 
-                        const tokenInfoClientId = this.#getGitlabTokenInfoClientId(tokenInfo);
-
-                        if (!tokenInfoClientId || !allowedClientIds.includes(tokenInfoClientId)) {
-                            cache.delete(tokenHash);
-                            throw new InvalidTokenError('GitLab OAuth application is not allowed')
+                        if (stale) {
+                            return admitProviderSubject(buildInfo(token, stale.user, stale.tokenInfo), establishPin)
                         }
+
+                        throw new InvalidTokenError(`GitLab token info validation failed (HTTP ${tokenInfoResponse.status})`)
                     }
 
-                    signal.throwIfAborted();
-                    cache.set(tokenHash, {user, tokenInfo, expiresAt: Date.now() + ttlMs});
+                    tokenInfo = await tokenInfoResponse.json();
 
-                    const tokenInfoClientId = this.#getGitlabTokenInfoClientId(tokenInfo),
-                          appSuffix         = tokenInfoClientId ? `, client: ${tokenInfoClientId}` : '';
+                    const tokenInfoClientId = this.#getGitlabTokenInfoClientId(tokenInfo);
 
-                    logger.info(`[AuthService] GitLab PAT validated for user: ${user.name || user.username}${appSuffix}`);
-
-                    return buildInfo(token, user, tokenInfo)
-                } catch (error) {
-                    // An InvalidTokenError raised above already made its own eviction decision —
-                    // authoritative rejections deleted the entry, transient ones deliberately kept
-                    // it. Re-deleting unconditionally, as this used to, destroys the fallback.
-                    if (error instanceof InvalidTokenError) {
-                        throw error
+                    if (!tokenInfoClientId || !allowedClientIds.includes(tokenInfoClientId)) {
+                        cache.delete(tokenHash);
+                        throw new InvalidTokenError('GitLab OAuth application is not allowed')
                     }
+                }
 
-                    const stale = serveStaleGitlab(cached, signal.aborted ? `timeout after ${validationTimeoutMs}ms` : 'network error');
+                signal.throwIfAborted();
 
-                    if (stale) {
-                        return buildInfo(token, stale.user, stale.tokenInfo)
-                    }
+                const info = admitProviderSubject(buildInfo(token, user, tokenInfo), establishPin);
 
-                    cache.delete(tokenHash);
+                cache.set(tokenHash, {user, tokenInfo, expiresAt: Date.now() + ttlMs});
 
-                    if (signal.aborted) {
-                        throw new InvalidTokenError(`GitLab PAT validation timed out after ${validationTimeoutMs}ms`)
-                    }
+                const tokenInfoClientId = this.#getGitlabTokenInfoClientId(tokenInfo),
+                      appSuffix         = tokenInfoClientId ? `, client: ${tokenInfoClientId}` : '';
 
+                logger.info(`[AuthService] GitLab PAT validated for user: ${user.name || user.username}${appSuffix}`);
+
+                return info
+            } catch (error) {
+                // An InvalidTokenError raised above already made its own eviction decision —
+                // authoritative rejections deleted the entry, transient ones deliberately kept
+                // it. Re-deleting unconditionally, as this used to, destroys the fallback.
+                if (error instanceof InvalidTokenError) {
                     throw error
                 }
+
+                const stale = serveStaleGitlab(cached, signal.aborted ? `timeout after ${validationTimeoutMs}ms` : 'network error');
+
+                if (stale) {
+                    return admitProviderSubject(buildInfo(token, stale.user, stale.tokenInfo), establishPin)
+                }
+
+                cache.delete(tokenHash);
+
+                if (signal.aborted) {
+                    throw new InvalidTokenError(`GitLab PAT validation timed out after ${validationTimeoutMs}ms`)
+                }
+
+                throw error
             }
+        };
+
+        return {
+            verifyAccessToken             : token => verify(token),
+            establishPinnedProviderSubject: token => verify(token, true)
         }
     }
 
@@ -1120,7 +1247,8 @@ class AuthService extends Base {
      * incoming bearer token to `GET {githubApiBaseUrl}/user`; a `200` resolves the identity
      * (`userId` = GitHub `login`, `source` = `'github-pat'`) in the same AuthInfo shape the
      * GitLab-PAT verifier produces and `RequestContextService` already consumes. An optional
-     * `auth.allowedUsers` allowlist can gate the resolved GitHub login (default-off). There is
+     * `auth.allowedUsers` allowlist can gate the resolved GitHub login, or the account id for a
+     * subject-pinned entry (default-off). There is
      * deliberately no client-id gate: GitHub PATs expose no OAuth-app identity comparable to
      * GitLab's `/oauth/token/info`. Successful validations are cached by SHA-256 token hash for
      * `auth.patCacheTtlSeconds` so a revoked PAT clears within that bounded window; failures are
@@ -1144,14 +1272,16 @@ class AuthService extends Base {
             ttlSeconds          = aiConfig.auth.patCacheTtlSeconds,
             ttlMs               = ttlSeconds * 1000,
             validationTimeoutMs = this.#validatePatValidationTimeoutMs(aiConfig.auth.patValidationTimeoutMs),
-            allowedUsers        = this.#normalizePatAllowlist(aiConfig.auth.allowedUsers),
-            requireUser         = allowedUsers.length > 0,
-            pinSubject          = aiConfig.auth.pinFirstProviderSubject === true,
-            staleGraceMs        = Math.max(0, Number(aiConfig.auth.patStaleGraceSeconds) || 0) * 1000,
-            diskCachePath       = aiConfig.auth.patDiskCachePath.trim(),
-            cache               = new Map(); // tokenHash -> {user, scopes, expiresAt} (cache-freshness, ms)
+            allowedUsers        = this.#normalizeUserAllowlist(aiConfig.auth.allowedUsers),
+            requireUser         = allowedUsers.size > 0,
+            // Applies the process-lifetime admission decision after provider validation but before
+            // AuthInfo can reach Express; bootstrap is the only call allowed to establish the pin.
+            admitProviderSubject = aiConfig.auth.pinFirstProviderSubject === true
+                ? this.#createProviderSubjectPin(InvalidTokenError, 'GitHub') : info => info,
+            staleGraceMs         = Math.max(0, Number(aiConfig.auth.patStaleGraceSeconds) || 0) * 1000,
+            diskCachePath        = aiConfig.auth.patDiskCachePath.trim(),
+            cache                = new Map(); // tokenHash -> {user, scopes, expiresAt} (cache-freshness, ms)
 
-        let pinnedProviderSubject = null;
         // Lazily-loaded mirror of the on-disk store; null until the first transport-failure fallback
         // (or first write-through) needs it. A plane that never sees an outage never pays the read.
         // SINGLE-FLIGHT: concurrent first validations share one load, so two writers mutate the
@@ -1244,11 +1374,22 @@ class AuthService extends Base {
                 return null
             }
 
+            // An entry without the provider's account id names no subject: neither a subject-pinned
+            // allowlist entry, the process pin nor Memory Core's binding could check it. An account id
+            // names one account per provider endpoint, so an entry the current endpoint did not verify
+            // names no subject here either. Both fail closed and leave the store; the next fresh
+            // validation writes a complete one.
+            if (entry.user?.id == null || entry.authProvider !== 'github' || entry.providerBaseUrl !== apiBaseUrl) {
+                entries.delete(tokenHash);
+                await persistDiskEntries();
+                return null
+            }
+
             // CURRENT admission policy reapplies to cached identities: a subject removed from the
             // allowlist before a restart is not readmitted because the provider happens to be down
             // when they return. The persisted identity is evidence of WHO was validated, never a
             // grant that outlives the policy that admitted it.
-            if (requireUser && !allowedUsers.includes(entry.user?.login)) {
+            if (requireUser && !allowedUsers.admits(entry.user.login, entry.user.id)) {
                 entries.delete(tokenHash);
                 cache.delete(tokenHash);
                 await persistDiskEntries();
@@ -1368,38 +1509,6 @@ class AuthService extends Base {
         });
 
         /**
-         * Applies the process-lifetime admission decision after provider validation but before
-         * AuthInfo can reach Express. Bootstrap is the only call allowed to establish the pin.
-         * @param {Object} info Provider-validated AuthInfo
-         * @param {Boolean} establishPin True only for the pre-listen bootstrap call
-         * @returns {Object} The admitted AuthInfo
-         */
-        const admitProviderSubject = (info, establishPin) => {
-            if (!pinSubject) {
-                return info
-            }
-
-            if (establishPin) {
-                if (pinnedProviderSubject !== null) {
-                    throw new InvalidTokenError('First provider subject is already established for this process')
-                }
-
-                pinnedProviderSubject = info.userId;
-                return info
-            }
-
-            if (!pinnedProviderSubject) {
-                throw new InvalidTokenError('First provider subject has not been established')
-            }
-
-            if (info.userId !== pinnedProviderSubject) {
-                throw new InvalidTokenError('GitHub provider subject does not match the process pin')
-            }
-
-            return info
-        };
-
-        /**
          * Provider validation with an explicit bootstrap-only pin establishment branch.
          * @param {String} token Presented PAT
          * @param {Boolean} [establishPin=false] True only before middleware installation
@@ -1481,7 +1590,7 @@ class AuthService extends Base {
                     throw new InvalidTokenError('GitHub PAT validation returned no provider login')
                 }
 
-                if (requireUser && !allowedUsers.includes(user.login)) {
+                if (requireUser && !allowedUsers.admits(user.login, user.id)) {
                     cache.delete(tokenHash);
 
                     if (diskCachePath) {
@@ -1503,14 +1612,17 @@ class AuthService extends Base {
                 // revoked token must also leave THIS store on the authoritative path below.
                 // Persisted subject is NORMALIZED to the fields buildInfo consumes — the full
                 // provider response (plan flags, profile URLs, email scopes) never reaches disk;
-                // identity-disclosure bound is exactly these three fields plus scopes + timestamp.
+                // identity-disclosure bound is exactly these three fields plus scopes + timestamp,
+                // and the endpoint that verified them.
                 if (diskCachePath) {
                     const entries = await loadDiskEntries();
 
                     entries.set(tokenHash, {
-                        user      : {id: user.id, login: user.login, name: user.name},
+                        user           : {id: user.id, login: user.login, name: user.name},
                         scopes,
-                        verifiedAt: Date.now()
+                        verifiedAt     : Date.now(),
+                        authProvider   : 'github',
+                        providerBaseUrl: apiBaseUrl
                     });
                     await persistDiskEntries()
                 }
