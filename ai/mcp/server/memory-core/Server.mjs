@@ -956,12 +956,18 @@ class Server extends BaseServer {
      * canonicalizer resolves the matching seeded graph node; (3)
      * the composite is shaped for `RequestContextService.run()` consumption.
      *
-     * Missing graph node is non-fatal: the identity still flows as `userId` tag, but
+     * Under the login binding a missing graph node is non-fatal: the identity still flows as `userId` tag, but
      * `agentIdentityNodeId` is null. Unseeded agents can write memories — they just can't yet
      * terminate `AUTHORED_BY` edges on a graph node until someone adds them via
      * `seedAgentIdentities.mjs`.
      *
+     * A source that carries a provider subject (`gh-cli`) acts, once the cutover activates selection, as the
+     * identity that subject is bound to ({@link selectAgentIdentityBySubject}, creating none), keyed by its bare
+     * id. A subject that selects none fails the boot by name: there is no login fallback. A host-trusted source
+     * (`NEO_AGENT_IDENTITY`) carries no subject and keeps the login binding (ADR 0038 §2.2 fact 5).
+     *
      * @returns {Promise<Object|null>}
+     * @throws {Error} A `NEO_AGENT_IDENTITY_SUBJECT_*` refusal once selection is active.
      * @protected
      */
     async resolveStdioIdentity() {
@@ -969,10 +975,13 @@ class Server extends BaseServer {
 
         if (!resolved.githubLogin) return null;
 
-        const agentIdentityNodeId = await this.bindAgentIdentity(resolved.githubLogin);
+        const
+            active              = Boolean(resolved.authProvider) && await this.readSubjectSelection(resolved.githubLogin),
+            agentIdentityNodeId = active ? this.selectAgentIdentityBySubject({reqAuth: {...resolved, userId: resolved.githubLogin}, create: false})
+                : await this.bindAgentIdentity(resolved.githubLogin);
 
         return {
-            userId  : resolved.githubLogin,
+            userId  : active ? normalizeUserId(agentIdentityNodeId) : resolved.githubLogin,
             username: resolved.username,
             agentIdentityNodeId,
             source  : resolved.source

@@ -2036,5 +2036,69 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
                 create.destroy();
             }
         });
+
+        test('once active, a stdio gh-cli boot acts as its subject\'s identity, and a subject that selects none fails by name', async () => {
+            await GraphService.initAsync();
+            const
+                serverInstance        = await createServerWithoutBoot(),
+                StdioIdentityResolver = (await import('../../../../../../../ai/mcp/server/shared/services/StdioIdentityResolver.mjs')).default,
+                originalResolve       = StdioIdentityResolver.resolve,
+                ghCli                 = (login, fields) => {
+                    StdioIdentityResolver.resolve = async () => ({githubLogin: login, username: login, source: 'gh-cli', ...fields})
+                };
+
+            try {
+                GraphService.createBoundIdentity({id: '@subject-1813-stdio', type: 'AgentIdentity', name: 'stdio', properties: {accountType: 'agent'}},
+                    {subject: subject('18130011')});
+
+                // dormant: the login binds, so a renamed login finds no identity
+                ghCli('subject-1813-stdio-renamed', subject('18130011'));
+                expect(await serverInstance.resolveStdioIdentity()).toMatchObject({userId: 'subject-1813-stdio-renamed', agentIdentityNodeId: null});
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                expect(await serverInstance.resolveStdioIdentity(), 'the subject decides, keyed by the identity')
+                    .toMatchObject({userId: 'subject-1813-stdio', agentIdentityNodeId: '@subject-1813-stdio', source: 'gh-cli'});
+
+                // a re-registered login and an incomplete subject both fail, and stdio creates nothing
+                ghCli('subject-1813-stdio', subject('18130012'));
+                await expect(serverInstance.resolveStdioIdentity()).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNBOUND'});
+                expect(readSubjectBinding(sqlite(), subject('18130012'))).toBeNull();
+
+                ghCli('subject-1813-stdio-new', {...subject('18130013'), providerUserId: undefined});
+                await expect(serverInstance.resolveStdioIdentity()).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_REQUIRED'});
+                expect(rawGraphNode('@subject-1813-stdio-new')).toBeNull();
+            } finally {
+                StdioIdentityResolver.resolve = originalResolve;
+                cleanUp(['18130011', '18130012', '18130013'], ['@subject-1813-stdio', '@subject-1813-stdio-renamed', '@subject-1813-stdio-new']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('once active, NEO_AGENT_IDENTITY keeps the login binding and never reads the activation', async () => {
+            await GraphService.initAsync();
+            const
+                serverInstance        = await createServerWithoutBoot(),
+                StdioIdentityResolver = (await import('../../../../../../../ai/mcp/server/shared/services/StdioIdentityResolver.mjs')).default,
+                originalResolve       = StdioIdentityResolver.resolve;
+
+            StdioIdentityResolver.resolve = async () => ({githubLogin: 'subject-1813-pinned', username: 'subject-1813-pinned', source: 'env-var'});
+
+            try {
+                GraphService.upsertNode({id: '@subject-1813-pinned', type: 'AgentIdentity', name: 'pinned'});
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                expect(await serverInstance.resolveStdioIdentity())
+                    .toEqual({userId: 'subject-1813-pinned', username: 'subject-1813-pinned', agentIdentityNodeId: '@subject-1813-pinned', source: 'env-var'});
+
+                // an env-pinned harness boots even where the activation cannot be read
+                serverInstance.readSubjectSelection = async () => { throw Object.assign(new Error('unreadable'), {code: 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'}) };
+                await expect(serverInstance.resolveStdioIdentity()).resolves.toMatchObject({agentIdentityNodeId: '@subject-1813-pinned'});
+            } finally {
+                StdioIdentityResolver.resolve = originalResolve;
+                cleanUp([], ['@subject-1813-pinned']);
+                serverInstance.destroy();
+            }
+        });
     });
 });

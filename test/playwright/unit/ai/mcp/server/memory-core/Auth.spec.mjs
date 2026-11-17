@@ -117,6 +117,45 @@ test.describe('Neo.ai.mcp.server.shared.services.StdioIdentityResolver', () => {
         expect(identity.githubLogin).toBe('explicit-agent');
         expect(identity.source).toBe('env-var');
     });
+
+    test('gh-cli carries the subject its payload proves: provider github, the API base its url names, and the account id', async () => {
+        for (const [url, providerBaseUrl] of [
+            ['https://api.github.com/users/human-dev',         'https://api.github.com'],
+            ['https://ghe.example.com/api/v3/users/human-dev', 'https://ghe.example.com/api/v3']
+        ]) {
+            StdioIdentityResolver.resolveFromGhCli = () => ({login: 'human-dev', name: 'Human Developer', id: 583231, url});
+
+            expect(await StdioIdentityResolver.resolve(), url).toEqual({
+                githubLogin: 'human-dev', username: 'Human Developer', source: 'gh-cli',
+                authProvider: 'github', providerBaseUrl, providerUserId: '583231'
+            });
+        }
+    });
+
+    test('a gh payload without a positive integer id or its own users url leaves that subject field absent', async () => {
+        const
+            own   = 'https://api.github.com/users/human-dev',
+            other = 'https://api.github.com/users/someone-else',
+            base  = 'https://api.github.com';
+
+        for (const [payload, expected] of [
+            [{url: own},                {providerBaseUrl: base,      providerUserId: undefined}],
+            [{id: 0, url: own},         {providerBaseUrl: base,      providerUserId: undefined}],
+            [{id: '583231', url: own},  {providerBaseUrl: base,      providerUserId: undefined}],
+            [{id: 583231},              {providerBaseUrl: undefined, providerUserId: '583231'}],
+            [{id: 583231, url: other},  {providerBaseUrl: undefined, providerUserId: '583231'}]
+        ]) {
+            StdioIdentityResolver.resolveFromGhCli = () => ({login: 'human-dev', ...payload});
+
+            expect(await StdioIdentityResolver.resolve(), JSON.stringify(payload)).toMatchObject({authProvider: 'github', ...expected});
+        }
+    });
+
+    test('NEO_AGENT_IDENTITY is host-trusted and carries no subject', async () => {
+        process.env.NEO_AGENT_IDENTITY = 'explicit-agent';
+
+        expect(await StdioIdentityResolver.resolve()).toEqual({githubLogin: 'explicit-agent', username: 'explicit-agent', source: 'env-var'});
+    });
 });
 
 test.describe('Neo.ai.mcp.server.shared.services.AuthMiddleware', () => {
