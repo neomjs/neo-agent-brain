@@ -27,4 +27,4 @@ jobs:
         github.event_name == 'pull_request_target' &&
         github.event.pull_request.user.type != 'Bot'
       )
-    uses: neomjs/neo/.github/workflows/claim-responder.yml@2404340dfa38119542c9450a8c7d53810d2c0ba7
+    uses: neomjs/neo/.github/workflows/claim-responder.yml@825047c9ea31db513add1963df1d54cc166a34a0
