@@ -99,6 +99,26 @@ export function forgeApiBase(auth, authProvider) {
 }
 
 /**
+ * @summary The provider subject an OIDC introspection proves: `(issuer, sub)` as provider `oidc`, the issuer as
+ * `providerBaseUrl` and `sub` as `providerUserId`, the tuple the protected subject relation keys on. Only the issuer
+ * discovery qualified for the configured Issuer URL counts; a response `iss` must equal it exactly, and is never
+ * normalized like a forge API base (OIDC Core §16.15). It may be omitted, since it is optional; a present one that
+ * is anything else, malformed included, qualifies nothing. `sub` counts only with an affirmative `active: true`. A
+ * field left absent makes the subject incomplete, which selection refuses by name once active; the login never
+ * stands in.
+ * @param {Object} introspection The token's introspection response.
+ * @param {String|undefined} qualifiedIssuer The issuer discovery returned for the configured Issuer URL, identical to it.
+ * @returns {{authProvider: String, providerBaseUrl: (String|undefined), providerUserId: (String|undefined)}}
+ */
+export function oidcSubject({active, iss, sub} = {}, qualifiedIssuer) {
+    return {
+        authProvider   : 'oidc',
+        providerBaseUrl: typeof qualifiedIssuer === 'string' && qualifiedIssuer && (iss === undefined || iss === qualifiedIssuer) ? qualifiedIssuer : undefined,
+        providerUserId : active === true && typeof sub === 'string' && sub ? sub : undefined
+    }
+}
+
+/**
  * @summary The forge facts a PAT admission stamps under the configured mode: `authProvider` and its
  * `providerBaseUrl` ({@link forgeApiBase}). `null` for a mode that admits no forge PAT. The Fleet's
  * forge-connection registry declares its binding from here, so it names exactly the endpoint admissions
@@ -316,6 +336,10 @@ class AuthService extends Base {
             response_types_supported: oauthUrls.response_types_supported || ['code'],
         };
 
+        // discovery's issuer qualifies only when identical to the configured Issuer URL (OIDC Discovery §4.3);
+        // the host/realm fallback builds a URL, never an Issuer Identifier
+        const qualifiedIssuer = aiConfig.auth.issuerUrl && oauthUrls.issuer === aiConfig.auth.issuerUrl ? oauthUrls.issuer : undefined;
+
         const tokenVerifier = {
             verifyAccessToken: async (token) => {
                 const introspectionEndpoint = oauthUrls.introspection_endpoint;
@@ -382,7 +406,8 @@ class AuthService extends Base {
                     username,
                     // Provenance tag consumed by `RequestContextService.getSource()`.
                     // Distinguishes OIDC-derived identity from stdio env-var / gh-CLI paths.
-                    source   : 'oidc'
+                    source   : 'oidc',
+                    ...oidcSubject(data, qualifiedIssuer)
                 };
             }
         };

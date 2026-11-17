@@ -63,7 +63,10 @@ class StdioIdentityResolver extends Base {
      * Callers that need the `@`-prefixed graph-node-id form use the shared
      * `normalizeAgentIdentityNodeId()` boundary at lookup time.
      *
-     * @returns {Promise<{githubLogin: String|null, username: String|null, source: String}>}
+     * **Subject:** `gh-cli` is provider-authenticated, so it also carries the subject its payload
+     * proves ({@link subjectOfGhUser}). `env-var` is host-trusted: it carries none and is never subject-bound proof.
+     *
+     * @returns {Promise<{githubLogin: String|null, username: String|null, source: String, authProvider: (String|undefined), providerBaseUrl: (String|undefined), providerUserId: (String|undefined)}>}
      *     An identity descriptor. `source` is one of `'env-var'`, `'gh-cli'`, or `'unresolved'`.
      */
     async resolve() {
@@ -85,7 +88,8 @@ class StdioIdentityResolver extends Base {
             return {
                 githubLogin: ghUser.login,
                 username   : ghUser.name || ghUser.login,
-                source     : 'gh-cli'
+                source     : 'gh-cli',
+                ...this.subjectOfGhUser(ghUser)
             }
         }
 
@@ -93,6 +97,26 @@ class StdioIdentityResolver extends Base {
             githubLogin: null,
             username   : null,
             source     : 'unresolved'
+        }
+    }
+
+    /**
+     * @summary The provider subject a `gh api user` payload proves: provider `github`, the API base named
+     * by the payload's own `url`, and the account `id`. A field the payload lacks stays absent, so the
+     * subject is incomplete and selection refuses it by name. The configured API base never stands in,
+     * because `gh` may be signed in to another host. On github.com the base equals the one GitHub PAT
+     * admissions stamp, so both transports key one account to one subject.
+     * @param {Object} ghUser The parsed `gh api user` payload.
+     * @returns {{authProvider: String, providerBaseUrl: (String|undefined), providerUserId: (String|undefined)}}
+     * @protected
+     */
+    subjectOfGhUser({id, login, url}) {
+        const suffix = `/users/${login}`;
+
+        return {
+            authProvider   : 'github',
+            providerBaseUrl: typeof url === 'string' && url.endsWith(suffix) ? url.slice(0, -suffix.length).replace(/\/+$/, '') : undefined,
+            providerUserId : Number.isSafeInteger(id) && id > 0 ? String(id) : undefined
         }
     }
 
