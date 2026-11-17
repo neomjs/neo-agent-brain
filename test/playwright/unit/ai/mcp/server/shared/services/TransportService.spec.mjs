@@ -478,7 +478,7 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             logger       = {info: () => {}, warn: () => {}, error: () => {}},
             oidcAudience = 'http://127.0.0.1:43199/mcp';
 
-        function oidcProxyConfig() {
+        function oidcProxyConfig(authOverrides) {
             return {
                 mcpHttpHost  : '127.0.0.1',
                 mcpListenHost: '127.0.0.1',
@@ -493,7 +493,8 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
                     issuerUrl         : null,
                     clientId          : 'neo-mcp',
                     clientSecret      : '',
-                    trustProxyIdentity: true
+                    trustProxyIdentity: true,
+                    ...authOverrides
                 }
             }
         }
@@ -511,12 +512,8 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             })
         }
 
-        async function setupOidcProxy(authOverrides = {}) {
-            const
-                mcpServer = new McpServer({name: 'oidc-proxy-test', version: '1.0.0'}),
-                aiConfig  = oidcProxyConfig();
-
-            Object.assign(aiConfig.auth, authOverrides);
+        async function setupOidcProxy(authOverrides) {
+            const mcpServer = new McpServer({name: 'oidc-proxy-test', version: '1.0.0'});
 
             await TransportService.setup({
                 server: {
@@ -531,7 +528,7 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
                         }
                     }
                 },
-                aiConfig,
+                aiConfig    : oidcProxyConfig(authOverrides),
                 logger,
                 resourceName: 'OidcProxyIngressTest'
             });
