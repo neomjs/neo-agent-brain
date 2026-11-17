@@ -4,13 +4,12 @@ import {Command} from 'commander';
 import fs        from 'node:fs';
 import path      from 'node:path';
 
-import {isEntryModule}                                 from '../../services/shared/isEntryModule.mjs';
-import {readIdentityFoundingSourceInTransaction}       from '../../services/memory-core/helpers/identityFoundingStorage.mjs';
-import {readIdentityPublicationAuthorityInTransaction} from '../../services/memory-core/helpers/identityPublicationLineage.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 import {
     bindAdministratively,
     foundingSubjectMappings,
     planAdministrativeBind,
+    readQualifiedFoundingInTransaction,
     readSubjectBindingRecords
 } from '../../services/memory-core/helpers/subjectBinding.mjs';
 
@@ -80,33 +79,13 @@ function requireIdentity(db, identityId) {
 }
 
 /**
- * @summary Reads the retained founding source, qualified the way identity admission qualifies it: the
- * plane is bound, and the source was installed by that lineage's issuer at its current head.
- * @returns {{foundingRevision: String, seed: Object}}
- * @throws {Error} `IDENTITY_FOUNDING_SOURCE_UNAVAILABLE`, or `SUBJECT_BINDING_FOUNDING_UNQUALIFIED`.
- */
-function qualifiedFounding(db, bootText, target) {
-    const
-        authority = readIdentityPublicationAuthorityInTransaction(db, bootText, target),
-        founding  = readIdentityFoundingSourceInTransaction(db, {target});
-
-    if (authority.state !== 'bound' || founding.provenance.issuer !== authority.issuer ||
-        founding.provenance.lineageHead !== authority.head) {
-        throw refusal('SUBJECT_BINDING_FOUNDING_UNQUALIFIED',
-            'The retained founding source is not qualified by the lineage this plane is bound to; an administrative bind rests on it.');
-    }
-
-    return {foundingRevision: founding.provenance.sourceRevision, seed: founding.seed};
-}
-
-/**
  * @summary Seeds the bindings the retained founding record authorizes on its own, inside the caller's
  * transaction: each subject mapped to exactly one held identity, and only where neither side is bound.
  * @returns {Object} `{foundingRevision, bound, matching, held, refused, unresolved}`.
  */
 function seedFromFounding(db, {bootText, target, apply, now}) {
     const
-        {foundingRevision, seed} = qualifiedFounding(db, bootText, target),
+        {foundingRevision, seed} = readQualifiedFoundingInTransaction(db, bootText, target),
         outcome                  = {bound: [], matching: [], held: [], refused: [], unresolved: []};
 
     for (const {subject, identityIds} of foundingSubjectMappings(seed)) {
@@ -171,7 +150,7 @@ export function runSubjectBindingAdmin({dbPath, command, subject, identityId, ap
 
         const decide = () => {
             requireIdentity(db, identityId);
-            return {foundingRevision: qualifiedFounding(db, bootText, target).foundingRevision, plan: planAdministrativeBind(db, {subject, identityId})};
+            return {foundingRevision: readQualifiedFoundingInTransaction(db, bootText, target).foundingRevision, plan: planAdministrativeBind(db, {subject, identityId})};
         };
 
         if (!apply) {

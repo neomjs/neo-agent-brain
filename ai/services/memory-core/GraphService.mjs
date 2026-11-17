@@ -18,7 +18,7 @@ import {fenceIdentityPublication}                                       from './
 import {consumeIdentityPublicationBoot, readIdentityPublicationLineage} from './helpers/identityPublicationLineage.mjs';
 import {installIdentityFoundingSource}                                  from './helpers/identityFoundingStorage.mjs';
 import {admitIdentityPublication, readIdentityPublicationSnapshot}      from './helpers/identityPublicationAdmission.mjs';
-import {bindAtFirstAdmission}                                           from './helpers/subjectBinding.mjs';
+import {bindAtFirstAdmission, readFoundingIdentities}                   from './helpers/subjectBinding.mjs';
 import {
     ANCHORED_ISSUE_EDGE_TYPES,
     MESSAGE_ID_PREFIX,
@@ -554,6 +554,20 @@ class GraphService extends Base {
             return Object.freeze({state: 'unavailable', code: 'publication-transaction-in-progress'});
         }
         return readIdentityPublicationLineage(this.db?.storage?.db, bootText, target);
+    }
+
+    /**
+     * @summary Reads the identities the qualified founding record maps one provider subject to.
+     * @param {Object} options Trusted `bootText`, the independently resolved `target`, and the `subject`.
+     * @returns {ReadonlyArray<String>} The mapped identity ids, empty when the record maps none.
+     * @throws {Error} During an open graph transaction, or when the founding source is unavailable or unqualified.
+     */
+    readFoundingIdentities(options) {
+        if (this.db?.isExecutingTransaction) {
+            throw Object.assign(new Error('The founding record cannot be read during a graph transaction.'),
+                {code: 'publication-transaction-in-progress'});
+        }
+        return readFoundingIdentities(this.db?.storage?.db, options);
     }
 
     /**

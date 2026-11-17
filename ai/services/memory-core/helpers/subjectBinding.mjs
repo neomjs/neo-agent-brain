@@ -1,3 +1,6 @@
+import {readIdentityFoundingSourceInTransaction}       from './identityFoundingStorage.mjs';
+import {readIdentityPublicationAuthorityInTransaction} from './identityPublicationLineage.mjs';
+
 /**
  * @module ai/services/memory-core/helpers/subjectBinding
  * @summary The protected relation from a provider subject to the one `AgentIdentity` a request acts as,
@@ -94,6 +97,11 @@ function checkSubject(subject) {
     if (!subject || typeof subject !== 'object' || !SUBJECT_KEY.every(key => text(subject[key]))) {
         throw refusal('SUBJECT_BINDING_INVALID', 'A binding needs the complete subject: authProvider, providerBaseUrl and providerUserId.');
     }
+}
+
+/** @summary The exact comparison key of a subject tuple, in key order. */
+function subjectKeyOf(subject) {
+    return JSON.stringify(SUBJECT_KEY.map(field => subject[field]));
 }
 
 /** @summary Validates the remaining write inputs. */
@@ -293,7 +301,7 @@ export function foundingSubjectMappings(seed) {
     const bySubject = new Map();
 
     for (const {identityKey, subject} of seed.entries) {
-        const key = JSON.stringify(SUBJECT_KEY.map(field => subject[field]));
+        const key = subjectKeyOf(subject);
 
         if (!bySubject.has(key)) {
             bySubject.set(key, {subject: Object.freeze(Object.fromEntries(SUBJECT_KEY.map(field => [field, subject[field]]))), identityIds: []});
@@ -302,6 +310,52 @@ export function foundingSubjectMappings(seed) {
     }
 
     return [...bySubject.values()].map(({subject, identityIds}) => Object.freeze({subject, identityIds: Object.freeze(identityIds)}));
+}
+
+/**
+ * @summary Reads the retained founding source, qualified the way identity admission qualifies it: the plane
+ * is bound, and the source was installed by that lineage's issuer at its current head. The administrative
+ * bind and the request boundary's founding guard both rest on it.
+ * @param {Object} db The graph's physical SQLite connection, inside the caller's transaction.
+ * @param {String|null} bootText The plane's trusted identity-publication boot descriptor.
+ * @param {Object} target The plane's independently resolved `{planeId, dataRoot}`.
+ * @returns {{foundingRevision: String, seed: Object}}
+ * @throws {Error} `IDENTITY_FOUNDING_SOURCE_UNAVAILABLE`, or `SUBJECT_BINDING_FOUNDING_UNQUALIFIED`.
+ */
+export function readQualifiedFoundingInTransaction(db, bootText, target) {
+    const
+        authority = readIdentityPublicationAuthorityInTransaction(db, bootText, target),
+        founding  = readIdentityFoundingSourceInTransaction(db, {target});
+
+    if (authority.state !== 'bound' || founding.provenance.issuer !== authority.issuer ||
+        founding.provenance.lineageHead !== authority.head) {
+        throw refusal('SUBJECT_BINDING_FOUNDING_UNQUALIFIED',
+            'The retained founding source is not qualified by the lineage this plane is bound to.');
+    }
+
+    return {foundingRevision: founding.provenance.sourceRevision, seed: founding.seed};
+}
+
+/**
+ * @summary The identities the qualified founding record maps one subject to, read under one physical snapshot.
+ * The request boundary refuses a first admission for every subject this names, so a founding subject binds
+ * only through the administrative path, never to a new identity that would lock its founding identities out.
+ * @param {Object} db The graph's physical SQLite connection.
+ * @param {Object} options
+ * @param {String|null} options.bootText The plane's trusted identity-publication boot descriptor.
+ * @param {Object} options.target The plane's independently resolved `{planeId, dataRoot}`.
+ * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`, compared exactly.
+ * @returns {ReadonlyArray<String>} The mapped identity ids in the seed's order, empty when the record maps none.
+ * @throws {Error} As {@link readQualifiedFoundingInTransaction}; the caller fails closed.
+ */
+export function readFoundingIdentities(db, {bootText, target, subject} = {}) {
+    const key = subjectKeyOf(subject);
+
+    return db.transaction(() => {
+        const {seed} = readQualifiedFoundingInTransaction(db, bootText, target);
+
+        return foundingSubjectMappings(seed).find(mapping => subjectKeyOf(mapping.subject) === key)?.identityIds ?? Object.freeze([]);
+    }).deferred();
 }
 
 /**

@@ -799,8 +799,10 @@ class Server extends BaseServer {
      * subject whose login names no identity yet creates and binds one in a single transaction.
      *
      * An existing identity binds only through the administrative path, so a login that names one is
-     * refused by name, as is a request without a complete subject. Every refusal fails closed: nothing
-     * falls back to the login.
+     * refused by name, as is a request without a complete subject. So is an unbound subject the founding
+     * record maps, to one identity or several: a first admission never claims it for a new identity, and
+     * the refusal names the mapping. Every refusal fails closed, an unreadable founding record included:
+     * nothing falls back to the login.
      * @param {Object} options
      * @param {Object} options.reqAuth Server-stamped auth context.
      * @param {String} options.userId Validated provider username.
@@ -808,7 +810,8 @@ class Server extends BaseServer {
      * @param {Object|null} options.subject The verified subject, or `null`.
      * @param {Object} options.sqlite The graph's physical SQLite connection.
      * @returns {String} The identity the request acts as.
-     * @throws {Error} `NEO_AGENT_IDENTITY_SUBJECT_REQUIRED`, `_SUBJECT_CONFLICT`, `_COLLISION` or `_SUBJECT_UNAVAILABLE`.
+     * @throws {Error} `NEO_AGENT_IDENTITY_SUBJECT_REQUIRED`, `_SUBJECT_FOUNDING_MAPPED`, `_SUBJECT_CONFLICT`,
+     * `_COLLISION` or `_SUBJECT_UNAVAILABLE`.
      * @protected
      */
     selectAgentIdentityBySubject({reqAuth, userId, graphNodeId, subject, sqlite}) {
@@ -822,6 +825,15 @@ class Server extends BaseServer {
 
             const bound = readSubjectBinding(sqlite, subject);
             if (bound) return bound.identityId;
+
+            const founding = IdentityPublicationService.getFoundingIdentities(subject);
+
+            if (founding.length > 0) {
+                throw this.createIdentityProvisioningError(
+                    `Cannot bind ${userId}: the founding record maps this subject to ${founding.join(', ')}, and only the administrative path binds it.`,
+                    'NEO_AGENT_IDENTITY_SUBJECT_FOUNDING_MAPPED'
+                );
+            }
 
             const existing = this.readRawGraphNode(graphNodeId);
 

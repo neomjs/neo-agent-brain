@@ -1783,5 +1783,54 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
                 serverInstance.destroy();
             }
         });
+
+        test('after activation, an unbound subject the founding record maps creates nothing, and an unreadable record fails closed', async () => {
+            await GraphService.initAsync();
+            const
+                IdentityPublicationService = (await import('../../../../../../../ai/services/memory-core/IdentityPublicationService.mjs')).default,
+                serverInstance             = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                original                   = IdentityPublicationService.getFoundingIdentities,
+                founding                   = new Map([['18120031', ['@subject-1812-grace', '@subject-1812-vega']], ['18120032', ['@subject-1812-clio']]]),
+                reads                      = [];
+
+            // The seam stands in for a provisioned plane's record; the record's own read is the helper's spec
+            IdentityPublicationService.getFoundingIdentities = ({providerUserId}) => {
+                reads.push(providerUserId);
+                if (providerUserId === '18120033') throw Object.assign(new Error('publication-boot-unavailable'), {code: 'publication-boot-unavailable'});
+                return founding.get(providerUserId) ?? [];
+            };
+
+            try {
+                await serverInstance.buildRequestContext(pat('subject-1812-bound', '18120034'));
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+                reads.length = 0;
+
+                // Several founding identities: refused by name, never a first-match choice
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-grace', '18120031'))).rejects.toMatchObject({
+                    code: 'NEO_AGENT_IDENTITY_SUBJECT_FOUNDING_MAPPED', message: expect.stringContaining('@subject-1812-grace, @subject-1812-vega')
+                });
+
+                // One founding identity, and a login that names none yet: a first admission would lock it out
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-newcomer', '18120032'))).rejects.toMatchObject({
+                    code: 'NEO_AGENT_IDENTITY_SUBJECT_FOUNDING_MAPPED', message: expect.stringContaining('@subject-1812-clio')
+                });
+
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-unread', '18120033')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'});
+
+                ['@subject-1812-newcomer', '@subject-1812-unread'].forEach(id => expect(rawGraphNode(id)).toBeNull());
+                ['18120031', '18120032', '18120033'].forEach(id => expect(readSubjectBinding(sqlite(), subject(id))).toBeNull());
+
+                // A bound subject never reads the record, whatever its login spells now
+                expect((await serverInstance.buildRequestContext(pat('subject-1812-bound-renamed', '18120034'))).agentIdentityNodeId)
+                    .toBe('@subject-1812-bound');
+                expect(reads).toEqual(['18120031', '18120032', '18120033']);
+            } finally {
+                IdentityPublicationService.getFoundingIdentities = original;
+                cleanUp(['18120031', '18120032', '18120033', '18120034'],
+                    ['@subject-1812-bound', '@subject-1812-newcomer', '@subject-1812-unread', '@subject-1812-bound-renamed']);
+                serverInstance.destroy();
+            }
+        });
     });
 });

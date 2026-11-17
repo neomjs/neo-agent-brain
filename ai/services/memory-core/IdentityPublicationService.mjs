@@ -144,6 +144,23 @@ class IdentityPublicationService extends Base {
         ) : this.#unprovisioned();
     }
 
+    /**
+     * @summary The identities the retained founding record maps one provider subject to, read under this
+     * boot generation's trust and target for the request boundary's founding guard. An unprovisioned plane
+     * holds no founding record, so it maps nothing.
+     * @param {Object} subject `{authProvider, providerBaseUrl, providerUserId}`.
+     * @returns {ReadonlyArray<String>} The mapped identity ids, empty when the record maps none.
+     * @throws {Error} While this generation's boot is pending or failed, or when the founding read fails or
+     * does not qualify; the caller fails closed.
+     */
+    getFoundingIdentities(subject) {
+        if (!this.#generation) return Object.freeze([]);
+        if (this.#bootFailure) {
+            throw Object.assign(new Error(`Identity publication boot unavailable: ${this.#bootFailure}`), {code: this.#bootFailure});
+        }
+        return GraphService.readFoundingIdentities({bootText: this.#generation.bootText, target: this.#generation.target, subject});
+    }
+
     /** @summary Returns an explicit unprovisioned state, never an empty successful population. */
     #unprovisioned() {
         return Object.freeze({state: 'unavailable', code: 'publication-not-provisioned'});

@@ -8,7 +8,11 @@ import {compileFoundingFamilySeed}                   from '../../../../../../ai/
 import {stringifyCanonicalJson}                      from '../../../../../../ai/services/shared/canonicalJson.mjs';
 import {consumeIdentityPublicationBoot}              from '../../../../../../ai/services/memory-core/helpers/identityPublicationLineage.mjs';
 import {installIdentityFoundingSource}               from '../../../../../../ai/services/memory-core/helpers/identityFoundingStorage.mjs';
-import {readSubjectBinding, readSubjectBindingRecords} from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
+import {
+    readFoundingIdentities,
+    readSubjectBinding,
+    readSubjectBindingRecords
+} from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 import {runSubjectBindingAdmin}                      from '../../../../../../ai/scripts/maintenance/subjectBindings.mjs';
 
 /**
@@ -144,6 +148,28 @@ test.describe('ai/scripts/maintenance/subjectBindings', () => {
 
         expect(() => bind({apply: true})).toThrow(expect.objectContaining({code: 'IDENTITY_FOUNDING_SOURCE_UNAVAILABLE'}));
         expect(stored(readSubjectBindingRecords)).toEqual([]);
+    });
+
+    test('the request guard reads the same qualified record: every identity a subject maps to, or none', () => {
+        const
+            mapped      = (subject, boot = bootText) => stored(db => readFoundingIdentities(db, {bootText: boot, target, subject})),
+            foreignBoot = stringifyCanonicalJson(descriptor([{kid: 'kid-b', publicKey: publicKey()}], 'kid-b'));
+
+        // An identity the graph lacks still maps: the guard holds the subject for its founding identity
+        expect(mapped(S)).toEqual(['@ada']);
+        expect(mapped(T)).toEqual(['@grace', '@vega']);
+        expect(mapped(U)).toEqual(['@clio']);
+
+        // The subject compares exactly, so the same account at another endpoint is not mapped
+        expect(mapped({...S, providerUserId: '4004'})).toEqual([]);
+        expect(mapped({...S, providerBaseUrl: 'https://github.example.com/api/v3'})).toEqual([]);
+
+        expect(() => mapped(S, foreignBoot)).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_FOUNDING_UNQUALIFIED'}));
+
+        fs.rmSync(dbPath);
+        seedGraph({founding: false});
+
+        expect(() => mapped(S)).toThrow(expect.objectContaining({code: 'IDENTITY_FOUNDING_SOURCE_UNAVAILABLE'}));
     });
 
     test('--apply refuses a database other than the configured live graph', () => {
