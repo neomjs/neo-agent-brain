@@ -325,17 +325,22 @@ export async function sendCodexSessionWake({binary, home, threadId, text, execut
 
 /**
  * @summary Finds an exact queued user message and matching started turn in the selected root rollout.
+ * A wake turn that completed or aborted without any hook acknowledgement is final: the interrupt
+ * landed, the digest did not, and that prompt is never submitted again.
  * @param {Object} options
  * @param {String} options.home Absolute Codex home.
  * @param {String} options.threadId Root thread UUID.
  * @param {String} options.text Exact unique opaque text submitted to the queue.
  * @param {Number} [options.receiptOffset] File size captured before enqueue.
- * @returns {Promise<Object>} Observed turn start, or unknown while unobserved.
+ * @param {String} [options.receiptToken] The redeeming hook's token; without one only `turn-unacknowledged` can be observed.
+ * @returns {Promise<Object>} `turn-started` with the acknowledgement, `turn-unacknowledged`, or unknown while unobserved.
  */
 export async function readCodexWakeReceipt({home, threadId, text, receiptOffset, receiptToken}) {
     const token = /^\[NEO_WAKE_V1:([0-9a-f-]{36})\] \[WAKE\]$/i.exec(text || '');
-    if (!token || !UUID.test(token[1]) || !UUID.test(receiptToken || '') || receiptToken === token[1]) throw new Error('Invalid Codex receipt token');
-    const acknowledgement = `[NEO_WAKE_RECEIVED:${receiptToken}]`;
+    if (!token || !UUID.test(token[1]) || (receiptToken != null && (!UUID.test(receiptToken) || receiptToken === token[1]))) {
+        throw new Error('Invalid Codex receipt token')
+    }
+    const acknowledgement = receiptToken == null ? null : `[NEO_WAKE_RECEIVED:${receiptToken}]`;
     const target          = await readCodexWakeTarget({home, threadId}), {handle, size} = await openRollout(home, target.rolloutPath, threadId);
     const cursor          = receiptOffset;
     try {
@@ -347,7 +352,8 @@ export async function readCodexWakeReceipt({home, threadId, text, receiptOffset,
         const prefix = Buffer.alloc(Math.min(cursor.offset, 256));
         if ((await handle.read(prefix, 0, prefix.length, cursor.offset - prefix.length)).bytesRead !== prefix.length ||
             createHash('sha256').update(prefix).digest('hex') !== cursor.boundaryHash) return {state: 'unknown'};
-        let position = cursor.offset, pieces = [], lineBytes = 0, currentTurn = null, seenUser = false, matched = null;
+        let position = cursor.offset, pieces = [], lineBytes = 0, currentTurn = null, seenUser = false, matched = null,
+            wakeTurn = null, wakeAcknowledged = false, wakeEnded = false;
         while (position < size) {
             const length = Math.min(64 * 1024, size - position), chunk = Buffer.alloc(length);
             if ((await handle.read(chunk, 0, length, position)).bytesRead !== length) return {state: 'unknown'};
@@ -367,13 +373,20 @@ export async function readCodexWakeReceipt({home, threadId, text, receiptOffset,
                         currentTurn = p.turn_id; seenUser = false
                     } else if (record.type === 'response_item' && p?.type === 'message' && p.role === 'user' &&
                         p.content?.length === 1 && p.content[0]?.type === 'input_text' && p.content[0].text === text && meta?.turn_id === currentTurn) {
-                        seenUser = true
-                    } else if (seenUser && record.type === 'response_item' && p?.type === 'message' && p.role === 'developer' &&
+                        if (wakeTurn && wakeTurn !== currentTurn) throw new Error('Codex wake receipt is ambiguous');
+                        wakeTurn = currentTurn; seenUser = true
+                    } else if (record.type === 'response_item' && p?.type === 'message' && p.role === 'developer' &&
                         meta?.turn_id === currentTurn && meta?.content_item_kinds?.includes('hooks.additional_context') &&
                         meta?.content_item_metadata?.some(item => item?.provenance?.type === 'harness' && item.provenance.hook === true) &&
-                        p.content?.some(item => item?.type === 'input_text' && typeof item.text === 'string' && item.text.split('\n').includes(acknowledgement))) {
-                        if (matched) throw new Error('Codex wake receipt is ambiguous');
-                        matched = currentTurn; seenUser = false
+                        p.content?.some(item => item?.type === 'input_text' && typeof item.text === 'string' && item.text.includes('[NEO_WAKE_RECEIVED:'))) {
+                        if (currentTurn === wakeTurn) wakeAcknowledged = true;
+                        if (seenUser && acknowledgement && p.content.some(item => item?.type === 'input_text' && typeof item.text === 'string' &&
+                            item.text.split('\n').includes(acknowledgement))) {
+                            if (matched) throw new Error('Codex wake receipt is ambiguous');
+                            matched = currentTurn; seenUser = false
+                        }
+                    } else if (record.type === 'event_msg' && ['task_complete', 'turn_aborted'].includes(p?.type) && wakeTurn && p.turn_id === wakeTurn) {
+                        wakeEnded = true
                     }
                 }
                 pieces = []; lineBytes = 0; start = i + 1
@@ -386,6 +399,7 @@ export async function readCodexWakeReceipt({home, threadId, text, receiptOffset,
         try { current = await fs.lstat(target.rolloutPath) } catch (error) { if (error.code === 'ENOENT') return {state: 'unknown'}; throw error }
         if (lineBytes || !current.isFile() || current.isSymbolicLink() || after.dev !== cursor.device || after.ino !== cursor.inode ||
             current.dev !== cursor.device || current.ino !== cursor.inode || after.size !== size || after.mtimeMs !== initial.mtimeMs) return {state: 'unknown'};
-        return matched ? {state: 'turn-started', threadId, turnId: matched} : {state: 'unknown'}
+        if (matched) return {state: 'turn-started', threadId, turnId: matched};
+        return wakeEnded && !wakeAcknowledged ? {state: 'turn-unacknowledged', threadId, turnId: wakeTurn} : {state: 'unknown'}
     } finally { await handle.close() }
 }

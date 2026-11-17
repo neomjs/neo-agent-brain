@@ -412,4 +412,41 @@ test.describe('stagePrimaryWake & deliverPrimarySessionWake urgent guards (RA-1 
             await fs.rm(dir, {recursive: true, force: true});
         }
     });
+
+    test('an unacknowledged urgent receipt settles its slot as delivered without the digest, and the ordinary wake behind it sends', async () => {
+        const dir       = await fs.mkdtemp(path.join(os.tmpdir(), 'primary-deliver-unacknowledged-'));
+        const statePath = path.join(dir, 'seat.json');
+        const threadId  = randomUUID(),
+              urgentKey = 'e'.repeat(64),
+              normalKey = 'f'.repeat(64),
+              binding   = {seat: '@deliver-guard', generation: '200:birth', family: 'codex-desktop', threadId};
+
+        try {
+            const targetProof = async () => ({root: true, threadId, generation: '200:birth'});
+            await bindPrimarySession({statePath, ...binding, expectedVersion: 0, proveTarget: targetProof, isRecordedDelivered: async () => false});
+
+            let   sendCalls = 0, receipt = null, recorded = false;
+            const deliver   = (recordKey, urgent) => deliverPrimarySessionWake({statePath, ...binding, recordKey, urgent,
+                readTarget         : targetProof,
+                send               : async () => { sendCalls++; return {status: 'accepted'} },
+                readReceipt        : async () => receipt,
+                isRecordedDelivered: async key => recorded && key === urgentKey
+            });
+
+            const urgentAttempt = await deliver(urgentKey, true);
+            expect(urgentAttempt.status).toBe('unknown');
+            expect(await deliver(normalKey, false)).toEqual({status: 'pending', reason: 'urgent delivery in progress'});
+
+            receipt = {status: 'unacknowledged', ...binding, recordKey: urgentKey, nonce: urgentAttempt.nonce};
+            expect(await deliver(urgentKey, true)).toEqual({status: 'delivered', nonce: urgentAttempt.nonce, acknowledged: false});
+            expect((await readPrimarySessionWake({statePath})).urgentInflight).toMatchObject({status: 'delivered', acknowledged: false});
+
+            recorded = true;
+            receipt  = null;
+            expect((await deliver(normalKey, false)).status).toBe('unknown');
+            expect(sendCalls).toBe(2);
+        } finally {
+            await fs.rm(dir, {recursive: true, force: true});
+        }
+    });
 });

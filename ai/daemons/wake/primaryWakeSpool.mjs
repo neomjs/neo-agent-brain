@@ -95,7 +95,8 @@ async function readSpoolOutcome(pointer, record, seat, key) {
         return {
             status   : 'delivered',
             recipient: outcome.recipient,
-            ...(typeof outcome.recipientObservedAt === 'string' ? {recipientObservedAt: outcome.recipientObservedAt} : {})
+            ...(typeof outcome.recipientObservedAt === 'string' ? {recipientObservedAt: outcome.recipientObservedAt} : {}),
+            ...(outcome.acknowledged === false ? {acknowledged: false} : {})
         }
     }
     const diagnostic = await readPrivateWakeJson(pointer + '.status');
