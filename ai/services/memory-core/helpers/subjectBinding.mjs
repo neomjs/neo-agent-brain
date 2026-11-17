@@ -1,0 +1,603 @@
+import {readIdentityFoundingSourceInTransaction}       from './identityFoundingStorage.mjs';
+import {readIdentityPublicationAuthorityInTransaction} from './identityPublicationLineage.mjs';
+
+/**
+ * @module ai/services/memory-core/helpers/subjectBinding
+ * @summary The protected relation from a provider subject to the one `AgentIdentity` a request acts as,
+ * and the activation record that turns selection by subject on.
+ *
+ * A login is display data: a forge releases a renamed login for anyone to register, so the identity a
+ * request acts as follows the verified subject `{authProvider, providerBaseUrl, providerUserId}`, compared
+ * exactly and never normalized here.
+ *
+ * The relation lives in its own table on the graph's physical connection, outside Nodes/Edges, so no
+ * graph write, edge cascade, decay or cold-storage pass reaches it. Exactly two writers create a binding:
+ * - {@link bindAtFirstAdmission}, Memory Core's request boundary, inside the transaction that creates
+ *   the identity. It binds only an identity that transaction created.
+ * - {@link bindAdministratively}, the plane-local administrative path, whose authority is host access to
+ *   the data root. It records the retained founding source revision and is the only route that binds an
+ *   existing identity or moves a binding to a new endpoint. A move keeps the endpoints it leaves on the
+ *   row (`formerBaseUrls`): family history is keyed by the full subject tuple, so they keep it reachable.
+ *
+ * Two more carry existing bindings and create none: a migration moves each binding with its renamed
+ * identity ({@link renameBoundIdentities}), and a graph bundle restore re-inserts exactly the rows the
+ * bundle's export read from this table ({@link readSubjectBindingRecords},
+ * {@link restoreSubjectBindingRecord}), under the restore's own operator admission.
+ *
+ * A subject binds one identity and an identity one subject. A conflicting claim refuses by name and
+ * writes nothing; re-presenting a matching binding returns it without a write.
+ *
+ * Selection is dormant until the epic's cutover commits its activation record through
+ * {@link activateSubjectBinding}, so the leaves activate together. Until then readers keep the login
+ * selection, and only identities created at first admission gain a binding.
+ */
+
+/** @type {String} The relation's table, outside the graph record populations. */
+export const SUBJECT_BINDING_TABLE = 'SubjectBinding';
+
+/** @type {String} The one-row activation record the cutover writes. */
+export const SUBJECT_BINDING_ACTIVATION_TABLE = 'SubjectBindingActivation';
+
+/** @type {ReadonlyArray<String>} The subject key, in key order. */
+export const SUBJECT_KEY = Object.freeze(['authProvider', 'providerBaseUrl', 'providerUserId']);
+
+/** @type {String} The graph bundle record type that carries one binding row. */
+export const SUBJECT_BINDING_RECORD = 'subject-binding';
+
+/** @type {String} The graph bundle record type that carries the activation record. */
+export const SUBJECT_BINDING_ACTIVATION_RECORD = 'subject-binding-activation';
+
+/**
+ * @type {ReadonlyArray<String>} The bundle record types only this module's export produces. Their own
+ * types, never `node`, keep their provenance: no ordinary graph row can be exported as one.
+ */
+export const SUBJECT_BINDING_RECORD_TYPES = Object.freeze([SUBJECT_BINDING_RECORD, SUBJECT_BINDING_ACTIVATION_RECORD]);
+
+const
+    ROW_KEYS   = [...SUBJECT_KEY, 'identityId', 'writer', 'foundingRevision', 'formerBaseUrls', 'boundAt'],
+    WRITERS    = ['first-admission', 'administrative'],
+    ACTIVATION = 'acting-identity',
+    SCHEMA     = `CREATE TABLE IF NOT EXISTS ${SUBJECT_BINDING_TABLE} (
+        authProvider     TEXT    NOT NULL,
+        providerBaseUrl  TEXT    NOT NULL,
+        providerUserId   TEXT    NOT NULL,
+        identityId       TEXT    NOT NULL UNIQUE,
+        writer           TEXT    NOT NULL CHECK (writer IN ('first-admission', 'administrative')),
+        foundingRevision TEXT,
+        formerBaseUrls   TEXT    NOT NULL,
+        boundAt          INTEGER NOT NULL,
+        PRIMARY KEY (authProvider, providerBaseUrl, providerUserId)
+    )`,
+    ACTIVATION_SCHEMA = `CREATE TABLE IF NOT EXISTS ${SUBJECT_BINDING_ACTIVATION_TABLE} (
+        gate            TEXT    PRIMARY KEY CHECK (gate = '${ACTIVATION}'),
+        cutoverRevision TEXT    NOT NULL,
+        activatedAt     INTEGER NOT NULL
+    )`;
+
+/**
+ * @summary Builds a named refusal; `details` carries the conflicting identity so a caller can name it.
+ * @param {String} code
+ * @param {String} message
+ * @param {Object} [details={}]
+ * @returns {Error}
+ */
+function refusal(code, message, details = {}) {
+    const error = new Error(message);
+    error.code = code;
+    Object.assign(error, details);
+    return error;
+}
+
+/** @summary Checks a caller-owned identifier without normalization. */
+function text(value) {
+    return typeof value === 'string' && value.length > 0 && value.trim() === value &&
+        !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+/** @summary Validates the exact subject tuple; anything short of all three fields is nonqualifying. */
+function checkSubject(subject) {
+    if (!subject || typeof subject !== 'object' || !SUBJECT_KEY.every(key => text(subject[key]))) {
+        throw refusal('SUBJECT_BINDING_INVALID', 'A binding needs the complete subject: authProvider, providerBaseUrl and providerUserId.');
+    }
+}
+
+/** @summary The exact comparison key of a subject tuple, in key order. */
+function subjectKeyOf(subject) {
+    return JSON.stringify(SUBJECT_KEY.map(field => subject[field]));
+}
+
+/** @summary Validates the remaining write inputs. */
+function checkWrite({identityId, at}) {
+    if (!text(identityId)) throw refusal('SUBJECT_BINDING_INVALID', 'A binding needs the identity it binds.');
+    if (!Number.isSafeInteger(at) || at < 0) throw refusal('SUBJECT_BINDING_INVALID', 'A binding needs its time.');
+}
+
+/** @summary Requires the caller's physical transaction, so a refusal writes nothing. */
+function checkTransaction(db) {
+    if (!db?.open || !db.inTransaction) {
+        throw refusal('SUBJECT_BINDING_TRANSACTION_REQUIRED', 'A subject binding is written only inside a physical transaction.');
+    }
+}
+
+/** @summary Tests whether a table exists; absence is a valid, unbound state. */
+function hasTable(db, name) {
+    return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+}
+
+/**
+ * @summary Tests a row's exact shape: the subject, the identity, a known writer with its revision rule, the
+ * endpoints a move left (distinct, never the current one, and only an administrative move leaves any), a time.
+ */
+function wellFormed(row) {
+    const former = row?.formerBaseUrls;
+
+    return Boolean(row) && typeof row === 'object' &&
+        Object.keys(row).length === ROW_KEYS.length && ROW_KEYS.every(key => Object.hasOwn(row, key)) &&
+        [...SUBJECT_KEY, 'identityId'].every(key => text(row[key])) && WRITERS.includes(row.writer) &&
+        (row.writer === 'administrative' ? text(row.foundingRevision) : row.foundingRevision === null) &&
+        Array.isArray(former) && former.every(text) && new Set(former).size === former.length &&
+        !former.includes(row.providerBaseUrl) && (row.writer === 'administrative' || former.length === 0) &&
+        Number.isSafeInteger(row.boundAt);
+}
+
+/** @summary Decodes the stored endpoint list; anything but a JSON array stays malformed. */
+function decodeFormer(value) {
+    try {
+        const list = JSON.parse(value);
+        return Array.isArray(list) ? list : null;
+    } catch {
+        return null;
+    }
+}
+
+/** @summary Tests the activation record's exact shape. */
+function wellFormedActivation(record) {
+    return Boolean(record) && typeof record === 'object' && Object.keys(record).length === 2 &&
+        text(record.cutoverRevision) && Number.isSafeInteger(record.activatedAt);
+}
+
+/** @summary Decodes and freezes one stored row after checking its exact shape; a malformed row never reads as a binding. */
+function freezeRow(row) {
+    if (!row) return null;
+
+    const value = {...row, formerBaseUrls: decodeFormer(row.formerBaseUrls)};
+
+    if (!wellFormed(value)) throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'A stored subject binding is malformed.');
+    return Object.freeze({...value, formerBaseUrls: Object.freeze(value.formerBaseUrls)});
+}
+
+/** @summary Runs a read, mapping storage failures to one named unavailable state. */
+function read(fn) {
+    try {
+        return fn();
+    } catch (error) {
+        if (error.code?.startsWith?.('SUBJECT_BINDING_')) throw error;
+        throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'Subject bindings cannot be read.');
+    }
+}
+
+/** @summary Reads the row bound to one exact subject. */
+function rowBySubject(db, subject) {
+    return freezeRow(db.prepare(`SELECT ${ROW_KEYS.join(', ')} FROM ${SUBJECT_BINDING_TABLE}
+        WHERE authProvider = ? AND providerBaseUrl = ? AND providerUserId = ?`)
+        .get(subject.authProvider, subject.providerBaseUrl, subject.providerUserId));
+}
+
+/** @summary Reads the row bound to one identity. */
+function rowByIdentity(db, identityId) {
+    return freezeRow(db.prepare(`SELECT ${ROW_KEYS.join(', ')} FROM ${SUBJECT_BINDING_TABLE} WHERE identityId = ?`)
+        .get(identityId));
+}
+
+/** @summary Renders a subject for a refusal message without echoing anything beyond its key. */
+function describe(subject) {
+    return `${subject.authProvider} user ${subject.providerUserId} at ${subject.providerBaseUrl}`;
+}
+
+/**
+ * @summary Reads the identity a subject is bound to.
+ * @param {Object} db The graph's physical SQLite connection.
+ * @param {Object} subject `{authProvider, providerBaseUrl, providerUserId}`.
+ * @returns {Object|null} The frozen binding, or `null` when the subject is unbound.
+ */
+export function readSubjectBinding(db, subject) {
+    checkSubject(subject);
+    return read(() => hasTable(db, SUBJECT_BINDING_TABLE) ? rowBySubject(db, subject) : null);
+}
+
+/**
+ * @summary Reads the subject an identity is bound to.
+ * @param {Object} db The graph's physical SQLite connection.
+ * @param {String} identityId An `AgentIdentity` id.
+ * @returns {Object|null} The frozen binding, or `null` when the identity is unbound.
+ */
+export function readIdentityBinding(db, identityId) {
+    if (!text(identityId)) throw refusal('SUBJECT_BINDING_INVALID', 'A binding read needs the identity.');
+    return read(() => hasTable(db, SUBJECT_BINDING_TABLE) ? rowByIdentity(db, identityId) : null);
+}
+
+/**
+ * @summary Reads the activation record; `null` keeps selection by subject dormant.
+ * @param {Object} db The graph's physical SQLite connection.
+ * @returns {Object|null} Frozen `{cutoverRevision, activatedAt}`, or `null` before the cutover.
+ */
+export function readSubjectBindingActivation(db) {
+    return read(() => {
+        if (!hasTable(db, SUBJECT_BINDING_ACTIVATION_TABLE)) return null;
+        const row = db.prepare(`SELECT cutoverRevision, activatedAt FROM ${SUBJECT_BINDING_ACTIVATION_TABLE} WHERE gate = ?`)
+            .get(ACTIVATION);
+        if (!row) return null;
+        if (!wellFormedActivation(row)) throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'The activation record is malformed.');
+        return Object.freeze({...row});
+    });
+}
+
+/**
+ * @summary Whether selection by subject is active: `true` once the cutover's activation record exists,
+ * `false` while it is known dormant. A connection that cannot answer throws, so no caller reads an unknown
+ * decision as dormant.
+ * @param {Object|null|undefined} db The graph's physical SQLite connection.
+ * @returns {Boolean}
+ * @throws {Error} `SUBJECT_BINDING_UNAVAILABLE` for a missing or closed connection, or an unreadable or malformed record.
+ */
+export function isSubjectSelectionActive(db) {
+    if (!db?.open) throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'The subject-binding activation cannot be read: the graph connection is not open.');
+    return readSubjectBindingActivation(db) !== null;
+}
+
+/**
+ * @summary Lists the relation as graph bundle records: one per binding in identity order, then the
+ * activation record when the cutover wrote one.
+ * @param {Object} db The graph's physical SQLite connection.
+ * @returns {Object[]} `{type, data}` records; empty for a plane with no relation.
+ * @throws {Error} `SUBJECT_BINDING_UNAVAILABLE` for a malformed stored row, so a backup never drops one silently.
+ */
+export function readSubjectBindingRecords(db) {
+    return read(() => {
+        const
+            rows       = hasTable(db, SUBJECT_BINDING_TABLE)
+                ? db.prepare(`SELECT ${ROW_KEYS.join(', ')} FROM ${SUBJECT_BINDING_TABLE} ORDER BY identityId`).all()
+                : [],
+            records    = rows.map(row => ({type: SUBJECT_BINDING_RECORD, data: freezeRow(row)})),
+            activation = readSubjectBindingActivation(db);
+
+        if (activation) records.push({type: SUBJECT_BINDING_ACTIVATION_RECORD, data: activation});
+        return records;
+    });
+}
+
+/**
+ * @summary Checks one claim against the stored relation and returns the matching binding, if any.
+ * A subject bound elsewhere and an identity bound to another subject both refuse by name.
+ * @param {Object} db
+ * @param {Object} subject
+ * @param {String} identityId
+ * @returns {Object|null}
+ */
+function existingClaim(db, subject, identityId) {
+    const bySubject = rowBySubject(db, subject);
+
+    if (bySubject) {
+        if (bySubject.identityId === identityId) return bySubject;
+        throw refusal('SUBJECT_BINDING_SUBJECT_CLAIMED',
+            `${describe(subject)} already acts as ${bySubject.identityId}; it cannot also act as ${identityId}.`,
+            {identityId: bySubject.identityId});
+    }
+
+    const byIdentity = rowByIdentity(db, identityId);
+
+    if (byIdentity) {
+        throw refusal('SUBJECT_BINDING_IDENTITY_CLAIMED',
+            `${identityId} is bound to another subject; ${describe(subject)} cannot act as it.`,
+            {identityId});
+    }
+
+    return null;
+}
+
+/** @summary Inserts one row and returns it frozen. */
+function insert(db, row) {
+    db.prepare(`INSERT INTO ${SUBJECT_BINDING_TABLE} (${ROW_KEYS.join(', ')}) VALUES (${ROW_KEYS.map(() => '?').join(', ')})`)
+        .run(...ROW_KEYS.map(key => key === 'formerBaseUrls' ? JSON.stringify(row[key]) : row[key]));
+    return rowBySubject(db, row);
+}
+
+/**
+ * @summary Binds a subject to the identity its first admission just created.
+ * Call it inside the transaction that wrote the identity; it binds nothing else.
+ * @param {Object} db The graph's physical SQLite connection, already in a transaction.
+ * @param {Object} options
+ * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`.
+ * @param {String} options.identityId The identity the same transaction created.
+ * @param {Number} [options.at=Date.now()]
+ * @returns {{state: 'bound'|'matching', binding: Object}}
+ * @throws {Error} A named refusal; nothing is written.
+ */
+export function bindAtFirstAdmission(db, {subject, identityId, at = Date.now()} = {}) {
+    checkSubject(subject);
+    checkWrite({identityId, at});
+    checkTransaction(db);
+    db.exec(SCHEMA);
+
+    const matching = existingClaim(db, subject, identityId);
+    if (matching) return Object.freeze({state: 'matching', binding: matching});
+
+    return Object.freeze({state: 'bound', binding: insert(db, {...subject, identityId, writer: 'first-admission', foundingRevision: null, formerBaseUrls: [], boundAt: at})});
+}
+
+/**
+ * @summary Groups a retained founding seed's entries by subject, in the seed's order: each subject with every
+ * identity the founding record maps it to. A subject mapped to one identity can seed its binding; one mapped to
+ * several stays unresolved, never a first-match choice.
+ * @param {Object} seed A validated founding seed, `{version, entries: [{identityKey, family, subject}], digest}`.
+ * @returns {Array<{subject: Object, identityIds: String[]}>} Frozen mappings.
+ */
+export function foundingSubjectMappings(seed) {
+    const bySubject = new Map();
+
+    for (const {identityKey, subject} of seed.entries) {
+        const key = subjectKeyOf(subject);
+
+        if (!bySubject.has(key)) {
+            bySubject.set(key, {subject: Object.freeze(Object.fromEntries(SUBJECT_KEY.map(field => [field, subject[field]]))), identityIds: []});
+        }
+        bySubject.get(key).identityIds.push(identityKey);
+    }
+
+    return [...bySubject.values()].map(({subject, identityIds}) => Object.freeze({subject, identityIds: Object.freeze(identityIds)}));
+}
+
+/**
+ * @summary Reads the retained founding source, qualified the way identity admission qualifies it: the plane
+ * is bound, and the source was installed by that lineage's issuer at its current head. The administrative
+ * bind and the request boundary's founding guard both rest on it.
+ * @param {Object} db The graph's physical SQLite connection, inside the caller's transaction.
+ * @param {String|null} bootText The plane's trusted identity-publication boot descriptor.
+ * @param {Object} target The plane's independently resolved `{planeId, dataRoot}`.
+ * @returns {{foundingRevision: String, seed: Object}}
+ * @throws {Error} `IDENTITY_FOUNDING_SOURCE_UNAVAILABLE`, or `SUBJECT_BINDING_FOUNDING_UNQUALIFIED`.
+ */
+export function readQualifiedFoundingInTransaction(db, bootText, target) {
+    const
+        authority = readIdentityPublicationAuthorityInTransaction(db, bootText, target),
+        founding  = readIdentityFoundingSourceInTransaction(db, {target});
+
+    if (authority.state !== 'bound' || founding.provenance.issuer !== authority.issuer ||
+        founding.provenance.lineageHead !== authority.head) {
+        throw refusal('SUBJECT_BINDING_FOUNDING_UNQUALIFIED',
+            'The retained founding source is not qualified by the lineage this plane is bound to.');
+    }
+
+    return {foundingRevision: founding.provenance.sourceRevision, seed: founding.seed};
+}
+
+/**
+ * @summary The identities the qualified founding record maps one subject to, read under one physical snapshot.
+ * The request boundary refuses a first admission for every subject this names, so a founding subject binds
+ * only through the administrative path, never to a new identity that would lock its founding identities out.
+ * @param {Object} db The graph's physical SQLite connection.
+ * @param {Object} options
+ * @param {String|null} options.bootText The plane's trusted identity-publication boot descriptor.
+ * @param {Object} options.target The plane's independently resolved `{planeId, dataRoot}`.
+ * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`, compared exactly.
+ * @returns {ReadonlyArray<String>} The mapped identity ids in the seed's order, empty when the record maps none.
+ * @throws {Error} As {@link readQualifiedFoundingInTransaction}; the caller fails closed.
+ */
+export function readFoundingIdentities(db, {bootText, target, subject} = {}) {
+    const key = subjectKeyOf(subject);
+
+    return db.transaction(() => {
+        const {seed} = readQualifiedFoundingInTransaction(db, bootText, target);
+
+        return foundingSubjectMappings(seed).find(mapping => subjectKeyOf(mapping.subject) === key)?.identityIds ?? Object.freeze([]);
+    }).deferred();
+}
+
+/**
+ * @summary Decides what an administrative bind would do, without writing: its dry run and its write share
+ * this decision. An endpoint move (same account, new API endpoint) is the one conflict a bind resolves.
+ * @param {Object} db The graph's physical SQLite connection; a read-only one suffices.
+ * @param {Object} options
+ * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`.
+ * @param {String} options.identityId The identity to bind.
+ * @returns {{state: 'bound'|'matching'|'moved', binding?: Object, previous?: Object}} A match carries the stored
+ * binding; a move carries the binding it replaces.
+ * @throws {Error} A named refusal for an invalid input or a conflicting claim.
+ */
+export function planAdministrativeBind(db, {subject, identityId} = {}) {
+    checkSubject(subject);
+    if (!text(identityId)) throw refusal('SUBJECT_BINDING_INVALID', 'A binding needs the identity it binds.');
+
+    return read(() => {
+        if (!hasTable(db, SUBJECT_BINDING_TABLE)) return Object.freeze({state: 'bound'});
+
+        const previous = rowBySubject(db, subject) ? null : rowByIdentity(db, identityId);
+
+        if (previous && previous.authProvider === subject.authProvider && previous.providerUserId === subject.providerUserId) {
+            return Object.freeze({state: 'moved', previous});
+        }
+
+        const binding = existingClaim(db, subject, identityId);
+        return Object.freeze(binding ? {state: 'matching', binding} : {state: 'bound'});
+    });
+}
+
+/**
+ * @summary Binds a subject to an existing identity, or moves an identity to its subject's new endpoint.
+ * Only the plane-local administrative path calls this. An endpoint move keeps the identity and adds the
+ * endpoint it leaves to `formerBaseUrls`, so history keyed by an earlier subject tuple stays reachable from
+ * the binding; any other conflict refuses by name.
+ * @param {Object} db The graph's physical SQLite connection, already in a transaction.
+ * @param {Object} options
+ * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`.
+ * @param {String} options.identityId The identity to bind.
+ * @param {String} options.foundingRevision The retained founding source revision this bind rests on.
+ * @param {Number} [options.at=Date.now()]
+ * @returns {{state: 'bound'|'matching'|'moved', binding: Object, previous?: Object}}
+ * @throws {Error} A named refusal; nothing is written.
+ */
+export function bindAdministratively(db, {subject, identityId, foundingRevision, at = Date.now()} = {}) {
+    checkSubject(subject);
+    checkWrite({identityId, at});
+    if (!text(foundingRevision)) throw refusal('SUBJECT_BINDING_INVALID', 'An administrative bind names its founding source revision.');
+    checkTransaction(db);
+    db.exec(SCHEMA);
+
+    const
+        plan = planAdministrativeBind(db, {subject, identityId}),
+        row  = {...subject, identityId, writer: 'administrative', foundingRevision, formerBaseUrls: [], boundAt: at};
+
+    if (plan.state === 'matching') return plan;
+
+    if (plan.state === 'moved') {
+        const {previous} = plan;
+
+        row.formerBaseUrls = [...new Set([...previous.formerBaseUrls, previous.providerBaseUrl])]
+            .filter(url => url !== subject.providerBaseUrl);
+
+        db.prepare(`DELETE FROM ${SUBJECT_BINDING_TABLE} WHERE identityId = ?`).run(identityId);
+        return Object.freeze({state: 'moved', binding: insert(db, row), previous});
+    }
+
+    return Object.freeze({state: 'bound', binding: insert(db, row)});
+}
+
+/**
+ * @summary Carries every binding across a migration that renames identity ids: each binding follows its
+ * identity to the id the migration gives it. A rename that would leave two subjects on one identity
+ * refuses, so the caller's transaction rolls the whole migration back.
+ * @param {Object} db The graph's physical SQLite connection, already in the migration's transaction.
+ * @param {Function} rename Maps an identity id to its id after the migration; unchanged ids map to themselves.
+ * @returns {Number} The number of bindings that moved.
+ * @throws {Error} `SUBJECT_BINDING_IDENTITY_CLAIMED` for a merge of two bound identities.
+ */
+export function renameBoundIdentities(db, rename) {
+    checkTransaction(db);
+    if (!hasTable(db, SUBJECT_BINDING_TABLE)) return 0;
+
+    const
+        rows     = db.prepare(`SELECT ${ROW_KEYS.join(', ')} FROM ${SUBJECT_BINDING_TABLE}`).all().map(freezeRow),
+        targetOf = new Map(rows.map(row => [row.identityId, rename(row.identityId)])),
+        moves    = [...targetOf].filter(([from, to]) => from !== to),
+        claimed  = new Set();
+
+    for (const [, to] of targetOf) {
+        if (!text(to)) throw refusal('SUBJECT_BINDING_INVALID', 'A renamed identity needs a valid id.');
+        if (claimed.has(to)) {
+            throw refusal('SUBJECT_BINDING_IDENTITY_CLAIMED',
+                `${to} would bind two subjects after this rename; the migration stops and nothing changes.`, {identityId: to});
+        }
+        claimed.add(to);
+    }
+
+    // Two passes, so a swap or a chain never meets the uniqueness constraint halfway.
+    const update = db.prepare(`UPDATE ${SUBJECT_BINDING_TABLE} SET identityId = ? WHERE identityId = ?`);
+    moves.forEach(([from], index) => update.run(`renaming:${index}`, from));
+    moves.forEach(([, to], index) => update.run(to, `renaming:${index}`));
+
+    return moves.length;
+}
+
+/**
+ * @summary Inserts the activation record unless one exists: the gate only moves forward.
+ * @returns {Boolean} Whether this call recorded it.
+ */
+function insertActivation(db, cutoverRevision, at) {
+    db.exec(SCHEMA);
+    db.exec(ACTIVATION_SCHEMA);
+    return db.prepare(`INSERT INTO ${SUBJECT_BINDING_ACTIVATION_TABLE} (gate, cutoverRevision, activatedAt) VALUES (?, ?, ?)
+        ON CONFLICT(gate) DO NOTHING`).run(ACTIVATION, cutoverRevision, at).changes === 1;
+}
+
+/**
+ * @summary Records the cutover's activation, which turns selection by subject on for every leaf.
+ * The cutover calls this after it has bound the legacy identities; re-recording keeps the first record.
+ * @param {Object} db The graph's physical SQLite connection, already in a transaction.
+ * @param {Object} options
+ * @param {String} options.cutoverRevision The cutover inventory revision the activation rests on.
+ * @param {Number} [options.at=Date.now()]
+ * @returns {Object} The frozen activation record.
+ */
+export function activateSubjectBinding(db, {cutoverRevision, at = Date.now()} = {}) {
+    if (!text(cutoverRevision)) throw refusal('SUBJECT_BINDING_INVALID', 'Activation names its cutover revision.');
+    if (!Number.isSafeInteger(at) || at < 0) throw refusal('SUBJECT_BINDING_INVALID', 'Activation needs its time.');
+    checkTransaction(db);
+    insertActivation(db, cutoverRevision, at);
+    return readSubjectBindingActivation(db);
+}
+
+/**
+ * @summary Deletes every binding row ahead of a replace restore whose bundle carries the relation, so the
+ * restored rows are the bundle's. The activation record stays: a restore never turns selection off.
+ * @param {Object} db The graph's physical SQLite connection, already in the restore's transaction.
+ */
+export function clearSubjectBindingsForReplace(db) {
+    checkTransaction(db);
+    if (hasTable(db, SUBJECT_BINDING_TABLE)) db.prepare(`DELETE FROM ${SUBJECT_BINDING_TABLE}`).run();
+}
+
+/**
+ * @summary Restores a graph bundle's relation as one unit, in one transaction of its own: a malformed or
+ * conflicting record, a duplicate inside the bundle included, refuses every record, and the stored relation
+ * and activation stay as they were. `replace` swaps the binding rows only when the bundle carries one; a
+ * bundle without the relation changes nothing.
+ * @param {Object} db The graph's physical SQLite connection, outside any transaction.
+ * @param {Object[]} records The bundle's {@link SUBJECT_BINDING_RECORD_TYPES} records, in bundle order.
+ * @param {Object} options
+ * @param {'merge'|'replace'} options.mode
+ * @param {Function} [options.admit] The restore's mutation fence, run first inside the transaction.
+ * @returns {{inserted: Number, skippedExisting: Number}}
+ * @throws {Error} As {@link restoreSubjectBindingRecord}; nothing is written.
+ */
+export function restoreSubjectBindingRelation(db, records, {mode, admit = () => {}} = {}) {
+    const counts = {inserted: 0, skippedExisting: 0};
+
+    if (records.length > 0) {
+        db.transaction(() => {
+            admit();
+            if (mode === 'replace' && records.some(record => record.type === SUBJECT_BINDING_RECORD)) clearSubjectBindingsForReplace(db);
+            records.forEach(record => counts[restoreSubjectBindingRecord(db, record)]++);
+        }).immediate();
+    }
+
+    return counts;
+}
+
+/**
+ * @summary Tests whether a graph bundle record is a well-formed binding or activation record: the shape
+ * {@link restoreSubjectBindingRecord} accepts, so a restore's admission can refuse anything else up front.
+ * @param {Object} record `{type, data}`.
+ * @returns {Boolean}
+ */
+export function isWellFormedSubjectBindingRecord(record) {
+    if (record?.type === SUBJECT_BINDING_RECORD) return wellFormed(record.data);
+    return record?.type === SUBJECT_BINDING_ACTIVATION_RECORD && wellFormedActivation(record.data);
+}
+
+/**
+ * @summary Restores one graph bundle record as {@link readSubjectBindingRecords} exported it. A binding
+ * identical to the stored one is skipped; one whose subject or identity is bound elsewhere refuses by name
+ * and writes nothing, so a restore never overwrites a binding. An activation record only moves the gate
+ * forward: a stored one holds.
+ * @param {Object} db The graph's physical SQLite connection, already in the restore's transaction.
+ * @param {Object} record `{type, data}` with a {@link SUBJECT_BINDING_RECORD_TYPES} type.
+ * @returns {'inserted'|'skippedExisting'}
+ * @throws {Error} `SUBJECT_BINDING_INVALID` for a malformed record; `SUBJECT_BINDING_SUBJECT_CLAIMED` or
+ * `SUBJECT_BINDING_IDENTITY_CLAIMED` for a conflict.
+ */
+export function restoreSubjectBindingRecord(db, record) {
+    checkTransaction(db);
+
+    if (!isWellFormedSubjectBindingRecord(record)) {
+        throw refusal('SUBJECT_BINDING_INVALID', `A bundle ${record?.type} record is malformed.`);
+    }
+
+    if (record.type === SUBJECT_BINDING_ACTIVATION_RECORD) {
+        return insertActivation(db, record.data.cutoverRevision, record.data.activatedAt) ? 'inserted' : 'skippedExisting';
+    }
+
+    db.exec(SCHEMA);
+    if (existingClaim(db, record.data, record.data.identityId)) return 'skippedExisting';
+    insert(db, record.data);
+    return 'inserted';
+}

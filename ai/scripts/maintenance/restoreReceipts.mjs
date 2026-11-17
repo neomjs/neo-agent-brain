@@ -7,6 +7,10 @@ import {isBundlePayload, openBundlePayload} from '../../services/shared/bundlePa
 import {isEntryModule}                      from '../../services/shared/isEntryModule.mjs';
 import {assertOrdinaryGraphMutation}        from '../../graph/identityPublicationProtection.mjs';
 import {fenceIdentityPublication}           from '../../services/memory-core/helpers/identityPublicationFence.mjs';
+import {
+    SUBJECT_BINDING_RECORD_TYPES,
+    isWellFormedSubjectBindingRecord
+} from '../../services/memory-core/helpers/subjectBinding.mjs';
 
 /**
  * @module ai/scripts/maintenance/restoreReceipts
@@ -90,9 +94,12 @@ export async function* readGraphRecords(file) {
 
 /**
  * @summary Parses the whole source once, before any write, and refuses it on the first malformed record.
+ * A bundle also carries the subject-binding relation's own records; they must be well formed, and this
+ * script leaves them to the graph restore.
  * @param {String} file Graph JSONL path.
  * @returns {Promise<{records: Number}>}
- * @throws {Error} Naming the 1-based line of the first record that does not parse or has no `type`/`data.id`.
+ * @throws {Error} Naming the 1-based line of the first record that does not parse, has no `type`/`data.id`,
+ * or is a malformed subject-binding record.
  */
 export async function validateGraphJsonl(file) {
     const lines      = openBundlePayload(file);
@@ -110,7 +117,11 @@ export async function validateGraphJsonl(file) {
             throw new Error(`${file}:${lineNumber} does not parse (${error.message}); nothing was written`);
         }
 
-        if ((record?.type !== 'node' && record?.type !== 'edge') || typeof record?.data?.id !== 'string') {
+        if (SUBJECT_BINDING_RECORD_TYPES.includes(record?.type)) {
+            if (!isWellFormedSubjectBindingRecord(record)) {
+                throw new Error(`${file}:${lineNumber} is not a well-formed ${record.type} record; nothing was written`);
+            }
+        } else if ((record?.type !== 'node' && record?.type !== 'edge') || typeof record?.data?.id !== 'string') {
             throw new Error(`${file}:${lineNumber} is not a node or edge record with an id; nothing was written`);
         }
 

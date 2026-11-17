@@ -41,6 +41,7 @@ import path                                                                     
 import {fileURLToPath}                                                            from 'node:url';
 import {isEntryModule}                                                            from '../../services/shared/isEntryModule.mjs';
 import {readIdentityPublicationPreservation, runWithIdentityPublicationPreserved} from '../../graph/identityPublicationProtection.mjs';
+import {renameBoundIdentities}                                                    from '../../services/memory-core/helpers/subjectBinding.mjs';
 import {
     createDynamicTextEmbeddingFunction,
     registerNeoChromaEmbeddingFunctions
@@ -763,6 +764,7 @@ export function runGraphMigration(db, apply) {
             nodesInserted          : 0,
             nodesMerged            : 0,
             nodesRekeyed           : 0,
+            subjectBindingsMoved   : 0,
             skipped                : []
         }
     };
@@ -774,6 +776,8 @@ export function runGraphMigration(db, apply) {
             deleteOldIdentityNode(db, rename, apply, stats, preservation);
         }
         rewriteGraphMetadataRows(db, apply, stats, preservation);
+        // A bound identity keeps its subject under its new id; a merge of two bound identities aborts the run.
+        if (apply) stats.graph.subjectBindingsMoved = renameBoundIdentities(db, rewriteNodeId);
     };
 
     if (apply) {

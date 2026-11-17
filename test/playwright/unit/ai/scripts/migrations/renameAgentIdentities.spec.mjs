@@ -33,6 +33,10 @@ import {
     createIdentityStateNode,
     validateEraChain
 } from '../../../../../../ai/graph/identitySchema.mjs';
+import {
+    bindAtFirstAdmission,
+    readIdentityBinding
+} from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 
 /**
  * @summary Creates the SQLite graph schema the identity rename runner migrates, with the production
@@ -487,6 +491,40 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
             expect(db.prepare('SELECT * FROM Nodes ORDER BY id').all()).toEqual(before);
             expect(db.prepare('SELECT * FROM GraphLog').all()).toEqual([]);
             expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+        } finally {db.close();}
+    });
+
+    test('a bound identity keeps its subject under its new id', () => {
+        const db      = new Database(':memory:'),
+              subject = {authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '4004'};
+        createGraphSchema(db);
+        try {
+            insertNode(db, {id: '@neo-gpt', data: {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: '@neo-gpt'}}});
+            db.transaction(() => bindAtFirstAdmission(db, {subject, identityId: '@neo-gpt', at: 1}))();
+
+            expect(runGraphMigration(db, true).subjectBindingsMoved).toBe(1);
+            expect(readIdentityBinding(db, '@neo-gpt')).toBeNull();
+            expect(readIdentityBinding(db, rewriteNodeId('@neo-gpt'))).toMatchObject(subject);
+        } finally {db.close();}
+    });
+
+    test('a rename that would merge two bound identities rolls the whole apply back', () => {
+        const db     = new Database(':memory:'),
+              target = rewriteNodeId('@neo-gpt');
+        createGraphSchema(db);
+        try {
+            for (const [id, providerUserId] of [['@neo-gpt', '5005'], [target, '5006']]) {
+                insertNode(db, {id, data: {id, label: 'AgentIdentity', properties: {githubLogin: id}}});
+                db.transaction(() => bindAtFirstAdmission(db, {
+                    subject: {authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId}, identityId: id, at: 1
+                }))();
+            }
+            const before = db.prepare('SELECT * FROM Nodes ORDER BY id').all();
+
+            expect(() => runGraphMigration(db, true))
+                .toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_IDENTITY_CLAIMED', identityId: target}));
+            expect(db.prepare('SELECT * FROM Nodes ORDER BY id').all()).toEqual(before);
+            expect(readIdentityBinding(db, '@neo-gpt').providerUserId).toBe('5005');
         } finally {db.close();}
     });
 

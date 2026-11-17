@@ -18,6 +18,7 @@ import {fenceIdentityPublication}                                       from './
 import {consumeIdentityPublicationBoot, readIdentityPublicationLineage} from './helpers/identityPublicationLineage.mjs';
 import {installIdentityFoundingSource}                                  from './helpers/identityFoundingStorage.mjs';
 import {admitIdentityPublication, readIdentityPublicationSnapshot}      from './helpers/identityPublicationAdmission.mjs';
+import {bindAtFirstAdmission, readFoundingIdentities}                   from './helpers/subjectBinding.mjs';
 import {
     ANCHORED_ISSUE_EDGE_TYPES,
     MESSAGE_ID_PREFIX,
@@ -556,6 +557,20 @@ class GraphService extends Base {
     }
 
     /**
+     * @summary Reads the identities the qualified founding record maps one provider subject to.
+     * @param {Object} options Trusted `bootText`, the independently resolved `target`, and the `subject`.
+     * @returns {ReadonlyArray<String>} The mapped identity ids, empty when the record maps none.
+     * @throws {Error} During an open graph transaction, or when the founding source is unavailable or unqualified.
+     */
+    readFoundingIdentities(options) {
+        if (this.db?.isExecutingTransaction) {
+            throw Object.assign(new Error('The founding record cannot be read during a graph transaction.'),
+                {code: 'publication-transaction-in-progress'});
+        }
+        return readFoundingIdentities(this.db?.storage?.db, options);
+    }
+
+    /**
      * @summary Fences publication on this service's exact live mutation handle and resolved target.
      * @param {Object} options Source-owned {db, operation, source}; db must already be in its transaction.
      * @returns {Object} Durable fenced disposition; this method cannot clear it.
@@ -749,6 +764,54 @@ class GraphService extends Base {
      */
     upsertGlobalNode(spec) {
         this.upsertNode({...spec, properties: {...spec.properties, userId: null}});
+    }
+
+    /**
+     * @summary Creates a global `AgentIdentity` and binds its verified provider subject in one physical
+     * transaction, so a first admission never leaves an identity without the subject that created it.
+     * The identity write goes through {@link GraphService#upsertGlobalNode} as every identity write does;
+     * its storage write joins this transaction. A rollback evicts the cached node, so the cache never
+     * holds an identity the store refused, and restores the GraphLog cursor: the upsert acknowledged its
+     * own uncommitted log row, whose id a rolled-back transaction frees for another process's write.
+     *
+     * The decision is made inside the transaction, against what the store holds once the write lock is
+     * taken, never the caller's earlier read: another writer may have created the identity or changed the
+     * subject's eligibility since. A node that exists refuses, so an existing unbound identity is never
+     * overwritten, and the caller's `admit` check runs before any write.
+     * @param {Object} spec The new identity's node spec, as for {@link GraphService#upsertGlobalNode}.
+     * @param {Object} options
+     * @param {Object} options.subject `{authProvider, providerBaseUrl, providerUserId}`.
+     * @param {Function} [options.admit] The caller's eligibility check; it throws to refuse.
+     * @param {Number} [options.at=Date.now()]
+     * @returns {{state: 'bound'|'matching', binding: Object}} The first-admission binding.
+     * @throws {Error} `SUBJECT_BINDING_IDENTITY_EXISTS`, the `admit` refusal, another named subject-binding
+     * refusal or a storage error; nothing is written.
+     */
+    createBoundIdentity(spec, {subject, admit = () => {}, at = Date.now()}) {
+        const sqlite = this.requireDb('AgentIdentity binding').storage.db;
+
+        if (!sqlite || sqlite.inTransaction || this.db.isExecutingTransaction) {
+            throw new Error('GraphService.createBoundIdentity requires its own physical transaction.');
+        }
+
+        const syncId = this.db.lastSyncId;
+
+        try {
+            return sqlite.transaction(() => {
+                if (sqlite.prepare('SELECT 1 FROM Nodes WHERE id = ?').get(spec.id)) {
+                    throw Object.assign(new Error(`${spec.id} exists; a first admission binds only an identity it creates.`),
+                        {code: 'SUBJECT_BINDING_IDENTITY_EXISTS', identityId: spec.id});
+                }
+
+                admit();
+                this.upsertGlobalNode(spec);
+                return bindAtFirstAdmission(sqlite, {subject, identityId: spec.id, at});
+            }).immediate();
+        } catch (error) {
+            this.db.lastSyncId = syncId;
+            this.db.invalidateRejectedMutations([{type: 'nodes', mutation: {addedItems: [{id: spec.id}]}}]);
+            throw error;
+        }
     }
 
     /**

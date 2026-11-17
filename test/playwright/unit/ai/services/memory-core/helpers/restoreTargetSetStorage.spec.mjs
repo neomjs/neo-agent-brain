@@ -33,6 +33,18 @@ import {
     createRestoreTargetSetDescriptor,
     deriveRestoreTargetSetIdentity
 } from '../../../../../../../ai/services/memory-core/helpers/restoreTargetSetContract.mjs';
+import {
+    bindAtFirstAdmission,
+    readSubjectBinding,
+    readSubjectBindingActivation
+} from '../../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
+
+const
+    SUBJECT         = Object.freeze({authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '1001'}),
+    BINDING_RECORDS = Object.freeze([
+        {type: 'subject-binding', data: {...SUBJECT, identityId: 'restored-a', writer: 'first-admission', foundingRevision: null, formerBaseUrls: [], boundAt: 10}},
+        {type: 'subject-binding-activation', data: {cutoverRevision: 'cut-1', activatedAt: 11}}
+    ]);
 
 setup({
     neoConfig: {
@@ -203,6 +215,94 @@ test.describe('restoreTargetSetStorage — fake Chroma + disposable SQLite targe
         expect(fixture.graphDb.prepare('SELECT data FROM Nodes ORDER BY id').all()).toEqual(before);
         expect(fixture.graphDb.prepare("SELECT name FROM sqlite_master WHERE name = 'PriorNodes'").get()).toBeUndefined();
         expect(readIdentityPublicationFence(fixture.graphDb, fixture.fenceTarget).state).toBe('clear');
+    });
+
+    test.describe('the subject-binding relation', () => {
+        /** @summary Swaps the default fixture for one whose graph bundle carries extra records. */
+        const replaceFixture = async options => {
+            fixture.graphDb.close();
+            await fs.rm(fixture.root, {recursive: true, force: true});
+            fixture = await createFixture(options)
+        };
+
+        /** @summary The staging context of the current fixture's target set. */
+        const stagingContext = () => {
+            const identity = deriveRestoreTargetSetIdentity(fixture.targetSet);
+            return {targetSet: fixture.targetSet, descriptor: identity.descriptor, ...identity}
+        };
+
+        test('a bundle without it keeps the admission it always had', () => {
+            const graph = fixture.targetSet.admission.components.graph;
+
+            expect(graph).not.toHaveProperty('bindingCount');
+            expect(graph.recordFingerprint).toBe('sha256:f5fd3b40082d4017e3e5bce5eb155df5c1d80ef45908c05b973fd5430b520aa7');
+        });
+
+        test('it travels from the admitted bundle into the live graph', async () => {
+            await replaceFixture({graphExtras: BINDING_RECORDS});
+
+            const outcome = await restoreEmptyTarget(fixture);
+
+            expect(fixture.targetSet.admission.components.graph.bindingCount).toBe(2);
+            expect(outcome.status).toBe('committed');
+            expect(readSubjectBinding(fixture.graphDb, SUBJECT)).toEqual(BINDING_RECORDS[0].data);
+            expect(readSubjectBindingActivation(fixture.graphDb)).toEqual(BINDING_RECORDS[1].data);
+        });
+
+        test('admission refuses a malformed record before any staging', async () => {
+            const graphFile = path.join(fixture.root, 'graph-backup.jsonl');
+            await fs.appendFile(graphFile, JSON.stringify({type: 'subject-binding', data: {...BINDING_RECORDS[0].data, writer: 'tool-payload'}}) + '\n');
+
+            await expect(admitRestoreTargetSetBundle({
+                bundleManifestPath: path.join(fixture.root, 'bundle-meta.json'),
+                memoriesFile      : path.join(fixture.root, 'memory-backup.jsonl'),
+                summariesFile     : path.join(fixture.root, 'summaries-backup.jsonl'),
+                graphFile,
+                expectedDimension : 3
+            })).rejects.toThrow('restore graph source line 4 must be a well-formed subject-binding record');
+        });
+
+        test('staging refuses a relation that contradicts itself', async () => {
+            await replaceFixture({graphExtras: [
+                BINDING_RECORDS[0],
+                {type: 'subject-binding', data: {...BINDING_RECORDS[0].data, providerUserId: '2002'}}
+            ]});
+
+            await expect(createStorage(fixture).stageTargetSet(stagingContext())).rejects.toThrow('rejected one or more records');
+        });
+
+        test('promotion refuses a live graph that already holds a relation, and changes nothing', async () => {
+            const live = {...SUBJECT, providerUserId: '3003'};
+
+            await replaceFixture({graphExtras: BINDING_RECORDS});
+            fixture.graphDb.transaction(() => bindAtFirstAdmission(fixture.graphDb, {subject: live, identityId: 'live-identity', at: 1}))();
+
+            const storage = createStorage(fixture),
+                  context = stagingContext(),
+                  staging = await storage.stageTargetSet(context),
+                  before  = fixture.graphDb.prepare('SELECT data FROM Nodes ORDER BY id').all();
+
+            await expect(storage.promoteComponent({...context, staging, role: 'graph'})).rejects.toThrow('already holds a subject-binding relation');
+            expect(fixture.graphDb.prepare('SELECT data FROM Nodes ORDER BY id').all()).toEqual(before);
+            expect(readSubjectBinding(fixture.graphDb, SUBJECT)).toBeNull();
+            expect(readSubjectBinding(fixture.graphDb, live).identityId).toBe('live-identity');
+            expect(fixture.graphCacheSyncs).toBe(0);
+        });
+
+        test('the initial empty-target proof counts a live relation as occupancy, so nothing is staged or promoted', async () => {
+            const live = {...SUBJECT, providerUserId: '3004'};
+
+            await replaceFixture({graphExtras: BINDING_RECORDS});
+            expect((await createStorage(fixture).inspectFreshTargetSet(stagingContext())).fresh, 'the boot-fresh fixture').toBe(true);
+
+            fixture.graphDb.transaction(() => bindAtFirstAdmission(fixture.graphDb, {subject: live, identityId: 'live-identity', at: 1}))();
+
+            const proof = await createStorage(fixture).inspectFreshTargetSet(stagingContext());
+
+            expect(proof.fresh).toBe(false);
+            expect(proof.reason).toContain('holds a subject-binding relation (1 records)');
+            expect(readSubjectBinding(fixture.graphDb, live).identityId).toBe('live-identity');
+        });
     });
 
     test('promotion refuses an outer transaction and rolls back its fence when a graph delete fails', async () => {
@@ -540,10 +640,23 @@ test.describe('restoreTargetSetStorage — live disposable Chroma + SQLite targe
     });
 });
 
+/** @summary Runs the empty-target restore operation over a fixture, end to end. */
+function restoreEmptyTarget(fixture) {
+    const operation = createRestoreEmptyTargetOperation({
+        withWriterFence : async (identity, task) => task(),
+        ...createStorage(fixture),
+        readTransitions : ({attemptFingerprint}) => readRestoreTargetSetTransitions({dir: fixture.ledgerDir, attemptFingerprint}),
+        appendTransition: input => appendRestoreTargetSetTransition(input, {dir: fixture.ledgerDir})
+    });
+
+    return operation({targetSet: fixture.targetSet, ...deriveRestoreTargetSetIdentity(fixture.targetSet)})
+}
+
 async function createFixture({
     client = createFakeChromaClient(),
     dummyEmbeddingFunction = null,
-    collectionSuffix = process.pid
+    collectionSuffix = process.pid,
+    graphExtras = []
 } = {}) {
     const
         root               = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-restore-target-set-storage-')),
@@ -617,7 +730,8 @@ async function createFixture({
                 type      : 'SUMMARIZED_IN',
                 properties: {weight: 1, userId: null}
             }
-        }
+        },
+        ...graphExtras
     ]);
 
     seedBootGraph(graphDb);

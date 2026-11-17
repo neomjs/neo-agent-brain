@@ -1,13 +1,13 @@
-import BaseServer                              from '../BaseServer.mjs';
-import logger                                  from './logger.mjs';
-import {buildToolCatalog, listTools, callTool} from './toolService.mjs';
-import AuthMiddleware                          from '../shared/services/AuthMiddleware.mjs';
-import AuthService                             from '../shared/services/AuthService.mjs';
-import IdentityPublicationService              from '../../../services/memory-core/IdentityPublicationService.mjs';
-import RequestContextService                   from '../shared/services/RequestContextService.mjs';
-import StdioIdentityResolver                   from '../shared/services/StdioIdentityResolver.mjs';
-import BootEnvelopeResolver                    from '../shared/services/BootEnvelopeResolver.mjs';
-import {formatHostEndpoint}                    from '../shared/helpers/hostEndpoint.mjs';
+import BaseServer                               from '../BaseServer.mjs';
+import logger                                   from './logger.mjs';
+import {buildToolCatalog, listTools, callTool}  from './toolService.mjs';
+import AuthMiddleware                           from '../shared/services/AuthMiddleware.mjs';
+import AuthService                              from '../shared/services/AuthService.mjs';
+import IdentityPublicationService               from '../../../services/memory-core/IdentityPublicationService.mjs';
+import RequestContextService, {normalizeUserId} from '../shared/services/RequestContextService.mjs';
+import StdioIdentityResolver                    from '../shared/services/StdioIdentityResolver.mjs';
+import BootEnvelopeResolver                     from '../shared/services/BootEnvelopeResolver.mjs';
+import {formatHostEndpoint}                     from '../shared/helpers/hostEndpoint.mjs';
 import {
     buildSqliteHolderDiagnostics,
     formatHarnessGroups
@@ -41,12 +41,33 @@ import {TRUST_TIERS}                    from '../../../graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId}   from '../../../graph/normalizeAgentIdentityNodeId.mjs';
 import ConfigBase, {PLANE_MEMBER_PATHS} from './configBase.mjs';
 import {readBackgroundDeliveryState}    from '../../../services/memory-core/MailboxService.mjs';
+import {
+    SUBJECT_KEY,
+    isSubjectSelectionActive,
+    readIdentityBinding,
+    readSubjectBinding
+} from '../../../services/memory-core/helpers/subjectBinding.mjs';
 
 // Security invariant, not deployment policy: graph ids must remain namespace/path/control safe.
 const AUTH_IDENTITY_USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
 
 function compactDefinedProperties(properties) {
     return Object.fromEntries(Object.entries(properties).filter(([, value]) => value !== undefined));
+}
+
+/**
+ * @summary The verified provider subject of a request, or `null` when any of its three fields is missing.
+ * @param {Object} reqAuth Server-stamped auth context.
+ * @returns {Object|null} `{authProvider, providerBaseUrl, providerUserId}`.
+ */
+function subjectOf(reqAuth) {
+    const subject = {
+        authProvider   : reqAuth?.authProvider,
+        providerBaseUrl: reqAuth?.providerBaseUrl,
+        providerUserId : reqAuth?.providerUserId == null ? undefined : String(reqAuth.providerUserId)
+    };
+
+    return SUBJECT_KEY.every(key => typeof subject[key] === 'string' && subject[key].length > 0) ? subject : null;
 }
 
 /**
@@ -545,20 +566,33 @@ class Server extends BaseServer {
 
     /**
      * @summary Streamable-HTTP-only hook: builds RequestContext for a `/mcp` request from `req.auth`.
-     * Invoked by `TransportService.setup` via duck-typed hook. Returns `{}` when no identity
-     * is present to preserve single-tenant fallthrough.
+     * Invoked by `TransportService.setup` via duck-typed hook. Returns `{}` for a request that carries
+     * neither a login nor a provider stamp, and before activation for one without a login, to preserve
+     * single-tenant fallthrough.
+     *
+     * Once the cutover activates selection, a request that carries a provider subject (its verifier
+     * stamps `authProvider`) or may create an identity acts as the identity its verified subject is bound
+     * to, whether or not its source creates one and whether or not it carries a login
+     * ({@link selectAgentIdentityBySubject}). That identity's bare id then keys the request's reads and
+     * writes: a renamed login keeps its identity's rows, and a re-registered one reaches none. Before
+     * activation, and for any other request, the login selects and keys it.
      * @param {Object|undefined} reqAuth
      * @returns {Promise<Object>}
      */
     async buildRequestContext(reqAuth) {
-        if (!reqAuth?.userId) return {};
+        if (!reqAuth?.userId && !reqAuth?.authProvider) return {};
 
-        const agentIdentityNodeId = this.shouldAutoProvisionAgentIdentity(reqAuth)
-            ? await this.ensureAgentIdentityForAuthContext(reqAuth)
-            : await this.bindAgentIdentity(reqAuth.userId);
+        const
+            create = this.shouldAutoProvisionAgentIdentity(reqAuth),
+            active = Boolean(reqAuth.authProvider || create) && await this.readSubjectSelection(reqAuth.userId || 'a request without a login');
+
+        if (!active && !reqAuth.userId) return {};
+
+        const agentIdentityNodeId = active ? this.selectAgentIdentityBySubject({reqAuth, create})
+            : create ? await this.ensureAgentIdentityForAuthContext(reqAuth) : await this.bindAgentIdentity(reqAuth.userId);
 
         return {
-            userId  : reqAuth.userId,
+            userId  : active ? normalizeUserId(agentIdentityNodeId) : reqAuth.userId,
             username: reqAuth.username,
             agentIdentityNodeId,
             source  : reqAuth.source || reqAuth.authSource || 'oidc'
@@ -661,16 +695,22 @@ class Server extends BaseServer {
      * participation. A write that would change only that stamp happens at most once per
      * `auth.identityStampIntervalMs` ({@link isFreshIdentityStamp}). Non-identity collisions and
      * malformed ids fail closed.
+     *
+     * This is the login selection, which runs only while selection by subject is dormant
+     * ({@link buildRequestContext} decides). A first admission binds its subject only to an identity it
+     * creates, in the same transaction.
      * @param {Object} reqAuth Server-stamped auth context from the validated bearer request.
-     * @returns {Promise<String|null>} Bound AgentIdentity node id, or null when graph startup is degraded.
+     * @returns {Promise<String|null>} Bound AgentIdentity node id, or null when a dormant write fails and
+     * the legacy lookup finds no node.
      * @protected
      */
     async ensureAgentIdentityForAuthContext(reqAuth) {
         const userId      = this.validateAuthProvisionUserId(reqAuth?.userId),
-              graphNodeId = normalizeAgentIdentityNodeId(userId);
+              graphNodeId = normalizeAgentIdentityNodeId(userId),
+              subject     = subjectOf(reqAuth);
 
         try {
-            await GraphService.ready();
+            const sqlite = GraphService.db.storage.db;
 
             let existing = this.readRawGraphNode(graphNodeId);
 
@@ -681,43 +721,26 @@ class Server extends BaseServer {
                 );
             }
 
-            const now             = new Date().toISOString(),
-                  existingProps   = existing?.properties || {},
-                  providerDisplay = reqAuth.providerDisplayName || reqAuth.username || reqAuth.providerUsername || userId,
-                  fullProperties  = compactDefinedProperties({
-                      accountType        : 'agent',
-                      // a sign-in creates a node active; after that, participation is the operator's decision
-                      participationStatus: existing ? undefined : 'active',
-                      trustTier          : TRUST_TIERS.INTERNAL_AUTHORED,
-                      authProvider       : reqAuth.authProvider || 'gitlab',
-                      authSource         : reqAuth.authSource || reqAuth.source || 'gitlab-pat',
-                      providerBaseUrl    : reqAuth.providerBaseUrl,
-                      providerUserId     : reqAuth.providerUserId == null ? undefined : String(reqAuth.providerUserId),
-                      providerUsername   : reqAuth.providerUsername || userId,
-                      providerDisplayName: providerDisplay,
-                      autoProvisioned    : true,
-                      createdAt          : existingProps.createdAt || now,
-                      lastAuthenticatedAt: now
-                  });
+            const now           = new Date().toISOString(),
+                  existingProps = existing?.properties || {},
+                  {spec}        = this.agentIdentitySpec({reqAuth, userId, graphNodeId, existing, now});
 
             const properties = existing
                 ? existingProps.autoProvisioned === true
-                    ? {...fullProperties, createdAt: existingProps.createdAt || now}
+                    ? {...spec.properties, createdAt: existingProps.createdAt || now}
                     : {lastAuthenticatedAt: now}
-                : fullProperties;
+                : spec.properties;
 
             // upsertGlobalNode also merges userId: null, so a row that is not global yet is a change
             if (existing && this.isFreshIdentityStamp({existingProps, now, properties: {...properties, userId: null}})) {
                 return graphNodeId
             }
 
-            GraphService.upsertGlobalNode({
-                id         : graphNodeId,
-                type       : 'AgentIdentity',
-                name       : existing ? undefined : providerDisplay,
-                description: existing ? undefined : 'Auto-provisioned Agent OS identity for an authenticated Memory Core principal.',
-                properties
-            });
+            if (!existing && subject && sqlite && !readSubjectBinding(sqlite, subject)) {
+                GraphService.createBoundIdentity({...spec, properties}, {subject});
+            } else {
+                GraphService.upsertGlobalNode({...spec, properties});
+            }
 
             existing = this.readRawGraphNode(graphNodeId);
             if (!existing || existing.type !== 'AgentIdentity') {
@@ -735,6 +758,156 @@ class Server extends BaseServer {
 
             logger.warn(`[neo-memory-core MCP] AgentIdentity auto-provision failed for ${graphNodeId}: ${error.message}`);
             return this.bindAgentIdentity(userId);
+        }
+    }
+
+    /**
+     * @summary Reads whether selection by subject is active. A graph that cannot answer, not ready, without
+     * an open connection or unreadable, is a named outcome and never the dormant login selection: the
+     * decision nobody can read may be the active one.
+     * @param {String} userId The request's login, for the refusal.
+     * @returns {Promise<Boolean>}
+     * @throws {Error} `NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE`
+     * @protected
+     */
+    async readSubjectSelection(userId) {
+        try {
+            await GraphService.ready();
+            return isSubjectSelectionActive(GraphService.db?.storage?.db);
+        } catch (error) {
+            throw this.createIdentityProvisioningError(
+                `Cannot select the identity for ${userId}: ${error.message}`,
+                'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'
+            );
+        }
+    }
+
+    /**
+     * @summary The node spec a sign-in writes for its identity: the full provider record for a new node,
+     * with the name and description only a new node takes.
+     * @param {Object} options
+     * @param {Object} options.reqAuth Server-stamped auth context.
+     * @param {String} options.userId Validated provider username.
+     * @param {String} options.graphNodeId The identity's node id.
+     * @param {Object|null} options.existing The stored node, or `null`.
+     * @param {String} options.now ISO timestamp of this sign-in.
+     * @returns {{spec: Object}}
+     * @protected
+     */
+    agentIdentitySpec({reqAuth, userId, graphNodeId, existing, now}) {
+        const
+            existingProps   = existing?.properties || {},
+            providerDisplay = reqAuth.providerDisplayName || reqAuth.username || reqAuth.providerUsername || userId;
+
+        return {spec: {
+            id         : graphNodeId,
+            type       : 'AgentIdentity',
+            name       : existing ? undefined : providerDisplay,
+            description: existing ? undefined : 'Auto-provisioned Agent OS identity for an authenticated Memory Core principal.',
+            properties : compactDefinedProperties({
+                accountType        : 'agent',
+                // a sign-in creates a node active; after that, participation is the operator's decision
+                participationStatus: existing ? undefined : 'active',
+                trustTier          : TRUST_TIERS.INTERNAL_AUTHORED,
+                authProvider       : reqAuth.authProvider || 'gitlab',
+                authSource         : reqAuth.authSource || reqAuth.source || 'gitlab-pat',
+                providerBaseUrl    : reqAuth.providerBaseUrl,
+                providerUserId     : reqAuth.providerUserId == null ? undefined : String(reqAuth.providerUserId),
+                providerUsername   : reqAuth.providerUsername || userId,
+                providerDisplayName: providerDisplay,
+                autoProvisioned    : true,
+                createdAt          : existingProps.createdAt || now,
+                lastAuthenticatedAt: now
+            })
+        }};
+    }
+
+    /**
+     * @summary Selects the identity a request acts as by its verified subject, once the cutover has
+     * activated selection. A bound subject keeps its identity whatever its login spells now, whether or not
+     * its source creates identities. An unbound subject is refused by name where its source creates none;
+     * where it does, a login that names no identity yet creates and binds one in a single transaction.
+     *
+     * An existing identity binds only through the administrative path, so a login that names one is
+     * refused by name, as is a request without a complete subject. So is an unbound subject the founding
+     * record maps, to one identity or several: a first admission never claims it for a new identity, and
+     * the refusal names the mapping. Every refusal fails closed, an unreadable founding record included:
+     * nothing falls back to the login.
+     * @param {Object} options
+     * @param {Object} options.reqAuth Server-stamped auth context.
+     * @param {Boolean} options.create Whether the request's source may create an identity.
+     * @returns {String} The identity the request acts as.
+     * @throws {Error} `NEO_AGENT_IDENTITY_SUBJECT_REQUIRED`, `_SUBJECT_FOUNDING_MAPPED`, `_SUBJECT_UNBOUND`,
+     * `_SUBJECT_CONFLICT`, `_COLLISION`, `_INVALID` or `_SUBJECT_UNAVAILABLE`.
+     * @protected
+     */
+    selectAgentIdentityBySubject({reqAuth, create}) {
+        const userId = reqAuth.userId || 'a request without a login';
+
+        try {
+            const
+                subject = subjectOf(reqAuth),
+                sqlite  = GraphService.db.storage.db;
+
+            if (!subject) {
+                throw this.createIdentityProvisioningError(
+                    `Cannot bind ${userId}: the request carries no complete provider subject.`,
+                    'NEO_AGENT_IDENTITY_SUBJECT_REQUIRED'
+                );
+            }
+
+            const bound = readSubjectBinding(sqlite, subject);
+            if (bound) return bound.identityId;
+
+            const refuseFounding = () => {
+                const founding = IdentityPublicationService.getFoundingIdentities(subject);
+
+                if (founding.length > 0) {
+                    throw this.createIdentityProvisioningError(
+                        `Cannot bind ${userId}: the founding record maps this subject to ${founding.join(', ')}, and only the administrative path binds it.`,
+                        'NEO_AGENT_IDENTITY_SUBJECT_FOUNDING_MAPPED'
+                    );
+                }
+            };
+
+            refuseFounding();
+
+            if (!create) {
+                throw this.createIdentityProvisioningError(
+                    `Cannot select an identity for ${userId}: its subject is bound to none, and this source creates none.`,
+                    'NEO_AGENT_IDENTITY_SUBJECT_UNBOUND'
+                );
+            }
+
+            const
+                login       = this.validateAuthProvisionUserId(reqAuth.userId),
+                graphNodeId = normalizeAgentIdentityNodeId(login),
+                existing    = this.readRawGraphNode(graphNodeId);
+
+            if (existing) {
+                throw this.createIdentityProvisioningError(
+                    existing.type !== 'AgentIdentity'
+                        ? `Cannot auto-provision AgentIdentity ${graphNodeId}: id collides with existing ${existing.type || 'unknown'} node.`
+                        : readIdentityBinding(sqlite, graphNodeId)
+                            ? `Cannot bind ${userId}: ${graphNodeId} acts for another subject.`
+                            : `Cannot bind ${userId}: ${graphNodeId} has no bound subject, and only the administrative bind binds an existing identity.`,
+                    existing.type !== 'AgentIdentity' ? 'NEO_AGENT_IDENTITY_COLLISION' : 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT'
+                );
+            }
+
+            const {spec} = this.agentIdentitySpec({reqAuth, userId: login, graphNodeId, existing: null, now: new Date().toISOString()});
+
+            // the founding record is read again inside the write transaction, which decides
+            GraphService.createBoundIdentity(spec, {subject, admit: refuseFounding});
+            return graphNodeId;
+        } catch (error) {
+            if (error.code?.startsWith?.('NEO_AGENT_IDENTITY_')) throw error;
+
+            throw this.createIdentityProvisioningError(
+                `Cannot bind ${userId}: ${error.message}`,
+                ['SUBJECT_BINDING_SUBJECT_CLAIMED', 'SUBJECT_BINDING_IDENTITY_CLAIMED', 'SUBJECT_BINDING_IDENTITY_EXISTS'].includes(error.code)
+                    ? 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT' : 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'
+            );
         }
     }
 

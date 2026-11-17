@@ -10,6 +10,7 @@ import {toChromaRecordSets}                                                  fro
 import {partitionRowsByVectorValidity, summarizeVectorRejections}            from './helpers/vectorWriteInvariant.mjs';
 import {validateJsonlSourceFile}                                             from './helpers/vectorJsonlSourceValidation.mjs';
 import {importGraphJsonl}                                                    from './helpers/graphJsonlImport.mjs';
+import {readSubjectBindingRecords}                                           from './helpers/subjectBinding.mjs';
 import {
     bundlePayloadEncoding,
     bundlePayloadFileName,
@@ -218,12 +219,14 @@ class DatabaseService extends Base {
     }
 
     /**
-     * Helper method to export the Native Graph (Nodes and Edges) as JSONL.
+     * Helper method to export the Native Graph (Nodes, Edges and the subject-binding relation) as JSONL.
+     * The relation lives outside Nodes/Edges and travels as its own record types, after the edges.
      * @param {String} backupPath The directory to save the backup file.
      * @param {String} filePrefix The prefix for the backup filename.
      * @param {String} [payloadEncoding='jsonl'] A `bundlePayload` encoding token; the daily bundle asks for `jsonl+br`.
      * @returns {Promise<{collection: String, backupFile: String|null, payloadEncoding: String|null, expected: Number, exported: Number, skipped: Number, skippedIds: String[]}>} Export statistics preserving source-row completeness.
      * @throws {Error} `GRAPH_COUNT_QUERY_FAILED` when the source tables cannot be counted.
+     * @throws {Error} `SUBJECT_BINDING_UNAVAILABLE` when a stored binding is malformed: a backup never drops one.
      * @throws {Error} `PARTIAL_COLLECTION_EXPORT` when one or more counted rows cannot be exported.
      * @private
      */
@@ -268,14 +271,15 @@ class DatabaseService extends Base {
             throw error
         }
 
-        const totalCount = nodesCount + edgesCount;
+        const bindingRecords = readSubjectBindingRecords(db),
+              totalCount     = nodesCount + edgesCount + bindingRecords.length;
 
         if (totalCount === 0) {
             logger.log(`No nodes or edges found in the native graph to export.`);
             return emptyStats
         }
 
-        logger.log(`Found ${nodesCount} nodes and ${edgesCount} edges to export.`);
+        logger.log(`Found ${nodesCount} nodes, ${edgesCount} edges and ${bindingRecords.length} subject-binding records to export.`);
 
         const fs   = (await import('fs-extra')).default;
         const path = (await import('path')).default;
@@ -322,6 +326,11 @@ class DatabaseService extends Base {
                  stats.skippedIds.push(`edge:${row.id}`);
                  logger.error(`Error parsing edge during export`, error);
              }
+        }
+
+        for (const record of bindingRecords) {
+            writeStream.write(JSON.stringify(record) + '\n');
+            stats.exported++;
         }
 
         await endBundlePayload(writeStream);
@@ -395,7 +404,15 @@ class DatabaseService extends Base {
         });
 
         const summary = `nodes(inserted=${counts.nodes.inserted}, skipped=${counts.nodes.skippedExisting}, failed=${counts.nodes.failed}) ` +
-                        `edges(inserted=${counts.edges.inserted}, skipped=${counts.edges.skippedExisting}, failed=${counts.edges.failed})`;
+                        `edges(inserted=${counts.edges.inserted}, skipped=${counts.edges.skippedExisting}, failed=${counts.edges.failed}) ` +
+                        `subjectBindings(inserted=${counts.subjectBindings.inserted}, skipped=${counts.subjectBindings.skippedExisting}, failed=${counts.subjectBindings.failed})`;
+
+        // the relation is restored as one unit, so a failed count means the bundle's relation was refused
+        if (counts.subjectBindings.failed > 0) {
+            throw Object.assign(new Error(`Graph import refused the bundle's subject-binding relation; the graph rows are imported and the target keeps its own relation: ${summary}`),
+                {code: 'GRAPH_IMPORT_SUBJECT_BINDINGS_REFUSED', imported, counts, mode});
+        }
+
         logger.log(`Successfully imported ${imported} graph elements: ${summary}`);
         return {imported, counts, mode};
     }

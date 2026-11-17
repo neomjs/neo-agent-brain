@@ -21,6 +21,13 @@ import path                    from 'path';
 import fs                      from 'fs-extra';
 import Neo                     from 'neo.mjs/src/Neo.mjs';
 import * as core               from 'neo.mjs/src/core/_export.mjs';
+import {
+    SUBJECT_BINDING_ACTIVATION_TABLE,
+    SUBJECT_BINDING_TABLE,
+    activateSubjectBinding,
+    bindAtFirstAdmission,
+    readSubjectBinding
+} from '../../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 import 'neo.mjs/src/manager/Instance.mjs';
 
 
@@ -1660,6 +1667,374 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             const {returned} = await renderTip({verdict: 'mismatch', conclusive: true, dialed: '127.0.0.1', answering: ['[::1]']});
 
             expect(returned).toBeUndefined();
+        });
+    });
+
+    test.describe('the verified subject selects the acting identity', () => {
+        // Activation is plane-wide state, so these steps run in order and remove their own records.
+        test.describe.configure({mode: 'serial'});
+
+        const
+            GITHUB  = 'https://api.github.com',
+            sqlite  = () => GraphService.db.storage.db,
+            subject = providerUserId => ({authProvider: 'github', providerBaseUrl: GITHUB, providerUserId}),
+            pat     = (login, providerUserId) => ({
+                token              : 'ghp-never-stored',
+                userId             : login,
+                username           : login,
+                source             : 'github-pat',
+                authProvider       : 'github',
+                authSource         : 'github-pat',
+                providerBaseUrl    : GITHUB,
+                providerUserId,
+                providerUsername   : login,
+                providerDisplayName: login
+            });
+
+        /** @summary Drops this block's bindings and the activation record, so no later test inherits them. */
+        function cleanUp(ids, nodeIds) {
+            sqlite().exec(`DROP TABLE IF EXISTS ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
+            if (sqlite().prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(SUBJECT_BINDING_TABLE)) {
+                const remove = sqlite().prepare(`DELETE FROM ${SUBJECT_BINDING_TABLE} WHERE providerUserId = ?`);
+                ids.forEach(id => remove.run(id));
+            }
+            nodeIds.forEach(id => fixtureNodeIds.add(id));
+        }
+
+        test('a refused bind rolls the new identity back: neither the store nor the cache keeps it', async () => {
+            await GraphService.initAsync();
+            const claimed = subject('18120021');
+
+            try {
+                sqlite().transaction(() => bindAtFirstAdmission(sqlite(), {subject: claimed, identityId: '@subject-1812-owner', at: 1}))();
+                const cursor = GraphService.db.lastSyncId;
+
+                expect(() => GraphService.createBoundIdentity(
+                    {id: '@subject-1812-intruder', type: 'AgentIdentity', name: 'intruder', properties: {accountType: 'agent'}},
+                    {subject: claimed}
+                )).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_SUBJECT_CLAIMED'}));
+
+                expect(rawGraphNode('@subject-1812-intruder')).toBeNull();
+                expect(GraphService.db.nodes.get('@subject-1812-intruder')).toBeFalsy();
+                expect(GraphService.db.lastSyncId).toBe(cursor);
+            } finally {
+                cleanUp(['18120021'], ['@subject-1812-intruder']);
+            }
+        });
+
+        test('a first admission decides inside its own transaction: an identity another writer created meanwhile is refused and kept', async () => {
+            await GraphService.initAsync();
+            const
+                raced = JSON.stringify({id: '@subject-1812-raced', label: 'AgentIdentity', properties: {accountType: 'agent', userId: null}}),
+                spec  = id => ({id, type: 'AgentIdentity', name: id, properties: {accountType: 'agent'}});
+
+            try {
+                // another writer commits the identity after the caller's read found none: a row on the physical
+                // connection that never passed through this service or its cache
+                sqlite().prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, NULL, ?)').run('@subject-1812-raced', raced);
+
+                expect(() => GraphService.createBoundIdentity(spec('@subject-1812-raced'), {subject: subject('18120051')}))
+                    .toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_IDENTITY_EXISTS'}));
+                expect(sqlite().prepare('SELECT data FROM Nodes WHERE id = ?').get('@subject-1812-raced').data, 'kept byte for byte').toBe(raced);
+                expect(readSubjectBinding(sqlite(), subject('18120051'))).toBeNull();
+
+                // an eligibility check that refuses inside the transaction writes nothing
+                expect(() => GraphService.createBoundIdentity(spec('@subject-1812-ineligible'), {subject: subject('18120052'), admit: () => { throw new Error('founding-mapped') }}))
+                    .toThrow('founding-mapped');
+                expect(rawGraphNode('@subject-1812-ineligible')).toBeNull();
+
+                expect(GraphService.createBoundIdentity(spec('@subject-1812-genuine'), {subject: subject('18120053')}).state, 'a new identity binds').toBe('bound');
+                expect(readSubjectBinding(sqlite(), subject('18120053')).identityId).toBe('@subject-1812-genuine');
+            } finally {
+                cleanUp(['18120051', '18120052', '18120053'], ['@subject-1812-raced', '@subject-1812-ineligible', '@subject-1812-genuine']);
+            }
+        });
+
+        test('the request boundary keeps an unbound identity another writer created between its read and its write', async () => {
+            await GraphService.initAsync();
+            const
+                serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                read           = serverInstance.readRawGraphNode.bind(serverInstance),
+                raced          = JSON.stringify({id: '@subject-1812-racer', label: 'AgentIdentity', properties: {accountType: 'agent', userId: null}});
+
+            // the request's own read runs before the other writer commits
+            let stale = 0;
+            serverInstance.readRawGraphNode = id => id === '@subject-1812-racer' && stale-- > 0 ? null : read(id);
+
+            try {
+                sqlite().prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, NULL, ?)').run('@subject-1812-racer', raced);
+
+                // dormant: the login selects the existing node, and nothing binds it
+                stale = 1;
+                expect((await serverInstance.buildRequestContext(pat('subject-1812-racer', '18120054'))).agentIdentityNodeId).toBe('@subject-1812-racer');
+                expect(readSubjectBinding(sqlite(), subject('18120054'))).toBeNull();
+
+                // active: a subject conflict by name
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+                stale = 1;
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-racer', '18120054')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT'});
+
+                expect(sqlite().prepare('SELECT data FROM Nodes WHERE id = ?').get('@subject-1812-racer').data, 'kept byte for byte').toBe(raced);
+                expect(readSubjectBinding(sqlite(), subject('18120054'))).toBeNull();
+            } finally {
+                cleanUp(['18120054'], ['@subject-1812-racer']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('before activation, a first admission binds only the identity it creates', async () => {
+            await GraphService.initAsync();
+            const serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']});
+
+            try {
+                const created = await serverInstance.buildRequestContext(pat('subject-1812-new', '18120001'));
+
+                expect(created.agentIdentityNodeId).toBe('@subject-1812-new');
+                expect(readSubjectBinding(sqlite(), subject('18120001'))).toMatchObject({
+                    identityId: '@subject-1812-new', writer: 'first-admission', foundingRevision: null
+                });
+
+                // A legacy identity keeps today's login selection and gains no binding before the cutover
+                GraphService.upsertGlobalNode({id: '@subject-1812-legacy', type: 'AgentIdentity', name: 'legacy', properties: {accountType: 'agent'}});
+                const legacy = await serverInstance.buildRequestContext(pat('subject-1812-legacy', '18120002'));
+
+                expect(legacy.agentIdentityNodeId).toBe('@subject-1812-legacy');
+                expect(readSubjectBinding(sqlite(), subject('18120002'))).toBeNull();
+            } finally {
+                cleanUp(['18120001', '18120002'], ['@subject-1812-new', '@subject-1812-legacy']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('after activation, the subject selects the identity and every conflict fails closed', async () => {
+            await GraphService.initAsync();
+            const serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']});
+            const nodeIds        = ['@subject-1812-old', '@subject-1812-renamed', '@subject-1812-legacy2', '@subject-1812-fresh'];
+
+            try {
+                await serverInstance.buildRequestContext(pat('subject-1812-old', '18120011'));
+                GraphService.upsertGlobalNode({id: '@subject-1812-legacy2', type: 'AgentIdentity', name: 'legacy', properties: {accountType: 'agent'}});
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                // A rename keeps the identity: the subject decides, not the new login
+                const renamed = await serverInstance.buildRequestContext(pat('subject-1812-renamed', '18120011'));
+                expect(renamed.agentIdentityNodeId).toBe('@subject-1812-old');
+                expect(rawGraphNode('@subject-1812-renamed')).toBeNull();
+
+                // A re-registered login gets nothing: its login names an identity bound to another subject
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-old', '18120012')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT'});
+                expect(readSubjectBinding(sqlite(), subject('18120012'))).toBeNull();
+
+                // An unbound legacy identity binds only through the administrative path
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-legacy2', '18120013')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT', message: expect.stringContaining('administrative')});
+
+                // A request without a complete subject is nonqualifying, with no fallback to the login
+                await expect(serverInstance.buildRequestContext({...pat('subject-1812-old', '18120011'), providerUserId: undefined}))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_REQUIRED'});
+
+                // A new subject whose login names no identity yet creates and binds one
+                const fresh = await serverInstance.buildRequestContext(pat('subject-1812-fresh', '18120014'));
+                expect(fresh.agentIdentityNodeId).toBe('@subject-1812-fresh');
+                expect(readSubjectBinding(sqlite(), subject('18120014')).identityId).toBe('@subject-1812-fresh');
+            } finally {
+                cleanUp(['18120011', '18120012', '18120013', '18120014'], nodeIds);
+                serverInstance.destroy();
+            }
+        });
+
+        test('after activation, an unbound subject the founding record maps creates nothing, and an unreadable record fails closed', async () => {
+            await GraphService.initAsync();
+            const
+                IdentityPublicationService = (await import('../../../../../../../ai/services/memory-core/IdentityPublicationService.mjs')).default,
+                serverInstance             = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                original                   = IdentityPublicationService.getFoundingIdentities,
+                founding                   = new Map([['18120031', ['@subject-1812-grace', '@subject-1812-vega']], ['18120032', ['@subject-1812-clio']]]),
+                reads                      = [];
+
+            // The seam stands in for a provisioned plane's record; the record's own read is the helper's spec
+            IdentityPublicationService.getFoundingIdentities = ({providerUserId}) => {
+                reads.push(providerUserId);
+                if (providerUserId === '18120033') throw Object.assign(new Error('publication-boot-unavailable'), {code: 'publication-boot-unavailable'});
+                return founding.get(providerUserId) ?? [];
+            };
+
+            try {
+                await serverInstance.buildRequestContext(pat('subject-1812-bound', '18120034'));
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+                reads.length = 0;
+
+                // Several founding identities: refused by name, never a first-match choice
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-grace', '18120031'))).rejects.toMatchObject({
+                    code: 'NEO_AGENT_IDENTITY_SUBJECT_FOUNDING_MAPPED', message: expect.stringContaining('@subject-1812-grace, @subject-1812-vega')
+                });
+
+                // One founding identity, and a login that names none yet: a first admission would lock it out
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-newcomer', '18120032'))).rejects.toMatchObject({
+                    code: 'NEO_AGENT_IDENTITY_SUBJECT_FOUNDING_MAPPED', message: expect.stringContaining('@subject-1812-clio')
+                });
+
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-unread', '18120033')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'});
+
+                ['@subject-1812-newcomer', '@subject-1812-unread'].forEach(id => expect(rawGraphNode(id)).toBeNull());
+                ['18120031', '18120032', '18120033'].forEach(id => expect(readSubjectBinding(sqlite(), subject(id))).toBeNull());
+
+                // A bound subject never reads the record, whatever its login spells now
+                expect((await serverInstance.buildRequestContext(pat('subject-1812-bound-renamed', '18120034'))).agentIdentityNodeId)
+                    .toBe('@subject-1812-bound');
+                expect(reads).toEqual(['18120031', '18120032', '18120033']);
+            } finally {
+                IdentityPublicationService.getFoundingIdentities = original;
+                cleanUp(['18120031', '18120032', '18120033', '18120034'],
+                    ['@subject-1812-bound', '@subject-1812-newcomer', '@subject-1812-unread', '@subject-1812-bound-renamed']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('an activation the graph cannot answer refuses by name instead of selecting by login', async () => {
+            await GraphService.initAsync();
+            const
+                serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                ready          = GraphService.ready,
+                request        = login => serverInstance.buildRequestContext(pat(login, '18120041'));
+
+            try {
+                expect((await request('subject-1812-dormant')).agentIdentityNodeId, 'known dormant: the login selects').toBe('@subject-1812-dormant');
+
+                // a malformed record is unreadable: neither the login nor a first admission decides
+                sqlite().exec(`CREATE TABLE ${SUBJECT_BINDING_ACTIVATION_TABLE} (gate TEXT PRIMARY KEY, cutoverRevision TEXT, activatedAt INTEGER)`);
+                sqlite().prepare(`INSERT INTO ${SUBJECT_BINDING_ACTIVATION_TABLE} VALUES ('acting-identity', '', 1)`).run();
+                await expect(request('subject-1812-dormant')).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'});
+                await expect(request('subject-1812-unseen')).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'});
+                expect(rawGraphNode('@subject-1812-unseen')).toBeNull();
+                sqlite().exec(`DROP TABLE ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
+
+                // a graph that is not ready cannot answer either
+                GraphService.ready = () => Promise.reject(new Error('graph startup degraded'));
+                await expect(request('subject-1812-dormant')).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'});
+                GraphService.ready = ready;
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+                expect((await request('subject-1812-dormant-renamed')).agentIdentityNodeId, 'healthy active: the subject selects').toBe('@subject-1812-dormant');
+            } finally {
+                GraphService.ready = ready;
+                cleanUp(['18120041'], ['@subject-1812-dormant', '@subject-1812-unseen', '@subject-1812-dormant-renamed']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('once active, a lookup-only plane selects by subject too: a bound subject acts as its identity, an unbound one is refused by name', async () => {
+            await GraphService.initAsync();
+            const serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: []});
+
+            try {
+                GraphService.createBoundIdentity({id: '@subject-1812-lookup', type: 'AgentIdentity', name: 'lookup', properties: {accountType: 'agent'}},
+                    {subject: subject('18120061')});
+
+                // dormant: the login selects, so a renamed login finds no identity
+                expect(await serverInstance.buildRequestContext(pat('subject-1812-lookup-renamed', '18120061')))
+                    .toMatchObject({userId: 'subject-1812-lookup-renamed', agentIdentityNodeId: null});
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                expect(await serverInstance.buildRequestContext(pat('subject-1812-lookup-renamed', '18120061')), 'the subject decides, not the login')
+                    .toMatchObject({userId: 'subject-1812-lookup', agentIdentityNodeId: '@subject-1812-lookup'});
+
+                // a re-registered login and a newcomer both reach nothing, and nothing is created
+                for (const [login, providerUserId] of [['subject-1812-lookup', '18120062'], ['subject-1812-lookup-new', '18120063']]) {
+                    await expect(serverInstance.buildRequestContext(pat(login, providerUserId)))
+                        .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNBOUND'});
+                    expect(readSubjectBinding(sqlite(), subject(providerUserId))).toBeNull();
+                }
+                expect(rawGraphNode('@subject-1812-lookup-new')).toBeNull();
+
+                await expect(serverInstance.buildRequestContext({...pat('subject-1812-lookup', '18120061'), providerUserId: undefined}))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_REQUIRED'});
+            } finally {
+                cleanUp(['18120061', '18120062', '18120063'], ['@subject-1812-lookup', '@subject-1812-lookup-renamed', '@subject-1812-lookup-new']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('once active, the bound identity keys the request: a renamed login reads its own rows, never the new login\'s', async () => {
+            await GraphService.initAsync();
+            const
+                [{default: RequestContextService}, {default: MemoryService}, {default: StorageRouter}] = await Promise.all([
+                    import('../../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs'),
+                    import('../../../../../../../ai/services/memory-core/MemoryService.mjs'),
+                    import('../../../../../../../ai/services/memory-core/managers/StorageRouter.mjs')
+                ]),
+                serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                collection     = StorageRouter.getMemoryCollection,
+                // one private row of the identity, and one an earlier holder of the login it renames to wrote
+                rows           = [['own', 'subject-1812-keyed'], ['earlier holder', 'subject-1812-keyed-renamed']].map(([prompt, userId], index) => ({
+                    id: `memory-1812-${index}`, metadata: {sessionId: 'session-1812', prompt, response: prompt, userId, timestamp: new Date(1000 + index).toISOString()}
+                })),
+                read = async context => {
+                    const view = await RequestContextService.run(context, () =>
+                        MemoryService.listMemories({sessionId: 'session-1812', limit: 10, memorySharing: 'private'}));
+                    return view.memories?.map(memory => memory.prompt) ?? view;
+                };
+
+            // the read's where clause, applied the way Chroma applies it
+            StorageRouter.getMemoryCollection = async () => ({get: async ({where}) => {
+                const found = rows.filter(({metadata}) => (where.$and ?? [where]).every(clause =>
+                    Object.entries(clause).every(([key, value]) => metadata[key] === value)));
+                return {ids: found.map(row => row.id), metadatas: found.map(row => row.metadata)};
+            }});
+
+            try {
+                expect(await read(await serverInstance.buildRequestContext(pat('subject-1812-keyed', '18120071')))).toEqual(['own']);
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                const renamed = await serverInstance.buildRequestContext(pat('subject-1812-keyed-renamed', '18120071'));
+                expect(renamed).toMatchObject({userId: 'subject-1812-keyed', agentIdentityNodeId: '@subject-1812-keyed'});
+                expect(await read(renamed)).toEqual(['own']);
+
+                // another account registering the released login is refused, so it holds no key at all
+                await expect(serverInstance.buildRequestContext(pat('subject-1812-keyed', '18120072')))
+                    .rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_CONFLICT'});
+            } finally {
+                StorageRouter.getMemoryCollection = collection;
+                cleanUp(['18120071', '18120072'], ['@subject-1812-keyed', '@subject-1812-keyed-renamed']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('once active, a provider-stamped request without a login still decides by its subject', async () => {
+            await GraphService.initAsync();
+            const
+                lookup  = await createServerWithoutBoot({autoProvisionIdentitySources: []}),
+                create  = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                noLogin = providerUserId => ({...pat('unused', providerUserId), userId: undefined, username: undefined, providerUsername: undefined});
+
+            try {
+                GraphService.createBoundIdentity({id: '@subject-1812-nologin', type: 'AgentIdentity', name: 'nologin', properties: {accountType: 'agent'}},
+                    {subject: subject('18120081')});
+
+                // dormant: a request without a login keeps the single-tenant fallthrough
+                expect(await lookup.buildRequestContext(noLogin('18120081'))).toEqual({});
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                for (const server of [lookup, create]) {
+                    expect(await server.buildRequestContext(noLogin('18120081')), 'the bound identity keys it')
+                        .toMatchObject({userId: 'subject-1812-nologin', agentIdentityNodeId: '@subject-1812-nologin'});
+                }
+
+                // unbound: refused by name, never the fallthrough
+                await expect(lookup.buildRequestContext(noLogin('18120082'))).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNBOUND'});
+                await expect(create.buildRequestContext(noLogin('18120082'))).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_INVALID'});
+                expect(readSubjectBinding(sqlite(), subject('18120082'))).toBeNull();
+            } finally {
+                cleanUp(['18120081', '18120082'], ['@subject-1812-nologin']);
+                lookup.destroy();
+                create.destroy();
+            }
         });
     });
 });

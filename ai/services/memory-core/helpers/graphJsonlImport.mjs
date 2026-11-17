@@ -1,4 +1,8 @@
 import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.mjs';
+import {
+    SUBJECT_BINDING_RECORD_TYPES,
+    restoreSubjectBindingRelation
+} from './subjectBinding.mjs';
 
 /**
  * @module ai/services/memory-core/helpers/graphJsonlImport
@@ -7,14 +11,20 @@ import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.
  */
 
 /**
- * @summary Imports canonical `{type:'node'|'edge', data}` JSONL records into an
- * opened graph SQLite database.
+ * @summary Imports canonical `{type:'node'|'edge', data}` JSONL records, and the
+ * subject-binding relation's own records, into an opened graph SQLite database.
  *
  * The caller owns destructive-target admission. `replace` clears graph rows
  * before importing; staging callers use it only on a run-owned disposable DB,
  * while `DatabaseService` applies its production guard first. The source-owned
  * fence runs in the first mutation transaction; disposable staging supplies an
  * explicit no-op. Existing transactions and asynchronous fences are refused.
+ *
+ * The relation's records are restored after the graph rows, as one unit
+ * ({@link restoreSubjectBindingRelation}): a malformed or conflicting record
+ * refuses all of them, counted failed, and the target keeps its relation and
+ * activation. `replace` swaps the binding rows only when the bundle carries one;
+ * an older bundle keeps the target's.
  *
  * @param {Object} options
  * @param {Object} options.db Open better-sqlite3 database with Nodes/Edges.
@@ -80,13 +90,16 @@ export async function importGraphJsonl({
             VALUES (?, ?, ?, ?, ?, ?)
         `),
         counts         = {
-            nodes: {inserted: 0, skippedExisting: 0, failed: 0},
-            edges: {inserted: 0, skippedExisting: 0, failed: 0}
+            nodes          : {inserted: 0, skippedExisting: 0, failed: 0},
+            edges          : {inserted: 0, skippedExisting: 0, failed: 0},
+            subjectBindings: {inserted: 0, skippedExisting: 0, failed: 0}
         };
 
     let imported    = 0;
     let maxObserved = 0;
     let mergeFenced = false;
+
+    const relation = [];
 
     const insertBatch = db.transaction(records => {
         if (mode === 'merge' && !mergeFenced) {
@@ -146,6 +159,8 @@ export async function importGraphJsonl({
                         warn(`[importGraphJsonl] edge insert failed for id=${edgeId}: ${error.message}`)
                     }
                 }
+            } else if (SUBJECT_BINDING_RECORD_TYPES.includes(record.type)) {
+                relation.push(record)
             }
 
             imported++
@@ -185,6 +200,16 @@ export async function importGraphJsonl({
         }
     } finally {
         closeBundlePayload(lines)
+    }
+
+    try {
+        Object.assign(counts.subjectBindings, restoreSubjectBindingRelation(db, relation, {
+            mode,
+            admit: () => mode === 'merge' && !mergeFenced && (admitMutation(), mergeFenced = true)
+        }))
+    } catch (error) {
+        counts.subjectBindings.failed = relation.length;
+        warn(`[importGraphJsonl] the bundle's subject-binding relation was refused whole; the target keeps its own: ${error.message}`)
     }
 
     return {

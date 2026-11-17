@@ -14,6 +14,10 @@ import {
     RESTORE_TARGET_ROLES
 } from './restoreTargetSetContract.mjs';
 import {
+    readSubjectBindingRecords,
+    restoreSubjectBindingRecord
+} from './subjectBinding.mjs';
+import {
     importVectorJsonlToEmptyCollection,
     validateVectorCollectionFromJsonl
 } from './vectorJsonlImport.mjs';
@@ -142,9 +146,12 @@ export function createRestoreTargetSetStorage({
             memoryCount    = memories ? await memories.count() : null,
             summaryCount   = summaries ? await summaries.count() : null,
             graphFreshness = inspectGraphBootFreshness(graphDb),
+            // the protected relation occupies a target as surely as its graph rows do
+            relationCount  = readSubjectBindingRecords(graphDb).length,
             fresh          = memoryCount === 0 &&
                 summaryCount === 0 &&
-                graphFreshness.fresh;
+                graphFreshness.fresh &&
+                relationCount === 0;
 
         const reasons = [];
         if (!memories) {
@@ -158,6 +165,7 @@ export function createRestoreTargetSetStorage({
             reasons.push(`summaries count is ${summaryCount}`)
         }
         if (!graphFreshness.fresh) reasons.push(graphFreshness.reason);
+        if (relationCount !== 0) reasons.push(`the live graph holds a subject-binding relation (${relationCount} records)`);
 
         const result = {
             fresh,
@@ -582,7 +590,8 @@ export function createRestoreTargetSetStorage({
             });
 
             if (receipt.counts.nodes.failed !== 0 ||
-                receipt.counts.edges.failed !== 0) {
+                receipt.counts.edges.failed !== 0 ||
+                receipt.counts.subjectBindings.failed !== 0) {
                 throw new Error('restore graph staging importer rejected one or more records')
             }
         } finally {
@@ -664,12 +673,19 @@ export function createRestoreTargetSetStorage({
         }
     }
 
-    /** @summary Fences and replaces the live graph from validated staging in its write transaction. */
+    /**
+     * @summary Fences and replaces the live graph from validated staging in its write transaction. The
+     * staged subject-binding relation moves with the rows, through its restore writer; a live graph that
+     * already holds a relation is no empty target, and promotion refuses it before writing anything.
+     */
     async function promoteGraph({graphPath, component}) {
         await assertDisposableGraphPath(graphPath);
-        await withGraphStagingDb(
+        const stagedBindings = await withGraphStagingDb(
             graphPath,
-            db => validateGraphDatabase({db, component})
+            db => {
+                validateGraphDatabase({db, component});
+                return readSubjectBindingRecords(db)
+            }
         );
 
         const fresh = inspectGraphBootFreshness(graphDb);
@@ -687,6 +703,9 @@ export function createRestoreTargetSetStorage({
                 if (fence && typeof fence.then === 'function') {
                     Promise.resolve(fence).catch(() => {});
                     throw new TypeError('restoreTargetSetStorage: graph mutation fence must be synchronous');
+                }
+                if (readSubjectBindingRecords(graphDb).length > 0) {
+                    throw new Error('restore graph live database already holds a subject-binding relation');
                 }
                 graphDb.prepare('DELETE FROM restore_stage.PriorEdges').run();
                 graphDb.prepare('DELETE FROM restore_stage.PriorNodes').run();
@@ -708,7 +727,11 @@ export function createRestoreTargetSetStorage({
                 graphDb.prepare(`
                     INSERT INTO main.Edges (id, user_id, source, target, type, data)
                     SELECT id, user_id, source, target, type, data FROM restore_stage.Edges
-                `).run()
+                `).run();
+
+                for (const record of stagedBindings) {
+                    restoreSubjectBindingRecord(graphDb, record)
+                }
             }).immediate()
         } finally {
             graphDb.prepare('DETACH DATABASE restore_stage').run()
@@ -810,27 +833,32 @@ function inspectGraphBootFreshness(db) {
 
 function validateGraphDatabase({db, component}) {
     const
-        nodeRows = db.prepare('SELECT data FROM Nodes ORDER BY id').all(),
-        edgeRows = db.prepare('SELECT data FROM Edges ORDER BY id').all(),
-        result   = {
+        nodeRows     = db.prepare('SELECT data FROM Nodes ORDER BY id').all(),
+        edgeRows     = db.prepare('SELECT data FROM Edges ORDER BY id').all(),
+        bindings     = readSubjectBindingRecords(db),
+        bindingCount = component.bindingCount ?? 0,
+        result       = {
             valid      : true,
             rowCount   : nodeRows.length + edgeRows.length,
             nodeCount  : nodeRows.length,
             edgeCount  : edgeRows.length,
             fingerprint: fingerprintGraphRecords({
                 nodes: nodeRows,
-                edges: edgeRows
+                edges: edgeRows,
+                bindings
             })
         };
 
     if (result.rowCount !== component.rowCount ||
         result.nodeCount !== component.nodeCount ||
         result.edgeCount !== component.edgeCount ||
+        bindings.length !== bindingCount ||
         result.fingerprint !== component.recordFingerprint) {
         throw new Error(
             `restore graph validation mismatch: rows=${result.rowCount}/${component.rowCount}, ` +
             `nodes=${result.nodeCount}/${component.nodeCount}, ` +
             `edges=${result.edgeCount}/${component.edgeCount}, ` +
+            `subject-binding records=${bindings.length}/${bindingCount}, ` +
             `fingerprint=${result.fingerprint}/${component.recordFingerprint}`
         )
     }
@@ -840,16 +868,27 @@ function validateGraphDatabase({db, component}) {
 
 function fingerprintGraphDatabase(db) {
     return fingerprintGraphRecords({
-        nodes: db.prepare('SELECT data FROM Nodes ORDER BY id').all(),
-        edges: db.prepare('SELECT data FROM Edges ORDER BY id').all()
+        nodes   : db.prepare('SELECT data FROM Nodes ORDER BY id').all(),
+        edges   : db.prepare('SELECT data FROM Edges ORDER BY id').all(),
+        bindings: readSubjectBindingRecords(db)
     })
 }
 
-function fingerprintGraphRecords({nodes, edges}) {
-    return fingerprintCanonical({
+/**
+ * @summary Fingerprints a graph's record set as admission does: the subject-binding relation's records
+ * join only when present, so a graph without the relation keeps the fingerprint it always had.
+ */
+function fingerprintGraphRecords({nodes, edges, bindings = []}) {
+    const records = {
         nodes: nodes.map(parseGraphRow).map(canonicalJson).sort(),
         edges: edges.map(parseGraphRow).map(canonicalJson).sort()
-    })
+    };
+
+    if (bindings.length > 0) {
+        records.bindings = bindings.map(canonicalJson).sort()
+    }
+
+    return fingerprintCanonical(records)
 }
 
 async function openGraphStagingDatabase(filePath, {create = true} = {}) {

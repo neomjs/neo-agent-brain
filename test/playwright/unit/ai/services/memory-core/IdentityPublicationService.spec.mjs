@@ -17,6 +17,7 @@ test('boot composition preserves signed bytes, physical refusal and coherent fou
         import {consumeIdentityPublicationBoot, readIdentityPublicationLineage} from ${JSON.stringify(helper('identityPublicationLineage'))};
         import {admitIdentityPublication, readIdentityPublicationSnapshot} from ${JSON.stringify(helper('identityPublicationAdmission'))};
         import {installIdentityFoundingSource} from ${JSON.stringify(helper('identityFoundingStorage'))};
+        import {readFoundingIdentities} from ${JSON.stringify(helper('subjectBinding'))};
         import {fenceIdentityPublication} from ${JSON.stringify(helper('identityPublicationFence'))};
         await import('neo.mjs/src/Neo.mjs');
         await import('neo.mjs/src/core/_export.mjs');
@@ -46,8 +47,10 @@ test('boot composition preserves signed bytes, physical refusal and coherent fou
             },
             installIdentityFoundingSource(options) {return installIdentityFoundingSource(db, options);},
             readIdentityPublicationSnapshot(options) {return readIdentityPublicationSnapshot(db, options);},
-            readIdentityPublicationLineage(text, resolvedTarget) {return readIdentityPublicationLineage(db, text, resolvedTarget);}
+            readIdentityPublicationLineage(text, resolvedTarget) {return readIdentityPublicationLineage(db, text, resolvedTarget);},
+            readFoundingIdentities(options) {return readFoundingIdentities(db, options);}
         };
+        const founder = {authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: 'founder'};
         const serviceUrl = ${JSON.stringify(serviceUrl)};
         const modules = new Map([
             ['../../mcp/server/memory-core/config.mjs', 'export default globalThis.fixtureConfig'],
@@ -68,6 +71,7 @@ test('boot composition preserves signed bytes, physical refusal and coherent fou
             assert.equal((await service.start()).code, 'publication-not-provisioned');
             assert.equal(bootCalls, 0);
             assert.equal(service.getIdentityPublicationSnapshot().state, 'unavailable');
+            assert.deepEqual(service.getFoundingIdentities(founder), [], 'an unprovisioned plane holds no founding record');
             assert.equal(db.prepare('SELECT COUNT(*) AS n FROM Nodes').get().n, 0);
 
             globalThis.fixtureConfig.identityPublicationBoot = reserveText;
@@ -108,6 +112,8 @@ test('boot composition preserves signed bytes, physical refusal and coherent fou
             assert.equal(read.snapshot.foundingRevision, 1);
             assert.equal(read.snapshot.foundingProvenance.sourceRevision, 'fixture-reviewed-source');
             const retainedSource = read.snapshot.foundingProvenance;
+            assert.deepEqual(service.getFoundingIdentities(founder), ['@founder']);
+            assert.deepEqual(service.getFoundingIdentities({...founder, providerUserId: 'newcomer'}), []);
 
             for (const method of ['ready', 'consumeIdentityPublicationBoot']) {
                 const original = globalThis.fixtureGraph[method];
@@ -130,6 +136,7 @@ test('boot composition preserves signed bytes, physical refusal and coherent fou
                     });
                     assert.deepEqual(service.publish(token), {statusCode: 503, body: {state: 'unavailable', code: 'publication-boot-unavailable'}});
                     assert.deepEqual(service.getIdentityPublicationSnapshot(), {state: 'unavailable', code: 'publication-boot-unavailable'});
+                    assert.throws(() => service.getFoundingIdentities(founder), {code: 'publication-boot-unavailable'}, 'a failed boot fails the guard closed');
                     assert.equal(service.getIdentityPublicationLineage().state, 'bound', 'failed boot still permits read-only lineage reconciliation');
                 } finally {globalThis.fixtureGraph[method] = original;}
                 assert.equal((await service.start()).state, 'bound');
