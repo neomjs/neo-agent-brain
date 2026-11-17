@@ -283,6 +283,28 @@ export function bindAtFirstAdmission(db, {subject, identityId, at = Date.now()} 
 }
 
 /**
+ * @summary Groups a retained founding seed's entries by subject, in the seed's order: each subject with every
+ * identity the founding record maps it to. A subject mapped to one identity can seed its binding; one mapped to
+ * several stays unresolved, never a first-match choice.
+ * @param {Object} seed A validated founding seed, `{version, entries: [{identityKey, family, subject}], digest}`.
+ * @returns {Array<{subject: Object, identityIds: String[]}>} Frozen mappings.
+ */
+export function foundingSubjectMappings(seed) {
+    const bySubject = new Map();
+
+    for (const {identityKey, subject} of seed.entries) {
+        const key = JSON.stringify(SUBJECT_KEY.map(field => subject[field]));
+
+        if (!bySubject.has(key)) {
+            bySubject.set(key, {subject: Object.freeze(Object.fromEntries(SUBJECT_KEY.map(field => [field, subject[field]]))), identityIds: []});
+        }
+        bySubject.get(key).identityIds.push(identityKey);
+    }
+
+    return [...bySubject.values()].map(({subject, identityIds}) => Object.freeze({subject, identityIds: Object.freeze(identityIds)}));
+}
+
+/**
  * @summary Decides what an administrative bind would do, without writing: its dry run and its write share
  * this decision. An endpoint move (same account, new API endpoint) is the one conflict a bind resolves.
  * @param {Object} db The graph's physical SQLite connection; a read-only one suffices.

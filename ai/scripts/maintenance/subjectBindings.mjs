@@ -9,6 +9,7 @@ import {readIdentityFoundingSourceInTransaction}       from '../../services/memo
 import {readIdentityPublicationAuthorityInTransaction} from '../../services/memory-core/helpers/identityPublicationLineage.mjs';
 import {
     bindAdministratively,
+    foundingSubjectMappings,
     planAdministrativeBind,
     readSubjectBindingRecords
 } from '../../services/memory-core/helpers/subjectBinding.mjs';
@@ -17,13 +18,14 @@ import {
  * @module ai/scripts/maintenance/subjectBindings
  * @summary The plane-local administrative path for the subject-binding relation, and the only caller of
  * its administrative writer: no MCP tool, HTTP route or Fleet wire reaches it. Host access to the Memory
- * Core data root is its authority, so it runs on the plane host and nowhere else. A bind is a dry run,
- * on a read-only connection, unless `--apply` is given.
+ * Core data root is its authority, so it runs on the plane host and nowhere else. `bind` and `seed` are
+ * dry runs, on a read-only connection, unless `--apply` is given.
  *
  * ```
  * subjectBindings.mjs list --db-path <graph.sqlite>
  * subjectBindings.mjs bind --db-path <graph.sqlite> --auth-provider github
  *                          --provider-base-url https://api.github.com --provider-user-id <id> --identity <id> [--apply]
+ * subjectBindings.mjs seed --db-path <graph.sqlite> [--apply]
  * ```
  *
  * A bind targets an identity the graph already holds: a new identity binds only at its first admission.
@@ -31,9 +33,14 @@ import {
  * so a bind never rests on a revision its caller typed. An endpoint move (the same account at a new
  * `--provider-base-url`) keeps the identity, so its history stays reachable; any other conflict refuses
  * by name and writes nothing.
+ *
+ * `seed` binds what the retained founding record authorizes on its own: each subject it maps to exactly
+ * one identity the graph holds. It names, and binds nothing for, a subject mapped to several identities
+ * or to one the graph lacks. It only binds a free pair: an identity an administrative move placed
+ * elsewhere is held, and a subject bound elsewhere refuses by name.
  */
 
-const COMMANDS = Object.freeze(['list', 'bind']);
+const COMMANDS = Object.freeze(['list', 'bind', 'seed']);
 
 /** @summary Builds a named refusal, the shape the relation's own refusals take. */
 function refusal(code, message) {
@@ -51,8 +58,8 @@ function sameFile(a, b) {
     }
 }
 
-/** @summary Refuses an identity the graph does not hold as an `AgentIdentity` node. */
-function requireIdentity(db, identityId) {
+/** @summary Whether the graph holds `identityId` as an `AgentIdentity` node. */
+function holdsIdentity(db, identityId) {
     const row = typeof identityId === 'string' ? db.prepare('SELECT data FROM Nodes WHERE id = ?').get(identityId) : null;
     let node = null;
 
@@ -61,19 +68,24 @@ function requireIdentity(db, identityId) {
     } catch {}
 
     // Stored nodes carry their type as `label`; older rows as `type`, as the founding storage also reads them.
-    if (node?.label !== 'AgentIdentity' && node?.type !== 'AgentIdentity') {
+    return node?.label === 'AgentIdentity' || node?.type === 'AgentIdentity';
+}
+
+/** @summary Refuses an identity the graph does not hold. */
+function requireIdentity(db, identityId) {
+    if (!holdsIdentity(db, identityId)) {
         throw refusal('SUBJECT_BINDING_IDENTITY_UNKNOWN',
             `${identityId} is no identity this graph holds; a new identity binds only at its first admission.`);
     }
 }
 
 /**
- * @summary Reads the retained founding source revision, qualified the way identity admission qualifies
- * it: the plane is bound, and the source was installed by that lineage's issuer at its current head.
- * @returns {String}
+ * @summary Reads the retained founding source, qualified the way identity admission qualifies it: the
+ * plane is bound, and the source was installed by that lineage's issuer at its current head.
+ * @returns {{foundingRevision: String, seed: Object}}
  * @throws {Error} `IDENTITY_FOUNDING_SOURCE_UNAVAILABLE`, or `SUBJECT_BINDING_FOUNDING_UNQUALIFIED`.
  */
-function qualifiedFoundingRevision(db, bootText, target) {
+function qualifiedFounding(db, bootText, target) {
     const
         authority = readIdentityPublicationAuthorityInTransaction(db, bootText, target),
         founding  = readIdentityFoundingSourceInTransaction(db, {target});
@@ -84,23 +96,58 @@ function qualifiedFoundingRevision(db, bootText, target) {
             'The retained founding source is not qualified by the lineage this plane is bound to; an administrative bind rests on it.');
     }
 
-    return founding.provenance.sourceRevision;
+    return {foundingRevision: founding.provenance.sourceRevision, seed: founding.seed};
 }
 
 /**
- * @summary Runs one command against an explicit graph file. `bind` decides inside one transaction, on a
- * read-only connection for a dry run, and decides again inside the write transaction when applied.
+ * @summary Seeds the bindings the retained founding record authorizes on its own, inside the caller's
+ * transaction: each subject mapped to exactly one held identity, and only where neither side is bound.
+ * @returns {Object} `{foundingRevision, bound, matching, held, refused, unresolved}`.
+ */
+function seedFromFounding(db, {bootText, target, apply, now}) {
+    const
+        {foundingRevision, seed} = qualifiedFounding(db, bootText, target),
+        outcome                  = {bound: [], matching: [], held: [], refused: [], unresolved: []};
+
+    for (const {subject, identityIds} of foundingSubjectMappings(seed)) {
+        const [identityId] = identityIds;
+
+        if (identityIds.length > 1 || !holdsIdentity(db, identityId)) {
+            outcome.unresolved.push({subject, identityIds, reason: identityIds.length > 1 ? 'several-identities' : 'identity-unknown'});
+            continue;
+        }
+
+        try {
+            const {state} = planAdministrativeBind(db, {subject, identityId});
+
+            if (state === 'bound' && apply) {
+                bindAdministratively(db, {subject, identityId, foundingRevision, at: now()});
+            }
+            outcome[state === 'moved' ? 'held' : state].push({subject, identityId});
+        } catch (error) {
+            if (!error.code?.startsWith('SUBJECT_BINDING_')) throw error;
+            outcome.refused.push({subject, identityId, code: error.code});
+        }
+    }
+
+    return {foundingRevision, ...outcome};
+}
+
+/**
+ * @summary Runs one command against an explicit graph file. `bind` and `seed` decide inside one transaction,
+ * on a read-only connection for a dry run, and decide again inside the write transaction when applied.
  * @param {Object}   options
  * @param {String}   options.dbPath                Explicit live graph SQLite path; must exist.
- * @param {String}   options.command               `list` or `bind`.
+ * @param {String}   options.command               `list`, `bind` or `seed`.
  * @param {Object}   [options.subject]             `{authProvider, providerBaseUrl, providerUserId}`, for `bind`.
  * @param {String}   [options.identityId]          The existing identity to bind, for `bind`.
- * @param {Boolean}  [options.apply=false]         Write the bind; otherwise report it.
- * @param {String}   [options.bootText]            The plane's identity-publication boot descriptor, for `bind`.
- * @param {Object}   [options.target]              The plane's `{planeId, dataRoot}`, for `bind`.
- * @param {String}   [options.configuredGraphPath] The configured live graph; an applied bind must target it.
+ * @param {Boolean}  [options.apply=false]         Write; otherwise report what would be written.
+ * @param {String}   [options.bootText]            The plane's identity-publication boot descriptor, for `bind` and `seed`.
+ * @param {Object}   [options.target]              The plane's `{planeId, dataRoot}`, for `bind` and `seed`.
+ * @param {String}   [options.configuredGraphPath] The configured live graph; an applied write must target it.
  * @param {Function} [options.now=Date.now]
- * @returns {Object} `{ok, command, records}` for `list`; `{ok, command, applied, state, identityId, foundingRevision}` for `bind`.
+ * @returns {Object} `{ok, command, records}` for `list`; `{ok, command, applied, state, identityId, foundingRevision}`
+ * for `bind`; `{ok, command, applied, foundingRevision, bound, matching, held, refused, unresolved}` for `seed`.
  * @throws {Error} A named refusal; nothing is written.
  */
 export function runSubjectBindingAdmin({dbPath, command, subject, identityId, apply = false, bootText, target, configuredGraphPath, now = Date.now} = {}) {
@@ -115,9 +162,16 @@ export function runSubjectBindingAdmin({dbPath, command, subject, identityId, ap
     try {
         if (command === 'list') return {ok: true, command, records: readSubjectBindingRecords(db)};
 
+        if (command === 'seed') {
+            const run     = () => seedFromFounding(db, {bootText, target, apply, now}),
+                  outcome = apply ? db.transaction(run).immediate() : db.transaction(run).deferred();
+
+            return {ok: outcome.refused.length === 0, command, applied: apply, ...outcome};
+        }
+
         const decide = () => {
             requireIdentity(db, identityId);
-            return {foundingRevision: qualifiedFoundingRevision(db, bootText, target), plan: planAdministrativeBind(db, {subject, identityId})};
+            return {foundingRevision: qualifiedFounding(db, bootText, target).foundingRevision, plan: planAdministrativeBind(db, {subject, identityId})};
         };
 
         if (!apply) {
@@ -142,7 +196,7 @@ export function runSubjectBindingAdmin({dbPath, command, subject, identityId, ap
  */
 export function createCommand() {
     return new Command('subjectBindings')
-        .description('Bind a provider subject to an existing identity on the plane host. A bind is a dry run unless --apply.')
+        .description('Bind provider subjects to existing identities on the plane host, one at a time or from the founding record. Dry run unless --apply.')
         .argument('<command>', COMMANDS.join(' | '))
         .requiredOption('--db-path <path>', 'live graph SQLite file (explicit, must exist)')
         .option('--auth-provider <provider>', 'the subject\'s forge, as admissions present it')
@@ -153,7 +207,8 @@ export function createCommand() {
 }
 
 /**
- * @summary Parses `argv` and runs the command; `bind` reads the plane's boot descriptor, target and graph path from config.
+ * @summary Parses `argv` and runs the command; `bind` and `seed` read the plane's boot descriptor, target and
+ * graph path from config.
  * @param {String[]} [argv=process.argv]
  * @returns {Promise<Object>}
  */
@@ -163,7 +218,7 @@ export async function runCli(argv = process.argv) {
         options = program.opts(),
         command = program.args[0];
 
-    if (command !== 'bind') return runSubjectBindingAdmin({dbPath: options.dbPath, command});
+    if (command !== 'bind' && command !== 'seed') return runSubjectBindingAdmin({dbPath: options.dbPath, command});
 
     await import('neo.mjs/src/Neo.mjs');
     await import('neo.mjs/src/core/_export.mjs');

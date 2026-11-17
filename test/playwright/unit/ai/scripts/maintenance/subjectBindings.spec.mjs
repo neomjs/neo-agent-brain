@@ -22,11 +22,16 @@ const
         reservation: {attemptId: 'attempt-a', kid, originRunId: '123e4567-e89b-42d3-a456-426614174000'}, trust}),
     publicKey  = () => generateKeyPairSync('ed25519').publicKey.export({type: 'spki', format: 'der'}).toString('base64url'),
     bootText   = stringifyCanonicalJson(descriptor([{kid: 'kid-a', publicKey: publicKey()}])),
-    S          = Object.freeze({authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '1001'});
+    S          = Object.freeze({authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '1001'}),
+    T          = Object.freeze({...S, providerUserId: '2002'}),
+    U          = Object.freeze({...S, providerUserId: '3003'});
 
 let root, dbPath;
 
-/** @summary Builds a graph with bound publication lineage, optionally a founding source, and two identities. */
+/**
+ * @summary Builds a graph with bound publication lineage, optionally a founding source, and three identities.
+ * The founding record maps S to `@ada` alone, U to `@clio` (whom the graph lacks), and T to both `@grace` and `@vega`.
+ */
 function seedGraph({founding = true} = {}) {
     const db = new Database(dbPath);
 
@@ -39,15 +44,19 @@ function seedGraph({founding = true} = {}) {
         if (founding) {
             expect(installIdentityFoundingSource(db, {bootText, target, sourceRevision: 'reviewed-source:fixture', clock: () => 100,
                 seed: compileFoundingFamilySeed({
-                    identities: [{id: '@founder', type: 'AgentIdentity', properties: {accountType: 'agent', modelFamily: 'claude'}}],
-                    subjects  : [{identityKey: '@founder', subject: {authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '101'}}]
+                    identities: ['@ada', '@clio', '@grace', '@vega'].map(id => ({id, type: 'AgentIdentity', properties: {accountType: 'agent', modelFamily: 'claude'}})),
+                    subjects  : [
+                        {identityKey: '@ada',   subject: {...S}},
+                        {identityKey: '@clio',  subject: {...U}},
+                        {identityKey: '@grace', subject: {...T}},
+                        {identityKey: '@vega',  subject: {...T}}
+                    ]
                 })
             }).state).toBe('installed');
         }
 
         const node = db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, NULL, ?)');
-        node.run('@ada', JSON.stringify({id: '@ada', label: 'AgentIdentity'}));
-        node.run('@grace', JSON.stringify({id: '@grace', label: 'AgentIdentity'}));
+        ['@ada', '@grace', '@vega'].forEach(id => node.run(id, JSON.stringify({id, label: 'AgentIdentity'})));
         node.run('memory-1', JSON.stringify({id: 'memory-1', label: 'MEMORY'}));
     } finally {
         db.close();
@@ -65,6 +74,17 @@ const bind = (options = {}) => runSubjectBindingAdmin({
     dbPath, command: 'bind', subject: S, identityId: '@ada', apply: false,
     bootText, target, configuredGraphPath: dbPath, now: () => 500, ...options
 });
+
+/** @summary One seed from the retained founding record, a dry run unless `apply` is set. */
+const seed = (options = {}) => runSubjectBindingAdmin({
+    dbPath, command: 'seed', apply: false, bootText, target, configuredGraphPath: dbPath, now: () => 500, ...options
+});
+
+/** @summary What the fixture's founding record leaves unresolved, in the record's order. */
+const UNRESOLVED = [
+    {subject: U, identityIds: ['@clio'], reason: 'identity-unknown'},
+    {subject: T, identityIds: ['@grace', '@vega'], reason: 'several-identities'}
+];
 
 test.beforeEach(() => {
     root   = fs.mkdtempSync(path.join(os.tmpdir(), 'subject-bindings-admin-'));
@@ -135,6 +155,40 @@ test.describe('ai/scripts/maintenance/subjectBindings', () => {
             expect(() => bind({apply: true, configuredGraphPath})).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_TARGET_MISMATCH'}));
         }
         expect(stored(readSubjectBindingRecords)).toEqual([]);
+    });
+
+    test('seed binds each subject the founding record maps to one held identity, and names the rest without choosing', () => {
+        expect(seed()).toEqual({
+            ok: true, command: 'seed', applied: false, foundingRevision: 'reviewed-source:fixture',
+            bound: [{subject: S, identityId: '@ada'}], matching: [], held: [], refused: [], unresolved: UNRESOLVED
+        });
+        expect(stored(readSubjectBindingRecords)).toEqual([]);
+
+        expect(seed({apply: true})).toMatchObject({ok: true, applied: true, bound: [{subject: S, identityId: '@ada'}], unresolved: UNRESOLVED});
+        expect(stored(db => readSubjectBinding(db, S))).toEqual({...S, identityId: '@ada', writer: 'administrative', foundingRevision: 'reviewed-source:fixture', boundAt: 500});
+        expect(stored(db => readSubjectBinding(db, T))).toBeNull();
+        expect(stored(db => readSubjectBinding(db, U))).toBeNull();
+
+        expect(seed({apply: true})).toMatchObject({bound: [], matching: [{subject: S, identityId: '@ada'}]});
+    });
+
+    test('seed holds an identity an administrative move placed elsewhere', () => {
+        const moved = {...S, providerBaseUrl: 'https://github.example.com/api/v3'};
+
+        bind({apply: true, subject: moved});
+
+        expect(seed({apply: true})).toMatchObject({ok: true, bound: [], held: [{subject: S, identityId: '@ada'}]});
+        expect(stored(db => readSubjectBinding(db, moved)).identityId).toBe('@ada');
+        expect(stored(db => readSubjectBinding(db, S))).toBeNull();
+    });
+
+    test('seed refuses by name where the relation already binds the subject elsewhere, and changes nothing', () => {
+        bind({apply: true, identityId: '@grace'});
+
+        expect(seed({apply: true})).toMatchObject({
+            ok: false, bound: [], refused: [{subject: S, identityId: '@ada', code: 'SUBJECT_BINDING_SUBJECT_CLAIMED'}]
+        });
+        expect(stored(db => readSubjectBinding(db, S)).identityId).toBe('@grace');
     });
 
     test('list reads the relation', () => {
