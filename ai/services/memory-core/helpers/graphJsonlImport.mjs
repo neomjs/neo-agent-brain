@@ -1,9 +1,7 @@
 import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.mjs';
 import {
-    SUBJECT_BINDING_RECORD,
     SUBJECT_BINDING_RECORD_TYPES,
-    clearSubjectBindingsForReplace,
-    restoreSubjectBindingRecord
+    restoreSubjectBindingRelation
 } from './subjectBinding.mjs';
 
 /**
@@ -22,9 +20,11 @@ import {
  * fence runs in the first mutation transaction; disposable staging supplies an
  * explicit no-op. Existing transactions and asynchronous fences are refused.
  *
- * The relation's records go to its restore writer, which never overwrites a
- * binding. `replace` swaps the binding rows only when the bundle carries one, in
- * the transaction of that record's batch; an older bundle keeps the target's.
+ * The relation's records are restored after the graph rows, as one unit
+ * ({@link restoreSubjectBindingRelation}): a malformed or conflicting record
+ * refuses all of them, counted failed, and the target keeps its relation and
+ * activation. `replace` swaps the binding rows only when the bundle carries one;
+ * an older bundle keeps the target's.
  *
  * @param {Object} options
  * @param {Object} options.db Open better-sqlite3 database with Nodes/Edges.
@@ -97,8 +97,9 @@ export async function importGraphJsonl({
 
     let imported        = 0;
     let maxObserved     = 0;
-    let mergeFenced     = false;
-    let bindingsCleared = false;
+    let mergeFenced = false;
+
+    const relation = [];
 
     const insertBatch = db.transaction(records => {
         if (mode === 'merge' && !mergeFenced) {
@@ -159,19 +160,7 @@ export async function importGraphJsonl({
                     }
                 }
             } else if (SUBJECT_BINDING_RECORD_TYPES.includes(record.type)) {
-                if (mode === 'replace' && record.type === SUBJECT_BINDING_RECORD && !bindingsCleared) {
-                    clearSubjectBindingsForReplace(db);
-                    bindingsCleared = true
-                }
-
-                try {
-                    counts.subjectBindings[restoreSubjectBindingRecord(db, record)]++
-                } catch (error) {
-                    counts.subjectBindings.failed++;
-                    if (counts.subjectBindings.failed <= 5) {
-                        warn(`[importGraphJsonl] subject binding not restored: ${error.message}`)
-                    }
-                }
+                relation.push(record)
             }
 
             imported++
@@ -211,6 +200,16 @@ export async function importGraphJsonl({
         }
     } finally {
         closeBundlePayload(lines)
+    }
+
+    try {
+        Object.assign(counts.subjectBindings, restoreSubjectBindingRelation(db, relation, {
+            mode,
+            admit: () => mode === 'merge' && !mergeFenced && (admitMutation(), mergeFenced = true)
+        }))
+    } catch (error) {
+        counts.subjectBindings.failed = relation.length;
+        warn(`[importGraphJsonl] the bundle's subject-binding relation was refused whole; the target keeps its own: ${error.message}`)
     }
 
     return {

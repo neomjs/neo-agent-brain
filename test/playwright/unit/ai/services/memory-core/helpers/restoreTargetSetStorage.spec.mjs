@@ -288,6 +288,21 @@ test.describe('restoreTargetSetStorage — fake Chroma + disposable SQLite targe
             expect(readSubjectBinding(fixture.graphDb, live).identityId).toBe('live-identity');
             expect(fixture.graphCacheSyncs).toBe(0);
         });
+
+        test('the initial empty-target proof counts a live relation as occupancy, so nothing is staged or promoted', async () => {
+            const live = {...SUBJECT, providerUserId: '3004'};
+
+            await replaceFixture({graphExtras: BINDING_RECORDS});
+            expect((await createStorage(fixture).inspectFreshTargetSet(stagingContext())).fresh, 'the boot-fresh fixture').toBe(true);
+
+            fixture.graphDb.transaction(() => bindAtFirstAdmission(fixture.graphDb, {subject: live, identityId: 'live-identity', at: 1}))();
+
+            const proof = await createStorage(fixture).inspectFreshTargetSet(stagingContext());
+
+            expect(proof.fresh).toBe(false);
+            expect(proof.reason).toContain('holds a subject-binding relation (1 records)');
+            expect(readSubjectBinding(fixture.graphDb, live).identityId).toBe('live-identity');
+        });
     });
 
     test('promotion refuses an outer transaction and rolls back its fence when a graph delete fails', async () => {

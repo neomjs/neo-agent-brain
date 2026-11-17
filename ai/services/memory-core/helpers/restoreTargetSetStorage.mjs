@@ -146,9 +146,12 @@ export function createRestoreTargetSetStorage({
             memoryCount    = memories ? await memories.count() : null,
             summaryCount   = summaries ? await summaries.count() : null,
             graphFreshness = inspectGraphBootFreshness(graphDb),
+            // the protected relation occupies a target as surely as its graph rows do
+            relationCount  = readSubjectBindingRecords(graphDb).length,
             fresh          = memoryCount === 0 &&
                 summaryCount === 0 &&
-                graphFreshness.fresh;
+                graphFreshness.fresh &&
+                relationCount === 0;
 
         const reasons = [];
         if (!memories) {
@@ -162,6 +165,7 @@ export function createRestoreTargetSetStorage({
             reasons.push(`summaries count is ${summaryCount}`)
         }
         if (!graphFreshness.fresh) reasons.push(graphFreshness.reason);
+        if (relationCount !== 0) reasons.push(`the live graph holds a subject-binding relation (${relationCount} records)`);
 
         const result = {
             fresh,

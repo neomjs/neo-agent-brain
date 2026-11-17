@@ -509,6 +509,33 @@ export function clearSubjectBindingsForReplace(db) {
 }
 
 /**
+ * @summary Restores a graph bundle's relation as one unit, in one transaction of its own: a malformed or
+ * conflicting record, a duplicate inside the bundle included, refuses every record, and the stored relation
+ * and activation stay as they were. `replace` swaps the binding rows only when the bundle carries one; a
+ * bundle without the relation changes nothing.
+ * @param {Object} db The graph's physical SQLite connection, outside any transaction.
+ * @param {Object[]} records The bundle's {@link SUBJECT_BINDING_RECORD_TYPES} records, in bundle order.
+ * @param {Object} options
+ * @param {'merge'|'replace'} options.mode
+ * @param {Function} [options.admit] The restore's mutation fence, run first inside the transaction.
+ * @returns {{inserted: Number, skippedExisting: Number}}
+ * @throws {Error} As {@link restoreSubjectBindingRecord}; nothing is written.
+ */
+export function restoreSubjectBindingRelation(db, records, {mode, admit = () => {}} = {}) {
+    const counts = {inserted: 0, skippedExisting: 0};
+
+    if (records.length > 0) {
+        db.transaction(() => {
+            admit();
+            if (mode === 'replace' && records.some(record => record.type === SUBJECT_BINDING_RECORD)) clearSubjectBindingsForReplace(db);
+            records.forEach(record => counts[restoreSubjectBindingRecord(db, record)]++);
+        }).immediate();
+    }
+
+    return counts;
+}
+
+/**
  * @summary Tests whether a graph bundle record is a well-formed binding or activation record: the shape
  * {@link restoreSubjectBindingRecord} accepts, so a restore's admission can refuse anything else up front.
  * @param {Object} record `{type, data}`.

@@ -406,6 +406,13 @@ class DatabaseService extends Base {
         const summary = `nodes(inserted=${counts.nodes.inserted}, skipped=${counts.nodes.skippedExisting}, failed=${counts.nodes.failed}) ` +
                         `edges(inserted=${counts.edges.inserted}, skipped=${counts.edges.skippedExisting}, failed=${counts.edges.failed}) ` +
                         `subjectBindings(inserted=${counts.subjectBindings.inserted}, skipped=${counts.subjectBindings.skippedExisting}, failed=${counts.subjectBindings.failed})`;
+
+        // the relation is restored as one unit, so a failed count means the bundle's relation was refused
+        if (counts.subjectBindings.failed > 0) {
+            throw Object.assign(new Error(`Graph import refused the bundle's subject-binding relation; the graph rows are imported and the target keeps its own relation: ${summary}`),
+                {code: 'GRAPH_IMPORT_SUBJECT_BINDINGS_REFUSED', imported, counts, mode});
+        }
+
         logger.log(`Successfully imported ${imported} graph elements: ${summary}`);
         return {imported, counts, mode};
     }

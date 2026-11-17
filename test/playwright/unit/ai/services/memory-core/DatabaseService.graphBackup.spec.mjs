@@ -181,14 +181,32 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
 
             await MemoryDatabaseService.manageDatabaseBackup({action: 'import', file: backupFile, mode: 'merge'});
 
+            const restored   = binding.readSubjectBinding(db, subject);
+            const activation = binding.readSubjectBindingActivation(db);
+
+            // the target's subject now acts as another identity: the bundle's relation conflicts with it
+            db.transaction(() => {
+                db.prepare('DELETE FROM ' + binding.SUBJECT_BINDING_TABLE).run();
+                binding.bindAtFirstAdmission(db, {subject, identityId: 'graph-backup-other', at: 12});
+            })();
+
+            let refusal = null;
+            try {
+                await MemoryDatabaseService.manageDatabaseBackup({action: 'import', file: backupFile, mode: 'merge'});
+            } catch (error) {
+                refusal = {code: error.code, message: error.message};
+            }
+
             console.log('GRAPH_BINDING_RESULT:' + JSON.stringify({
-                activation       : binding.readSubjectBindingActivation(db),
+                activation,
                 activationRecords: records.filter(record => record.type === binding.SUBJECT_BINDING_ACTIVATION_RECORD).map(record => record.data),
                 bindingRecords   : records.filter(record => record.type === binding.SUBJECT_BINDING_RECORD).map(record => record.data),
                 graphStats       : exportResult.graph,
+                kept             : binding.readSubjectBinding(db, subject)?.identityId,
                 nodeCount,
                 recordCount      : records.length,
-                restored         : binding.readSubjectBinding(db, subject)
+                refusal,
+                restored
             }));
         `;
 
@@ -229,6 +247,10 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
             expect(proof.graphStats.exported).toBe(proof.recordCount);
             expect(proof.restored).toEqual(bound);
             expect(proof.activation).toEqual({cutoverRevision: 'cut-1', activatedAt: 11});
+            expect(proof.refusal, 'a refused relation never reads as a successful import').toEqual({
+                code: 'DATABASE_IMPORT_ERROR', message: expect.stringContaining("refused the bundle's subject-binding relation")
+            });
+            expect(proof.kept).toBe('graph-backup-other');
         } finally {
             fs.rmSync(tmpDir, {recursive: true, force: true});
         }

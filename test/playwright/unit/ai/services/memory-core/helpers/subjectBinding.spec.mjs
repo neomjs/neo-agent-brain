@@ -300,24 +300,52 @@ test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
             expect(readSubjectBindingActivation(db)).toEqual({cutoverRevision: 'cut-1', activatedAt: 12});
         });
 
-        test('merge never overwrites a binding: a conflict fails by name, an identical row is skipped', async () => {
-            const warnings = [];
+        test('merge restores the relation as one unit: one conflicting record refuses every record, and the target keeps its own', async () => {
+            const
+                warnings    = [],
+                conflicting = [
+                    {type: SUBJECT_BINDING_RECORD, data: row(S, '@ada', 10)},
+                    {type: SUBJECT_BINDING_RECORD, data: row(T, '@grace', 13)},
+                    {type: SUBJECT_BINDING_RECORD, data: row(S, '@mallory', 11)}
+                ];
 
-            inTransaction(() => bindAtFirstAdmission(db, {subject: S, identityId: '@ada', at: 10}));
+            inTransaction(() => {
+                bindAtFirstAdmission(db, {subject: S, identityId: '@ada', at: 10});
+                activateSubjectBinding(db, {cutoverRevision: 'cut-1', at: 12});
+            });
 
-            const {counts} = await restore(bundle([
-                {type: SUBJECT_BINDING_RECORD, data: row(S, '@ada', 10)},
-                {type: SUBJECT_BINDING_RECORD, data: row(S, '@mallory', 11)},
-                {type: SUBJECT_BINDING_RECORD, data: row(T, '@ada', 12)},
-                {type: SUBJECT_BINDING_RECORD, data: row(T, '@grace', 13)}
-            ]), 'merge', warnings);
+            const {counts} = await restore(bundle(conflicting), 'merge', warnings);
 
-            expect(counts.subjectBindings).toEqual({inserted: 1, skippedExisting: 1, failed: 2});
+            expect(counts.subjectBindings).toEqual({inserted: 0, skippedExisting: 0, failed: 3});
             expect(readSubjectBinding(db, S).identityId).toBe('@ada');
-            expect(readSubjectBinding(db, T).identityId).toBe('@grace');
+            expect(readSubjectBinding(db, T), 'the valid row before the conflict is rolled back with it').toBeNull();
             expect(readIdentityBinding(db, '@mallory')).toBeNull();
-            expect(warnings).toHaveLength(2);
-            expect(warnings.every(warning => warning.includes('@ada'))).toBe(true);
+            expect(readSubjectBindingActivation(db)).toEqual({cutoverRevision: 'cut-1', activatedAt: 12});
+            expect(warnings).toEqual([expect.stringContaining('@ada')]);
+
+            // without the conflict, an identical row is skipped and a new one inserted
+            const {counts: clean} = await restore(bundle(conflicting.slice(0, 2)), 'merge');
+
+            expect(clean.subjectBindings).toEqual({inserted: 1, skippedExisting: 1, failed: 0});
+            expect(readSubjectBinding(db, T).identityId).toBe('@grace');
+        });
+
+        test('a refused replace keeps the target relation and activation whole', async () => {
+            inTransaction(() => {
+                bindAtFirstAdmission(db, {subject: S, identityId: '@ada', at: 10});
+                activateSubjectBinding(db, {cutoverRevision: 'cut-1', at: 12});
+            });
+
+            // the bundle binds one identity to two subjects
+            const {counts} = await restore(bundle([
+                {type: SUBJECT_BINDING_RECORD, data: row(T, '@grace', 20)},
+                {type: SUBJECT_BINDING_RECORD, data: row({...T, providerUserId: '999'}, '@grace', 21)}
+            ]), 'replace');
+
+            expect(counts.subjectBindings).toEqual({inserted: 0, skippedExisting: 0, failed: 2});
+            expect(readSubjectBinding(db, S), 'the replace cleared nothing').toEqual(row(S, '@ada'));
+            expect(readSubjectBinding(db, T)).toBeNull();
+            expect(readSubjectBindingActivation(db)).toEqual({cutoverRevision: 'cut-1', activatedAt: 12});
         });
 
         test('a malformed record never becomes a binding or an activation', async () => {
