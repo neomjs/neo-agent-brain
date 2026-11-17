@@ -1571,20 +1571,30 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — first provider 
 
     test('allowedUsers resolved through the CSV env or a config overlay mounts a verifier only when every entry is a login or a pinned subject', async () => {
         const
-            {createConfigProxy, leaf} = await import('../../../../../../../ai/ConfigProvider.mjs'),
-            {default: RootConfigBase} = await import('../../../../../../../ai/configBase.mjs'),
-            env                       = 'NEO_AUTH_ALLOWED_USERS',
-            previous                  = process.env[env],
-            // each carrier resolves the leaf the way a deployment does; the shared config is never written
+            {default: ConfigProvider, createConfigProxy, leaf} = await import('../../../../../../../ai/ConfigProvider.mjs'),
+            {default: RootConfigBase}                          = await import('../../../../../../../ai/configBase.mjs'),
+            env      = 'NEO_AUTH_ALLOWED_USERS',
+            previous = process.env[env],
+            // Each carrier holds one leaf, resolves it the way a deployment does, and is destroyed after the read.
+            // A whole RootConfigBase would join the shared Tier-1 config as its child, and its formulas write into it.
+            resolve  = allowedUsers => {
+                const carrier = Neo.create(ConfigProvider, {data: {auth: {allowedUsers}}});
+
+                try {
+                    return createConfigProxy(carrier).auth.allowedUsers
+                } finally {
+                    carrier.destroy()
+                }
+            },
             fromEnv     = csv => {
                 try {
                     process.env[env] = csv;
-                    return createConfigProxy(Neo.create(RootConfigBase)).auth.allowedUsers
+                    return resolve(RootConfigBase.config.data.auth.allowedUsers)
                 } finally {
                     previous === undefined ? delete process.env[env] : (process.env[env] = previous)
                 }
             },
-            fromOverlay = value => createConfigProxy(Neo.create(RootConfigBase, {data: {auth: {allowedUsers: leaf(value, env, 'csv')}}})).auth.allowedUsers,
+            fromOverlay = value => resolve(leaf(value, env, 'csv')),
             mounts      = async (allowedUsers, mode = 'github-pat') => {
                 const options = createOptions({mode, gitlabApiBaseUrl: 'https://gitlab.example.com', allowedUsers, pinFirstProviderSubject: false});
 
