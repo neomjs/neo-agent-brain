@@ -2500,6 +2500,10 @@ test.describe('oidcSubject: the (issuer, sub) an OIDC introspection proves', () 
             // compared exactly, never normalized: a trailing slash or a host's case is another issuer
             [active({iss: `${ISS}/`, sub: 's-1'}),                        ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
             [active({iss: 'https://IDP.example/realms/neo', sub: 's-1'}), ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
+            // only an omitted iss is covered: a present malformed one qualifies nothing
+            [active({iss: '', sub: 's-1'}),                               ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
+            [active({iss: null, sub: 's-1'}),                             ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
+            [active({iss: 42, sub: 's-1'}),                               ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
             // a sub counts only with an affirmative active
             [{iss: ISS, sub: 's-1'},                                      ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}],
             [{active: 'true', iss: ISS, sub: 's-1'},                      ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}],

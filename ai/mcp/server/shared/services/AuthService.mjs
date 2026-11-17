@@ -102,19 +102,18 @@ export function forgeApiBase(auth, authProvider) {
  * @summary The provider subject an OIDC introspection proves: `(issuer, sub)` as provider `oidc`, the issuer as
  * `providerBaseUrl` and `sub` as `providerUserId`, the tuple the protected subject relation keys on. Only the issuer
  * discovery qualified for the configured Issuer URL counts; a response `iss` must equal it exactly, and is never
- * normalized like a forge API base (OIDC Core §16.15). It may be omitted, since it is optional. `sub` counts only
- * with an affirmative `active: true`. A field left absent makes the subject incomplete, which selection refuses by
- * name once active; the login never stands in.
+ * normalized like a forge API base (OIDC Core §16.15). It may be omitted, since it is optional; a present one that
+ * is anything else, malformed included, qualifies nothing. `sub` counts only with an affirmative `active: true`. A
+ * field left absent makes the subject incomplete, which selection refuses by name once active; the login never
+ * stands in.
  * @param {Object} introspection The token's introspection response.
  * @param {String|undefined} qualifiedIssuer The issuer discovery returned for the configured Issuer URL, identical to it.
  * @returns {{authProvider: String, providerBaseUrl: (String|undefined), providerUserId: (String|undefined)}}
  */
 export function oidcSubject({active, iss, sub} = {}, qualifiedIssuer) {
-    const claimed = typeof iss === 'string' && iss ? iss : undefined;
-
     return {
         authProvider   : 'oidc',
-        providerBaseUrl: typeof qualifiedIssuer === 'string' && qualifiedIssuer && (claimed === undefined || claimed === qualifiedIssuer) ? qualifiedIssuer : undefined,
+        providerBaseUrl: typeof qualifiedIssuer === 'string' && qualifiedIssuer && (iss === undefined || iss === qualifiedIssuer) ? qualifiedIssuer : undefined,
         providerUserId : active === true && typeof sub === 'string' && sub ? sub : undefined
     }
 }
