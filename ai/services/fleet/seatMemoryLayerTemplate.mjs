@@ -265,6 +265,70 @@ export function renderCodexMemoryBootSection({bootFiles, memoryDir} = {}) {
 }
 
 /**
+ * The first Antigravity loader Fleet wrote, before the guard card: kept so a seat still carrying it
+ * upgrades on its next Start ({@link isAntigravityMemoryLoader}).
+ * @private
+ */
+const ANTIGRAVITY_MEMORY_LOADER_V1 = /^# Fleet seat memory\n\nOperational identity for this managed workspace: @\S+\.\nUse the current Fleet-issued identity and loaded seat memory when legacy global harness notes differ\.\n\n@\[Seat memory\]\(\/[^()\n]+\/MEMORY\.md\)\n@\[Bearer identity\]\(\/[^()\n]+\/identity\.md\)\n$/;
+
+/**
+ * @summary The Antigravity workspace file that loads a seat's memory, rendered whole by Fleet. Antigravity
+ * reads `GEMINI.md` into every turn's rules, so it also carries the seat's guard card. Changing this text
+ * strands every seat on the previous rendering: keep that rendering recognizable in
+ * {@link isAntigravityMemoryLoader} first, as the first loader is.
+ * @param {Object} options
+ * @param {String} options.identity  The seat's launch identity.
+ * @param {String} options.memoryDir The seat's memory folder.
+ * @returns {String}
+ */
+export function renderAntigravityMemoryLoader({identity, memoryDir}) {
+    const seat = `@${identity}`;
+
+    return [
+        '# Fleet seat memory',
+        '',
+        `Operational identity for this managed workspace: ${seat}.`,
+        'Use the current Fleet-issued identity and loaded seat memory when legacy global harness notes differ.',
+        '',
+        '## Guard card',
+        '',
+        `- **A helper is never ${seat}.** This identity and \`identity.md\` belong to the root conversation alone. ` +
+            `Open every \`invoke_subagent\` prompt with "Subagent helper for ${seat}: a bounded task helper, not ${seat} ` +
+            'and never a copy." A helper makes no first-person claim as the seat and calls no `add_memory`, `add_message`, ' +
+            '`mark_read` or GitHub write tool; it returns findings or workspace edits to the parent.',
+        '- **One writer per checkout.** While a `self` subagent works in this checkout, the main thread makes no git or ' +
+            'file change in it.',
+        '- **Triage before delegating.** Bounded mechanical work (read or grep sweeps, a PR rebase, a custom Playwright ' +
+            'run, a mechanical check) goes to `Model: "flash"`. A helper that meets cross-module ambiguity, an ADR or ' +
+            'contract question, or two failed fix attempts stops and returns `ESCALATE_TO_CARBON: <blocker and files>`.',
+        '- **No `schedule` polling.** Fleet and Antigravity wake this seat on CI, reviews, contributor replies, direct ' +
+            'messages and subagent completion. Call `schedule` only on the operator\'s `/schedule`, a verified degraded ' +
+            'wake route, or a forge Fleet does not cover.',
+        '',
+        `@[Seat memory](${path.join(memoryDir, 'MEMORY.md')})`,
+        `@[Bearer identity](${path.join(memoryDir, 'identity.md')})`,
+        ''
+    ].join('\n')
+}
+
+/**
+ * @summary Whether a `GEMINI.md` is a Fleet rendering that Start may replace: the first loader's exact shape,
+ * or exactly what {@link renderAntigravityMemoryLoader} writes for the identity and memory folder the file
+ * names. Any edit makes it the resident's file.
+ * @param {String} content The file's text.
+ * @returns {Boolean}
+ */
+export function isAntigravityMemoryLoader(content) {
+    if (ANTIGRAVITY_MEMORY_LOADER_V1.test(content)) return true;
+
+    const
+        identity  = content.match(/^Operational identity for this managed workspace: @(\S+)\.$/m)?.[1],
+        memoryDir = content.match(/^@\[Seat memory\]\((\/[^()\n]+)\/MEMORY\.md\)$/m)?.[1];
+
+    return Boolean(identity && memoryDir) && content === renderAntigravityMemoryLoader({identity, memoryDir})
+}
+
+/**
  * Render the seat's `identity.md`: story-sovereignty by construction — the bearer authors their
  * own self-story at their naming gate; the template emits headings and the rule, never a story.
  * @returns {String}
