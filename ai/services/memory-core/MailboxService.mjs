@@ -45,7 +45,7 @@ import {
     resolveResidentFamilyById
 } from '../graph/agentFamilyResolution.mjs';
 import {getMissingMemoryWalLeaves}    from './helpers/memoryWalStore.mjs';
-import {readSubjectBindingActivation} from './helpers/subjectBinding.mjs';
+import {isSubjectSelectionActive}     from './helpers/subjectBinding.mjs';
 import {writerStamp}                  from '../../daemons/wake/sunsetReceipt.mjs';
 import {
     classifyMailboxReadState,
@@ -750,23 +750,6 @@ function hasGraphNode(db, id) {
 }
 
 /**
- * @summary True once the cutover's activation record exists on the graph's physical connection.
- * A connection that cannot answer keeps the dormant, alias-first behavior.
- * @param {Object} db The graph database.
- * @returns {Boolean}
- * @private
- */
-function isSubjectSelectionActive(db) {
-    const sqlite = db?.storage?.db;
-    if (!sqlite?.open) return false;
-    try {
-        return Boolean(readSubjectBindingActivation(sqlite));
-    } catch {
-        return false;
-    }
-}
-
-/**
  * Validates the canonical mailbox target after `normalizeMailboxTarget`.
  * Resolves unambiguous `AGENT:<family>/<model>` aliases against registered AgentIdentity
  * graph nodes and rejects unresolvable targets before edge creation, so invalid addresses
@@ -806,7 +789,8 @@ function validateMailboxTarget(normalizedTo, originalTo, db = GraphService.requi
     // validator focuses on the @<identity> + AGENT:<family>/<model> failure surface.
     if (normalizedTo.startsWith('role:') || normalizedTo.startsWith('human:')) return normalizedTo;
 
-    if (isSubjectSelectionActive(db) && hasGraphNode(db, normalizedTo)) return normalizedTo;
+    // an unreadable activation throws by name instead of reading as dormant, alias-first addressing
+    if (isSubjectSelectionActive(db.storage?.db) && hasGraphNode(db, normalizedTo)) return normalizedTo;
 
     const formerAlias = resolveAgentIdentityAlias(originalTo) ?? resolveAgentIdentityAlias(normalizedTo);
     if (formerAlias) {

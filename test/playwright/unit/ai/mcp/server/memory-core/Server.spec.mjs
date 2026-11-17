@@ -1832,5 +1832,37 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
                 serverInstance.destroy();
             }
         });
+
+        test('an activation the graph cannot answer refuses by name instead of selecting by login', async () => {
+            await GraphService.initAsync();
+            const
+                serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['github-pat']}),
+                ready          = GraphService.ready,
+                request        = login => serverInstance.buildRequestContext(pat(login, '18120041'));
+
+            try {
+                expect((await request('subject-1812-dormant')).agentIdentityNodeId, 'known dormant: the login selects').toBe('@subject-1812-dormant');
+
+                // a malformed record is unreadable: neither the login nor a first admission decides
+                sqlite().exec(`CREATE TABLE ${SUBJECT_BINDING_ACTIVATION_TABLE} (gate TEXT PRIMARY KEY, cutoverRevision TEXT, activatedAt INTEGER)`);
+                sqlite().prepare(`INSERT INTO ${SUBJECT_BINDING_ACTIVATION_TABLE} VALUES ('acting-identity', '', 1)`).run();
+                await expect(request('subject-1812-dormant')).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'});
+                await expect(request('subject-1812-unseen')).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'});
+                expect(rawGraphNode('@subject-1812-unseen')).toBeNull();
+                sqlite().exec(`DROP TABLE ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
+
+                // a graph that is not ready cannot answer either
+                GraphService.ready = () => Promise.reject(new Error('graph startup degraded'));
+                await expect(request('subject-1812-dormant')).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'});
+                GraphService.ready = ready;
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+                expect((await request('subject-1812-dormant-renamed')).agentIdentityNodeId, 'healthy active: the subject selects').toBe('@subject-1812-dormant');
+            } finally {
+                GraphService.ready = ready;
+                cleanUp(['18120041'], ['@subject-1812-dormant', '@subject-1812-unseen', '@subject-1812-dormant-renamed']);
+                serverInstance.destroy();
+            }
+        });
     });
 });

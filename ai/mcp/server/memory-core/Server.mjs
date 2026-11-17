@@ -43,9 +43,9 @@ import ConfigBase, {PLANE_MEMBER_PATHS} from './configBase.mjs';
 import {readBackgroundDeliveryState}    from '../../../services/memory-core/MailboxService.mjs';
 import {
     SUBJECT_KEY,
+    isSubjectSelectionActive,
     readIdentityBinding,
-    readSubjectBinding,
-    readSubjectBindingActivation
+    readSubjectBinding
 } from '../../../services/memory-core/helpers/subjectBinding.mjs';
 
 // Security invariant, not deployment policy: graph ids must remain namespace/path/control safe.
@@ -685,9 +685,11 @@ class Server extends BaseServer {
      *
      * Once the cutover has recorded its activation, the verified subject selects the identity instead
      * ({@link selectAgentIdentityBySubject}). Before that, selection stays with the login, and a first
-     * admission binds its subject only to an identity it creates, in the same transaction.
+     * admission binds its subject only to an identity it creates, in the same transaction. A decision
+     * the graph cannot answer refuses by name ({@link readSubjectSelection}).
      * @param {Object} reqAuth Server-stamped auth context from the validated bearer request.
-     * @returns {Promise<String|null>} Bound AgentIdentity node id, or null when graph startup is degraded.
+     * @returns {Promise<String|null>} Bound AgentIdentity node id, or null when a dormant write fails and
+     * the legacy lookup finds no node.
      * @protected
      */
     async ensureAgentIdentityForAuthContext(reqAuth) {
@@ -695,14 +697,12 @@ class Server extends BaseServer {
               graphNodeId = normalizeAgentIdentityNodeId(userId),
               subject     = subjectOf(reqAuth);
 
+        if (await this.readSubjectSelection(userId)) {
+            return this.selectAgentIdentityBySubject({reqAuth, userId, graphNodeId, subject, sqlite: GraphService.db.storage.db});
+        }
+
         try {
-            await GraphService.ready();
-
-            const sqlite = GraphService.db.storage?.db;
-
-            if (sqlite && readSubjectBindingActivation(sqlite)) {
-                return this.selectAgentIdentityBySubject({reqAuth, userId, graphNodeId, subject, sqlite});
-            }
+            const sqlite = GraphService.db.storage.db;
 
             let existing = this.readRawGraphNode(graphNodeId);
 
@@ -750,6 +750,27 @@ class Server extends BaseServer {
 
             logger.warn(`[neo-memory-core MCP] AgentIdentity auto-provision failed for ${graphNodeId}: ${error.message}`);
             return this.bindAgentIdentity(userId);
+        }
+    }
+
+    /**
+     * @summary Reads whether selection by subject is active. A graph that cannot answer, not ready, without
+     * an open connection or unreadable, is a named outcome and never the dormant login selection: the
+     * decision nobody can read may be the active one.
+     * @param {String} userId The validated login, for the refusal.
+     * @returns {Promise<Boolean>}
+     * @throws {Error} `NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE`
+     * @protected
+     */
+    async readSubjectSelection(userId) {
+        try {
+            await GraphService.ready();
+            return isSubjectSelectionActive(GraphService.db?.storage?.db);
+        } catch (error) {
+            throw this.createIdentityProvisioningError(
+                `Cannot select the identity for ${userId}: ${error.message}`,
+                'NEO_AGENT_IDENTITY_SUBJECT_UNAVAILABLE'
+            );
         }
     }
 

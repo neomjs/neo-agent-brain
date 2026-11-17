@@ -2849,6 +2849,12 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             const newcomerInbox = await RequestContextService.run({agentIdentityNodeId: '@neo-fable'},
                 () => MailboxService.listMessages({box: 'inbox', status: 'all'}));
             expect(newcomerInbox.messages.map(message => message.to)).toContain('@neo-fable');
+
+            // An activation the graph cannot read refuses by name, never the dormant alias-first resolution
+            sqlite.exec(`DROP TABLE ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
+            sqlite.exec(`CREATE TABLE ${SUBJECT_BINDING_ACTIVATION_TABLE} (gate TEXT PRIMARY KEY, cutoverRevision TEXT, activatedAt INTEGER)`);
+            sqlite.prepare(`INSERT INTO ${SUBJECT_BINDING_ACTIVATION_TABLE} VALUES ('acting-identity', '', 1)`).run();
+            await expect(send()).rejects.toMatchObject({code: 'SUBJECT_BINDING_UNAVAILABLE'});
         } finally {
             sqlite.exec(`DROP TABLE IF EXISTS ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
         }

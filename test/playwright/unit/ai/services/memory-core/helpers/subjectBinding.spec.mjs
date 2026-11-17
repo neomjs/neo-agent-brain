@@ -11,6 +11,7 @@ import {
     activateSubjectBinding,
     bindAdministratively,
     bindAtFirstAdmission,
+    isSubjectSelectionActive,
     readIdentityBinding,
     readSubjectBinding,
     readSubjectBindingActivation,
@@ -178,6 +179,17 @@ test.describe('ai/services/memory-core/helpers/subjectBinding', () => {
         inTransaction(() => activateSubjectBinding(db, {cutoverRevision: 'cut-2', at: 20}));
 
         expect(readSubjectBindingActivation(db)).toEqual({cutoverRevision: 'cut-1', activatedAt: 10});
+    });
+
+    test('selection reads active or known dormant, and a connection that cannot answer throws instead of reading dormant', () => {
+        expect(isSubjectSelectionActive(db), 'no record').toBe(false);
+
+        for (const connection of [null, undefined, {open: false}]) {
+            expect(() => isSubjectSelectionActive(connection)).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_UNAVAILABLE'}));
+        }
+
+        inTransaction(() => activateSubjectBinding(db, {cutoverRevision: 'cut-1', at: 10}));
+        expect(isSubjectSelectionActive(db)).toBe(true);
     });
 
     test('the relation sits outside the graph populations: clearing Nodes and Edges leaves it', () => {

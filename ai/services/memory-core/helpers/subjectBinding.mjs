@@ -211,6 +211,19 @@ export function readSubjectBindingActivation(db) {
 }
 
 /**
+ * @summary Whether selection by subject is active: `true` once the cutover's activation record exists,
+ * `false` while it is known dormant. A connection that cannot answer throws, so no caller reads an unknown
+ * decision as dormant.
+ * @param {Object|null|undefined} db The graph's physical SQLite connection.
+ * @returns {Boolean}
+ * @throws {Error} `SUBJECT_BINDING_UNAVAILABLE` for a missing or closed connection, or an unreadable or malformed record.
+ */
+export function isSubjectSelectionActive(db) {
+    if (!db?.open) throw refusal('SUBJECT_BINDING_UNAVAILABLE', 'The subject-binding activation cannot be read: the graph connection is not open.');
+    return readSubjectBindingActivation(db) !== null;
+}
+
+/**
  * @summary Lists the relation as graph bundle records: one per binding in identity order, then the
  * activation record when the cutover wrote one.
  * @param {Object} db The graph's physical SQLite connection.
