@@ -126,7 +126,7 @@ test.describe('Neo.ai.mcp.server.shared.services.StdioIdentityResolver', () => {
             StdioIdentityResolver.resolveFromGhCli = () => ({login: 'human-dev', name: 'Human Developer', id: 583231, url});
 
             expect(await StdioIdentityResolver.resolve(), url).toEqual({
-                githubLogin: 'human-dev', username: 'Human Developer', source: 'gh-cli',
+                githubLogin : 'human-dev', username: 'Human Developer', source: 'gh-cli',
                 authProvider: 'github', providerBaseUrl, providerUserId: '583231'
             });
         }

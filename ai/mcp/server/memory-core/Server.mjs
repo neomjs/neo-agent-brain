@@ -964,7 +964,7 @@ class Server extends BaseServer {
      * A source that carries a provider subject (`gh-cli`) acts, once the cutover activates selection, as the
      * identity that subject is bound to ({@link selectAgentIdentityBySubject}, creating none), keyed by its bare
      * id. A subject that selects none fails the boot by name: there is no login fallback. A host-trusted source
-     * (`NEO_AGENT_IDENTITY`) carries no subject and keeps the login binding (ADR 0038 §2.2 fact 5).
+     * (`NEO_AGENT_IDENTITY`) carries no subject and keeps the login binding: it is never subject-bound proof.
      *
      * @returns {Promise<Object|null>}
      * @throws {Error} A `NEO_AGENT_IDENTITY_SUBJECT_*` refusal once selection is active.

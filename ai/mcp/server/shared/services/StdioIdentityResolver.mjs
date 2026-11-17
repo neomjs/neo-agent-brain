@@ -63,8 +63,8 @@ class StdioIdentityResolver extends Base {
      * Callers that need the `@`-prefixed graph-node-id form use the shared
      * `normalizeAgentIdentityNodeId()` boundary at lookup time.
      *
-     * **Subject (ADR 0038 §2.2 fact 5):** `gh-cli` is provider-authenticated, so it also carries the
-     * subject its payload proves ({@link subjectOfGhUser}). `env-var` is host-trusted and carries none.
+     * **Subject:** `gh-cli` is provider-authenticated, so it also carries the subject its payload
+     * proves ({@link subjectOfGhUser}). `env-var` is host-trusted: it carries none and is never subject-bound proof.
      *
      * @returns {Promise<{githubLogin: String|null, username: String|null, source: String, authProvider: (String|undefined), providerBaseUrl: (String|undefined), providerUserId: (String|undefined)}>}
      *     An identity descriptor. `source` is one of `'env-var'`, `'gh-cli'`, or `'unresolved'`.

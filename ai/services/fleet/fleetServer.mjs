@@ -136,7 +136,7 @@ export function createFleetRequestContext(authInfo) {
         }
     }
 
-    // an owner is a forge connection's (ADR 0038 §2.2 fact 2): an OIDC subject names none
+    // only a forge connection owns: an OIDC subject names none, so it resolves no owner
     if (Object.hasOwn(FORGE_PROVIDER_NAMES, context.authProvider ?? '')) {
         const resolution = ForgeConnectionRegistryService.resolveOwner(context);
 

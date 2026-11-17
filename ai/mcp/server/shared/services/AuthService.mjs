@@ -100,7 +100,7 @@ export function forgeApiBase(auth, authProvider) {
 
 /**
  * @summary The provider subject an OIDC introspection proves: `(issuer, sub)` as provider `oidc`, the issuer as
- * `providerBaseUrl` and `sub` as `providerUserId` (ADR 0038 §2.2 fact 5). The issuer is the response's `iss`,
+ * `providerBaseUrl` and `sub` as `providerUserId`, the tuple the protected subject relation keys on. The issuer is the response's `iss`,
  * else the one discovery named. When both exist they are compared exactly and never normalized like a forge API
  * base (OIDC Core §16.15): a mismatch leaves no issuer. A field left absent makes the subject incomplete, which
  * selection refuses by name once active; the login never stands in.

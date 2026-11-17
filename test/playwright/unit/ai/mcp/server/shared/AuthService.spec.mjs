@@ -1573,8 +1573,8 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — first provider 
         const
             {default: ConfigProvider, createConfigProxy, leaf} = await import('../../../../../../../ai/ConfigProvider.mjs'),
             {default: RootConfigBase}                          = await import('../../../../../../../ai/configBase.mjs'),
-            env      = 'NEO_AUTH_ALLOWED_USERS',
-            previous = process.env[env],
+            env                                                = 'NEO_AUTH_ALLOWED_USERS',
+            previous                                           = process.env[env],
             // Each carrier holds one leaf, resolves it the way a deployment does, and is destroyed after the read.
             // A whole RootConfigBase would join the shared Tier-1 config as its child, and its formulas write into it.
             resolve  = allowedUsers => {
