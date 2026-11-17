@@ -757,9 +757,10 @@ function hasGraphNode(db, id) {
  *
  * Resolution policy:
  * - `'AGENT:*'` and `role:` / `human:` prefixes pass through unchanged.
- * - Once the cutover has activated selection by subject, an exact canonical id addresses its own
- *   node before any former-login alias: a reclaimed login's new identity keeps its own mail.
- *   Before that, a former-login alias resolves first, as it always has.
+ * - Once the cutover has activated selection by subject, a former login is provenance only: an exact
+ *   canonical id addresses its own node, so a reclaimed login's new identity keeps its own mail, and
+ *   a former spelling without a node of its own no longer redirects. Before that, a former-login
+ *   alias resolves first, as it always has.
  * - Targets that already match a registered graph node ID pass through.
  * - `AGENT:<family>/<model>` patterns resolve to the single AgentIdentity node whose model
  *   family matches `'<family>'` and `accountType === 'agent'` when the match is unambiguous;
@@ -790,9 +791,11 @@ function validateMailboxTarget(normalizedTo, originalTo, db = GraphService.requi
     if (normalizedTo.startsWith('role:') || normalizedTo.startsWith('human:')) return normalizedTo;
 
     // an unreadable activation throws by name instead of reading as dormant, alias-first addressing
-    if (isSubjectSelectionActive(db.storage?.db) && hasGraphNode(db, normalizedTo)) return normalizedTo;
+    const active = isSubjectSelectionActive(db.storage?.db);
 
-    const formerAlias = resolveAgentIdentityAlias(originalTo) ?? resolveAgentIdentityAlias(normalizedTo);
+    if (active && hasGraphNode(db, normalizedTo)) return normalizedTo;
+
+    const formerAlias = active ? null : (resolveAgentIdentityAlias(originalTo) ?? resolveAgentIdentityAlias(normalizedTo));
     if (formerAlias) {
         let canonicalExists = db?.nodes?.has(formerAlias.id);
         if (!canonicalExists && db?.getAdjacentNodes) {

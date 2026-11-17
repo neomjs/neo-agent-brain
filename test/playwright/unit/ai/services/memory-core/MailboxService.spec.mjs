@@ -2860,6 +2860,32 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         }
     });
 
+    test('once activated, a former login with no identity of its own no longer redirects', async () => {
+        const sqlite = GraphService.db.storage.db;
+
+        GraphService.upsertNode({id: '@neo-gemini-julia', type: 'AgentIdentity', name: 'Julia',
+            properties: {accountType: 'agent', githubLogin: '@neo-gemini-julia', formerLogins: ['@neo-gemini-pro']}});
+
+        for (const [grantor, grantee] of [['@neo-gemini-julia', '@alice'], ['@alice', '@neo-gemini-julia']]) {
+            await RequestContextService.run({agentIdentityNodeId: grantor}, () => PermissionService.grantPermission({to: grantee, scope: 'CAN_REPLY_TO'}));
+        }
+
+        const send = () => RequestContextService.run({agentIdentityNodeId: '@alice'},
+            () => MailboxService.addMessage({to: '@neo-gemini-pro', subject: 'former spelling', body: 'routing probe'}));
+
+        try {
+            // Dormant: the former spelling still reaches the identity that left it
+            expect((await send()).resolvedRecipientAlias?.id).toBe('@neo-gemini-julia');
+
+            sqlite.transaction(() => activateSubjectBinding(sqlite, {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+            // Active: the spelling is provenance only, so it addresses nobody
+            await expect(send()).rejects.toThrow(/Unrecognized 'to' format: '@neo-gemini-pro'/);
+        } finally {
+            sqlite.exec(`DROP TABLE IF EXISTS ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
+        }
+    });
+
     test('markRead updates the readAt property', async () => {
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
             await PermissionService.grantPermission({ to: '@alice', scope: 'CAN_REPLY_TO' });
