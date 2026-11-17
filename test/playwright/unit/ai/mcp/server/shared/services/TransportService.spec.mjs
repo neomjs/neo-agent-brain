@@ -472,7 +472,7 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
      * trusted proxy identity, and every rejection occurs before connection/session creation.
      */
     test.describe('trusted-proxy and OIDC composition HTTP ingress', () => {
-        let TransportService, McpServer, originalFetch, capturedAuth;
+        let TransportService, McpServer, originalFetch, capturedAuth, discoveredIssuer;
 
         const
             logger       = {info: () => {}, warn: () => {}, error: () => {}},
@@ -511,8 +511,12 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             })
         }
 
-        async function setupOidcProxy() {
-            const mcpServer = new McpServer({name: 'oidc-proxy-test', version: '1.0.0'});
+        async function setupOidcProxy(authOverrides = {}) {
+            const
+                mcpServer = new McpServer({name: 'oidc-proxy-test', version: '1.0.0'}),
+                aiConfig  = oidcProxyConfig();
+
+            Object.assign(aiConfig.auth, authOverrides);
 
             await TransportService.setup({
                 server: {
@@ -527,7 +531,7 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
                         }
                     }
                 },
-                aiConfig    : oidcProxyConfig(),
+                aiConfig,
                 logger,
                 resourceName: 'OidcProxyIngressTest'
             });
@@ -608,9 +612,20 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             TransportService.transports = new Map();
             TransportService.mcpServers = new Map();
 
+            discoveredIssuer = 'https://oidc.test/realms/neo';
+
             globalThis.fetch = async (url, options={}) => {
                 if (!String(url).startsWith('https://oidc.test/')) {
                     return originalFetch(url, options)
+                }
+
+                if (String(url).endsWith('/.well-known/openid-configuration')) {
+                    return {ok: true, json: async () => ({
+                        issuer                : discoveredIssuer,
+                        introspection_endpoint: 'https://oidc.test/realms/neo/protocol/openid-connect/token/introspect',
+                        authorization_endpoint: 'https://oidc.test/realms/neo/protocol/openid-connect/auth',
+                        token_endpoint        : 'https://oidc.test/realms/neo/protocol/openid-connect/token'
+                    })}
                 }
 
                 const token = new URLSearchParams(options.body).get('token');
@@ -661,7 +676,9 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             expect(capturedAuth[0]).toMatchObject({
                 userId: 'oidc-user',
                 source: 'oidc'
-            })
+            });
+            // the host/realm fallback builds a URL, never an Issuer Identifier: no issuer qualifies
+            expect(capturedAuth[0].providerBaseUrl).toBeUndefined()
         });
 
         test('invalid or malformed bearer + valid proxy challenges without downgrade', async () => {
@@ -697,13 +714,24 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             })
         });
 
-        test('an OIDC bearer carries its (issuer, sub) subject', async () => {
-            const port = await setupOidcProxy();
+        test('a configured discovery qualifies its issuer, so an OIDC bearer carries its (issuer, sub) subject', async () => {
+            const port = await setupOidcProxy({host: null, issuerUrl: 'https://oidc.test/realms/neo', trustProxyIdentity: false});
 
-            expect((await initialize(port, {Authorization: 'Bearer valid-oidc-iss'})).status).toBe(200);
+            // the qualified issuer covers the omitted optional iss
+            expect((await initialize(port, {Authorization: 'Bearer valid-oidc'})).status).toBe(200);
             expect(capturedAuth[0]).toMatchObject({
                 userId: 'oidc-user', source: 'oidc', authProvider: 'oidc', providerBaseUrl: 'https://oidc.test/realms/neo', providerUserId: 'oidc-subject'
             })
+        });
+
+        test('discovery that names another issuer qualifies none: the bearer is still admitted, with an incomplete subject', async () => {
+            discoveredIssuer = 'https://oidc.test/realms/neo/';
+            const port = await setupOidcProxy({host: null, issuerUrl: 'https://oidc.test/realms/neo', trustProxyIdentity: false});
+
+            // no iss in the response, so only the unqualified discovery issuer could have supplied one
+            expect((await initialize(port, {Authorization: 'Bearer valid-oidc'})).status).toBe(200);
+            expect(capturedAuth[0]).toMatchObject({userId: 'oidc-user', source: 'oidc', authProvider: 'oidc', providerUserId: 'oidc-subject'});
+            expect(capturedAuth[0].providerBaseUrl, 'not identical to the Issuer URL').toBeUndefined()
         });
 
         test('absent bearer + missing proxy identity rejects before MCP dispatch', async () => {

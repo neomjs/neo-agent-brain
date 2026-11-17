@@ -873,7 +873,8 @@ export function resolveViewerStreamKey(context, provenIdentity) {
         return provenIdentity
     }
 
-    if (context.authProvider && (context.providerUserId ?? '') !== '') {
+    // a forge id is unique per provider; an OIDC sub is unique only per issuer, so it keys no viewer
+    if (Object.hasOwn(FORGE_PROVIDER_NAMES, context.authProvider ?? '') && (context.providerUserId ?? '') !== '') {
         return `provider:${context.authProvider}:${context.providerUserId}`
     }
 

@@ -753,6 +753,13 @@ test.describe('resolveViewerStreamKey - immutable-fact keying, never display nam
             .toBe('provider:github:99')
     });
 
+    test('an OIDC sub, unique only per issuer, keys no viewer: the provider fallback stays forge-only', () => {
+        const oidc = {username: 'OIDC Viewer', authProvider: 'oidc', providerBaseUrl: 'https://idp.example/realms/neo', providerUserId: 'f3b2c1'};
+
+        expect(resolveViewerStreamKey(oidc, proven)).toBeNull();
+        expect(resolveViewerStreamKey({...oidc, authProvider: 'gitlab', providerUserId: 5}, proven)).toBe('provider:gitlab:5')
+    });
+
     test('no stable subject yields null, which the route refuses', () => {
         expect(resolveViewerStreamKey({username: 'Ghost Display'}, proven)).toBeNull();
         expect(resolveViewerStreamKey(null, proven)).toBeNull()

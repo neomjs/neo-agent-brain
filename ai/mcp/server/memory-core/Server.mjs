@@ -697,8 +697,9 @@ class Server extends BaseServer {
      * malformed ids fail closed.
      *
      * This is the login selection, which runs only while selection by subject is dormant
-     * ({@link buildRequestContext} decides). A first admission binds its subject only to an identity it
-     * creates, in the same transaction.
+     * ({@link buildRequestContext} decides). A forge PAT's first admission binds its subject only to an identity it
+     * creates, in the same transaction. Any other provider subject (an OIDC one) binds only behind the activation gate,
+     * so while dormant its source keeps the legacy node behavior.
      * @param {Object} reqAuth Server-stamped auth context from the validated bearer request.
      * @returns {Promise<String|null>} Bound AgentIdentity node id, or null when a dormant write fails and
      * the legacy lookup finds no node.
@@ -707,7 +708,7 @@ class Server extends BaseServer {
     async ensureAgentIdentityForAuthContext(reqAuth) {
         const userId      = this.validateAuthProvisionUserId(reqAuth?.userId),
               graphNodeId = normalizeAgentIdentityNodeId(userId),
-              subject     = subjectOf(reqAuth);
+              subject     = ['github-pat', 'gitlab-pat'].includes(reqAuth?.authSource) ? subjectOf(reqAuth) : null;
 
         try {
             const sqlite = GraphService.db.storage.db;
@@ -963,8 +964,9 @@ class Server extends BaseServer {
      *
      * A source that carries a provider subject (`gh-cli`) acts, once the cutover activates selection, as the
      * identity that subject is bound to ({@link selectAgentIdentityBySubject}, creating none), keyed by its bare
-     * id. A subject that selects none fails the boot by name: there is no login fallback. A host-trusted source
-     * (`NEO_AGENT_IDENTITY`) carries no subject and keeps the login binding: it is never subject-bound proof.
+     * id, with or without a login. A subject that selects none fails the boot by name: there is no login or
+     * single-tenant fallback. A host-trusted source (`NEO_AGENT_IDENTITY`) carries no subject and keeps the login
+     * binding: it is never subject-bound proof. While dormant, a session without a login stays single-tenant.
      *
      * @returns {Promise<Object|null>}
      * @throws {Error} A `NEO_AGENT_IDENTITY_SUBJECT_*` refusal once selection is active.
@@ -973,12 +975,14 @@ class Server extends BaseServer {
     async resolveStdioIdentity() {
         const resolved = await StdioIdentityResolver.resolve();
 
-        if (!resolved.githubLogin) return null;
+        if (!resolved.githubLogin && !resolved.authProvider) return null;
 
-        const
-            active              = Boolean(resolved.authProvider) && await this.readSubjectSelection(resolved.githubLogin),
-            agentIdentityNodeId = active ? this.selectAgentIdentityBySubject({reqAuth: {...resolved, userId: resolved.githubLogin}, create: false})
-                : await this.bindAgentIdentity(resolved.githubLogin);
+        const active = Boolean(resolved.authProvider) && await this.readSubjectSelection(resolved.githubLogin || 'a stdio session without a login');
+
+        if (!active && !resolved.githubLogin) return null;
+
+        const agentIdentityNodeId = active ? this.selectAgentIdentityBySubject({reqAuth: {...resolved, userId: resolved.githubLogin}, create: false})
+            : await this.bindAgentIdentity(resolved.githubLogin);
 
         return {
             userId  : active ? normalizeUserId(agentIdentityNodeId) : resolved.githubLogin,

@@ -2116,6 +2116,61 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             }
         });
 
+        test('while dormant, an OIDC source allowed to create keeps the legacy node and binds nothing; once active it binds in the same transaction', async () => {
+            await GraphService.initAsync();
+            const
+                serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['oidc']}),
+                oidcSubjectOf  = sub => ({authProvider: 'oidc', providerBaseUrl: 'https://idp.example/realms/neo', providerUserId: sub}),
+                oidc           = (login, sub) => ({userId: login, username: login, source: 'oidc', ...oidcSubjectOf(sub)});
+
+            try {
+                expect(await serverInstance.buildRequestContext(oidc('subject-1813-oidc-created', '18130031')))
+                    .toMatchObject({userId: 'subject-1813-oidc-created', agentIdentityNodeId: '@subject-1813-oidc-created'});
+                expect(rawGraphNode('@subject-1813-oidc-created')?.label).toBe('AgentIdentity');
+                expect(readSubjectBinding(sqlite(), oidcSubjectOf('18130031')), 'no protected binding ahead of the gate').toBeNull();
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                expect(await serverInstance.buildRequestContext(oidc('subject-1813-oidc-new', '18130032')))
+                    .toMatchObject({agentIdentityNodeId: '@subject-1813-oidc-new'});
+                expect(readSubjectBinding(sqlite(), oidcSubjectOf('18130032'))).toMatchObject({identityId: '@subject-1813-oidc-new'});
+            } finally {
+                cleanUp(['18130031', '18130032'], ['@subject-1813-oidc-created', '@subject-1813-oidc-new']);
+                serverInstance.destroy();
+            }
+        });
+
+        test('a provider-stamped stdio result without a login stays single-tenant while dormant, and decides by its subject once active', async () => {
+            await GraphService.initAsync();
+            const
+                serverInstance        = await createServerWithoutBoot(),
+                StdioIdentityResolver = (await import('../../../../../../../ai/mcp/server/shared/services/StdioIdentityResolver.mjs')).default,
+                originalResolve       = StdioIdentityResolver.resolve,
+                loginless             = fields => {
+                    StdioIdentityResolver.resolve = async () => ({githubLogin: undefined, username: undefined, source: 'gh-cli', ...fields})
+                };
+
+            try {
+                GraphService.createBoundIdentity({id: '@subject-1813-loginless', type: 'AgentIdentity', name: 'loginless', properties: {accountType: 'agent'}},
+                    {subject: subject('18130041')});
+
+                loginless(subject('18130041'));
+                expect(await serverInstance.resolveStdioIdentity(), 'dormant: unchanged').toBeNull();
+
+                sqlite().transaction(() => activateSubjectBinding(sqlite(), {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+                expect(await serverInstance.resolveStdioIdentity())
+                    .toMatchObject({userId: 'subject-1813-loginless', agentIdentityNodeId: '@subject-1813-loginless', source: 'gh-cli'});
+
+                loginless({...subject('18130042'), providerBaseUrl: undefined});
+                await expect(serverInstance.resolveStdioIdentity()).rejects.toMatchObject({code: 'NEO_AGENT_IDENTITY_SUBJECT_REQUIRED'});
+            } finally {
+                StdioIdentityResolver.resolve = originalResolve;
+                cleanUp(['18130041', '18130042'], ['@subject-1813-loginless']);
+                serverInstance.destroy();
+            }
+        });
+
         test('once active, NEO_AGENT_IDENTITY keeps the login binding and never reads the activation', async () => {
             await GraphService.initAsync();
             const

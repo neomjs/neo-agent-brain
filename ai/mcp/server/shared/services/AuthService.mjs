@@ -100,23 +100,22 @@ export function forgeApiBase(auth, authProvider) {
 
 /**
  * @summary The provider subject an OIDC introspection proves: `(issuer, sub)` as provider `oidc`, the issuer as
- * `providerBaseUrl` and `sub` as `providerUserId`, the tuple the protected subject relation keys on. The issuer is the response's `iss`,
- * else the one discovery named. When both exist they are compared exactly and never normalized like a forge API
- * base (OIDC Core §16.15): a mismatch leaves no issuer. A field left absent makes the subject incomplete, which
- * selection refuses by name once active; the login never stands in.
- * @param {Object} introspection The active token's introspection response.
- * @param {String|undefined} discoveredIssuer The issuer the discovery document named, when discovery ran.
+ * `providerBaseUrl` and `sub` as `providerUserId`, the tuple the protected subject relation keys on. Only the issuer
+ * discovery qualified for the configured Issuer URL counts; a response `iss` must equal it exactly, and is never
+ * normalized like a forge API base (OIDC Core §16.15). It may be omitted, since it is optional. `sub` counts only
+ * with an affirmative `active: true`. A field left absent makes the subject incomplete, which selection refuses by
+ * name once active; the login never stands in.
+ * @param {Object} introspection The token's introspection response.
+ * @param {String|undefined} qualifiedIssuer The issuer discovery returned for the configured Issuer URL, identical to it.
  * @returns {{authProvider: String, providerBaseUrl: (String|undefined), providerUserId: (String|undefined)}}
  */
-export function oidcSubject({iss, sub} = {}, discoveredIssuer) {
-    const
-        claimed = typeof iss === 'string' && iss ? iss : undefined,
-        known   = typeof discoveredIssuer === 'string' && discoveredIssuer ? discoveredIssuer : undefined;
+export function oidcSubject({active, iss, sub} = {}, qualifiedIssuer) {
+    const claimed = typeof iss === 'string' && iss ? iss : undefined;
 
     return {
         authProvider   : 'oidc',
-        providerBaseUrl: claimed && known && claimed !== known ? undefined : claimed ?? known,
-        providerUserId : typeof sub === 'string' && sub ? sub : undefined
+        providerBaseUrl: typeof qualifiedIssuer === 'string' && qualifiedIssuer && (claimed === undefined || claimed === qualifiedIssuer) ? qualifiedIssuer : undefined,
+        providerUserId : active === true && typeof sub === 'string' && sub ? sub : undefined
     }
 }
 
@@ -338,8 +337,9 @@ class AuthService extends Base {
             response_types_supported: oauthUrls.response_types_supported || ['code'],
         };
 
-        // only discovery names an issuer; the host/realm fallback builds a URL, not an Issuer Identifier
-        const discoveredIssuer = aiConfig.auth.issuerUrl ? oauthUrls.issuer : undefined;
+        // discovery's issuer qualifies only when identical to the configured Issuer URL (OIDC Discovery §4.3);
+        // the host/realm fallback builds a URL, never an Issuer Identifier
+        const qualifiedIssuer = aiConfig.auth.issuerUrl && oauthUrls.issuer === aiConfig.auth.issuerUrl ? oauthUrls.issuer : undefined;
 
         const tokenVerifier = {
             verifyAccessToken: async (token) => {
@@ -408,7 +408,7 @@ class AuthService extends Base {
                     // Provenance tag consumed by `RequestContextService.getSource()`.
                     // Distinguishes OIDC-derived identity from stdio env-var / gh-CLI paths.
                     source   : 'oidc',
-                    ...oidcSubject(data, discoveredIssuer)
+                    ...oidcSubject(data, qualifiedIssuer)
                 };
             }
         };

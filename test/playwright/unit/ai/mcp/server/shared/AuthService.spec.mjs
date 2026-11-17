@@ -2485,23 +2485,28 @@ test.describe('AuthService — the forge facts an admission stamps', () => {
 });
 
 test.describe('oidcSubject: the (issuer, sub) an OIDC introspection proves', () => {
-    test('keys on (issuer, sub), compares the issuer exactly, and leaves a field it cannot confirm absent', async () => {
+    test('keys on (issuer, sub): only a qualified issuer, compared exactly, and a sub only from an active token', async () => {
         const
             {oidcSubject} = await import('../../../../../../../ai/mcp/server/shared/services/AuthService.mjs'),
-            ISS           = 'https://idp.example/realms/neo';
+            ISS           = 'https://idp.example/realms/neo',
+            active        = fields => ({active: true, ...fields});
 
-        for (const [introspection, discovered, expected] of [
-            [{iss: ISS, sub: 's-1'},                              ISS,       {providerBaseUrl: ISS,       providerUserId: 's-1'}],
-            [{iss: ISS, sub: 's-1'},                              undefined, {providerBaseUrl: ISS,       providerUserId: 's-1'}],
-            [{sub: 's-1'},                                        ISS,       {providerBaseUrl: ISS,       providerUserId: 's-1'}],
+        for (const [introspection, qualified, expected] of [
+            [active({iss: ISS, sub: 's-1'}),                              ISS,       {providerBaseUrl: ISS,       providerUserId: 's-1'}],
+            // the qualified issuer covers an omitted optional iss
+            [active({sub: 's-1'}),                                        ISS,       {providerBaseUrl: ISS,       providerUserId: 's-1'}],
+            // without a qualified issuer, a response's own iss proves nothing
+            [active({iss: ISS, sub: 's-1'}),                              undefined, {providerBaseUrl: undefined, providerUserId: 's-1'}],
             // compared exactly, never normalized: a trailing slash or a host's case is another issuer
-            [{iss: `${ISS}/`, sub: 's-1'},                        ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
-            [{iss: 'https://IDP.example/realms/neo', sub: 's-1'}, ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
-            [{sub: 's-1'},                                        undefined, {providerBaseUrl: undefined, providerUserId: 's-1'}],
-            [{iss: ISS, sub: ''},                                 ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}],
-            [{iss: ISS, preferred_username: 's-1'},               ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}]
+            [active({iss: `${ISS}/`, sub: 's-1'}),                        ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
+            [active({iss: 'https://IDP.example/realms/neo', sub: 's-1'}), ISS,       {providerBaseUrl: undefined, providerUserId: 's-1'}],
+            // a sub counts only with an affirmative active
+            [{iss: ISS, sub: 's-1'},                                      ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}],
+            [{active: 'true', iss: ISS, sub: 's-1'},                      ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}],
+            [active({iss: ISS, sub: ''}),                                 ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}],
+            [active({iss: ISS, preferred_username: 's-1'}),               ISS,       {providerBaseUrl: ISS,       providerUserId: undefined}]
         ]) {
-            expect(oidcSubject(introspection, discovered), JSON.stringify([introspection, discovered])).toEqual({authProvider: 'oidc', ...expected})
+            expect(oidcSubject(introspection, qualified), JSON.stringify([introspection, qualified])).toEqual({authProvider: 'oidc', ...expected})
         }
     })
 });
