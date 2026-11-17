@@ -8,6 +8,7 @@ import {
     readDatedItems,
     toUtcDateString
 } from '../../../services/graph/datedItemsSection.mjs';
+import {isSubjectSelectionActive} from '../../../services/memory-core/helpers/subjectBinding.mjs';
 
 /**
  * @module ai/daemons/orchestrator/scheduling/datedItemsOverdue
@@ -66,9 +67,10 @@ export function normalizeOwnerHandle(rawOwner) {
  * graph nodes ({@link readAgentIdentityNodes}), or from an explicit test override (`knownIdentities`).
  *
  * Only nodes whose participation status is `'active'` ({@link participationStatusOf}) and whose
- * `accountType` is `'agent'` or `'human'` ({@link memberLoginsOf}) are addressable. When the graph
- * store cannot answer, a `WARN` is logged and an empty set is returned so overdue rows fall back to
- * `AGENT:*`.
+ * `accountType` is `'agent'` or `'human'` ({@link memberLoginsOf}) are addressable. Their former
+ * logins are addressable only while selection by subject is dormant: after the cutover a former login
+ * no longer delivers. When the graph store cannot answer, a `WARN` is logged and an empty set is
+ * returned so overdue rows fall back to `AGENT:*`.
  *
  * @param {Object} [options={}]
  * @param {Iterable<String>|null} [options.knownIdentities=null] Explicit known identities override for tests.
@@ -95,7 +97,7 @@ export function resolveKnownIdentities({knownIdentities = null, db = null, write
             node => participationStatusOf(node) === 'active'
         );
 
-        for (const login of memberLoginsOf(activeNodes, {formerLogins: true})) {
+        for (const login of memberLoginsOf(activeNodes, {formerLogins: !isSubjectSelectionActive(db)})) {
             const normalized = normalizeOwnerHandle(login);
             if (normalized) {
                 known.add(normalized);
