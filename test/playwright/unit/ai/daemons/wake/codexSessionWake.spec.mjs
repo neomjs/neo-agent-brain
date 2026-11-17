@@ -245,6 +245,29 @@ test.describe('Codex session wake', () => {
         await expect(readCodexWakeReceipt({home, threadId: id, text, receiptOffset, receiptToken: id})).rejects.toThrow('ambiguous')
     });
 
+    test('a wake turn that ends without any hook acknowledgement reads as unacknowledged; a running or acknowledged one does not', async () => {
+        const text          = `[NEO_WAKE_V1:${queueId}] [WAKE]`;
+        const receiptOffset = (await readCodexWakeTarget({home, threadId: id})).receiptOffset;
+        const read          = receiptToken => readCodexWakeReceipt({home, threadId: id, text, receiptOffset, receiptToken});
+        const end           = (type, turnId = turn) => line({type: 'event_msg', payload: {type, turn_id: turnId, root_turn_id: turnId}});
+        const context       = token => line({type: 'response_item', payload: {type: 'message', role: 'developer',
+            content                                   : [{type: 'input_text', text: `digest\n[NEO_WAKE_RECEIVED:${token}]`}],
+            internal_chat_message_metadata_passthrough: {turn_id: turn, content_item_kinds: ['hooks.additional_context'],
+                content_item_metadata: [{provenance: {type: 'harness', hook: true}}]}}});
+        await fs.appendFile(file, line(start()) + line(message(text)));
+        expect(await read()).toEqual({state: 'unknown'});
+        await fs.appendFile(file, end('task_complete', queueId));
+        expect(await read()).toEqual({state: 'unknown'});
+        await fs.appendFile(file, end('turn_aborted'));
+        expect(await read()).toEqual({state: 'turn-unacknowledged', threadId: id, turnId: turn});
+        await expect(read('not-a-token')).rejects.toThrow('Invalid Codex receipt token');
+
+        await fs.truncate(file, receiptOffset.offset);
+        await fs.appendFile(file, line(start()) + line(message(text)) + context(id) + end('task_complete'));
+        expect(await read()).toEqual({state: 'unknown'});
+        expect(await read(id)).toEqual({state: 'turn-started', threadId: id, turnId: turn})
+    });
+
     test('streams large post-send logs and refuses rotation or incomplete data', async () => {
         const text  = `[NEO_WAKE_V1:${queueId}] [WAKE]`, receiptToken = id;
         const proof = line(start()) + line(message(text)) + line({type: 'response_item', payload: {

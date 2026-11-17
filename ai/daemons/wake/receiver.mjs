@@ -646,6 +646,7 @@ export function createWakeReceiver({
                 let outcomeReason;
                 let expectedRecipient;
                 let nativeRecipientObservedAt = null;
+                let nativeUnacknowledged      = false;
 
                 // A manifest can change while context probing awaited. Do not let a captured GUI
                 // snapshot type after that route has been cut over to native delivery.
@@ -736,6 +737,7 @@ export function createWakeReceiver({
                     if (native && typeof result?.recipientObservedAt === 'string') {
                         nativeRecipientObservedAt = result.recipientObservedAt
                     }
+                    nativeUnacknowledged = native && result?.acknowledged === false;
 
                     if (result && typeof result === 'object' && result.outcomeReason) {
                         outcomeReason = String(result.outcomeReason);
@@ -822,6 +824,7 @@ export function createWakeReceiver({
                     ...(outcome === 'delivered' ? {
                         waitStage          : 'delivered',
                         recipientObservedAt: nativeRecipientObservedAt || finishedIso,
+                        ...(nativeUnacknowledged ? {acknowledged: false} : {}),
                         ...(isNative ? {hostStagedAt: dispatching.hostStagedAt || finishedIso, namedDependency: null} : {})
                     } : {}),
                     dispatchFinishedAt: finishedIso

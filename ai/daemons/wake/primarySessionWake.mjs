@@ -103,7 +103,8 @@ function deliveredResult(attempt) {
     return {
         status: 'delivered',
         nonce : attempt.nonce,
-        ...(typeof attempt.recipientObservedAt === 'string' ? {recipientObservedAt: attempt.recipientObservedAt} : {})
+        ...(typeof attempt.recipientObservedAt === 'string' ? {recipientObservedAt: attempt.recipientObservedAt} : {}),
+        ...(attempt.acknowledged === false ? {acknowledged: false} : {})
     }
 }
 
@@ -111,6 +112,8 @@ function deliveredResult(attempt) {
  * @summary Serializes binding, durable admission, native effect and receipt reconciliation per seat.
  * Ordinary records use `inflight`; distinct urgent records use `urgentInflight` without evicting an
  * ambiguous ordinary attempt. Receiver record persistence owns long-term deduplication.
+ * An `unacknowledged` receipt (the wake started a turn that ended without the hook redeeming it)
+ * settles the slot as delivered with `acknowledged: false`, so no later wake waits behind it.
  */
 export async function deliverPrimarySessionWake({statePath, seat, generation, family, recordKey, urgent = false,
     readTarget, send, readReceipt, isRecordedDelivered}) {
@@ -218,12 +221,13 @@ export async function deliverPrimarySessionWake({statePath, seat, generation, fa
                 await save(statePath, {...state, [activeSlotKey]: null});
                 return {status: 'pending', reason: 'effect proven not sent'}
             }
-            if (receipt.status !== 'consumed') return {status: 'unknown', reason: 'delivery unresolved', nonce: attempt.nonce};
+            if (!['consumed', 'unacknowledged'].includes(receipt.status)) return {status: 'unknown', reason: 'delivery unresolved', nonce: attempt.nonce};
             const recipientObservedAt = typeof receipt.observedAt === 'string' ? receipt.observedAt : null,
                   settledAttempt      = {
                       ...current,
                       status: 'delivered',
-                      ...(recipientObservedAt ? {recipientObservedAt} : {})
+                      ...(recipientObservedAt ? {recipientObservedAt} : {}),
+                      ...(receipt.status === 'unacknowledged' ? {acknowledged: false} : {})
                   };
             await save(statePath, {...state, [activeSlotKey]: settledAttempt});
             return deliveredResult(settledAttempt)

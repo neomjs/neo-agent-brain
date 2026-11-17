@@ -122,6 +122,26 @@ test.describe('signed native wake receiver integration', () => {
         expect(await state.list('delivered')).toHaveLength(1);
     });
 
+    test('a wake turn that ended without the hook reaches its record as delivered without acknowledgement, and is not sent again', async () => {
+        await new Promise(resolve => server.close(resolve));
+        receiver = createWakeReceiver({manifest,state,manifestPath,logger:{log(){},warn(){},error(){}}});
+        server = receiver.server; await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+        url = `http://127.0.0.1:${server.address().port}/wake`;
+        mode = 'silent';
+        const ended = new Set();
+        transport.readCodexWakeReceipt = async ({text}) => ended.has(text) ? {state:'turn-unacknowledged',threadId,turnId:'turn-bare'} : {state:'unknown'};
+        const pump = () => drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId:sub,route:manifest.routes[sub],
+            dispatch:(record, options) => dispatchFleetPrimarySessionWake(record,{...options,inspectResident:resident,codexTransport:transport})});
+        expect((await post(1)).status).toBe(202);
+        await receiver.drain(); await pump(); await receiver.drain();
+        expect(sends).toBe(1);
+        expect(await state.list('delivered')).toHaveLength(0);
+        ended.add(nativeInputs[0]);
+        await pump(); await receiver.drain(); await pump();
+        expect(await state.list('delivered')).toEqual([expect.objectContaining({acknowledged: false})]);
+        expect(sends).toBe(1);
+    });
+
     test('a missing first seat record cannot starve the next seat in the Fleet pump', async () => {
         await new Promise(resolve => server.close(resolve));
         receiver = createWakeReceiver({manifest,state,manifestPath,logger:{log(){},warn(){},error(){}}});

@@ -470,3 +470,51 @@ test('RA-5 — concurrent normal (.claim.json) and urgent (.urgent.claim.json) c
 
     expect(await dispatchFleetPrimarySessionWake(normalRecord, options)).toMatchObject({status: 'delivered'});
 });
+
+test('an idle wake whose turn ended without the hook settles unacknowledged, an admitted claim never does, and a late hook gets nothing', async () => {
+    const seat      = '@fixture', threadId = randomUUID();
+    const sub       = 'WAKE_SUB:unacknowledged', generation = '404:birth', family = 'codex-desktop';
+    const sent      = [], ended = new Set();
+    const transport = {
+        listCodexWakeTargets    : async () => [{root: true, threadId, startedAt: 10, receiptOffset: 0}],
+        readCodexWakeActivity   : async () => ({state: 'idle'}),
+        verifyCodexWakeAdmission: async () => ({verified: true}),
+        sendCodexSessionWake    : async req => { sent.push(req); return {status: 'accepted'} },
+        // A turn listed in `ended` finished without the acknowledgement, whether or not its hook admitted.
+        readCodexWakeReceipt    : async ({text}) => ended.has(text)
+            ? {state: 'turn-unacknowledged', threadId, turnId: 'turn-bare'} : {state: 'unknown'}
+    };
+    const config = {agentId: 'fixture', family, instanceHome: path.join(tempDir, 'home'), appBundle: path.join(tempDir, 'ChatGPT.app')};
+    const route  = {agentIdentity: seat, harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
+    await enrollNativeWake({manifestPath, stateDir, agentId: config.agentId, family});
+    await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes: {[sub]: route}}));
+    const options = {state, stateDir, manifestPath, codexTransport: transport, inspectResident: async () => ({generation, workspaceRoot: tempDir})};
+    const accept  = async (eventId, urgent) => (await state.accept({
+        subscriptionId: sub, eventId, route, metadata: {urgent},
+        envelope      : {eventType: 'wake/digest', agentIdentity: seat, subscriptionId: sub, payload: {totalEvents: 1, urgent,
+            breakdown: {sent_to_me: {count: 1, highestPriority: urgent ? 'high' : 'normal', latest: {priority: urgent ? 'high' : 'normal', sentAt: new Date().toISOString(), subject: eventId}}}}}
+    })).record;
+    const urgentRecord = await accept('bare-urgent', true), normalRecord = await accept('held-ordinary', false);
+    const nonceOf      = req => req.text.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+
+    expect((await dispatchFleetPrimarySessionWake(urgentRecord, options)).status).toBe('unknown');
+    expect(await dispatchFleetPrimarySessionWake(normalRecord, options)).toMatchObject({status: 'pending', reason: 'urgent delivery in progress'});
+    expect(sent).toHaveLength(1);
+
+    ended.add(sent[0].text);
+    expect(await dispatchFleetPrimarySessionWake(urgentRecord, options)).toMatchObject({status: 'delivered', acknowledged: false});
+    expect(await consumeNativeWakePrompt({...options, agentId: config.agentId, family, threadId, turnId: 'turn-bare', nonce: nonceOf(sent[0])})).toEqual({admitted: false});
+
+    await state.transition(urgentRecord.recordKey, 'pending', 'delivered');
+    expect((await dispatchFleetPrimarySessionWake(normalRecord, options)).status).toBe('unknown');
+    expect(sent).toHaveLength(2);
+    const redemption = await consumeNativeWakePrompt({...options, agentId: config.agentId, family, threadId, turnId: 'turn-held', nonce: nonceOf(sent[1])});
+    expect(redemption.admitted).toBe(true);
+    ended.add(sent[1].text);
+    expect((await dispatchFleetPrimarySessionWake(normalRecord, options)).status).toBe('unknown');
+    expect((await readPrimarySessionWakeState()).inflight).toMatchObject({status: 'unknown', nonce: nonceOf(sent[1])});
+
+    async function readPrimarySessionWakeState() {
+        return JSON.parse(await fs.readFile(path.join(stateDir, 'primary-sessions', 'fixture.json'), 'utf8'))
+    }
+});

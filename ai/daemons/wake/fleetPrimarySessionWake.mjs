@@ -311,7 +311,14 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
             const {threadId} = binding, text = wakeText(nonce), saved = await readPrivate(cursorPathFor(slotUrgent));
             if (saved?.nonce !== nonce) return null;
             const claim = await readPrivate(claimPathFor(slotUrgent));
-            if (claim?.nonce !== nonce || claim.recordKey !== recordKey || claim.generation !== binding.generation || claim.threadId !== threadId) return null;
+            if (claim?.nonce !== nonce) {
+                // No hook redeemed this nonce. Once its idle wake turn has ended without an acknowledgement
+                // it never can, so the slot settles instead of holding every later wake behind it.
+                if (!isCodex || attempt?.deliveryMode === 'active-turn') return null;
+                const proof = await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptOffset:saved.cursor});
+                return proof?.state === 'turn-unacknowledged' && proof.threadId === threadId ? {...binding,recordKey,nonce,status:'unacknowledged'} : null
+            }
+            if (claim.recordKey !== recordKey || claim.generation !== binding.generation || claim.threadId !== threadId) return null;
             if (claim.admitted === false) {
                 denialReason = ['resident-unavailable', 'selection-unavailable'].includes(claim.reason) ? claim.reason : null;
                 return {...binding,recordKey,nonce,status:'not-sent'}
@@ -387,7 +394,8 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
                 recordKey,
                 subscriptionId,
                 recipient: result.recipient,
-                ...(typeof result.recipientObservedAt === 'string' ? {recipientObservedAt: result.recipientObservedAt} : {})
+                ...(typeof result.recipientObservedAt === 'string' ? {recipientObservedAt: result.recipientObservedAt} : {}),
+                ...(result.acknowledged === false ? {acknowledged: false} : {})
             }), {mode:0o600,fsync:true});
             return {active:false}
         }
