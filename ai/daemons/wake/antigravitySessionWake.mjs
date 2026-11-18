@@ -10,8 +10,21 @@ import {promisify} from 'node:util';
  * Read-only target validation and sidecar-local Antigravity dispatch. Project membership does not
  * attest that a session is the current seat root: the host owns that binding and sidecar custody.
  */
-const UUID   = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const STATES = new Set(['CASCADE_RUN_STATUS_IDLE', 'CASCADE_RUN_STATUS_RUNNING']);
+const UUID                     = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const STATES                   = new Set(['CASCADE_RUN_STATUS_IDLE', 'CASCADE_RUN_STATUS_RUNNING']);
+const EXTERNAL_SYSTEM_ENVELOPE = /^The following is a <SYSTEM_MESSAGE> not actually sent by the user\. It is provided by the system as important information to pay attention to\.\n\n<SYSTEM_MESSAGE>\n\[Message\] timestamp=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) sender=system priority=(MESSAGE_PRIORITY_[A-Z_]+) content=(.*)$/s;
+
+function isTruncatedField(item, field) {
+    return Array.isArray(item?.truncated_fields) && item.truncated_fields.includes(field);
+}
+
+/** @summary Recognizes only external system-dispatched envelopes, not Plan Mode or task/subagent notices. */
+export function isAntigravityExternalSystemMessage(item) {
+    if (item?.type !== 'SYSTEM_MESSAGE' || item.source !== 'SYSTEM' || item.status !== 'DONE' ||
+        typeof item.content !== 'string') return false;
+    const match = item.content.match(EXTERNAL_SYSTEM_ENVELOPE);
+    return Boolean(match && !Number.isNaN(Date.parse(match[1])));
+}
 
 function validateInputs(databasePath, projectId) {
     if (!path.isAbsolute(databasePath || '') || typeof projectId !== 'string' || !projectId.trim()) {
@@ -199,37 +212,46 @@ export function hasAntigravityPendingSystemWake({appDataDir,threadId,text,cursor
     try {
         let latest = false;
         for (const item of transcriptRecords({appDataDir,threadId,cursor})) {
-            if (!item || item.truncated_fields) latest = false;
-            else if (item.type === 'USER_INPUT' || item.type === 'SYSTEM_MESSAGE') latest = isAntigravityWakeSystemMessage(item,text);
+            if (!item) latest = false;
+            else if (item.type === 'USER_INPUT' || isAntigravityExternalSystemMessage(item)) latest = isAntigravityWakeSystemMessage(item,text);
         }
         return latest;
     } catch { return false }
 }
 
 /**
- * @summary Recognizes the exact post-cursor wake followed by the private model acknowledgment.
- * @returns {Object} A bounded model-response observation, or unknown.
+ * @summary Recognizes the exact post-cursor wake followed by the private model acknowledgment, or settled unacknowledged finish.
+ * @returns {Object} A bounded model-response observation, `turn-unacknowledged`, or `unknown`.
  */
-export function readAntigravityWakeReceipt({appDataDir,threadId,text,cursor,receiptToken}) {
+export function readAntigravityWakeReceipt({appDataDir,threadId,text,cursor,receiptToken=null,targetStatus=null,settleUnacknowledged=false}) {
     const unknown = {outcome:'unknown'};
     if (typeof text !== 'string' || !text || !cursor || !Number.isSafeInteger(cursor.offset) ||
-        cursor.offset < 0 || !UUID.test(receiptToken || '')) return unknown;
+        cursor.offset < 0 || (receiptToken !== null ? !UUID.test(receiptToken || '') : !settleUnacknowledged)) return unknown;
     try {
-        let matched = null;
+        let matched = null, wakeSeen = false, superseded = false, terminalResponse = false;
         for (const item of transcriptRecords({appDataDir,threadId,cursor})) {
-            if (!item || item.truncated_fields) { matched = null; continue }
-            if (((item.type === 'USER_INPUT' && item.source === 'USER_EXPLICIT' && item.status === 'DONE' && item.content === text) ||
+            if (!item) { matched = null; terminalResponse = false; continue }
+            if (((item.type === 'USER_INPUT' && item.source === 'USER_EXPLICIT' && item.status === 'DONE' &&
+                !isTruncatedField(item,'content') && item.content === text) ||
                 isAntigravityWakeSystemMessage(item,text)) && Number.isSafeInteger(item.step_index)) {
-                matched = item.step_index;
-            } else if (matched !== null && (item.type === 'USER_INPUT' || item.type === 'SYSTEM_MESSAGE')) {
-                matched = null;
+                matched = item.step_index; wakeSeen = true; superseded = false; terminalResponse = false;
+            } else if (matched !== null && (item.type === 'USER_INPUT' || isAntigravityExternalSystemMessage(item))) {
+                matched = null; superseded = true; terminalResponse = false;
             } else if (matched !== null && item.type === 'PLANNER_RESPONSE' && item.source === 'MODEL' &&
                 item.status === 'DONE' && Number.isSafeInteger(item.step_index) && item.step_index > matched) {
-                const lines = typeof item.content === 'string' ? item.content.split(/\r?\n/) : [];
-                if (lines.some(line => line === '[NEO_WAKE_RECEIVED:' + receiptToken + ']')) {
-                    return {outcome:'observed',reason:'private-model-ack'};
+                terminalResponse = !isTruncatedField(item,'tool_calls') && (!Array.isArray(item.tool_calls) || item.tool_calls.length === 0);
+                if (receiptToken && !isTruncatedField(item,'content')) {
+                    const lines = typeof item.content === 'string' ? item.content.split(/\r?\n/) : [];
+                    if (lines.some(line => line === '[NEO_WAKE_RECEIVED:' + receiptToken + ']')) {
+                        return {outcome:'observed',reason:'private-model-ack'};
+                    }
                 }
+            } else if (matched !== null) {
+                terminalResponse = false;
             }
+        }
+        if (settleUnacknowledged && wakeSeen && (superseded || (matched !== null && terminalResponse && targetStatus === 'CASCADE_RUN_STATUS_IDLE'))) {
+            return {outcome:'turn-unacknowledged'};
         }
         return unknown;
     } catch { return unknown }
@@ -318,8 +340,9 @@ export function verifyAntigravityWakeAdmission({databasePath,appDataDir,projectI
 
 /** @summary Marks a native PreInvocation observation for the currently selected root. */
 export async function observeAntigravityPreInvocation({databasePath,projectId,projectRoot,generation,statePath,input}) {
+    const invocationNum = input?.invocationNum === undefined ? 0 : input.invocationNum;
     if (!Array.isArray(input?.workspacePaths) || !input.workspacePaths.includes(projectRoot) ||
-        !Number.isSafeInteger(input.invocationNum) || input.invocationNum < 0) return false;
+        !Number.isSafeInteger(invocationNum) || invocationNum < 0) return false;
     const file                  = statePath + '.starts.json';
     const {withOutboxLock}      = await import('./outboxLock.mjs');
     const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
@@ -337,14 +360,15 @@ export async function observeAntigravityPreInvocation({databasePath,projectId,pr
 export async function handleAntigravityPreInvocation({input,consume,...context}) {
     const text = input?.lastUserInput;
     if (typeof text !== 'string' || !text.startsWith('[NEO_WAKE_V1:')) return {};
-    const match = text.match(/^\[NEO_WAKE_V1:([0-9a-f-]{36})\] \[WAKE\]$/i);
-    const deny  = {terminationBehavior:'terminate',injectSteps:[{errorMessage:{userMessage:'Wake admission refused.'}}]};
+    const match         = text.match(/^\[NEO_WAKE_V1:([0-9a-f-]{36})\] \[WAKE\]$/i);
+    const deny          = {terminationBehavior:'terminate',injectSteps:[{errorMessage:{userMessage:'Wake admission refused.'}}]};
+    const invocationNum = input?.invocationNum === undefined ? 0 : input.invocationNum;
     if (!match || !UUID.test(match[1])) return deny;
     let observed = false;
     try { observed = await observeAntigravityPreInvocation({...context,input}) } catch { /* Refuse and reconcile only an authenticated spent wake. */ }
     if (!observed) {
         if (Array.isArray(input.workspacePaths) && input.workspacePaths.includes(context.projectRoot) &&
-            Number.isSafeInteger(input.invocationNum) && input.invocationNum >= 0 && UUID.test(input.conversationId || '')) {
+            Number.isSafeInteger(invocationNum) && invocationNum >= 0 && UUID.test(input.conversationId || '')) {
             // The App/lease-authenticated caller has witnessed this exact native marker. This
             // request can only write a negative claim after host route and nonce checks; it cannot
             // disclose the digest. Unknown/foreign invocations never reach this path.
@@ -352,7 +376,7 @@ export async function handleAntigravityPreInvocation({input,consume,...context})
         }
         return deny
     }
-    if (input.invocationNum > 0) {
+    if (invocationNum > 0) {
         for (const suffix of ['.urgent.claim.json', '.claim.json']) {
             try {
                 const claim = JSON.parse(fs.readFileSync(context.statePath + suffix,'utf8'));
@@ -364,5 +388,5 @@ export async function handleAntigravityPreInvocation({input,consume,...context})
     }
     const result = await consume({threadId:input.conversationId,nonce:match[1]});
     if (!result?.admitted || typeof result.digest !== 'string') return deny;
-    return {injectSteps:[{ephemeralMessage:result.digest + '\nWhen you respond, repeat the exact NEO_WAKE_RECEIVED line above on its own line to acknowledge receipt.'}]};
+    return {injectSteps:[{systemMessage:{systemMessage:result.digest + '\nWhen you respond, repeat the exact NEO_WAKE_RECEIVED line above on its own line to acknowledge receipt.'}}]};
 }

@@ -518,3 +518,48 @@ test('an idle wake whose turn ended without the hook settles unacknowledged, an 
         return JSON.parse(await fs.readFile(path.join(stateDir, 'primary-sessions', 'fixture.json'), 'utf8'))
     }
 });
+
+test('finished unacknowledged or unechoed Antigravity idle turns settle as acknowledged: false and unblock subsequent wakes', async () => {
+    const seat    = '@fixture', threadId = randomUUID();
+    const sub     = 'WAKE_SUB:agy-unacknowledged', generation = '405:birth', family = 'antigravity';
+    const home    = path.join(tempDir, 'home'), projectRoot = tempDir, appBundle = path.join(tempDir, 'gen', 'Antigravity.app');
+    const sent    = [], finished = new Set();
+    const sidecar = {appPid:405, appStart:'birth', appBundle, instanceHome:home, environment:{ANTIGRAVITY_AGENTAPI_EXE:'/bin/language_server'}};
+    const logsDir = path.join(tempDir, 'agy', 'brain', threadId, '.system_generated', 'logs');
+    await fs.mkdir(logsDir, {recursive:true});
+    await fs.writeFile(path.join(logsDir, 'transcript.jsonl'), '');
+    const transport = {
+        latestAntigravityWakeTarget   : async () => ({root:true, threadId, startSequence:1, status:'CASCADE_RUN_STATUS_IDLE'}),
+        readAntigravityWakeTarget     : async () => ({threadId, projectId:'p', status:'CASCADE_RUN_STATUS_IDLE'}),
+        verifyAntigravityWakeAdmission: async () => ({verified:true}),
+        captureAntigravityWakeCursor  : () => ({dev:1, ino:1, offset:0, tailHash:'a'.repeat(64)}),
+        sendAntigravitySessionWake    : async req => { sent.push(req); return {outcome:'unknown', reason:'agentapi-dispatch-exited-zero'} },
+        readAntigravityWakeReceipt    : ({text}) => finished.has(text) ? {outcome:'turn-unacknowledged'} : {outcome:'unknown'}
+    };
+    const config = {agentId:'fixture', family, instanceHome:home, appBundle, projectId:'p', projectRoot};
+    const route  = {agentIdentity:seat, harnessTargetMetadata:{adapter:'primary-session'}, adapterConfig:{primarySession:config}};
+    await enrollNativeWake({manifestPath, stateDir, agentId:config.agentId, family});
+    await fs.writeFile(manifestPath, JSON.stringify({schemaVersion:1, routes:{[sub]:route}}));
+    const options = {state, stateDir, manifestPath, sidecar, antigravityTransport:transport, appDataDir:path.join(tempDir, 'agy'),
+        inspectResident:async () => ({generation, pid:405, startedAt:'birth', workspaceRoot:projectRoot})};
+    const accept = async (eventId, urgent) => (await state.accept({
+        subscriptionId:sub, eventId, route, metadata:{urgent},
+        envelope:{eventType:'wake/digest', agentIdentity:seat, subscriptionId:sub, payload:{totalEvents:1, urgent,
+            breakdown:{sent_to_me:{count:1, highestPriority:urgent ? 'high' : 'normal', latest:{priority:urgent ? 'high' : 'normal', sentAt:new Date().toISOString(), subject:eventId}}}}}
+    })).record;
+    const first = await accept('agy-unredeemed', false), second = await accept('agy-unechoed', false);
+
+    expect((await dispatchFleetPrimarySessionWake(first, options)).status).toBe('unknown');
+    expect(sent).toHaveLength(1);
+    finished.add(sent[0].message);
+    expect(await dispatchFleetPrimarySessionWake(first, options)).toMatchObject({status:'delivered', acknowledged:false});
+    await state.transition(first.recordKey, 'pending', 'delivered');
+
+    expect((await dispatchFleetPrimarySessionWake(second, options)).status).toBe('unknown');
+    expect(sent).toHaveLength(2);
+    const secondNonce = sent[1].message.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+    const redemption  = await consumeNativeWakePrompt({...options, agentId:config.agentId, family, threadId, nonce:secondNonce});
+    expect(redemption.admitted).toBe(true);
+    finished.add(sent[1].message);
+    expect(await dispatchFleetPrimarySessionWake(second, options)).toMatchObject({status:'delivered', acknowledged:false});
+});

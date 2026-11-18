@@ -42,7 +42,8 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
             projectRoot:config.projectRoot,generation,statePath,input};
         if (event === 'SessionStart') { await observeAntigravitySessionStart(context); return {} }
         if (event !== 'PreInvocation') return reserved ? deny : {};
-        let wakeInput = input;
+        let   wakeInput     = input;
+        const invocationNum = input?.invocationNum === undefined ? 0 : input.invocationNum;
         if (!reserved) {
             const state = await readPrimarySessionWake({statePath});
             for (const [slotKey, cursorSuffix, claimSuffix] of [
@@ -56,7 +57,7 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
                         const cursor     = privateJson(statePath + cursorSuffix);
                         const marker     = '[NEO_WAKE_V1:' + nonce + '] [WAKE]';
                         let   continuing = false;
-                        if (input.invocationNum > 0) {
+                        if (invocationNum > 0) {
                             try {
                                 const claim = privateJson(statePath + claimSuffix);
                                 continuing = claim.admitted === true && claim.nonce === nonce &&
