@@ -577,4 +577,39 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
         // catches the drift the old hand-written `toBe(null)` assertion silently encoded.
         expect(() => turnPresenceOutputSchema.parse({...start, terminalState: null})).toThrow();
     });
+
+    test('writerKey persists on the node across progress and add_memory terminalization while staying omitted from responses (#1841)', async () => {
+        const writerKey = 'v1:307def5255aca2a8e72d087143a8b2f1';
+
+        const started = await asAgent(() => TurnPresenceService.recordTurnPresence({
+            action: 'start',
+            turnId: 'turn-stamped',
+            writerKey,
+            source: 'claude-user-prompt-submit'
+        }));
+
+        expect('writerKey' in started).toBe(false);
+        expect(() => turnPresenceOutputSchema.parse(started)).not.toThrow();
+        expect(getNode('turn-stamped').properties.writerKey).toBe(writerKey);
+
+        const progressed = await asAgent(() => TurnPresenceService.recordTurnPresence({
+            action: 'progress',
+            turnId: 'turn-stamped',
+            source: 'claude-post-tool-use'
+        }));
+
+        expect('writerKey' in progressed).toBe(false);
+        expect(getNode('turn-stamped').properties.writerKey).toBe(writerKey);
+
+        await asAgent(() => MemoryService.addMemory({prompt: 'p', decisionContext: 'd', response: 'r'}));
+        expect(getNode('turn-stamped').properties.status).toBe('terminal');
+        expect(getNode('turn-stamped').properties.writerKey).toBe(writerKey);
+
+        await asAgent(() => TurnPresenceService.recordTurnPresence({
+            action   : 'start',
+            turnId   : 'turn-bad-key',
+            writerKey: 'x'.repeat(200)
+        }));
+        expect(getNode('turn-bad-key').properties.writerKey).toBeUndefined();
+    });
 });

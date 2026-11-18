@@ -1037,3 +1037,109 @@ test.describe('session-rotation lane: an amendment is not a new receipt, and the
         expect(waits(await runLane(db, {waitsLogged, now: NOW + 2 * MIN}))).toEqual([])
     });
 });
+
+test.describe('session-rotation lane: async PostToolUse overlap and pre-request addenda (#1841)', () => {
+    const KEY   = 'v1:307def5255aca2a8e72d087143a8b2f1';
+    const OTHER = 'v1:other0000000000000000000000000';
+    const MS    = 1 / 60000;
+
+    function buildOverlapCase({otherKey} = {}) {
+        const db = createGraph();
+
+        insertRoute(db);
+        insertNode(db, 'MEM:b-before', 'AGENT_MEMORY', {
+            agentIdentity: SEAT, userId: SEAT, timestamp: at(10), sessionId: 's1', writerKey: KEY, writerTurn: 'b4622140'
+        });
+        insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:b4622140`, 'AGENT_TURN_PRESENCE', {
+            agentIdentity: SEAT, turnId: 'b4622140', startedAt: at(4), lastProgressAt: at(2 - 2 * MS),
+            status       : 'active', expiresAt: at(-58), ...(otherKey ? {writerKey: otherKey} : {})
+        });
+        insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:1267b06e`, 'AGENT_TURN_PRESENCE', {
+            agentIdentity: SEAT, turnId: '1267b06e', startedAt: at(2), lastProgressAt: at(1),
+            status       : 'terminal', terminalState: 'completed', expiresAt: at(-59), writerKey: KEY
+        });
+        insertNode(db, 'MESSAGE:de397fdd', 'MESSAGE', {
+            from             : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(2 + 1 * MS),
+            focusItemsReceipt: {named: 1, placed: 1}, taggedConcepts: ['sunset-protocol-handover'],
+            writerKey        : KEY, writerTurn: '1267b06e'
+        });
+        insertNode(db, 'MEM:b-close', 'AGENT_MEMORY', {
+            agentIdentity: SEAT, userId: SEAT, timestamp: at(1), sessionId: 's1', writerKey: KEY, writerTurn: '1267b06e'
+        });
+
+        return db
+    }
+
+    test('AC-2: same-writerKey predecessor active interval with +2 ms async PostToolUse overlap yields liveTurnUntil null and rotates', async () => {
+        const db   = buildOverlapCase({otherKey: KEY}),
+              read = readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)});
+
+        expect(read.liveTurnUntil).toBeNull();
+        expect(decideRotation({read, now: NOW, windowMs: WINDOW_MS, minIntervalMs: MIN_GAP_MS}).action).toBe('request');
+
+        const {sent, outcome} = await runLane(db);
+
+        expect(outcome).toMatchObject({requested: 1, refused: 0, waiting: 0});
+        expect(sent).toHaveLength(1);
+        expect(sent[0].envelope.payload.receiptMessageId).toBe('MESSAGE:de397fdd')
+    });
+
+    test('AC-3: active interval with a different or missing writerKey and lastProgressAt >= ownStart still holds live-turn', async () => {
+        for (const otherKey of [OTHER, undefined]) {
+            const db   = buildOverlapCase({otherKey}),
+                  read = readSunsetReceipt(db, SEAT, {sinceIso: at(WINDOW_MS / MIN), nowIso: at(0)});
+
+            expect(read.liveTurnUntil, String(otherKey)).not.toBeNull();
+            expect(decideRotation({read, now: NOW, windowMs: WINDOW_MS, minIntervalMs: MIN_GAP_MS})).toMatchObject({action: 'wait', reason: 'live-turn'});
+
+            const {sent, outcome} = await runLane(db);
+
+            expect(sent, String(otherKey)).toEqual([]);
+            expect(outcome).toMatchObject({requested: 0, waiting: 1})
+        }
+    });
+
+    test('AC-4: pre-requestedAt same-writerKey handover addendum folds into one rotation whose marker on either completes it', async () => {
+        for (const replyTarget of ['MESSAGE:de397fdd', 'MESSAGE:4d664b7c']) {
+            const db = createGraph();
+
+            insertRoute(db);
+            insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:b4622140`, 'AGENT_TURN_PRESENCE', {
+                agentIdentity: SEAT, turnId: 'b4622140', startedAt: at(4), lastProgressAt: at(2 - 2 * MS),
+                status       : 'active', expiresAt: at(-58), writerKey: KEY
+            });
+            insertNode(db, 'MESSAGE:de397fdd', 'MESSAGE', {
+                from             : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(2.1),
+                focusItemsReceipt: {named: 1, placed: 1}, taggedConcepts: ['sunset-protocol-handover'],
+                writerKey        : KEY, writerTurn: 'b4622140'
+            });
+            insertNode(db, `AGENT_TURN_PRESENCE:${SEAT}:1267b06e`, 'AGENT_TURN_PRESENCE', {
+                agentIdentity: SEAT, turnId: '1267b06e', startedAt: at(2), lastProgressAt: at(1.2),
+                status       : 'terminal', terminalState: 'completed', expiresAt: at(-59), writerKey: KEY
+            });
+            insertNode(db, 'MESSAGE:4d664b7c', 'MESSAGE', {
+                from          : SEAT, to: SEAT, subject: '[sunset] focus items: 1, 1 placed', sentAt: at(1.5),
+                inReplyTo     : 'MESSAGE:de397fdd', focusItemsReceipt: {named: 1, placed: 1},
+                taggedConcepts: ['sunset-protocol-handover'], writerKey: KEY, writerTurn: '1267b06e'
+            });
+            insertNode(db, 'MEM:close', 'AGENT_MEMORY', {
+                agentIdentity: SEAT, userId: SEAT, timestamp: at(1.2), sessionId: 's1', writerKey: KEY, writerTurn: '1267b06e'
+            });
+
+            const first = await runLane(db);
+
+            expect(first.sent, replyTarget).toHaveLength(1);
+            expect(first.sent[0].envelope.payload.receiptMessageId).toBe('MESSAGE:4d664b7c');
+            expect(rotationOf(db, 'MESSAGE:4d664b7c')).toMatchObject({state: 'requested'});
+
+            insertSuccessor(db, 'MESSAGE:succ', 0.5, replyTarget);
+
+            const second = await runLane(db, {now: NOW + MIN});
+
+            expect(second.sent, replyTarget).toEqual([]);
+            expect(second.outcome.completed).toBe(1);
+            expect(rotationOf(db, 'MESSAGE:4d664b7c')).toMatchObject({state: 'completed', successorMessageId: 'MESSAGE:succ'});
+            expect(rotationOf(db, 'MESSAGE:de397fdd')).toBeUndefined()
+        }
+    });
+});

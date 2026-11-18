@@ -10,7 +10,7 @@ import {decideRotation} from '../../../../../../ai/daemons/wake/sessionRotation.
 // The rotation slice's design histories, run through the real reader: synthetic ids,
 // an in-memory Nodes table, the stored shapes the lane reads. `ago` is minutes before NOW; a fractional one is
 // seconds (19 - 8 / 60 is eight seconds after 19 minutes ago).
-const SEAT = '@seat', MIN = 60_000, WINDOW_MS = 180 * MIN, MIN_GAP_MS = 30 * MIN,
+const SEAT  = '@seat', MIN = 60_000, WINDOW_MS = 180 * MIN, MIN_GAP_MS = 30 * MIN,
       NOW   = Date.parse('2026-11-16T05:00:00.000Z'),
       at    = ago => new Date(NOW - ago * MIN).toISOString(),
       SINCE = new Date(NOW - 2 * WINDOW_MS - MIN_GAP_MS).toISOString(),
@@ -24,21 +24,22 @@ const graph = () => {
 const put      = (db, id, label, properties) => db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)').run(id, null, JSON.stringify({id, label, type: label, properties}));
 const stamp    = (key, turn) => ({...(key ? {writerKey: key.includes(':') ? key : `v1:${key}`} : {}), ...(turn ? {writerTurn: turn} : {})});
 const handover = (db, id, ago, {key, turn, origin, rotation} = {}) => put(db, `MESSAGE:${id}`, 'MESSAGE', {
-    from: SEAT, to: SEAT, subject: '[sunset]', sentAt: at(ago), taggedConcepts: ['sunset-protocol-handover'],
+    from             : SEAT, to: SEAT, subject: '[sunset]', sentAt: at(ago), taggedConcepts: ['sunset-protocol-handover'],
     focusItemsReceipt: {named: 1, placed: 1}, ...(origin ? {originSessionId: origin} : {}), ...stamp(key, turn),
     ...(rotation ? {sessionRotation: rotation} : {})
 });
-const marker   = (db, id, ago, replyTo, key, turn) => put(db, `MESSAGE:${id}`, 'MESSAGE', {
-    from: SEAT, to: SEAT, subject: '[sunset successor]', sentAt: at(ago), inReplyTo: `MESSAGE:${replyTo}`,
+const marker = (db, id, ago, replyTo, key, turn) => put(db, `MESSAGE:${id}`, 'MESSAGE', {
+    from          : SEAT, to: SEAT, subject: '[sunset successor]', sentAt: at(ago), inReplyTo: `MESSAGE:${replyTo}`,
     taggedConcepts: ['sunset-successor'], ...stamp(key, turn)
 });
-const save     = (db, id, ago, session, key, turn) => put(db, `MEM:${id}`, 'AGENT_MEMORY', {
+const save = (db, id, ago, session, key, turn) => put(db, `MEM:${id}`, 'AGENT_MEMORY', {
     agentIdentity: SEAT, userId: SEAT, timestamp: at(ago), sessionId: session, ...stamp(key, turn)
 });
-const interval = (db, turn, {started, progress = started, closed = false, wake = false}) => put(db, `AGENT_TURN_PRESENCE:${SEAT}:${turn}`, 'AGENT_TURN_PRESENCE', {
+const interval = (db, turn, {started, progress = started, closed = false, wake = false, key} = {}) => put(db, `AGENT_TURN_PRESENCE:${SEAT}:${turn}`, 'AGENT_TURN_PRESENCE', {
     agentIdentity: SEAT, turnId: turn, startedAt: at(started), lastProgressAt: at(progress),
-    status: closed ? 'terminal' : 'active', terminalState: closed ? 'completed' : null,
-    expiresAt: new Date(Date.parse(at(progress)) + 60 * MIN).toISOString(), ...(wake ? {wakeSubmitNonce: NONCE} : {})
+    status       : closed ? 'terminal' : 'active', terminalState: closed ? 'completed' : null,
+    expiresAt    : new Date(Date.parse(at(progress)) + 60 * MIN).toISOString(),
+    ...(wake ? {wakeSubmitNonce: NONCE} : {}), ...(key ? {writerKey: key.includes(':') ? key : `v1:${key}`} : {})
 });
 // predecessor A wrote rA at -150; the plane requested at -149; its successor (key `succKey`) sent the marker at -140
 const chain = (db, {aKey = 'kA', succKey = 'kB', stamped = true} = {}) => {
@@ -170,6 +171,24 @@ const histories = [
         put(db, `AGENT_TURN_PRESENCE:${SEAT}:noTurn`, 'AGENT_TURN_PRESENCE', {agentIdentity: SEAT, startedAt: at(25), lastProgressAt: at(25),
             status: 'terminal', expiresAt: at(-35), wakeSubmitNonce: NONCE});
         put(db, 'MEM:late', 'AGENT_MEMORY', {agentIdentity: SEAT, userId: SEAT, timestamp: at(10), sessionId: 'mcF'})
+    }],
+    ['same writerKey predecessor sub-turn whose async PostToolUse settled 2 ms after sunset turn start does not hold live-turn (#1841)', 'request', db => {
+        chain(db); sunsetB(db);
+        interval(db, 'b4622140', {started: 25, progress: 22 - 2 / 60000, key: 'kB'});
+        interval(db, 'tB3',      {started: 22, progress: 19, closed: true, key: 'kB'})
+    }],
+    ['different writerKey active interval whose PostToolUse settled 2 ms after sunset turn start still holds live-turn (#1841)', 'wait: live-turn', db => {
+        chain(db); sunsetB(db);
+        interval(db, 'other', {started: 25, progress: 22 - 2 / 60000, key: 'kC'});
+        interval(db, 'tB3',   {started: 22, progress: 19, closed: true, key: 'kB'})
+    }],
+    ['pre-requestedAt same-writerKey addendum folds into prior handover so marker on first still matches (#1841)', 'complete', db => {
+        handover(db, 'rX1', 21, {key: 'kB', turn: 'tB2', origin: 'mcB1'});
+        handover(db, 'rX2', 20, {key: 'kB', turn: 'tB3', origin: 'mcB1', rotation: {
+            state: 'requested', requestedAt: at(18.5), deliveredAt: at(18.5), oldSessionId: 'mcB1'
+        }});
+        save(db, 'bX', 19, 'mcB1', 'kB', 'tB3');
+        marker(db, 'm2', 18, 'rX1', 'kC', 'tC1')
     }]
 ];
 

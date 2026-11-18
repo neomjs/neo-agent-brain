@@ -44,3 +44,10 @@ test('add_message keeps the writer stamp and strips an undeclared key', async ()
     expect(parsed).toMatchObject(STAMP);
     expect('undeclaredControl' in parsed).toBe(false)
 });
+
+test('record_turn_presence keeps writerKey and strips an undeclared key', async () => {
+    const parsed = await parseInput('record_turn_presence', {action: 'progress', writerKey: STAMP.writerKey, undeclaredControl: 'x'});
+
+    expect(parsed.writerKey).toBe(STAMP.writerKey);
+    expect('undeclaredControl' in parsed).toBe(false)
+});

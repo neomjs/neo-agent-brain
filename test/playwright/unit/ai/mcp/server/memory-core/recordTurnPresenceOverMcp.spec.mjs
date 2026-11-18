@@ -91,6 +91,15 @@ test.describe('recordTurnPresenceOverMcp', () => {
         expect(state.calls[0].arguments).toEqual({action: 'start', capacity})
     });
 
+    test('forwards writerKey when supplied and omits it when absent', async () => {
+        const {state, ClientClass, TransportClass} = createClientSeam(),
+              writerKey                            = 'v1:0123456789abcdef0123456789abcdef';
+
+        await recordTurnPresenceOverMcp({baseUrl: BASE_URL, identity: '@test-seat', action: 'progress', writerKey, ClientClass, TransportClass});
+
+        expect(state.calls[0].arguments).toEqual({action: 'progress', writerKey})
+    });
+
     test('refuses to resolve its own endpoint or identity', async () => {
         const {ClientClass, TransportClass} = createClientSeam();
 

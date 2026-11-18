@@ -3,6 +3,7 @@ import Base                                     from 'neo.mjs/src/core/Base.mjs'
 import GraphService                             from './GraphService.mjs';
 import aiConfig                                 from '../../mcp/server/memory-core/config.mjs';
 import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
+import {writerStamp}                            from '../../daemons/wake/sunsetReceipt.mjs';
 
 /**
  * @summary Graph-backed active-turn presence writer for agent liveness beacons.
@@ -96,6 +97,7 @@ class TurnPresenceService extends Base {
      * malformed one is rejected rather than dropped — a silently discarded nonce degrades every
      * subsequent proof to `wake-submit-unknown`, which reads as "delivery unverifiable" rather than
      * "correlation key was malformed".
+     * @param {String} [options.writerKey] Opaque seat-session writer key stored on the interval, never echoed in tool output.
      * @param {Object} [options.capacity] The seat's plan-capacity reading, stored apart from the turn
      * interval ({@link TurnPresenceService#getCapacity}): it lands even when the event itself is a
      * no-op, and a malformed reading refuses the whole call before anything is written.
@@ -109,6 +111,7 @@ class TurnPresenceService extends Base {
         source = 'mcp-client',
         note,
         wakeSubmitNonce,
+        writerKey,
         capacity,
         now = new Date()
     } = {}) {
@@ -183,7 +186,8 @@ class TurnPresenceService extends Base {
                   sharedEntity  : false,
                   // Spread last and only when supplied, so a later progress event without a nonce keeps the
                   // one its `start` carried (via `...current`) instead of erasing the correlation mid-turn.
-                  ...(wakeSubmitNonce ? {wakeSubmitNonce: String(wakeSubmitNonce).trim().toLowerCase()} : {})
+                  ...(wakeSubmitNonce ? {wakeSubmitNonce: String(wakeSubmitNonce).trim().toLowerCase()} : {}),
+                  ...writerStamp({writerKey})
               };
 
         GraphService.upsertNode({
@@ -208,6 +212,7 @@ class TurnPresenceService extends Base {
         if (action !== 'terminal') {
             delete response.terminalState;
         }
+        delete response.writerKey;
 
         return response;
     }

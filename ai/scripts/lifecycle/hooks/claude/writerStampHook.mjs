@@ -1,9 +1,11 @@
-import crypto from 'node:crypto';
-
-import {readHookPayload}  from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
-import {readSeatConfig}   from '../seatConfig.mjs';
-import {isEntryModule}    from '../../../../services/shared/isEntryModule.mjs';
-import {sessionTurnStore} from './turnPresenceHook.mjs';
+import {readHookPayload} from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
+import {readSeatConfig}  from '../seatConfig.mjs';
+import {isEntryModule}   from '../../../../services/shared/isEntryModule.mjs';
+import {
+    WRITER_KEY_VERSION,
+    deriveWriterKey,
+    sessionTurnStore
+} from './turnPresenceHook.mjs';
 
 /**
  * @module ai/scripts/lifecycle/hooks/claude/writerStampHook
@@ -17,22 +19,7 @@ import {sessionTurnStore} from './turnPresenceHook.mjs';
  * write keeps today's verdict. It returns no permission decision, so the call's own permission check still runs.
  */
 
-/**
- * @summary The key derivation's version, which prefixes every key. A changed derivation must change it: the
- * plane then reads the old and the new key as two writers and holds the rotation instead of releasing it.
- * @type {String}
- */
-export const WRITER_KEY_VERSION = 'v1';
-
-/**
- * @summary Derives a seat's writer key for one harness session. Pure.
- * @param {String} identity  The seat.
- * @param {String} sessionId The hook payload's `session_id`.
- * @returns {String} The version, a colon and 32 hex characters.
- */
-export function deriveWriterKey(identity, sessionId) {
-    return `${WRITER_KEY_VERSION}:${crypto.createHash('sha256').update(`${identity}\n${sessionId}`).digest('hex').slice(0, 32)}`
-}
+export {WRITER_KEY_VERSION, deriveWriterKey};
 
 /**
  * @summary Decides one `PreToolUse` payload. A stamp the caller supplied is replaced, never kept.

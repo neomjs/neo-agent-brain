@@ -6,9 +6,27 @@ import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
-import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
-import {isEntryModule}                               from '../../../../services/shared/isEntryModule.mjs';
-import {resolveUserDataDir}                          from './seatModelGuardHook.mjs';
+import {readPlaneConfig, readSeatConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
+import {isEntryModule}                                               from '../../../../services/shared/isEntryModule.mjs';
+import {resolveUserDataDir}                                          from './seatModelGuardHook.mjs';
+
+/**
+ * @summary The key derivation's version, which prefixes every key; shared with `writerStampHook.mjs`. A changed
+ * derivation must change it: the plane then reads the old and the new key as two writers and holds the
+ * rotation instead of releasing it.
+ * @type {String}
+ */
+export const WRITER_KEY_VERSION = 'v1';
+
+/**
+ * @summary Derives a seat's opaque writer key for one harness session. Pure.
+ * @param {String} identity  The seat.
+ * @param {String} sessionId The hook payload's `session_id`.
+ * @returns {String} The version, a colon and 32 hex characters.
+ */
+export function deriveWriterKey(identity, sessionId) {
+    return `${WRITER_KEY_VERSION}:${crypto.createHash('sha256').update(`${identity}\n${sessionId}`).digest('hex').slice(0, 32)}`
+}
 
 /**
  * @summary The actions that carry the seat's capacity reading: the turn's start only. Progress fires
@@ -180,6 +198,7 @@ function resolveNote({action, hookPayload} = {}) {
  * @param {*} [options.hookPayload] Parsed Claude Code hook payload.
  * @param {String|Date|Number} [options.now] Clock override for tests.
  * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from the seat leaves when absent.
+ * @param {Function} [options.readSeat=readSeatConfig] Seat config reader ({@link readSeatConfig}); supplies `identity` across every path.
  * @param {Function} [options.record] Transport seam.
  * @param {Object} [options.turnStore] The session's turn ids; {@link sessionTurnStore} when absent.
  * @param {Function} [options.mintTurnId=crypto.randomUUID] Mints a turn id at the session's prompt.
@@ -193,6 +212,7 @@ export async function recordClaudeTurnPresence({
     hookPayload,
     now,
     plane,
+    readSeat   = readSeatConfig,
     record,
     turnStore  = sessionTurnStore(),
     mintTurnId = crypto.randomUUID
@@ -210,6 +230,10 @@ export async function recordClaudeTurnPresence({
 
     if (action === 'start' && turnId) turnStore.write(sessionId, turnId);
 
+    const resolvedPlane = plane ?? await readPlaneConfig(),
+          seatIdentity  = sessionId ? (await readSeat())?.identity ?? null : null,
+          writerKey     = seatIdentity && sessionId ? deriveWriterKey(seatIdentity, sessionId) : undefined;
+
     const result = await recordTurnPresenceFromHook({
         action,
         ...(reading ? {capacity: reading} : {}),
@@ -218,9 +242,10 @@ export async function recordClaudeTurnPresence({
         hookPayload,
         note      : resolveNote({action, hookPayload}),
         now,
-        plane     : plane ?? await readPlaneConfig(),
+        plane     : resolvedPlane,
         source    : resolveSource({action, hookPayload}),
-        ...(turnId ? {turnId} : {}),
+        ...(turnId    ? {turnId}    : {}),
+        ...(writerKey ? {writerKey} : {}),
         ...(normalizeHookEventName(hookPayload) === 'StopFailure' ? {terminalState: 'aborted'} : {}),
         ...(record ? {record} : {})
     });
