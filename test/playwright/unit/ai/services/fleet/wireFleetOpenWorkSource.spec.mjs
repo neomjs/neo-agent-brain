@@ -477,4 +477,103 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             fs.rmSync(dataDir, {recursive: true, force: true})
         }
     });
+
+    test('stalled readPresence falls back cleanly to retained identityRows inside rosterRetainedMaxAgeMs without stalling GitHub reads, and expires past it (#1842)', async () => {
+        const
+            dataDir        = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-presence-timeout-')),
+            bridge         = {},
+            pendingStalled = [],
+            lines          = [],
+            origLog        = console.log,
+            node           = {
+                number                  : 19, headRefOid: 'b2', reviewDecision: 'REVIEW_REQUIRED', mergeable: 'MERGEABLE', isDraft: false,
+                body                    : 'Authored by Ada (Claude).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []}, latestReviews: {pageInfo: {hasNextPage: false}, nodes: []},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []}, commits: {nodes: [{commit: {oid: 'b2', statusCheckRollup: {state: 'SUCCESS'}}}]}
+            };
+        let presenceCall = 0, clockMs = Date.now() - 200000;
+
+        console.log = line => lines.push(String(line));
+
+        try {
+            const wired = wireFleetOpenWorkSource({
+                registry         : {
+                    listAgents       : () => definitions,
+                    getDataDir       : () => dataDir,
+                    resolveCredential: id => id === 'ada' ? 'pat-ada' : null
+                },
+                bridge,
+                presenceTimeoutMs: 25,
+                pulseMs          : 3600000,
+                now              : () => new Date(clockMs),
+                createQuery      : () => async (text, {query: search}) => ({
+                    rateLimit: {cost: 1},
+                    search   : {pageInfo: {hasNextPage: false}, nodes: search.includes('author:neo-opus-ada') ? [node] : []}
+                }),
+                readPresence     : () => {
+                    presenceCall++;
+                    if (presenceCall === 1) {
+                        return Promise.resolve({
+                            agents: [
+                                {identity: '@neo-opus-ada', name: 'Ada', signals: {}},
+                                {identity: '@lab-seat',     name: 'Lab', signals: {participationStatus: 'operator_benched'}},
+                                {identity: '@idle-seat',    name: 'Idle', signals: {participationStatus: 'operator_benched'}}
+                            ]
+                        })
+                    }
+                    return new Promise(resolve => { pendingStalled.push(resolve) })
+                }
+            });
+
+            // Pulse 1 warms retainedPresence synchronously from the first readPresence answer.
+            await wired.producer.pulse();
+            expect(wired.producer.getState()).toMatchObject({coverage: 'complete', reason: null});
+
+            // Pulse 2 hangs in readPresence past presenceTimeoutMs=25 inside rosterRetainedMaxAgeMs and serves retained rows.
+            clockMs += 60000;
+            await wired.producer.pulse();
+            expect(presenceCall).toBe(2);
+            expect(wired.producer.getState()).toMatchObject({coverage: 'complete', reason: null});
+            expect(wired.producer.getState().snapshot.rows['acme/app#19'].owner).toEqual({
+                kind : 'seat',
+                seat : '@neo-opus-ada',
+                login: 'neo-opus-ada'
+            });
+
+            // Settling the stalled call late logs once through boundRosterRead and refreshes retainedPresence for Pulse 3.
+            pendingStalled.shift()({
+                agents: [
+                    {identity: '@neo-opus-ada', name: 'AdaRenamed', signals: {participationStatus: 'operator_benched'}},
+                    {identity: '@lab-seat',     name: 'Lab',        signals: {participationStatus: 'operator_benched'}},
+                    {identity: '@idle-seat',    name: 'Idle',       signals: {participationStatus: 'operator_benched'}}
+                ]
+            });
+            await Promise.resolve();
+            await Promise.resolve();
+
+            const lateLogs = lines.filter(line => line.startsWith('[fleet] roster open-work presence read answered after'));
+            expect(lateLogs).toHaveLength(1);
+
+            await wired.producer.pulse();
+            expect(wired.producer.getState().pulses.at(-1).seats.find(row => row.seat === '@neo-opus-ada')?.benched).toBe(true);
+
+            // 1 ms past fleet.rosterRetainedMaxAgeMs (120000 ms), stalled readPresence no longer serves expired rows.
+            clockMs += 120001;
+            await wired.producer.pulse();
+            expect(presenceCall).toBe(4);
+            expect(wired.producer.getState().pulses.at(-1).seats.find(row => row.seat === '@neo-opus-ada')?.benched).toBe(false);
+            expect(bridge.openWorkSource.readOpenWork().state).toBe('ok');
+
+            while (pendingStalled.length) {
+                pendingStalled.shift()({agents: []});
+            }
+            await wired.stop();
+        } finally {
+            console.log = origLog;
+            while (pendingStalled.length) {
+                pendingStalled.shift()({agents: []});
+            }
+            fs.rmSync(dataDir, {recursive: true, force: true})
+        }
+    });
 });

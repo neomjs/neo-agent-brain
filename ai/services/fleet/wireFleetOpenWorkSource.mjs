@@ -19,6 +19,8 @@
 
 import fs                                                       from 'fs';
 import path                                                     from 'path';
+import AiConfig                                                 from '../../config.mjs';
+import boundRosterRead                                          from './boundRosterRead.mjs';
 import FleetControlBridge                                       from './FleetControlBridge.mjs';
 import {createFleetOpenWorkSource}                              from './fleetOpenWorkSource.mjs';
 import {createOpenWorkProducer}                                 from './openWorkProducer.mjs';
@@ -111,7 +113,9 @@ export async function benchedIdentities(readPresence) {
  */
 export function seatReaders({listDefinitions, resolveCredential, apiBase = 'https://api.github.com', createQuery = token => createGithubGraphqlQuery({token, apiBase}), readPresence = null}) {
     return async () => {
-        const benched = await benchedIdentities(readPresence);
+        const
+            benched = await benchedIdentities(readPresence),
+            queries = new Map();
 
         return listDefinitions()
             .filter(definition => definition.githubUsername && (definition.forge ?? 'github') === 'github')
@@ -119,8 +123,17 @@ export function seatReaders({listDefinitions, resolveCredential, apiBase = 'http
                 const
                     login = String(definition.githubUsername).replace(/^@/, ''),
                     token = resolveCredential(definition.id);
+                let query = null;
 
-                return {seat: `@${login}`, login, apiBase, query: token ? createQuery(token) : null, benched: benched.has(presenceIdentityForAgent(definition))}
+                if (token) {
+                    query = queries.get(token);
+                    if (!query) {
+                        query = createQuery(token);
+                        queries.set(token, query)
+                    }
+                }
+
+                return {seat: `@${login}`, login, apiBase, query, benched: benched.has(presenceIdentityForAgent(definition))}
             })
     }
 }
@@ -305,28 +318,61 @@ export function fileStore(filePath) {
  * @param {Function} [options.query]      Replaces every seat's GitHub call, credential included (tests).
  * @param {Function} [options.createQuery] `(token) → query`; replaces the GitHub call per token (tests).
  * @param {Function} [options.readPresence] The roster's `who_is_online` read; without it no seat is benched.
+ * @param {Number}   [options.presenceTimeoutMs=AiConfig.fleet.rosterAxisTimeoutMs] Axis timeout bounding `readPresence` via {@link module:ai/services/fleet/boundRosterRead} so a slow plane serves retained presence while younger than `AiConfig.fleet.rosterRetainedMaxAgeMs`, and expires past it.
  * @param {Function} [options.now]
  * @param {String} [options.apiBase] Existing query endpoint, recorded with quota evidence.
  * @param {Function|null} [options.onPulse] Awaited after the existing pulse; concurrent rounds share it.
  * @returns {{producer: Object, source: Object, pulse: Function, stop: Function}|null} null without a registry.
  */
-export function wireFleetOpenWorkSource({registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, createQuery, readPresence = null, now, apiBase = 'https://api.github.com', onPulse = null} = {}) {
+export function wireFleetOpenWorkSource({
+    registry,
+    pulseMs           = PULSE_MS,
+    bridge            = FleetControlBridge,
+    query,
+    createQuery,
+    readPresence      = null,
+    presenceTimeoutMs = AiConfig.fleet.rosterAxisTimeoutMs,
+    now,
+    apiBase           = 'https://api.github.com',
+    onPulse           = null
+} = {}) {
     if (typeof registry?.listAgents !== 'function' || typeof registry.getDataDir !== 'function') {
         return null
     }
 
-    // the pulse's presence read keeps its rows for the identity lookups that follow it; a read that
-    // fails leaves the last answered rows in place
-    let running = null, stopped = false, identityRows = [];
+    // the pulse's presence read keeps its rows only while younger than `rosterRetainedMaxAgeMs`; a timeout or
+    // failed read leaves valid retained rows in place so GitHub reads are never stalled behind mc-server
+    let running = null, stopped = false, retainedPresence = null;
     const
-        listDefinitions = () => registry.listAgents(),
-        readRows        = readPresence && (async () => {
-            const report = await readPresence();
+        clock = typeof now === 'function' ? now : Date.now,
+        nowMs = () => {
+            const value = clock();
 
-            if (Array.isArray(report?.agents)) identityRows = report.agents;
-            return report
-        }),
-        producer        = createOpenWorkProducer({
+            return typeof value === 'number' ? value : new Date(value).getTime()
+        },
+        currentIdentityRows = () => retainedPresence && nowMs() - retainedPresence.settledAtMs <= AiConfig.fleet.rosterRetainedMaxAgeMs
+            ? retainedPresence.payload.agents
+            : [],
+        recordPresence      = (payload, settledAtMs = nowMs()) => {
+            if (Array.isArray(payload?.agents)) {
+                retainedPresence = {payload, settledAtMs}
+            }
+        },
+        listDefinitions     = () => registry.listAgents(),
+        readRows            = readPresence && (Number.isFinite(presenceTimeoutMs) && presenceTimeoutMs > 0
+            ? boundRosterRead(readPresence, 'open-work presence', presenceTimeoutMs, {
+                maxRetainedAgeMs: AiConfig.fleet.rosterRetainedMaxAgeMs,
+                now             : clock,
+                readRetained    : () => retainedPresence,
+                writeRetained   : recordPresence
+            })
+            : async () => {
+                const report = await readPresence();
+
+                recordPresence(report);
+                return report
+            }),
+        producer            = createOpenWorkProducer({
             readers   : seatReaders({
                 listDefinitions,
                 resolveCredential: id => query ? 'injected' : registry.resolveCredential?.(id) ?? null,
@@ -335,19 +381,26 @@ export function wireFleetOpenWorkSource({registry, pulseMs = PULSE_MS, bridge = 
                 ...(query ? {createQuery: () => query} : createQuery ? {createQuery} : {})
             }),
             repos     : async () => githubSlugsOf(listDefinitions()),
-            identities: seatIdentities(listDefinitions, () => identityRows),
+            identities: seatIdentities(listDefinitions, currentIdentityRows),
             store     : fileStore(path.join(registry.getDataDir(), 'open-work.json')),
             intervalMs: pulseMs,
             ...(now ? {now} : {})
         }),
-        pulse           = () => stopped ? (running ?? Promise.resolve(producer.getState())) :
+        pulse               = () => stopped ? (running ?? Promise.resolve(producer.getState())) :
             running ??= producer.pulse().then(async state => { await onPulse?.(state); return state })
                 .catch(error => console.error('[fleet] open-work pulse failed:', error)).finally(() => { running = null }),
-        timer           = setInterval(pulse, pulseMs);
+        timer               = setInterval(pulse, pulseMs);
 
     timer.unref?.();
-    // the pulse's last presence rows give the projection the families the wake round decides with
-    bridge.openWorkSource = createFleetOpenWorkSource({producer, seatFamilies: () => identityRows.length ? familiesOf({agents: identityRows}) : null});
+    // the pulse's last unexpired presence rows give the projection the families the wake round decides with
+    bridge.openWorkSource = createFleetOpenWorkSource({
+        producer,
+        seatFamilies: () => {
+            const rows = currentIdentityRows();
+
+            return rows.length ? familiesOf({agents: rows}) : null
+        }
+    });
     pulse();
 
     return {

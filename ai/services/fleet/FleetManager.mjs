@@ -1,5 +1,6 @@
 import Base                                                                          from 'neo.mjs/src/core/Base.mjs';
 import AiConfig                                                                      from '../../config.mjs';
+import boundRosterRead                                                               from './boundRosterRead.mjs';
 import FleetLifecycleService                                                         from './FleetLifecycleService.mjs';
 import {armFleetSeatWake}                                                            from './armFleetSeatWake.mjs';
 import {ensureAgentRepos}                                                            from './ensureAgentRepo.mjs';
@@ -90,64 +91,6 @@ export function resolveBoundPlaneEndpoint(agent, planeBase = null) {
     });
 
     return placement?.kind === 'plane' ? placement.endpoint : (planeBase || null)
-}
-
-/**
- * @summary Bounds one of the roster's plane-sourced reads: past `timeoutMs` it serves an unexpired
- * retained observation when configured, else rejects naming the wait while the plane call runs on.
- * A call that settles after the bound refreshes retention and logs its duration once.
- * @param {Function} read `() => Promise`, the axis's reader
- * @param {String} axis `'presence'` or `'wake'`, named in the reason and the log line
- * @param {Number} timeoutMs
- * @param {Object} [retention={}]
- * @param {Number} [retention.maxRetainedAgeMs=0]
- * @param {Function} [retention.now=Date.now]
- * @param {Function|null} [retention.readRetained=null]
- * @param {Function|null} [retention.writeRetained=null]
- * @returns {Function} The bounded reader
- * @private
- */
-function boundRosterRead(read, axis, timeoutMs, {
-    maxRetainedAgeMs = 0,
-    now              = Date.now,
-    readRetained     = null,
-    writeRetained    = null
-} = {}) {
-    const nowMs = () => {
-        const value = now();
-
-        return typeof value === 'number' ? value : new Date(value).getTime()
-    };
-
-    return () => {
-        const startedAt = nowMs(), call = Promise.resolve().then(read);
-        let   late      = false, timerId;
-
-        const settled = outcome => late && console.log(`[fleet] roster ${axis} read ${outcome} after ${nowMs() - startedAt} ms (bound ${timeoutMs} ms)`);
-
-        call.then(payload => {
-            writeRetained?.(payload, nowMs());
-            settled('answered')
-        }, () => settled('failed'));
-
-        return Promise.race([
-            call.finally(() => clearTimeout(timerId)),
-            new Promise((resolve, reject) => {
-                timerId = setTimeout(() => {
-                    late = true;
-
-                    const retained = readRetained?.();
-
-                    if (retained && nowMs() - retained.settledAtMs <= maxRetainedAgeMs) {
-                        resolve(retained.payload);
-                        return
-                    }
-
-                    reject(new Error(`${axis} read still pending after ${timeoutMs} ms`))
-                }, timeoutMs)
-            })
-        ])
-    }
 }
 
 /**

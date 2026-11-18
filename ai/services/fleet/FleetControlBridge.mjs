@@ -1,5 +1,7 @@
 import crypto                                    from 'node:crypto';
 import Base                                      from 'neo.mjs/src/core/Base.mjs';
+import AiConfig                                  from '../../config.mjs';
+import boundRosterRead                           from './boundRosterRead.mjs';
 import FleetManager, {resolveBoundPlaneEndpoint} from './FleetManager.mjs';
 import FleetRegistryService                      from './FleetRegistryService.mjs';
 import FleetTenantService                        from './FleetTenantService.mjs';
@@ -127,9 +129,12 @@ function questionPage(params) {
  * @param {Object|null} seam The bridge's `composeWriter`.
  * @param {{limit: Number, offset: Number}} page
  * @param {Object} [view=QUESTION_VIEWS.open]
+ * @param {Object} [options={}]
+ * @param {Number|null} [options.timeoutMs=null] Optional axis deadline in ms; when finite and positive,
+ *     bounded via {@link module:ai/services/fleet/boundRosterRead} so expired waits degrade only this view.
  * @returns {Promise<Object>} `{state, reason, count, rows, page, capturedAt}`, plus `since` for the expired view.
  */
-async function readOwnQuestions(seam, page, view = QUESTION_VIEWS.open) {
+async function readOwnQuestions(seam, page, view = QUESTION_VIEWS.open, {timeoutMs = null} = {}) {
     const
         windowed    = view.filter.expiredWithinSpan === true,
         unavailable = reason => ({
@@ -144,15 +149,22 @@ async function readOwnQuestions(seam, page, view = QUESTION_VIEWS.open) {
     let answer;
 
     try {
-        answer = await seam.observeMessages({
+        const observe = () => seam.observeMessages({
             box            : 'inbox',
             status         : 'all',
             includeArchived: true,
             ...view.filter,
-            limit          : page.limit,
-            offset         : page.offset
-        })
+            limit : page.limit,
+            offset: page.offset
+        });
+
+        answer = await (Number.isFinite(timeoutMs) && timeoutMs > 0
+            ? boundRosterRead(observe, view.label, timeoutMs)()
+            : observe())
     } catch (error) {
+        if (error?.code === 'FLEET_AXIS_TIMEOUT') {
+            return unavailable(`fleet: the ${view.label} read timed out after ${timeoutMs} ms`)
+        }
         console.error(`[fleet] the ${view.label} read failed:`, error);
         return unavailable(`fleet: the ${view.label} read failed`)
     }
@@ -1461,19 +1473,22 @@ class FleetControlBridge extends Base {
      * untouched; an unwired source is named as unavailable, never as no open work. Beside it,
      * `questions` counts the viewer's open questions from the same read {@link fleetOwnQuestions}
      * lists, so the count and the list cannot disagree, and `questions.expired` counts the ones that
-     * expired within the ask span from the read `fleetOwnQuestions({expired: true})` lists.
+     * expired within the ask span from the read `fleetOwnQuestions({expired: true})` lists. Each question
+     * read is bounded by `timeoutMs` so a slow plane degrades only `questions`, leaving `openWork` intact.
      * @param {Object} [params] `{seat}` narrows the answer to one seat.
+     * @param {Object} [options={}]
+     * @param {Number} [options.timeoutMs=AiConfig.fleet.rosterAxisTimeoutMs] Axis deadline for each question count read.
      * @returns {Promise<Object>} the source envelope plus `questions: {state, count, reason, expired: {state, count, since, reason}}`.
      */
-    async fleetOpenWork(params = {}) {
+    async fleetOpenWork(params = {}, {timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs} = {}) {
         const
             openWork = typeof this.openWorkSource?.readOpenWork === 'function'
                 ? await this.openWorkSource.readOpenWork(params)
                 : {state: 'unavailable', observedAt: null, coverage: 'unavailable', reason: 'fleet open-work source not wired', seats: {}},
             // a count is complete on any page, so one row reads it
             [open, expired] = await Promise.all([
-                readOwnQuestions(this.composeWriter, {limit: 1, offset: 0}),
-                readOwnQuestions(this.composeWriter, {limit: 1, offset: 0}, QUESTION_VIEWS.expired)
+                readOwnQuestions(this.composeWriter, {limit: 1, offset: 0}, QUESTION_VIEWS.open, {timeoutMs}),
+                readOwnQuestions(this.composeWriter, {limit: 1, offset: 0}, QUESTION_VIEWS.expired, {timeoutMs})
             ]);
 
         return {

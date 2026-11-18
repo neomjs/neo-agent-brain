@@ -1355,3 +1355,179 @@ test.describe('openWorkProducer — organization-login PRs keep coverage across 
         ])
     });
 });
+
+test.describe('openWorkProducer — concurrent distinct-query lanes (#1842)', () => {
+    test('concurrent distinct-query lanes finish without waiting serially while preserving deterministic order (#1842)', async () => {
+        const
+            logins  = ['seat-a', 'seat-b', 'seat-c', 'seat-d'],
+            gates   = [],
+            entered = new Set(),
+            localId = {
+                byLogin: login => `@${login}`,
+                byName : () => null
+            },
+            emptyPage = (viewerId, nodes = []) => ({
+                viewer   : {id: viewerId},
+                rateLimit: {cost: 1, limit: 1000, remaining: 999, resetAt: '2026-10-14T11:00:00Z'},
+                search   : {nodes, pageInfo: {hasNextPage: false}}
+            });
+        let onFourEntered;
+        const fourEntered = new Promise(resolve => { onFourEntered = resolve });
+
+        const seatQueries = logins.map((login, index) => async (text, {query: search}) => {
+            if (!entered.has(login)) {
+                entered.add(login);
+                if (entered.size === logins.length) onFourEntered();
+                await new Promise(resolve => { gates[index] = resolve });
+            }
+
+            if (search.includes('author:seat-')) {
+                const match = search.match(/author:(seat-\w+)/);
+                if (match && !search.startsWith('is:pr is:open archived:false -author:')) {
+                    return emptyPage(`issuer-${index}`, [pr({number: 100 + index, author: match[1], name: match[1]})]);
+                }
+            }
+            return emptyPage(`issuer-${index}`);
+        });
+
+        const producer = createOpenWorkProducer({
+            readers   : async () => logins.map((login, index) => ({
+                seat   : `@${login}`,
+                login,
+                apiBase: 'https://api.github.com',
+                query  : seatQueries[index]
+            })),
+            repos     : async () => ['acme/app'],
+            identities: localId,
+            now       : clock('2026-10-14T10:00:00Z')
+        });
+
+        const pulsePromise = producer.pulse();
+
+        // All 4 distinct-query seats enter concurrently before the first gate is released.
+        await fourEntered;
+        expect(entered.size).toBe(4);
+
+        // Release in reverse declaration order to verify output/quota ordering remains deterministic.
+        for (let index = logins.length - 1; index >= 0; index--) {
+            gates[index]();
+            await Promise.resolve();
+        }
+
+        const state     = await pulsePromise;
+        const lastPulse = state.pulses.at(-1);
+
+        expect(lastPulse.seats.map(row => row.seat)).toEqual(logins.map(login => `@${login}`));
+        expect(Object.keys(state.seatReads)).toEqual(logins.map(login => `@${login}`));
+        expect(lastPulse.quota.slice(0, 4).map(row => [row.viewerId, row.firstOrdinal, row.lastOrdinal])).toEqual([
+            ['issuer-0', 1, 2],
+            ['issuer-1', 3, 4],
+            ['issuer-2', 5, 6],
+            ['issuer-3', 7, 8]
+        ]);
+        expect(lastPulse.quota.slice(0, 4).every(row => Date.parse(row.firstAt) <= Date.parse(row.lastAt))).toBe(true);
+        expect(Object.keys(state.snapshot.rows).sort()).toEqual([
+            'acme/app#100', 'acme/app#101', 'acme/app#102', 'acme/app#103'
+        ]);
+    });
+
+    test('concurrency bounds active lanes and serializes seats sharing a query function reference (#1842)', async () => {
+        const
+            sharedQueryCalls = [],
+            inflightByLane   = {shared: 0, dedicated: 0},
+            maxShared        = {value: 0};
+        let activeTotal   = 0,
+            maxTotal      = 0,
+            nextRemaining = 1000,
+            dedicatedDone = 0;
+        const pendingShared = [];
+
+        const makeAnswer = () => ({
+            viewer   : {id: 'issuer-shared'},
+            rateLimit: {cost: 1, limit: 1000, remaining: --nextRemaining, resetAt: '2026-10-14T11:00:00Z'},
+            search   : {nodes: [], pageInfo: {hasNextPage: false}}
+        });
+
+        let waitTwoDistinct;
+        const twoDistinctEntered = new Promise(resolve => { waitTwoDistinct = resolve });
+        const enteredLanes       = new Set();
+
+        const sharedQuery = async (text, {query: search}) => {
+            activeTotal++;
+            maxTotal = Math.max(maxTotal, activeTotal);
+            inflightByLane.shared++;
+            maxShared.value = Math.max(maxShared.value, inflightByLane.shared);
+            sharedQueryCalls.push(search);
+            enteredLanes.add('shared');
+            if (enteredLanes.size === 2) waitTwoDistinct();
+            try {
+                await new Promise(resolve => pendingShared.push(resolve));
+                return makeAnswer()
+            } finally {
+                inflightByLane.shared--;
+                activeTotal--;
+            }
+        };
+
+        const makeDedicated = id => async () => {
+            activeTotal++;
+            maxTotal = Math.max(maxTotal, activeTotal);
+            enteredLanes.add(id);
+            if (enteredLanes.size === 2) waitTwoDistinct();
+            try {
+                await Promise.resolve();
+                return makeAnswer()
+            } finally {
+                dedicatedDone++;
+                activeTotal--;
+            }
+        };
+
+        const producer = createOpenWorkProducer({
+            concurrency: 2,
+            readers    : async () => [
+                {seat: '@s1', login: 's1', apiBase: 'https://api.github.com', query: sharedQuery},
+                {seat: '@s2', login: 's2', apiBase: 'https://api.github.com', query: sharedQuery},
+                {seat: '@d1', login: 'd1', apiBase: 'https://api.github.com', query: makeDedicated('d1')},
+                {seat: '@d2', login: 'd2', apiBase: 'https://api.github.com', query: makeDedicated('d2')}
+            ],
+            repos     : async () => ['acme/app'],
+            identities: {byLogin: login => `@${login}`, byName: () => null},
+            now       : clock('2026-10-14T10:00:00Z')
+        });
+
+        const run = producer.pulse();
+        await twoDistinctEntered;
+
+        // Drain queued promises from the shared lane; hold s2's final call until d1/d2 finish and advance >1 ms.
+        let done = false, tickedFinal = false;
+        run.finally(() => { done = true });
+        while (!done) {
+            if (pendingShared.length) {
+                if (sharedQueryCalls.length === 4 && !tickedFinal) {
+                    if (dedicatedDone < 4) {
+                        await Promise.resolve();
+                        continue
+                    }
+                    tickedFinal = true;
+                    await new Promise(resolve => setTimeout(resolve, 5));
+                }
+                pendingShared.shift()();
+            }
+            await Promise.resolve();
+        }
+
+        const state = await run;
+        expect(maxShared.value).toBe(1);
+        expect(maxTotal).toBeLessThanOrEqual(2);
+        expect(sharedQueryCalls.filter(q => !q.includes('-author:') && q.includes('author:s1'))).toHaveLength(1);
+        expect(sharedQueryCalls.filter(q => !q.includes('-author:') && q.includes('author:s2'))).toHaveLength(1);
+        expect(state.pulses.at(-1).quota[0]).toMatchObject({
+            viewerId    : 'issuer-shared',
+            calls       : 8,
+            firstOrdinal: 1,
+            lastOrdinal : 4,
+            remaining   : 992
+        });
+    });
+});
