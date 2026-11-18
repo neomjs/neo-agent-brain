@@ -69,6 +69,7 @@ export function readToolJson(result) {
  * @param {String} [options.source] Hook source identifier.
  * @param {String} [options.terminalState] Terminal state, honoured only when `action` is `terminal`.
  * @param {String} [options.turnId] Explicit turn id; omitted lets the server resolve or mint one.
+ * @param {String} [options.writerKey] Opaque seat-session writer key.
  * @param {Object} [options.capacity] The seat's plan-capacity reading, sent as the tool's `capacity`.
  * @param {Number} [options.deadlineMs=DEFAULT_TIMEOUT_MS] Budget for ALL stages COMBINED, not per
  * stage. Per-stage budgets do not compose: two 8s stages under one 15s caller deadline can consume 16s.
@@ -85,6 +86,7 @@ export async function recordTurnPresenceOverMcp({
     source,
     terminalState,
     turnId,
+    writerKey,
     capacity,
     deadlineMs     = DEFAULT_TIMEOUT_MS,
     ClientClass    = Client,
@@ -152,6 +154,7 @@ export async function recordTurnPresenceOverMcp({
         if (source        !== undefined) args.source        = source;
         if (terminalState !== undefined) args.terminalState = terminalState;
         if (turnId        !== undefined) args.turnId        = turnId;
+        if (writerKey     !== undefined) args.writerKey     = writerKey;
         if (capacity      !== undefined) args.capacity      = capacity;
 
         const result = await bound(

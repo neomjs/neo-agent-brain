@@ -32,6 +32,7 @@ import {HOOK_PROCESS_SHARE_MS}                   from '../../../../../../../ai/s
 import {generateKimiSeatConfig}                  from '../../../../../../../ai/services/fleet/generateKimiSeatConfig.mjs';
 import {
     CAPACITY_ACTIONS,
+    deriveWriterKey,
     readClaudeUsageCapacity,
     recordClaudeTurnPresence,
     sessionTurnStore
@@ -168,7 +169,13 @@ async function startPresencePlane() {
                 onsessionclosed     : id => sessions.delete(id)
             });
             mcpServer.registerTool('record_turn_presence', {
-                inputSchema: {action: z.string(), note: z.string().optional(), source: z.string().optional()}
+                inputSchema: {
+                    action   : z.string(),
+                    note     : z.string().optional(),
+                    source   : z.string().optional(),
+                    turnId   : z.string().optional(),
+                    writerKey: z.string().optional()
+                }
             }, async args => {
                 calls.push(args);
                 return {content: [{type: 'text', text: JSON.stringify({status: 'recorded'})}]}
@@ -721,6 +728,50 @@ test.describe('turnPresenceHook — a session names its own turn', () => {
             expect(store.read('session/a')).toBeNull()
         } finally {
             fs.rmSync(dir, {force: true, recursive: true})
+        }
+    });
+
+    test('stamps writerKey from seat identity and session_id, omits without session_id, and never leaks either to stderr (#1841)', async () => {
+        const calls = [];
+
+        await recordClaudeTurnPresence({
+            actionArg  : 'progress',
+            deadlineMs : 500,
+            env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
+            hookPayload: {hook_event_name: 'PostToolUse', session_id: 'secret-session-1'},
+            plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+            record     : async args => {calls.push(args); return {status: 'recorded'}},
+            turnStore  : memoryStore()
+        });
+
+        await recordClaudeTurnPresence({
+            actionArg  : 'progress',
+            deadlineMs : 500,
+            env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
+            hookPayload: {hook_event_name: 'PostToolUse'},
+            plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+            record     : async args => {calls.push(args); return {status: 'recorded'}},
+            turnStore  : memoryStore()
+        });
+
+        expect(calls[0].writerKey).toBe(deriveWriterKey('AGENT:neo-opus-grace', 'secret-session-1'));
+        expect('writerKey' in calls[1]).toBe(false);
+
+        const plane = await listenSilently(), {target} = projectInto('writer-key-stderr');
+
+        try {
+            const {code, stderr} = await runHook(target, {
+                args : ['progress'],
+                stdin: JSON.stringify({hook_event_name: 'PostToolUse', session_id: 'secret-session-1'}),
+                env  : {NEO_SEAT_PLANE_BASE: plane.baseUrl, NEO_TURN_PRESENCE_ASYNC_HOOK_WRITE_TIMEOUT_MS: '150'}
+            });
+
+            expect(code).toBe(0);
+            expect(stderr).toContain('[WARN] [turn-presence] not recorded');
+            expect(stderr).not.toContain('secret-session-1');
+            expect(stderr).not.toContain(deriveWriterKey('AGENT:neo-opus-grace', 'secret-session-1'))
+        } finally {
+            await plane.close()
         }
     })
 });

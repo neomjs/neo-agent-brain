@@ -168,6 +168,16 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
 
         const rotation = receipt?.properties.sessionRotation;
 
+        const receiptKey = receipt && writerStamp(receipt.properties).writerKey,
+              sameWriter = Boolean(receiptKey) && receiptKey === writerStamp(handover.properties).writerKey;
+
+        if (receipt && !rotation?.requestedAt && sameWriter && !(marker && marker.properties.sentAt <= at)) {
+            receipt = handover;
+            chain.add(bareMessageId(handover.id));
+            marker  = firstReply(chain);
+            continue
+        }
+
         if (rotation?.requestedAt) {
             if (!TERMINAL_ROTATION_STATES.includes(rotation.state)) open = {receipt, chain, marker};
             // a request that found no successor ends the lineage; one that did is the next receipt's predecessor
@@ -216,7 +226,8 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
                      COALESCE(json_extract(data, '$.properties.status'), 'active') AS status,
                      json_extract(data, '$.properties.expiresAt') AS expiresAt,
                      json_extract(data, '$.properties.wakeSubmitNonce') AS nonce,
-                     json_extract(data, '$.properties.turnId') AS turnId
+                     json_extract(data, '$.properties.turnId') AS turnId,
+                     json_extract(data, '$.properties.writerKey') AS writerKey
               FROM Nodes
               WHERE id >= ? AND id < ?
                 AND COALESCE(json_extract(data, '$.properties.lastProgressAt'), json_extract(data, '$.properties.startedAt')) >= ?
@@ -332,8 +343,12 @@ export function releaseByWriterStamp(db, identity, {receipt, predecessorMarker, 
     return {
         closedAt,
         promptedAt   : [...laterWrite, ...laterTurn].sort()[0] || null,
-        liveTurnUntil: others.filter(row => row.status === 'active' && row.expiresAt > nowIso && row.lastProgressAt >= ownStart)
-                             .map(row => row.expiresAt).sort().at(-1) || null
+        liveTurnUntil: others.filter(row =>
+            row.status === 'active'
+            && row.expiresAt > nowIso
+            && row.lastProgressAt >= ownStart
+            && !(writerStamp(row).writerKey === key && row.startedAt <= ownStart)
+        ).map(row => row.expiresAt).sort().at(-1) || null
     }
 }
 

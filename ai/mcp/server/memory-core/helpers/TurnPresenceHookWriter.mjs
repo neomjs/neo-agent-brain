@@ -104,6 +104,7 @@ export function readHookPayload({stdin = process.stdin} = {}) {
  * @param {'completed'|'blocked'|'aborted'|'stale'} [options.terminalState='completed'] Terminal state.
  * @param {String} [options.turnId] Stable active-turn identifier; the server resolves it when omitted.
  * @param {String} [options.wakeSubmitNonce] Optional explicit wake-submit nonce.
+ * @param {String} [options.writerKey] Opaque seat-session writer key.
  * @returns {Promise<Object>} `{status}` — `recorded`, or `skipped` with a `reason` naming what was
  * missing. Never a silent success.
  */
@@ -120,7 +121,8 @@ export async function recordTurnPresenceFromHook({
     source = 'harness-hook',
     terminalState = 'completed',
     turnId,
-    wakeSubmitNonce = extractWakeSubmitNonce(hookPayload)
+    wakeSubmitNonce = extractWakeSubmitNonce(hookPayload),
+    writerKey
 } = {}) {
     const agentIdentity = normalizeAgentIdentityNodeId(env.NEO_AGENT_IDENTITY);
 
@@ -167,6 +169,7 @@ export async function recordTurnPresenceFromHook({
         ...(capacity                    ? {capacity}      : {}),
         ...(now           !== undefined ? {now}           : {}),
         ...(turnId        !== undefined ? {turnId}        : {}),
+        ...(writerKey     !== undefined ? {writerKey}     : {}),
         ...(action === 'terminal'       ? {terminalState} : {})
     });
 

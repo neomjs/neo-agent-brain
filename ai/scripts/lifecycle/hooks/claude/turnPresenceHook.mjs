@@ -6,9 +6,25 @@ import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
-import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
-import {isEntryModule}                               from '../../../../services/shared/isEntryModule.mjs';
-import {resolveUserDataDir}                          from './seatModelGuardHook.mjs';
+import {readPlaneConfig, readSeatConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
+import {isEntryModule}                                               from '../../../../services/shared/isEntryModule.mjs';
+import {resolveUserDataDir}                                          from './seatModelGuardHook.mjs';
+
+/**
+ * @summary Version prefix for derived writer keys; shared with `writerStampHook.mjs`.
+ * @type {String}
+ */
+export const WRITER_KEY_VERSION = 'v1';
+
+/**
+ * @summary Derives a seat's opaque writer key for one harness session. Pure.
+ * @param {String} identity  The seat.
+ * @param {String} sessionId The hook payload's `session_id`.
+ * @returns {String} The version, a colon and 32 hex characters.
+ */
+export function deriveWriterKey(identity, sessionId) {
+    return `${WRITER_KEY_VERSION}:${crypto.createHash('sha256').update(`${identity}\n${sessionId}`).digest('hex').slice(0, 32)}`
+}
 
 /**
  * @summary The actions that carry the seat's capacity reading: the turn's start only. Progress fires
@@ -210,6 +226,12 @@ export async function recordClaudeTurnPresence({
 
     if (action === 'start' && turnId) turnStore.write(sessionId, turnId);
 
+    const resolvedPlane = plane ?? await readPlaneConfig(),
+          seatIdentity  = !sessionId ? null : plane
+              ? (typeof env.NEO_AGENT_IDENTITY === 'string' && env.NEO_AGENT_IDENTITY.trim() ? env.NEO_AGENT_IDENTITY.trim() : null)
+              : (await readSeatConfig()).identity,
+          writerKey     = seatIdentity && sessionId ? deriveWriterKey(seatIdentity, sessionId) : undefined;
+
     const result = await recordTurnPresenceFromHook({
         action,
         ...(reading ? {capacity: reading} : {}),
@@ -218,9 +240,10 @@ export async function recordClaudeTurnPresence({
         hookPayload,
         note      : resolveNote({action, hookPayload}),
         now,
-        plane     : plane ?? await readPlaneConfig(),
+        plane     : resolvedPlane,
         source    : resolveSource({action, hookPayload}),
-        ...(turnId ? {turnId} : {}),
+        ...(turnId    ? {turnId}    : {}),
+        ...(writerKey ? {writerKey} : {}),
         ...(normalizeHookEventName(hookPayload) === 'StopFailure' ? {terminalState: 'aborted'} : {}),
         ...(record ? {record} : {})
     });

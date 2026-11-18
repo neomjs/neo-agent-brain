@@ -5652,6 +5652,9 @@ components:
             - type: string
               format: date-time
             - type: number
+        writerKey:
+          type: string
+          description: "Writer key the seat's harness hook stamps (a hash of seat and harness session). Never set by hand."
 
     TurnPresenceRecordResponse:
       type: object
