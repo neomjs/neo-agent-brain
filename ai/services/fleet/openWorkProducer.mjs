@@ -119,9 +119,11 @@ function recordQuota(tally, apiBase, data, failed, queryHash, attemptAt, at) {
     bucket.failed += Number(failed);
     if (Date.parse(attemptAt) < Date.parse(bucket.firstAttemptAt)) bucket.firstAttemptAt = attemptAt;
     if (Date.parse(at) < Date.parse(bucket.firstAt)) bucket.firstAt = at;
-    if (Date.parse(at) > Date.parse(bucket.lastAt)) bucket.lastAt = at;
-    bucket.lastOrdinal = ordinal;
-    bucket.remaining = remaining;
+    if (Date.parse(at) >= Date.parse(bucket.lastAt)) {
+        bucket.lastAt      = at;
+        bucket.lastOrdinal = ordinal;
+        bucket.remaining   = remaining
+    }
     bucket.zeroCostFailedCalls += Number(failed && cost === 0);
     bucket.unknown ||= !endpoint || !viewerId || !limit || !resetAt || cost === null;
     if (cost === null) {
@@ -491,7 +493,7 @@ export function createOpenWorkProducer({
                 laneQueue   = [...lanes.values()],
                 parsedLimit = Number.isFinite(concurrency) ? Math.trunc(concurrency) : SEAT_CONCURRENCY,
                 workerCount = Math.min(Math.max(1, parsedLimit), laneQueue.length);
-            let nextLane    = 0;
+            let nextLane = 0;
 
             await Promise.all(Array.from({length: workerCount}, async () => {
                 while (nextLane < laneQueue.length) {

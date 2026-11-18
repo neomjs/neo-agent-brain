@@ -1,6 +1,7 @@
 import crypto                                    from 'node:crypto';
 import Base                                      from 'neo.mjs/src/core/Base.mjs';
 import AiConfig                                  from '../../config.mjs';
+import boundRosterRead                           from './boundRosterRead.mjs';
 import FleetManager, {resolveBoundPlaneEndpoint} from './FleetManager.mjs';
 import FleetRegistryService                      from './FleetRegistryService.mjs';
 import FleetTenantService                        from './FleetTenantService.mjs';
@@ -129,7 +130,8 @@ function questionPage(params) {
  * @param {{limit: Number, offset: Number}} page
  * @param {Object} [view=QUESTION_VIEWS.open]
  * @param {Object} [options={}]
- * @param {Number|null} [options.timeoutMs=null] Optional axis deadline in ms; expired waits degrade only this view.
+ * @param {Number|null} [options.timeoutMs=null] Optional axis deadline in ms; when finite and positive,
+ *     bounded via {@link module:ai/services/fleet/boundRosterRead} so expired waits degrade only this view.
  * @returns {Promise<Object>} `{state, reason, count, rows, page, capturedAt}`, plus `since` for the expired view.
  */
 async function readOwnQuestions(seam, page, view = QUESTION_VIEWS.open, {timeoutMs = null} = {}) {
@@ -147,35 +149,21 @@ async function readOwnQuestions(seam, page, view = QUESTION_VIEWS.open, {timeout
     let answer;
 
     try {
-        const observe = Promise.resolve().then(() => seam.observeMessages({
+        const observe = () => seam.observeMessages({
             box            : 'inbox',
             status         : 'all',
             includeArchived: true,
             ...view.filter,
-            limit          : page.limit,
-            offset         : page.offset
-        }));
+            limit : page.limit,
+            offset: page.offset
+        });
 
-        if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-            observe.catch(() => {});
-            let timerId;
-
-            answer = await Promise.race([
-                observe.finally(() => clearTimeout(timerId)),
-                new Promise((_, reject) => {
-                    timerId = setTimeout(
-                        () => reject(Object.assign(new Error(`fleet: the ${view.label} read timed out after ${timeoutMs} ms`), {code: 'FLEET_AXIS_TIMEOUT'})),
-                        timeoutMs
-                    );
-                    timerId.unref?.()
-                })
-            ])
-        } else {
-            answer = await observe
-        }
+        answer = await (Number.isFinite(timeoutMs) && timeoutMs > 0
+            ? boundRosterRead(observe, view.label, timeoutMs)()
+            : observe())
     } catch (error) {
         if (error?.code === 'FLEET_AXIS_TIMEOUT') {
-            return unavailable(error.message)
+            return unavailable(`fleet: the ${view.label} read timed out after ${timeoutMs} ms`)
         }
         console.error(`[fleet] the ${view.label} read failed:`, error);
         return unavailable(`fleet: the ${view.label} read failed`)

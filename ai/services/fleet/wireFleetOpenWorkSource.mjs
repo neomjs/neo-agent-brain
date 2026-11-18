@@ -20,6 +20,7 @@
 import fs                                                       from 'fs';
 import path                                                     from 'path';
 import AiConfig                                                 from '../../config.mjs';
+import boundRosterRead                                          from './boundRosterRead.mjs';
 import FleetControlBridge                                       from './FleetControlBridge.mjs';
 import {createFleetOpenWorkSource}                              from './fleetOpenWorkSource.mjs';
 import {createOpenWorkProducer}                                 from './openWorkProducer.mjs';
@@ -317,7 +318,7 @@ export function fileStore(filePath) {
  * @param {Function} [options.query]      Replaces every seat's GitHub call, credential included (tests).
  * @param {Function} [options.createQuery] `(token) → query`; replaces the GitHub call per token (tests).
  * @param {Function} [options.readPresence] The roster's `who_is_online` read; without it no seat is benched.
- * @param {Number}   [options.presenceTimeoutMs=AiConfig.fleet.rosterAxisTimeoutMs] Axis timeout bounding `readPresence` so a slow plane falls back to retained `identityRows`.
+ * @param {Number}   [options.presenceTimeoutMs=AiConfig.fleet.rosterAxisTimeoutMs] Axis timeout bounding `readPresence` via {@link module:ai/services/fleet/boundRosterRead} so a slow plane serves retained presence while younger than `AiConfig.fleet.rosterRetainedMaxAgeMs`, and expires past it.
  * @param {Function} [options.now]
  * @param {String} [options.apiBase] Existing query endpoint, recorded with quota evidence.
  * @param {Function|null} [options.onPulse] Awaited after the existing pulse; concurrent rounds share it.
@@ -339,34 +340,39 @@ export function wireFleetOpenWorkSource({
         return null
     }
 
-    // the pulse's presence read keeps its rows for the identity lookups that follow it; a timeout or
-    // failed read leaves the last answered rows in place so GitHub reads are never stalled behind mc-server
-    let running = null, stopped = false, identityRows = [];
+    // the pulse's presence read keeps its rows only while younger than `rosterRetainedMaxAgeMs`; a timeout or
+    // failed read leaves valid retained rows in place so GitHub reads are never stalled behind mc-server
+    let running = null, stopped = false, retainedPresence = null;
     const
-        listDefinitions = () => registry.listAgents(),
-        readRows        = readPresence && (() => {
-            const call = Promise.resolve().then(readPresence).then(report => {
-                if (Array.isArray(report?.agents)) identityRows = report.agents;
-                return report
-            });
+        clock = typeof now === 'function' ? now : Date.now,
+        nowMs = () => {
+            const value = clock();
 
-            call.catch(() => {});
-
-            if (!Number.isFinite(presenceTimeoutMs) || presenceTimeoutMs <= 0) {
-                return call
+            return typeof value === 'number' ? value : new Date(value).getTime()
+        },
+        currentIdentityRows = () => retainedPresence && nowMs() - retainedPresence.settledAtMs <= AiConfig.fleet.rosterRetainedMaxAgeMs
+            ? retainedPresence.payload.agents
+            : [],
+        recordPresence      = (payload, settledAtMs = nowMs()) => {
+            if (Array.isArray(payload?.agents)) {
+                retainedPresence = {payload, settledAtMs}
             }
+        },
+        listDefinitions     = () => registry.listAgents(),
+        readRows            = readPresence && (Number.isFinite(presenceTimeoutMs) && presenceTimeoutMs > 0
+            ? boundRosterRead(readPresence, 'open-work presence', presenceTimeoutMs, {
+                maxRetainedAgeMs: AiConfig.fleet.rosterRetainedMaxAgeMs,
+                now             : clock,
+                readRetained    : () => retainedPresence,
+                writeRetained   : recordPresence
+            })
+            : async () => {
+                const report = await readPresence();
 
-            let timerId;
-
-            return Promise.race([
-                call.finally(() => clearTimeout(timerId)),
-                new Promise(resolve => {
-                    timerId = setTimeout(() => resolve({agents: identityRows}), presenceTimeoutMs);
-                    timerId.unref?.()
-                })
-            ])
-        }),
-        producer        = createOpenWorkProducer({
+                recordPresence(report);
+                return report
+            }),
+        producer            = createOpenWorkProducer({
             readers   : seatReaders({
                 listDefinitions,
                 resolveCredential: id => query ? 'injected' : registry.resolveCredential?.(id) ?? null,
@@ -375,19 +381,26 @@ export function wireFleetOpenWorkSource({
                 ...(query ? {createQuery: () => query} : createQuery ? {createQuery} : {})
             }),
             repos     : async () => githubSlugsOf(listDefinitions()),
-            identities: seatIdentities(listDefinitions, () => identityRows),
+            identities: seatIdentities(listDefinitions, currentIdentityRows),
             store     : fileStore(path.join(registry.getDataDir(), 'open-work.json')),
             intervalMs: pulseMs,
             ...(now ? {now} : {})
         }),
-        pulse           = () => stopped ? (running ?? Promise.resolve(producer.getState())) :
+        pulse               = () => stopped ? (running ?? Promise.resolve(producer.getState())) :
             running ??= producer.pulse().then(async state => { await onPulse?.(state); return state })
                 .catch(error => console.error('[fleet] open-work pulse failed:', error)).finally(() => { running = null }),
-        timer           = setInterval(pulse, pulseMs);
+        timer               = setInterval(pulse, pulseMs);
 
     timer.unref?.();
-    // the pulse's last presence rows give the projection the families the wake round decides with
-    bridge.openWorkSource = createFleetOpenWorkSource({producer, seatFamilies: () => identityRows.length ? familiesOf({agents: identityRows}) : null});
+    // the pulse's last unexpired presence rows give the projection the families the wake round decides with
+    bridge.openWorkSource = createFleetOpenWorkSource({
+        producer,
+        seatFamilies: () => {
+            const rows = currentIdentityRows();
+
+            return rows.length ? familiesOf({agents: rows}) : null
+        }
+    });
     pulse();
 
     return {
