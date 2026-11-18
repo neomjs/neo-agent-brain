@@ -30,13 +30,13 @@ test.describe('Neo.ai.services.shared.contentTrust.authorTrustClassifier', () =>
 
     const FORMER_LOGINS = ['@neo-gemini-pro', 'neo-gemini-pro', 'Neo-Gemini-Pro', '@neo-gemini-3-1-pro', '@neo-fable', 'neo-fable', '@neo-gpt', 'neo-gpt', '@neo-opus-4-7', '@neo-claude-opus'];
 
-    test('a former login with org standing keeps the owning resident trust tier (@-prefix + case agnostic)', () => {
+    test('a former login confers no tier of its own: org standing yields repo-trusted, never the renamed resident\'s tier (#1814)', () => {
         for (const formerLogin of FORMER_LOGINS) {
             for (const authorAssociation of ['MEMBER', 'owner', 'COLLABORATOR']) {
-                expect(classifyAuthorTrust(formerLogin, {authorAssociation}), `${formerLogin} ${authorAssociation}`).toBe(TRUST_TIERS.PEER_TRUSTED)
+                expect(classifyAuthorTrust(formerLogin, {authorAssociation}), `${formerLogin} ${authorAssociation}`).toBe(TRUST_TIERS.REPO_TRUSTED)
             }
             expect(classifyAuthorTrust(formerLogin, {collaborators: new Set([formerLogin.toUpperCase()])}), `${formerLogin} collaborator`)
-                .toBe(TRUST_TIERS.PEER_TRUSTED)
+                .toBe(TRUST_TIERS.REPO_TRUSTED)
         }
     });
 
