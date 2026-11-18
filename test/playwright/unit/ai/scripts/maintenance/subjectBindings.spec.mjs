@@ -360,6 +360,23 @@ test.describe('ai/scripts/maintenance/subjectBindings', () => {
             expect(result.unresolved).toContainEqual({row: '@neo-gemini-pro', state: 'ambiguous-legacy-ownership',
                 remedy: 'a reviewed reconciliation: the spelling is a live identity of its own', authority: 'the plane operator'});
         });
+
+        test('a row between two former spellings counts for each of them once, so a reclaimed second spelling stays ambiguous', () => {
+            node('MESSAGE:between', {label: 'MESSAGE', properties: {to: '@neo-gpt', from: '@neo-gemini-pro'}});
+            node('MESSAGE:self',    {label: 'MESSAGE', properties: {to: '@neo-gpt', from: '@neo-gpt'}});
+            insert('INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (?, NULL, ?, ?, ?, ?)', 'edge-between', 'AGENT:neo-gpt', 'AGENT:neo-gemini-pro', 'RELATES_TO', '{}');
+            node('@neo-gemini-pro', {label: 'AgentIdentity', properties: {accountType: 'agent'}});
+
+            const
+                result   = inventory(),
+                spelling = handle => result.formerSpellings.find(entry => entry.spelling === handle),
+                edge     = {id: 'edge-between', type: 'RELATES_TO', source: 'AGENT:neo-gpt', target: 'AGENT:neo-gemini-pro'};
+
+            expect(spelling('@neo-gpt')).toMatchObject({reclaimed: false, messages: 2, edges: [edge], state: 'legacy-rows'});
+            expect(spelling('@neo-gemini-pro')).toMatchObject({reclaimed: true, messages: 1, edges: [edge], state: 'ambiguous-legacy-ownership'});
+            expect(result.unresolved).toContainEqual(expect.objectContaining({row: '@neo-gemini-pro', state: 'ambiguous-legacy-ownership'}));
+            expect(result.blockers).toContainEqual({blocker: 'former-spelling-rows', spellings: ['@neo-gemini-pro', '@neo-gpt']});
+        });
     });
 
     test.describe('activate (#1814)', () => {

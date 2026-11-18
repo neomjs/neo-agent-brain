@@ -204,7 +204,10 @@ function readFormerSpellings(db, identities) {
     identities.forEach(({id, properties}) => (Array.isArray(properties.formerLogins) ? properties.formerLogins : []).forEach(raw => claim(raw, id, 'graph')));
     Object.entries(FORMER_LOGIN_TO_IDENTITY).forEach(([raw, {id}]) => claim(raw, id, 'roster'));
 
-    const spellingOf = new Map([...spellings.keys()].flatMap(spelling => storageSpellings(spelling).map(value => [value, spelling])));
+    const
+        spellingOf = new Map([...spellings.keys()].flatMap(spelling => storageSpellings(spelling).map(value => [value, spelling]))),
+        // A row between two former spellings counts for each of them, and a row between two storage forms of one counts once
+        holders    = (...values) => [...new Set(values.map(value => spellingOf.get(value)).filter(Boolean))].map(spelling => spellings.get(spelling));
 
     if (spellingOf.size > 0) {
         const values = [...spellingOf.keys()], marks = values.map(() => '?').join(', ');
@@ -212,10 +215,10 @@ function readFormerSpellings(db, identities) {
         db.prepare(`SELECT json_extract(data, '$.properties.to') AS too, json_extract(data, '$.properties.from') AS frm FROM Nodes
             WHERE id LIKE 'MESSAGE:%' AND CASE WHEN json_valid(data) THEN json_extract(data, '$.properties.to') IN (${marks})
                 OR json_extract(data, '$.properties.from') IN (${marks}) ELSE 0 END`).all(...values, ...values)
-            .forEach(({too, frm}) => spellings.get(spellingOf.get(too) ?? spellingOf.get(frm)).messages++);
+            .forEach(({too, frm}) => holders(too, frm).forEach(entry => entry.messages++));
 
         db.prepare(`SELECT id, type, source, target FROM Edges WHERE source IN (${marks}) OR target IN (${marks}) ORDER BY id`).all(...values, ...values)
-            .forEach(edge => spellings.get(spellingOf.get(edge.source) ?? spellingOf.get(edge.target)).edges.push({...edge}));
+            .forEach(edge => holders(edge.source, edge.target).forEach(entry => entry.edges.push({...edge})));
     }
 
     return [...spellings.values()].sort((a, b) => a.spelling.localeCompare(b.spelling)).map(entry => {
