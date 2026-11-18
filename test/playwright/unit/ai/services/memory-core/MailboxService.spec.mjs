@@ -2860,6 +2860,72 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         }
     });
 
+    test('once activated, a former login with no identity of its own no longer redirects', async () => {
+        const sqlite = GraphService.db.storage.db;
+
+        GraphService.upsertNode({id: '@neo-gemini-julia', type: 'AgentIdentity', name: 'Julia',
+            properties: {accountType: 'agent', githubLogin: '@neo-gemini-julia', formerLogins: ['@neo-gemini-pro']}});
+
+        for (const [grantor, grantee] of [['@neo-gemini-julia', '@alice'], ['@alice', '@neo-gemini-julia']]) {
+            await RequestContextService.run({agentIdentityNodeId: grantor}, () => PermissionService.grantPermission({to: grantee, scope: 'CAN_REPLY_TO'}));
+        }
+
+        const send = () => RequestContextService.run({agentIdentityNodeId: '@alice'},
+            () => MailboxService.addMessage({to: '@neo-gemini-pro', subject: 'former spelling', body: 'routing probe'}));
+
+        try {
+            // Dormant: the former spelling still reaches the identity that left it
+            expect((await send()).resolvedRecipientAlias?.id).toBe('@neo-gemini-julia');
+
+            sqlite.transaction(() => activateSubjectBinding(sqlite, {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+            // Active: the spelling is provenance only, so it addresses nobody
+            await expect(send()).rejects.toThrow(/Unrecognized 'to' format: '@neo-gemini-pro'/);
+        } finally {
+            sqlite.exec(`DROP TABLE IF EXISTS ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
+        }
+    });
+
+    test('once activated, a former spelling neither widens a mailbox read nor names its renamed identity in a filter', async () => {
+        const sqlite = GraphService.db.storage.db;
+
+        GraphService.upsertNode({id: '@neo-gemini-julia', type: 'AgentIdentity', name: 'Julia',
+            properties: {accountType: 'agent', githubLogin: '@neo-gemini-julia', formerLogins: ['@neo-gemini-pro']}});
+
+        for (const [grantor, grantee] of [['@neo-gemini-julia', '@alice'], ['@alice', '@neo-gemini-julia']]) {
+            await RequestContextService.run({agentIdentityNodeId: grantor}, () => PermissionService.grantPermission({to: grantee, scope: 'CAN_REPLY_TO'}));
+        }
+        await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-julia'},
+            () => MailboxService.addMessage({to: '@alice', subject: 'from the renamed seat', body: 'history probe'}));
+
+        const
+            asAlice     = fn => RequestContextService.run({agentIdentityNodeId: '@alice'}, fn),
+            fromFormer  = () => asAlice(() => MailboxService.listMessages({box: 'inbox', fromIdentity: '@neo-gemini-pro'})),
+            countFormer = () => asAlice(() => MailboxService.countMessages({box: 'inbox', fromIdentity: '@neo-gemini-pro'})),
+            ownByFormer = () => RequestContextService.run({agentIdentityNodeId: '@neo-gemini-julia'},
+                () => MailboxService.listMessages({box: 'inbox', to: '@neo-gemini-pro'}));
+
+        try {
+            // Dormant: the former spelling still names the renamed identity, in the filter and in storage
+            const dormant = await fromFormer();
+            expect(dormant.resolvedIdentityAliases?.fromIdentity?.id).toBe('@neo-gemini-julia');
+            expect(dormant.messages.map(message => message.subject)).toContain('from the renamed seat');
+            expect((await countFormer()).count).toBeGreaterThanOrEqual(1);
+            await expect(ownByFormer()).resolves.toBeTruthy();
+
+            sqlite.transaction(() => activateSubjectBinding(sqlite, {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+            // Active: the spelling is provenance only, in the filter (`listMessages`) and in storage (`countMessages`)
+            const active = await fromFormer();
+            expect(active.resolvedIdentityAliases).toBeUndefined();
+            expect(active.messages).toHaveLength(0);
+            expect((await countFormer()).count).toBe(0);
+            await expect(ownByFormer()).rejects.toThrow(/no CAN_READ_INBOX_OF permission for @neo-gemini-pro/);
+        } finally {
+            sqlite.exec(`DROP TABLE IF EXISTS ${SUBJECT_BINDING_ACTIVATION_TABLE}`);
+        }
+    });
+
     test('markRead updates the readAt property', async () => {
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
             await PermissionService.grantPermission({ to: '@alice', scope: 'CAN_REPLY_TO' });

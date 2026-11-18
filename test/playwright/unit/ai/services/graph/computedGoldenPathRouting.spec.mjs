@@ -13,9 +13,11 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}             from '@playwright/test';
+import Database                   from 'better-sqlite3';
+import Neo                        from 'neo.mjs/src/Neo.mjs';
+import * as core                  from 'neo.mjs/src/core/_export.mjs';
+import {activateSubjectBinding}   from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 
 test.describe('computedGoldenPathRouting — the contradiction guard (routing-decision surface, #14588)', () => {
     let buildComputedRouteFromPass, findComputedFocusContradiction, isRoutingConflictFocusCandidate,
@@ -445,8 +447,22 @@ test.describe('buildComputedRouteFromPass — canonical pass outcome → typed c
 test.describe('computedGoldenPathRouting — community-multiplier internal-author set (#1527)', () => {
     let isCommunityAuthor, readInternalAuthorLogins;
 
-    const graphOf  = nodes => ({db: {storage: {db: {prepare: () => ({all: () => nodes.map(node => ({data: JSON.stringify(node)}))})}}}}),
-          internal = new Set(['owner-login', 'their-agent']);
+    const
+        members  = [
+            {id: '@their-agent',      label: 'AgentIdentity', properties: {accountType: 'agent', formerLogins: ['@their-old-handle']}},
+            {id: '@their-owner',      label: 'AgentIdentity', properties: {accountType: 'human', githubLogin: '@owner-login'}},
+            {id: '@fixture-leftover', label: 'AgentIdentity', properties: {}}
+        ],
+        graphOf  = (nodes, {activated = false} = {}) => {
+            const db = new Database(':memory:');
+
+            db.exec('CREATE TABLE Nodes (id TEXT PRIMARY KEY, user_id TEXT, data TEXT)');
+            nodes.forEach(node => db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(node.id, JSON.stringify(node)));
+            if (activated) db.transaction(() => activateSubjectBinding(db, {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+            return {db: {storage: {db}}};
+        },
+        internal = new Set(['owner-login', 'their-agent']);
 
     test.beforeAll(async () => {
         ({
@@ -455,14 +471,12 @@ test.describe('computedGoldenPathRouting — community-multiplier internal-autho
         } = await import('../../../../../../ai/services/graph/computedGoldenPathRouting.mjs'));
     });
 
-    test('readInternalAuthorLogins reads the plane\'s members as bare logins, former logins included', () => {
-        const logins = readInternalAuthorLogins(graphOf([
-            {id: '@their-agent',      label: 'AgentIdentity', properties: {accountType: 'agent', formerLogins: ['@their-old-handle']}},
-            {id: '@their-owner',      label: 'AgentIdentity', properties: {accountType: 'human', githubLogin: '@owner-login'}},
-            {id: '@fixture-leftover', label: 'AgentIdentity', properties: {}}
-        ]));
+    test('readInternalAuthorLogins reads the plane\'s members as bare logins, former logins included while the cutover is dormant', () => {
+        expect([...readInternalAuthorLogins(graphOf(members))]).toEqual(['their-agent', 'their-old-handle', 'owner-login']);
+    });
 
-        expect([...logins]).toEqual(['their-agent', 'their-old-handle', 'owner-login']);
+    test('readInternalAuthorLogins: after the cutover a former login confers no member weight (#1814)', () => {
+        expect([...readInternalAuthorLogins(graphOf(members, {activated: true}))]).toEqual(['their-agent', 'owner-login']);
     });
 
     test('readInternalAuthorLogins answers an empty set and notifies onError when the plane cannot be read', () => {

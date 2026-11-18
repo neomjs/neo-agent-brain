@@ -185,7 +185,7 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
         expect(summary.quarantined).toBe(2)
     });
 
-    test('non-rostered org MEMBER and formerLogins comments with org standing classify as trusted and preserve GitHub URLs untouched (#1279)', () => {
+    test('non-rostered org MEMBER and formerLogins comments with org standing classify as repo-trusted and preserve GitHub URLs untouched (#1279, #1814)', () => {
         const memberBody = 'Receipt: https://github.com/neomjs/neo-agent-brain/blob/dev/ai/services/memory-core/MemoryService.mjs#L466';
         const formerBody = 'Historical peer receipt: https://github.com/neomjs/neo/pull/19835';
 
@@ -214,7 +214,8 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
         expect(memberComment.body).toBe(memberBody);
         expect(memberComment.body).not.toContain('[QUARANTINED_URL');
 
-        expect(formerReply.authorTrust).toBe(TRUST_TIERS.PEER_TRUSTED);
+        // A former login confers no tier of its own: org standing makes it repo-trusted, never the renamed resident
+        expect(formerReply.authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
         expect(formerReply.body).toBe(formerBody);
         expect(formerReply.body).not.toContain('[QUARANTINED_URL');
 

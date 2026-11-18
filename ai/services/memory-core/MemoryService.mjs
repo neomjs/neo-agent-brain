@@ -39,6 +39,7 @@ import RequestContextService, {SHARED_USER_ID, normalizeUserId} from '../../mcp/
 import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER}              from '../../graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId}                           from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {resolveAgentIdentityAlias}                              from '../graph/agentFamilyResolution.mjs';
+import {isSubjectSelectionActive}                               from './helpers/subjectBinding.mjs';
 
 import {CONCEPT_EXPANSION_EDGE_TYPES, MEMORY_TERMINAL_EDGE_TYPES, enrichWithConceptWalk} from '../graph/conceptAnchoredRetrieval.mjs';
 import {buildMemoryResolveCandidate}                                                     from './conceptWalkMemoryGate.mjs';
@@ -374,6 +375,19 @@ function buildMailboxDelta() {
 }
 
 /**
+ * @summary Whether a former login still confers its renamed identity's trust tier: only while selection by
+ * subject is known dormant. An unreadable activation confers nothing rather than reading as dormant.
+ * @returns {Boolean}
+ */
+function formerLoginsConferTrust() {
+    try {
+        return !isSubjectSelectionActive(GraphService.db?.storage?.db);
+    } catch {
+        return false;
+    }
+}
+
+/**
  * @summary Service for handling adding, listing, and querying agent memories.
  *
  * This service acts as the primary interface for interacting with the 'memories' collection in ChromaDB.
@@ -409,19 +423,7 @@ class MemoryService extends Base {
         singleton: true
     }
 
-    static identityTrustTiers = new Map(IDENTITIES.flatMap(identity => {
-        const
-            tier         = identity.properties?.trustTier || TRUST_TIERS.UNCLASSIFIED,
-            formerLogins = Array.isArray(identity.properties?.formerLogins) ? identity.properties.formerLogins : [];
-
-        return [
-            [identity.id, tier],
-            ...formerLogins
-                .map(login => normalizeAgentIdentityNodeId(login))
-                .filter(id => typeof id === 'string' && id.startsWith('@'))
-                .map(id => [id, tier])
-        ];
-    }))
+    static identityTrustTiers = new Map(IDENTITIES.map(identity => [identity.id, identity.properties?.trustTier || TRUST_TIERS.UNCLASSIFIED]))
 
     static trustTierRanks = new Map(TRUST_TIER_ORDER.map((tier, index) => [tier, index]))
 
@@ -463,8 +465,12 @@ class MemoryService extends Base {
      *
      * Checks the live `GraphService` `AgentIdentity` node first (so runtime/auto-provisioned seats
      * such as `@neo-gemini-maryam` resolve their graph-stamped `trustTier` without requiring an
-     * entry in `identityRoots.mjs`), resolving `formerLogins` aliases before falling back to the
-     * seeded `identityTrustTiers` map (`id` + `formerLogins`) when the graph is unseeded or offline.
+     * entry in `identityRoots.mjs`), before falling back to the seeded `identityTrustTiers` map
+     * when the graph is unseeded or offline.
+     *
+     * While selection by subject is dormant, a `formerLogins` spelling resolves to its renamed
+     * identity first. Once the cutover activates it, the exact node comes first and a former
+     * spelling confers no tier; nor does one whose activation cannot be read.
      *
      * @param {Object} metadata Chroma metadata row.
      * @returns {String} Trust tier, or `unclassified` when neither the graph nor seeded identities match.
@@ -476,9 +482,13 @@ class MemoryService extends Base {
             return TRUST_TIERS.UNCLASSIFIED;
         }
 
+        let formerConfers;
+
         const
-            normalizedId = normalizeAgentIdentityNodeId(rawId),
-            canonicalId  = resolveAgentIdentityAlias(normalizedId)?.id || normalizedId;
+            confersFormer = () => formerConfers ??= formerLoginsConferTrust(),
+            normalizedId  = normalizeAgentIdentityNodeId(rawId),
+            alias         = resolveAgentIdentityAlias(normalizedId),
+            canonicalId   = alias && confersFormer() ? alias.id : normalizedId;
 
         if (GraphService.db) {
             const
@@ -492,7 +502,7 @@ class MemoryService extends Base {
                 directNode = readNode(canonicalId)
                     || (canonicalId !== normalizedId ? readNode(normalizedId) : null)
                     || (normalizedId !== rawId ? readNode(rawId) : null),
-                matchedNode = directNode || (!this.identityTrustTiers.has(canonicalId) && typeof GraphService.listNodeRecordsByType === 'function'
+                matchedNode = directNode || (!this.identityTrustTiers.has(canonicalId) && typeof GraphService.listNodeRecordsByType === 'function' && confersFormer()
                     ? (() => {
                         try {
                             const {records = []} = GraphService.listNodeRecordsByType({type: 'AgentIdentity'}) || {};

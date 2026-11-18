@@ -52,6 +52,7 @@ import {
     buildAuthorityReceipt,
     getTaskAuthorityClass
 } from '../../../../../../ai/daemons/orchestrator/taskAuthority.mjs';
+import {activateSubjectBinding}      from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 
 const TODAY    = '2026-11-10';
 const TOMORROW = '2026-11-11';
@@ -601,6 +602,25 @@ test.describe('datedItemsSection & dated-items-overdue lane (#1576)', () => {
             ]);
         } finally {
             try { db.close(); } catch {}
+        }
+    });
+
+    test('once the cutover activates, a former login stops being an addressable owner (#1814)', () => {
+        const db = createIdentityGraphDb([{
+            id        : '@neo-gemini-julia',
+            properties: {accountType: 'agent', githubLogin: '@neo-gemini-julia', participationStatus: 'active', formerLogins: ['@neo-gemini-pro']}
+        }]);
+
+        try {
+            // Dormant: the former spelling still addresses its identity
+            expect([...resolveKnownIdentities({db})]).toEqual(['@neo-gemini-julia', '@neo-gemini-pro']);
+
+            db.transaction(() => activateSubjectBinding(db, {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+            // Active: it no longer delivers, so its rows fall back to AGENT:*
+            expect([...resolveKnownIdentities({db})]).toEqual(['@neo-gemini-julia']);
+        } finally {
+            db.close()
         }
     });
 
