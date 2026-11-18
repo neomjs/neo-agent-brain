@@ -1,4 +1,5 @@
 import {memberLoginsOf, readAgentIdentityNodes} from './agentIdentityParticipation.mjs';
+import {isSubjectSelectionActive}               from '../services/memory-core/helpers/subjectBinding.mjs';
 
 /**
  * @module ai/graph/issueEdgeWeightSchema
@@ -75,13 +76,16 @@ export function getComputedRecommendationNodeType(nodeData) {
 }
 
 /**
- * @summary Reads bare GitHub logins of the plane's internal members (`agent` and `human` `AgentIdentity` nodes),
- * including `formerLogins` so historical tickets authored before handle renames remain recognized as internal.
+ * @summary Reads bare GitHub logins of the plane's internal members (`agent` and `human` `AgentIdentity` nodes).
+ *
+ * Until the cutover activates selection by subject, `formerLogins` count as members too. After it, a
+ * released login confers no member weight on whoever registers it, and no stored ticket still names a
+ * former login: GitHub reports a renamed account's history under its current login (#1814).
  *
  * Accepts either a direct `better-sqlite3` handle (`db.prepare`) or a `GraphService`-like wrapper
  * (`graphService.db.storage.db`). Degrades safely to an empty `Set` (invoking `onError` when supplied)
- * if the store or `AgentIdentity` query is unavailable, keeping community emphasis disabled rather than
- * inverting into boosting every ticket.
+ * if the store, its activation record or the `AgentIdentity` query is unavailable, keeping community
+ * emphasis disabled rather than inverting into boosting every ticket.
  *
  * @param {Object|null|undefined} graphOrDb Direct `better-sqlite3` handle or `GraphService` carrier.
  * @param {Function} [onError] Optional callback invoked when reading `AgentIdentity` nodes fails.
@@ -93,7 +97,7 @@ export function readInternalAuthorLogins(graphOrDb, onError) {
             ? graphOrDb
             : graphOrDb?.db?.storage?.db;
 
-        return new Set(memberLoginsOf(readAgentIdentityNodes(sqliteDb), {formerLogins: true}));
+        return new Set(memberLoginsOf(readAgentIdentityNodes(sqliteDb), {formerLogins: !isSubjectSelectionActive(sqliteDb)}));
     } catch (error) {
         onError?.(error);
         return new Set();
