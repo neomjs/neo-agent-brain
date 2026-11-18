@@ -477,4 +477,80 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             fs.rmSync(dataDir, {recursive: true, force: true})
         }
     });
+
+    test('stalled readPresence falls back cleanly to retained identityRows at presenceTimeoutMs without stalling GitHub reads (#1842)', async () => {
+        const
+            dataDir      = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-presence-timeout-')),
+            bridge       = {},
+            node         = {
+                number                  : 19, headRefOid: 'b2', reviewDecision: 'REVIEW_REQUIRED', mergeable: 'MERGEABLE', isDraft: false,
+                body                    : 'Authored by Ada (Claude).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []}, latestReviews: {pageInfo: {hasNextPage: false}, nodes: []},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []}, commits: {nodes: [{commit: {oid: 'b2', statusCheckRollup: {state: 'SUCCESS'}}}]}
+            };
+        let presenceCall = 0, releaseStalled;
+
+        try {
+            const wired = wireFleetOpenWorkSource({
+                registry         : {
+                    listAgents       : () => definitions,
+                    getDataDir       : () => dataDir,
+                    resolveCredential: id => id === 'ada' ? 'pat-ada' : null
+                },
+                bridge,
+                presenceTimeoutMs: 25,
+                pulseMs          : 3600000,
+                createQuery      : () => async (text, {query: search}) => ({
+                    rateLimit: {cost: 1},
+                    search   : {pageInfo: {hasNextPage: false}, nodes: search.includes('author:neo-opus-ada') ? [node] : []}
+                }),
+                readPresence     : () => {
+                    presenceCall++;
+                    if (presenceCall === 1) {
+                        return Promise.resolve({
+                            agents: [
+                                {identity: '@neo-opus-ada', name: 'Ada', signals: {}},
+                                {identity: '@lab-seat',     name: 'Lab', signals: {participationStatus: 'operator_benched'}},
+                                {identity: '@idle-seat',    name: 'Idle', signals: {participationStatus: 'operator_benched'}}
+                            ]
+                        })
+                    }
+                    return new Promise(resolve => { releaseStalled = resolve })
+                }
+            });
+
+            // Pulse 1 warms identityRows synchronously from the first readPresence answer.
+            await wired.producer.pulse();
+            expect(wired.producer.getState()).toMatchObject({coverage: 'complete', reason: null});
+
+            // Pulse 2 hangs in readPresence past presenceTimeoutMs=25 and still completes using retained identityRows.
+            await wired.producer.pulse();
+            expect(presenceCall).toBe(2);
+            expect(wired.producer.getState()).toMatchObject({coverage: 'complete', reason: null});
+            expect(wired.producer.getState().snapshot.rows['acme/app#19'].owner).toEqual({
+                kind : 'seat',
+                seat : '@neo-opus-ada',
+                login: 'neo-opus-ada'
+            });
+
+            // Settling the stalled call late refreshes identityRows for subsequent pulses.
+            releaseStalled({
+                agents: [
+                    {identity: '@neo-opus-ada', name: 'AdaRenamed', signals: {participationStatus: 'operator_benched'}},
+                    {identity: '@lab-seat',     name: 'Lab',        signals: {participationStatus: 'operator_benched'}},
+                    {identity: '@idle-seat',    name: 'Idle',       signals: {participationStatus: 'operator_benched'}}
+                ]
+            });
+            await Promise.resolve();
+            await Promise.resolve();
+
+            await wired.producer.pulse();
+            expect(wired.producer.getState().pulses.at(-1).seats.find(row => row.seat === '@neo-opus-ada')?.benched).toBe(true);
+            releaseStalled?.({agents: []});
+            await wired.stop();
+        } finally {
+            releaseStalled?.({agents: []});
+            fs.rmSync(dataDir, {recursive: true, force: true})
+        }
+    });
 });

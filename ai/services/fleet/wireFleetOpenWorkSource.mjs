@@ -19,6 +19,7 @@
 
 import fs                                                       from 'fs';
 import path                                                     from 'path';
+import AiConfig                                                 from '../../config.mjs';
 import FleetControlBridge                                       from './FleetControlBridge.mjs';
 import {createFleetOpenWorkSource}                              from './fleetOpenWorkSource.mjs';
 import {createOpenWorkProducer}                                 from './openWorkProducer.mjs';
@@ -111,7 +112,9 @@ export async function benchedIdentities(readPresence) {
  */
 export function seatReaders({listDefinitions, resolveCredential, apiBase = 'https://api.github.com', createQuery = token => createGithubGraphqlQuery({token, apiBase}), readPresence = null}) {
     return async () => {
-        const benched = await benchedIdentities(readPresence);
+        const
+            benched = await benchedIdentities(readPresence),
+            queries = new Map();
 
         return listDefinitions()
             .filter(definition => definition.githubUsername && (definition.forge ?? 'github') === 'github')
@@ -119,8 +122,17 @@ export function seatReaders({listDefinitions, resolveCredential, apiBase = 'http
                 const
                     login = String(definition.githubUsername).replace(/^@/, ''),
                     token = resolveCredential(definition.id);
+                let query = null;
 
-                return {seat: `@${login}`, login, apiBase, query: token ? createQuery(token) : null, benched: benched.has(presenceIdentityForAgent(definition))}
+                if (token) {
+                    query = queries.get(token);
+                    if (!query) {
+                        query = createQuery(token);
+                        queries.set(token, query)
+                    }
+                }
+
+                return {seat: `@${login}`, login, apiBase, query, benched: benched.has(presenceIdentityForAgent(definition))}
             })
     }
 }
@@ -305,26 +317,54 @@ export function fileStore(filePath) {
  * @param {Function} [options.query]      Replaces every seat's GitHub call, credential included (tests).
  * @param {Function} [options.createQuery] `(token) → query`; replaces the GitHub call per token (tests).
  * @param {Function} [options.readPresence] The roster's `who_is_online` read; without it no seat is benched.
+ * @param {Number}   [options.presenceTimeoutMs=AiConfig.fleet.rosterAxisTimeoutMs] Axis timeout bounding `readPresence` so a slow plane falls back to retained `identityRows`.
  * @param {Function} [options.now]
  * @param {String} [options.apiBase] Existing query endpoint, recorded with quota evidence.
  * @param {Function|null} [options.onPulse] Awaited after the existing pulse; concurrent rounds share it.
  * @returns {{producer: Object, source: Object, pulse: Function, stop: Function}|null} null without a registry.
  */
-export function wireFleetOpenWorkSource({registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, createQuery, readPresence = null, now, apiBase = 'https://api.github.com', onPulse = null} = {}) {
+export function wireFleetOpenWorkSource({
+    registry,
+    pulseMs           = PULSE_MS,
+    bridge            = FleetControlBridge,
+    query,
+    createQuery,
+    readPresence      = null,
+    presenceTimeoutMs = AiConfig.fleet.rosterAxisTimeoutMs,
+    now,
+    apiBase           = 'https://api.github.com',
+    onPulse           = null
+} = {}) {
     if (typeof registry?.listAgents !== 'function' || typeof registry.getDataDir !== 'function') {
         return null
     }
 
-    // the pulse's presence read keeps its rows for the identity lookups that follow it; a read that
-    // fails leaves the last answered rows in place
+    // the pulse's presence read keeps its rows for the identity lookups that follow it; a timeout or
+    // failed read leaves the last answered rows in place so GitHub reads are never stalled behind mc-server
     let running = null, stopped = false, identityRows = [];
     const
         listDefinitions = () => registry.listAgents(),
-        readRows        = readPresence && (async () => {
-            const report = await readPresence();
+        readRows        = readPresence && (() => {
+            const call = Promise.resolve().then(readPresence).then(report => {
+                if (Array.isArray(report?.agents)) identityRows = report.agents;
+                return report
+            });
 
-            if (Array.isArray(report?.agents)) identityRows = report.agents;
-            return report
+            call.catch(() => {});
+
+            if (!Number.isFinite(presenceTimeoutMs) || presenceTimeoutMs <= 0) {
+                return call
+            }
+
+            let timerId;
+
+            return Promise.race([
+                call.finally(() => clearTimeout(timerId)),
+                new Promise(resolve => {
+                    timerId = setTimeout(() => resolve({agents: identityRows}), presenceTimeoutMs);
+                    timerId.unref?.()
+                })
+            ])
         }),
         producer        = createOpenWorkProducer({
             readers   : seatReaders({

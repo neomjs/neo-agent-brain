@@ -49,6 +49,8 @@ const
     UNBLOCK_ATTEMPTS  = 3,
     /** @summary How long after its observation a merge is still read, so retained history is never read. */
     UNBLOCK_RECENT_MS = 10 * 60 * 1000,
+    /** @summary Maximum distinct seat-reader lanes executing GraphQL searches concurrently per pulse. */
+    SEAT_CONCURRENCY  = 16,
     /** @summary A producer that has never pulsed. */
     FRESH             = Object.freeze({
         snapshot: null, observedAt: null, coverage: 'unavailable', watermark: null, window: null, reason: null, detail: null, seatReads: {}, transitions: [], pulses: []
@@ -83,6 +85,11 @@ const shift = (iso, ms) => new Date(Date.parse(iso) + ms).toISOString();
  * @returns {void}
  */
 function recordQuota(tally, apiBase, data, failed, queryHash, attemptAt, at) {
+    if (Array.isArray(tally.deferred)) {
+        tally.deferred.push({apiBase, data, failed, queryHash, attemptAt, at});
+        return
+    }
+
     const
         measured  = value => Number.isInteger(value) && value >= 0 ? value : null,
         rate      = data?.rateLimit,
@@ -110,7 +117,9 @@ function recordQuota(tally, apiBase, data, failed, queryHash, attemptAt, at) {
     }
     bucket.calls++;
     bucket.failed += Number(failed);
-    bucket.lastAt = at;
+    if (Date.parse(attemptAt) < Date.parse(bucket.firstAttemptAt)) bucket.firstAttemptAt = attemptAt;
+    if (Date.parse(at) < Date.parse(bucket.firstAt)) bucket.firstAt = at;
+    if (Date.parse(at) > Date.parse(bucket.lastAt)) bucket.lastAt = at;
     bucket.lastOrdinal = ordinal;
     bucket.remaining = remaining;
     bucket.zeroCostFailedCalls += Number(failed && cost === 0);
@@ -339,6 +348,7 @@ function classifySeatReadFailure(error, reason) {
  * @param {Number|null} [options.pulseWindow] Explicit count-only history cap; otherwise retain the elapsed quota prefix.
  * @param {Number} [options.intervalMs] The existing producer cadence, recorded for gap assessment.
  * @param {Number}   [options.overlapMs]
+ * @param {Number}   [options.concurrency] Maximum distinct seat-reader lanes executing concurrently per pulse.
  * @returns {{pulse: Function, getState: Function}}
  */
 export function createOpenWorkProducer({
@@ -351,7 +361,8 @@ export function createOpenWorkProducer({
     transitionWindow = TRANSITION_WINDOW,
     pulseWindow      = null,
     intervalMs       = 60000,
-    overlapMs        = OVERLAP_MS
+    overlapMs        = OVERLAP_MS,
+    concurrency      = SEAT_CONCURRENCY
 }) {
     let state = FRESH, loadFailure = null, running = null;
 
@@ -408,50 +419,99 @@ export function createOpenWorkProducer({
                 .filter(([seat, entry]) => seat && entry)),
             coverageSeats = seats.map(({seat, query, benched}) => ({seat, benched: !!benched, outcome: query ? 'failed' : 'credential-unread', authored: null, held: null, terminal: null}));
 
-        for (const {seat, login, query, apiBase} of seats.filter(seat => seat.query)) {
-            // a seat's terminal window and watermark are its own; a saved single watermark seeds them
-            let latestTokenExpiresAt = null, answeredAny = false;
-            const
-                // `tokenExpiresAt` rides on `data` as a non-enumerable property; wrappers must not JSON/structuredClone-copy `data` ahead of this read.
-                observedQuery = async (text, variables) => {
-                    const data = await query(text, variables);
-                    answeredAny = true;
-                    latestTokenExpiresAt = typeof data?.tokenExpiresAt === 'string' ? data.tokenExpiresAt : null;
-                    return data
-                },
-                mark         = state.readers?.[login] ?? {watermark: state.watermark ?? null, window: null},
-                resume       = mark.window?.scope === scope && mark.window.since === mark.watermark,
-                window       = state.snapshot && mark.watermark ? (resume ? mark.window : {scope, since: mark.watermark, until: at, cursor: null}) : null,
-                open         = (search, progress) => readSearch({query: observedQuery, text: OPEN_WORK_SNAPSHOT, search: `is:pr is:open archived:false ${search} ${scope}`, pageBudget, tally, apiBase, stamp, progress}),
-                coverageSeat = coverageSeats.find(row => row.seat === seat);
-
-            try {
-                coverageSeat.terminal = {required: !!window, complete: !window, rows: 0};
-                const authored = await open(`author:${login}`, coverageSeat.authored = {complete: false, rows: 0});
-                const held     = await open(`review-requested:${login}`, coverageSeat.held = {complete: false, rows: 0});
-                const ended    = window
-                        ? await readSearch({query: observedQuery, text: OPEN_WORK_TERMINAL, search: `is:pr is:closed closed:${searchTime(window.since)}..${searchTime(window.until)} author:${login} ${scope}`, cursor: window.cursor, pageBudget, tally, apiBase, stamp, progress: coverageSeat.terminal})
-                        : {nodes: [], complete: true, cursor: null};
-                coverageSeat.outcome = authored.complete && held.complete && ended.complete ? 'complete' : 'partial';
-
-                seatReads[seat] = {
-                    observedAt       : at,
-                    credentialRefusal: null,
-                    tokenExpiresAt   : answeredAny ? latestTokenExpiresAt : (state.seatReads?.[seat]?.tokenExpiresAt ?? null)
-                };
-                reads.push({seat, login, apiBase, mark, window, nodes: [...authored.nodes, ...held.nodes], authoredComplete: authored.complete, heldComplete: held.complete, complete: authored.complete && held.complete, ended})
-            } catch (error) {
-                // a message-less error still failed: without the fallback it would count as answered
+        const
+            seatsWithQuery = seats.filter(seat => seat.query),
+            resultsByEntry = new Map(),
+            readSeat       = async ({seat, login, query, apiBase}) => {
+                // a seat's terminal window and watermark are its own; a saved single watermark seeds them
+                let latestTokenExpiresAt = null, answeredAny = false;
                 const
-                    failure           = redactReadFailure(error) ?? 'the read failed without a message',
-                    credentialRefusal = classifySeatReadFailure(error, failure);
+                    seatTally     = {pages: 0, deferred: []},
+                    // `tokenExpiresAt` rides on `data` as a non-enumerable property; wrappers must not JSON/structuredClone-copy `data` ahead of this read.
+                    observedQuery = async (text, variables) => {
+                        const data = await query(text, variables);
+                        answeredAny = true;
+                        latestTokenExpiresAt = typeof data?.tokenExpiresAt === 'string' ? data.tokenExpiresAt : null;
+                        return data
+                    },
+                    mark         = state.readers?.[login] ?? {watermark: state.watermark ?? null, window: null},
+                    resume       = mark.window?.scope === scope && mark.window.since === mark.watermark,
+                    window       = state.snapshot && mark.watermark ? (resume ? mark.window : {scope, since: mark.watermark, until: at, cursor: null}) : null,
+                    open         = (search, progress) => readSearch({query: observedQuery, text: OPEN_WORK_SNAPSHOT, search: `is:pr is:open archived:false ${search} ${scope}`, pageBudget, tally: seatTally, apiBase, stamp, progress}),
+                    coverageSeat = coverageSeats.find(row => row.seat === seat);
 
-                seatReads[seat] = {
-                    observedAt    : at,
-                    credentialRefusal,
-                    tokenExpiresAt: answeredAny ? latestTokenExpiresAt : (state.seatReads?.[seat]?.tokenExpiresAt ?? null)
-                };
-                reads.push({seat, failure, refused: error?.status === 401 || error?.code === 'INSUFFICIENT_SCOPES'})
+                try {
+                    coverageSeat.terminal = {required: !!window, complete: !window, rows: 0};
+                    const authored = await open(`author:${login}`, coverageSeat.authored = {complete: false, rows: 0});
+                    const held     = await open(`review-requested:${login}`, coverageSeat.held = {complete: false, rows: 0});
+                    const ended    = window
+                            ? await readSearch({query: observedQuery, text: OPEN_WORK_TERMINAL, search: `is:pr is:closed closed:${searchTime(window.since)}..${searchTime(window.until)} author:${login} ${scope}`, cursor: window.cursor, pageBudget, tally: seatTally, apiBase, stamp, progress: coverageSeat.terminal})
+                            : {nodes: [], complete: true, cursor: null};
+                    coverageSeat.outcome = authored.complete && held.complete && ended.complete ? 'complete' : 'partial';
+
+                    return {
+                        seat,
+                        seatTally,
+                        seatRead : {
+                            observedAt       : at,
+                            credentialRefusal: null,
+                            tokenExpiresAt   : answeredAny ? latestTokenExpiresAt : (state.seatReads?.[seat]?.tokenExpiresAt ?? null)
+                        },
+                        readEntry: {seat, login, apiBase, mark, window, nodes: [...authored.nodes, ...held.nodes], authoredComplete: authored.complete, heldComplete: held.complete, complete: authored.complete && held.complete, ended}
+                    }
+                } catch (error) {
+                    // a message-less error still failed: without the fallback it would count as answered
+                    const
+                        failure           = redactReadFailure(error) ?? 'the read failed without a message',
+                        credentialRefusal = classifySeatReadFailure(error, failure);
+
+                    return {
+                        seat,
+                        seatTally,
+                        seatRead : {
+                            observedAt    : at,
+                            credentialRefusal,
+                            tokenExpiresAt: answeredAny ? latestTokenExpiresAt : (state.seatReads?.[seat]?.tokenExpiresAt ?? null)
+                        },
+                        readEntry: {seat, failure, refused: error?.status === 401 || error?.code === 'INSUFFICIENT_SCOPES'}
+                    }
+                }
+            };
+
+        if (seatsWithQuery.length) {
+            const lanes = new Map();
+
+            for (const entry of seatsWithQuery) {
+                let lane = lanes.get(entry.query);
+                if (!lane) lanes.set(entry.query, lane = []);
+                lane.push(entry)
+            }
+
+            const
+                laneQueue   = [...lanes.values()],
+                parsedLimit = Number.isFinite(concurrency) ? Math.trunc(concurrency) : SEAT_CONCURRENCY,
+                workerCount = Math.min(Math.max(1, parsedLimit), laneQueue.length);
+            let nextLane    = 0;
+
+            await Promise.all(Array.from({length: workerCount}, async () => {
+                while (nextLane < laneQueue.length) {
+                    const lane = laneQueue[nextLane++];
+
+                    for (const entry of lane) {
+                        resultsByEntry.set(entry, await readSeat(entry))
+                    }
+                }
+            }));
+
+            for (const entry of seatsWithQuery) {
+                const result = resultsByEntry.get(entry);
+
+                tally.pages += result.seatTally.pages;
+                for (const attempt of result.seatTally.deferred) {
+                    recordQuota(tally, attempt.apiBase, attempt.data, attempt.failed, attempt.queryHash, attempt.attemptAt, attempt.at)
+                }
+                seatReads[result.seat] = result.seatRead;
+                reads.push(result.readEntry)
             }
         }
 

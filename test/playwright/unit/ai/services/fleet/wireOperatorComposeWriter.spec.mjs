@@ -492,4 +492,59 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             }
         });
     });
+
+    test('fleetOpenWork bounds stalled observeMessages reads and returns openWork intact (#1842)', async () => {
+        const
+            original        = FleetControlBridge.openWorkSource,
+            pendingResolvers = [];
+
+        try {
+            FleetControlBridge.openWorkSource = {
+                readOpenWork: () => ({
+                    state        : 'ok',
+                    coverage     : 'complete',
+                    seats        : {ada: {}},
+                    awaitingMerge: [{key: 'acme/app#42', number: 42}]
+                })
+            };
+            wireOperatorComposeWriter({
+                addMessage     : () => ({}),
+                observeMessages: () => new Promise(resolve => { pendingResolvers.push(resolve) })
+            });
+
+            const answer = await FleetControlBridge.fleetOpenWork({seat: 'ada'}, {timeoutMs: 25});
+
+            expect(pendingResolvers).toHaveLength(2);
+            expect(answer).toEqual({
+                state        : 'ok',
+                coverage     : 'complete',
+                seats        : {ada: {}},
+                awaitingMerge: [{key: 'acme/app#42', number: 42}],
+                questions    : {
+                    state  : 'unavailable',
+                    count  : null,
+                    reason : 'fleet: the open-questions read timed out after 25 ms',
+                    expired: {
+                        state : 'unavailable',
+                        count : null,
+                        since : null,
+                        reason: 'fleet: the expired-questions read timed out after 25 ms'
+                    }
+                }
+            });
+
+            // Settling late observers never surfaces an unhandled rejection and leaves direct fleetOwnQuestions unbounded.
+            for (const resolve of pendingResolvers) {
+                resolve({totalCount: 0, truncated: false, expiredSince: '2026-11-06T21:00:00.000Z', messages: []});
+            }
+
+            wireOperatorComposeWriter({
+                addMessage     : () => ({}),
+                observeMessages: async () => ({totalCount: 1, truncated: false, messages: [{messageId: 'MESSAGE:ok'}]})
+            });
+            expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'ok', count: 1});
+        } finally {
+            FleetControlBridge.openWorkSource = original
+        }
+    });
 });
