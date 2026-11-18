@@ -57,7 +57,7 @@ const REPO_TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
  * 4. GitHub `authorAssociation` in `['OWNER', 'MEMBER', 'COLLABORATOR']` → `REPO_TRUSTED` (non-rostered org members and collaborators).
  * 5. Anything else → `EXTERNAL` (the conservative default; never inferred up from prose).
  *
- * A roster `formerLogins` entry confers no tier of its own (#1814). GitHub reports a renamed account's
+ * A roster `formerLogins` entry confers no tier of its own. GitHub reports a renamed account's
  * content under its current login, so a released login only ever names whoever registered it since.
  *
  * @param {String} login GitHub author login (bare `octocat` or `@octocat` both accepted)

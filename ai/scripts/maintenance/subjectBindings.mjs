@@ -47,7 +47,7 @@ import {
  * or to one the graph lacks. It only binds a free pair: an identity an administrative move placed
  * elsewhere is held, and a subject bound elsewhere refuses by name.
  *
- * `inventory` is the cutover's read-only census (#1814): what activating selection by subject would meet
+ * `inventory` is the cutover's read-only census: what activating selection by subject would meet
  * on this plane, read in one snapshot. It names every unresolved row with its remedy and binding authority,
  * and the blockers that keep activation shut. An identity's provider properties appear as a candidate only:
  * the relation and the qualified founding record are the only evidence. Memory and session rows live in

@@ -711,7 +711,7 @@ function getCanonicalTaskAssigneeForTarget(target, db = GraphService.requireDb('
  *
  * Until the cutover activates selection by subject, a former login also stands for its renamed
  * identity, both ways. After it, a former spelling is nobody's but its own node's: the rename
- * migrations re-keyed the stored rows, so no history is stranded (#1814).
+ * migrations re-keyed the stored rows, so no history is stranded.
  * @param {*} identity Direct identity or mailbox sentinel.
  * @returns {Array<*>} De-duplicated values suitable for SQLite `IN (...)` predicates.
  * @throws {Error} `SUBJECT_BINDING_UNAVAILABLE` when the activation cannot be read for a direct identity.
@@ -4638,7 +4638,7 @@ class MailboxService extends Base {
         const
             me                      = normalizeMailboxIdentityForComparison(boundIdentity),
             rawTarget               = normalizeMailboxIdentityForComparison(to || me),
-            // a former login names its renamed identity only until the cutover activates selection by subject (#1814)
+            // a former login names its renamed identity only until the cutover activates selection by subject
             formerLogins            = Boolean(to || fromIdentity) && !isSubjectSelectionActive(GraphService.db?.storage?.db),
             toAlias                 = to && formerLogins ? resolveAgentIdentityAlias(rawTarget) : null,
             target                  = toAlias?.id ?? rawTarget,

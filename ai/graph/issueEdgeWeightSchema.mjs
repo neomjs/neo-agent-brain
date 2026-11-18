@@ -80,7 +80,7 @@ export function getComputedRecommendationNodeType(nodeData) {
  *
  * Until the cutover activates selection by subject, `formerLogins` count as members too. After it, a
  * released login confers no member weight on whoever registers it, and no stored ticket still names a
- * former login: GitHub reports a renamed account's history under its current login (#1814).
+ * former login: GitHub reports a renamed account's history under its current login.
  *
  * Accepts either a direct `better-sqlite3` handle (`db.prepare`) or a `GraphService`-like wrapper
  * (`graphService.db.storage.db`). Degrades safely to an empty `Set` (invoking `onError` when supplied)

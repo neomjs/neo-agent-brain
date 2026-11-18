@@ -376,7 +376,7 @@ function buildMailboxDelta() {
 
 /**
  * @summary Whether a former login still confers its renamed identity's trust tier: only while selection by
- * subject is known dormant. An unreadable activation confers nothing rather than reading as dormant (#1814).
+ * subject is known dormant. An unreadable activation confers nothing rather than reading as dormant.
  * @returns {Boolean}
  */
 function formerLoginsConferTrust() {
@@ -470,7 +470,7 @@ class MemoryService extends Base {
      *
      * While selection by subject is dormant, a `formerLogins` spelling resolves to its renamed
      * identity first. Once the cutover activates it, the exact node comes first and a former
-     * spelling confers no tier; nor does one whose activation cannot be read (#1814).
+     * spelling confers no tier; nor does one whose activation cannot be read.
      *
      * @param {Object} metadata Chroma metadata row.
      * @returns {String} Trust tier, or `unclassified` when neither the graph nor seeded identities match.
