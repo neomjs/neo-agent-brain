@@ -276,6 +276,140 @@ test.describe('ai/scripts/maintenance/subjectBindings', () => {
         expect(stored(db => readSubjectBinding(db, S)).identityId).toBe('@grace');
     });
 
+    test.describe('inventory (#1814)', () => {
+        const
+            inventory = (options = {}) => runSubjectBindingAdmin({dbPath, command: 'inventory', bootText, target, now: () => 500, ...options}),
+            insert    = (sql, ...values) => {
+                const db = new Database(dbPath);
+                try { db.prepare(sql).run(...values); } finally { db.close(); }
+            },
+            node      = (id, data) => insert('INSERT INTO Nodes (id, user_id, data) VALUES (?, NULL, ?)', id, JSON.stringify({id, ...data})),
+            stateOf   = result => Object.fromEntries(result.identities.map(({id, state}) => [id, state]));
+
+        test('names every unbound identity with its remedy and binding authority, keeps activation shut, and writes nothing', () => {
+            node('@maryam', {label: 'AgentIdentity', properties: {accountType: 'agent', authProvider: 'github', providerBaseUrl: S.providerBaseUrl, providerUserId: '5005'}});
+
+            const result = inventory();
+
+            expect(result).toMatchObject({ok: true, command: 'inventory', readyToActivate: false, activation: {state: 'dormant'},
+                founding: {state: 'qualified', foundingRevision: 'reviewed-source:fixture'}, foundingSubjects: [{subject: U, identityIds: ['@clio']}]});
+            expect(stateOf(result)).toEqual({'@ada': 'seedable', '@grace': 'ambiguous-founding', '@maryam': 'non-rostered', '@vega': 'ambiguous-founding'});
+            // Last-seen provider properties are a candidate only: they bind nothing and count as no evidence
+            expect(result.identities.find(({id}) => id === '@maryam').candidate).toEqual({...S, providerUserId: '5005'});
+            expect(result.unresolved).toEqual(expect.arrayContaining([
+                {row: '@ada',    state: 'seedable',           remedy: '`seed --apply`',                  authority: 'the qualified founding record'},
+                {row: '@grace',  state: 'ambiguous-founding', remedy: 'an explicit administrative bind', authority: '#1297 on a Fleet plane; a reviewed cutover bind elsewhere'},
+                {row: '@maryam', state: 'non-rostered',       remedy: 'an explicit administrative bind', authority: '#1297 on a Fleet plane; a reviewed cutover bind elsewhere'},
+                expect.objectContaining({row: `github ${U.providerBaseUrl} 3003`, state: 'identity-unknown', identityIds: ['@clio']})
+            ]));
+            expect(result.blockers).toEqual([{blocker: 'unbound-active-identities', identities: ['@ada', '@grace', '@maryam', '@vega']}]);
+            expect(result.formerSpellings.every(({state}) => state === 'clear')).toBe(true);
+            expect(stored(readSubjectBindingRecords)).toEqual([]);
+            expect(() => inventory({apply: true, configuredGraphPath: dbPath})).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_INVALID'}));
+        });
+
+        test('once every active identity is bound it is ready to activate, and its revision moves with the state', () => {
+            const before = inventory().revision;
+
+            seed({apply: true});
+            bind({apply: true, subject: T, identityId: '@grace'});
+            bind({apply: true, subject: {...S, providerUserId: '4004'}, identityId: '@vega'});
+
+            const result = inventory();
+
+            expect(result).toMatchObject({readyToActivate: true, blockers: []});
+            expect(stateOf(result)).toEqual({'@ada': 'bound', '@grace': 'bound', '@vega': 'bound'});
+            expect(result.identities.find(({id}) => id === '@ada').binding).toEqual({...S, writer: 'administrative'});
+            expect(result.revision).toMatch(/^cutover-inventory-[a-f0-9]{64}$/);
+            expect(result.revision).not.toBe(before);
+            expect(inventory().revision).toBe(result.revision);
+        });
+
+        test('without a qualified founding record every unbound identity waits on identity publication', () => {
+            fs.rmSync(dbPath);
+            seedGraph({founding: false});
+
+            const result = inventory();
+
+            expect(result.founding).toEqual({state: 'unavailable', code: 'IDENTITY_FOUNDING_SOURCE_UNAVAILABLE'});
+            expect(new Set(Object.values(stateOf(result)))).toEqual(new Set(['founding-unavailable']));
+            expect(result.unresolved[0]).toEqual({row: 'founding', state: 'founding-unavailable', code: 'IDENTITY_FOUNDING_SOURCE_UNAVAILABLE',
+                remedy: 'provision identity publication on this plane: a bound lineage and an installed founding source', authority: 'the lineage issuer'});
+            expect(result.blockers.map(({blocker}) => blocker)).toEqual(['founding-unavailable', 'unbound-active-identities']);
+
+            // A plane that never provisioned identity publication names that, not a crash
+            expect(inventory({bootText: null}).founding).toEqual({state: 'unavailable', code: 'publication-not-provisioned'});
+        });
+
+        test('a row still stored under a former spelling blocks activation, and a reclaimed spelling holding rows is ambiguous', () => {
+            node('MESSAGE:legacy', {label: 'MESSAGE', properties: {to: '@neo-gemini-pro', from: '@ada'}});
+            insert('INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (?, NULL, ?, ?, ?, ?)', 'edge-legacy', 'AGENT:neo-opus-4-7', 'pr-1', 'IMPLEMENTS', '{}');
+
+            const spelling = (result, handle) => result.formerSpellings.find(entry => entry.spelling === handle);
+            let result = inventory();
+
+            expect(spelling(result, '@neo-gemini-pro')).toMatchObject({identityIds: ['@neo-gemini-julia'], sources: ['roster'], reclaimed: false, messages: 1, state: 'legacy-rows'});
+            expect(spelling(result, '@neo-opus-4-7')).toMatchObject({identityIds: ['@neo-opus-ada'], edges: [{id: 'edge-legacy', type: 'IMPLEMENTS', source: 'AGENT:neo-opus-4-7', target: 'pr-1'}], state: 'legacy-rows'});
+            expect(spelling(result, '@neo-gpt')).toMatchObject({messages: 0, edges: [], state: 'clear'});
+            expect(result.blockers).toContainEqual({blocker: 'former-spelling-rows', spellings: ['@neo-gemini-pro', '@neo-opus-4-7']});
+
+            node('@neo-gemini-pro', {label: 'AgentIdentity', properties: {accountType: 'agent'}});
+            result = inventory();
+
+            expect(spelling(result, '@neo-gemini-pro')).toMatchObject({reclaimed: true, state: 'ambiguous-legacy-ownership'});
+            expect(result.unresolved).toContainEqual({row: '@neo-gemini-pro', state: 'ambiguous-legacy-ownership',
+                remedy: 'a reviewed reconciliation: the spelling is a live identity of its own', authority: 'the plane operator'});
+        });
+    });
+
+    test.describe('activate (#1814)', () => {
+        const
+            activate  = (options = {}) => runSubjectBindingAdmin({dbPath, command: 'activate', bootText, target, configuredGraphPath: dbPath, now: () => 900, ...options}),
+            revision  = () => runSubjectBindingAdmin({dbPath, command: 'inventory', bootText, target}).revision,
+            activated = () => stored(db => readSubjectBindingRecords(db).find(({type}) => type === 'subject-binding-activation')?.data ?? null),
+            bindAll   = () => {
+                seed({apply: true});
+                bind({apply: true, subject: T, identityId: '@grace'});
+                bind({apply: true, subject: {...S, providerUserId: '4004'}, identityId: '@vega'});
+            };
+
+        test('refuses while the inventory has a blocker, and writes nothing', () => {
+            const reviewed = revision();
+
+            expect(() => activate({cutoverRevision: reviewed, apply: true})).toThrow(expect.objectContaining({
+                code    : 'SUBJECT_BINDING_CUTOVER_BLOCKED',
+                blockers: [{blocker: 'unbound-active-identities', identities: ['@ada', '@grace', '@vega']}]
+            }));
+            expect(activated()).toBeNull();
+        });
+
+        test('refuses an inventory revision the state has moved past, and one it never named', () => {
+            const reviewed = revision();
+
+            bindAll();
+
+            expect(() => activate({cutoverRevision: reviewed, apply: true})).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_CUTOVER_STALE'}));
+            expect(() => activate({apply: true})).toThrow(expect.objectContaining({code: 'SUBJECT_BINDING_INVALID'}));
+            expect(activated()).toBeNull();
+        });
+
+        test('activates on the reviewed revision once every active identity is bound, and only moves forward', () => {
+            bindAll();
+
+            const reviewed = revision();
+
+            expect(activate({cutoverRevision: reviewed})).toEqual({ok: true, command: 'activate', applied: false, state: 'ready', revision: reviewed});
+            expect(activated()).toBeNull();
+
+            expect(activate({cutoverRevision: reviewed, apply: true})).toMatchObject({applied: true, state: 'activated', activation: {cutoverRevision: reviewed, activatedAt: 900}});
+            expect(activated()).toEqual({cutoverRevision: reviewed, activatedAt: 900});
+
+            // Re-running keeps the first record, and the inventory now reads the plane as active
+            expect(activate({cutoverRevision: reviewed, apply: true})).toMatchObject({applied: false, state: 'active', activation: {cutoverRevision: reviewed}});
+            expect(runSubjectBindingAdmin({dbPath, command: 'inventory', bootText, target}).activation).toEqual({state: 'active', cutoverRevision: reviewed, activatedAt: 900});
+        });
+    });
+
     test('list reads the relation', () => {
         bind({apply: true});
 
@@ -284,25 +418,29 @@ test.describe('ai/scripts/maintenance/subjectBindings', () => {
         });
     });
 
-    test('no MCP tool, HTTP route or Fleet wire reaches the administrative writer', () => {
-        const naming = [];
+    test('no MCP tool, HTTP route or Fleet wire reaches the administrative writer or the activation', () => {
+        const naming = {bindAdministratively: [], activateSubjectBinding: []};
 
-        /** @summary Collects every `ai/` module that names the writer; the two expected hits are the scan's positive control. */
+        /** @summary Collects every `ai/` module that names a writer; the two expected hits per writer are the scan's positive control. */
         const walk = dir => fs.readdirSync(dir, {withFileTypes: true}).forEach(entry => {
             const file = path.join(dir, entry.name);
 
             if (entry.isDirectory()) {
                 if (entry.name !== 'node_modules') walk(file);
-            } else if (entry.name.endsWith('.mjs') && fs.readFileSync(file, 'utf8').includes('bindAdministratively')) {
-                naming.push(path.relative(process.cwd(), file).split(path.sep).join('/'));
+            } else if (entry.name.endsWith('.mjs')) {
+                const source = fs.readFileSync(file, 'utf8');
+                Object.keys(naming).filter(writer => source.includes(writer))
+                    .forEach(writer => naming[writer].push(path.relative(process.cwd(), file).split(path.sep).join('/')));
             }
         });
 
         walk(path.join(process.cwd(), 'ai'));
 
-        expect(naming.sort()).toEqual([
-            'ai/scripts/maintenance/subjectBindings.mjs',
-            'ai/services/memory-core/helpers/subjectBinding.mjs'
-        ]);
+        for (const writer of Object.keys(naming)) {
+            expect(naming[writer].sort(), writer).toEqual([
+                'ai/scripts/maintenance/subjectBindings.mjs',
+                'ai/services/memory-core/helpers/subjectBinding.mjs'
+            ]);
+        }
     });
 });
