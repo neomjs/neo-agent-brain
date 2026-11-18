@@ -37,6 +37,7 @@ import {
     recordClaudeTurnPresence,
     sessionTurnStore
 } from '../../../../../../../ai/scripts/lifecycle/hooks/claude/turnPresenceHook.mjs';
+import {decideWriterStamp} from '../../../../../../../ai/scripts/lifecycle/hooks/claude/writerStampHook.mjs';
 
 const
     REPO_ROOT   = path.resolve(process.cwd()),
@@ -636,6 +637,7 @@ test.describe('the Claude hook\'s capacity reading', () => {
             env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
             hookPayload: {session_id: 'session-a', hook_event_name: 'StopFailure', error: 'authentication_failed', last_assistant_message: 'Invalid API key'},
             plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+            readSeat   : async () => ({identity: 'AGENT:neo-opus-grace'}),
             record     : async args => {calls.push(args); return {status: 'recorded'}},
             turnStore  : {read: () => 'turn-1', write: () => {}, remove: () => {}}
         });
@@ -667,6 +669,7 @@ test.describe('turnPresenceHook — a session names its own turn', () => {
         hookPayload: {session_id: sessionId, hook_event_name: EVENTS[actionArg], ...(actionArg === 'terminal' ? {error: 'authentication_failed'} : {})},
         mintTurnId : () => `turn-of-${sessionId}`,
         plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+        readSeat   : async () => ({identity: 'AGENT:neo-opus-grace'}),
         record     : async args => {calls.push(args); return {status: 'recorded'}},
         turnStore
     });
@@ -731,15 +734,16 @@ test.describe('turnPresenceHook — a session names its own turn', () => {
         }
     });
 
-    test('stamps writerKey from seat identity and session_id, omits without session_id, and never leaks either to stderr (#1841)', async () => {
+    test('stamps writerKey from readSeat on every path, pins production identity parity with writerStampHook, and never leaks secrets to stderr (#1841)', async () => {
         const calls = [];
 
         await recordClaudeTurnPresence({
             actionArg  : 'progress',
             deadlineMs : 500,
-            env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
+            env        : {NEO_AGENT_IDENTITY: 'AGENT:ignored-env-identity'},
             hookPayload: {hook_event_name: 'PostToolUse', session_id: 'secret-session-1'},
             plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+            readSeat   : async () => ({identity: '@neo-opus-grace'}),
             record     : async args => {calls.push(args); return {status: 'recorded'}},
             turnStore  : memoryStore()
         });
@@ -747,20 +751,69 @@ test.describe('turnPresenceHook — a session names its own turn', () => {
         await recordClaudeTurnPresence({
             actionArg  : 'progress',
             deadlineMs : 500,
-            env        : {NEO_AGENT_IDENTITY: 'AGENT:neo-opus-grace'},
+            env        : {NEO_AGENT_IDENTITY: 'AGENT:ignored-env-identity'},
             hookPayload: {hook_event_name: 'PostToolUse'},
             plane      : {baseUrl: 'http://plane.test/mc/mcp', credential: ''},
+            readSeat   : async () => ({identity: '@neo-opus-grace'}),
             record     : async args => {calls.push(args); return {status: 'recorded'}},
             turnStore  : memoryStore()
         });
 
-        expect(calls[0].writerKey).toBe(deriveWriterKey('AGENT:neo-opus-grace', 'secret-session-1'));
+        expect(calls[0].writerKey).toBe(decideWriterStamp({
+            identity : '@neo-opus-grace',
+            payload  : {hook_event_name: 'PreToolUse', session_id: 'secret-session-1', tool_input: {prompt: 'p'}},
+            turnStore: {read: () => 'turn-1'}
+        }).hookSpecificOutput.updatedInput.writerKey);
         expect('writerKey' in calls[1]).toBe(false);
 
-        const plane = await listenSilently(), {target} = projectInto('writer-key-stderr');
+        // Pin the production main() path end-to-end against readSeatConfig() and writerStampHook.mjs.
+        const
+            presencePlane = await startPresencePlane(),
+            stampHook     = path.join(HOOKS_DIR, 'claude/writerStampHook.mjs'),
+            {target}      = projectInto('writer-key-prod-parity'),
+            prodSession   = `prod-parity-${process.pid}`,
+            env           = {
+                NEO_AI_DAEMON_DIR      : path.join(path.dirname(target), 'daemon'),
+                NEO_SEAT_PLANE_BASE    : presencePlane.baseUrl,
+                TMPDIR                 : path.dirname(target),
+                UNIT_TEST_MODE         : 'true',
+                NEO_AGENT_IDENTITY     : 'AGENT:neo-opus-grace',
+                NEO_MCP_REMOTE_TOKEN   : 'seat-plane-pat'
+            };
 
         try {
-            const {code, stderr} = await runHook(target, {
+            const startRes = await runHook(target, {
+                args : ['start'],
+                stdin: JSON.stringify({hook_event_name: 'UserPromptSubmit', session_id: prodSession}),
+                env
+            });
+            expect(startRes.code, startRes.stderr).toBe(0);
+
+            const {spawnSync} = await import('node:child_process');
+            const stampRes    = spawnSync(process.execPath, [stampHook], {
+                input   : JSON.stringify({
+                    hook_event_name: 'PreToolUse',
+                    session_id     : prodSession,
+                    tool_name      : 'mcp__neo-mjs-memory-core__add_memory',
+                    tool_input     : {prompt: 'p', response: 'r', decisionContext: 'd'}
+                }),
+                encoding: 'utf8',
+                env     : {PATH: process.env.PATH, ...env}
+            });
+
+            expect(stampRes.status, stampRes.stderr).toBe(0);
+            expect(presencePlane.calls).toHaveLength(1);
+            expect(presencePlane.calls[0].writerKey).toBe(
+                JSON.parse(stampRes.stdout).hookSpecificOutput.updatedInput.writerKey
+            );
+        } finally {
+            await presencePlane.close()
+        }
+
+        const plane = await listenSilently(), {target: leakTarget} = projectInto('writer-key-stderr');
+
+        try {
+            const {code, stderr} = await runHook(leakTarget, {
                 args : ['progress'],
                 stdin: JSON.stringify({hook_event_name: 'PostToolUse', session_id: 'secret-session-1'}),
                 env  : {NEO_SEAT_PLANE_BASE: plane.baseUrl, NEO_TURN_PRESENCE_ASYNC_HOOK_WRITE_TIMEOUT_MS: '150'}

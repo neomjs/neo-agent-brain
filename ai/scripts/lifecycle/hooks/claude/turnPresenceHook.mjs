@@ -11,7 +11,9 @@ import {isEntryModule}                                               from '../..
 import {resolveUserDataDir}                                          from './seatModelGuardHook.mjs';
 
 /**
- * @summary Version prefix for derived writer keys; shared with `writerStampHook.mjs`.
+ * @summary The key derivation's version, which prefixes every key; shared with `writerStampHook.mjs`. A changed
+ * derivation must change it: the plane then reads the old and the new key as two writers and holds the
+ * rotation instead of releasing it.
  * @type {String}
  */
 export const WRITER_KEY_VERSION = 'v1';
@@ -196,6 +198,7 @@ function resolveNote({action, hookPayload} = {}) {
  * @param {*} [options.hookPayload] Parsed Claude Code hook payload.
  * @param {String|Date|Number} [options.now] Clock override for tests.
  * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from the seat leaves when absent.
+ * @param {Function} [options.readSeat=readSeatConfig] Seat config reader ({@link readSeatConfig}); supplies `identity` across every path.
  * @param {Function} [options.record] Transport seam.
  * @param {Object} [options.turnStore] The session's turn ids; {@link sessionTurnStore} when absent.
  * @param {Function} [options.mintTurnId=crypto.randomUUID] Mints a turn id at the session's prompt.
@@ -209,6 +212,7 @@ export async function recordClaudeTurnPresence({
     hookPayload,
     now,
     plane,
+    readSeat   = readSeatConfig,
     record,
     turnStore  = sessionTurnStore(),
     mintTurnId = crypto.randomUUID
@@ -227,9 +231,7 @@ export async function recordClaudeTurnPresence({
     if (action === 'start' && turnId) turnStore.write(sessionId, turnId);
 
     const resolvedPlane = plane ?? await readPlaneConfig(),
-          seatIdentity  = !sessionId ? null : plane
-              ? (typeof env.NEO_AGENT_IDENTITY === 'string' && env.NEO_AGENT_IDENTITY.trim() ? env.NEO_AGENT_IDENTITY.trim() : null)
-              : (await readSeatConfig()).identity,
+          seatIdentity  = sessionId ? (await readSeat())?.identity ?? null : null,
           writerKey     = seatIdentity && sessionId ? deriveWriterKey(seatIdentity, sessionId) : undefined;
 
     const result = await recordTurnPresenceFromHook({

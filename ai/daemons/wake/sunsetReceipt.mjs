@@ -147,9 +147,11 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
     if (!newest || !isHandover(newest)) return null;
 
     // Walk the newest run of handovers (another self-message ends it) oldest first. A handover sent while
-    // the current receipt's rotation is open, and before its first successor marker, amends it; any other
-    // handover is a receipt of its own. One sent after a requested rotation's marker has a predecessor
-    // that may still write, so its writer must differ provably from that rotation's old session.
+    // the current receipt's rotation is open, and before its first successor marker, amends it; a same-writer
+    // handover sent before any rotation request folds into the current receipt (re-pointing `receipt` to the
+    // newest turn so writer-stamp close stays on the turn that actually saved); any other handover starts a
+    // receipt of its own. One sent after a requested rotation's marker has a predecessor that may still write,
+    // so its writer must differ provably from that rotation's old session.
     const runEnd     = notes.findIndex(message => !isHandover(message)),
           run        = (runEnd === -1 ? notes : notes.slice(0, runEnd)).toReversed(),
           markers    = messages.filter(isMarker).toReversed(),
@@ -280,8 +282,11 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
  * against that close. A write from a later turn is a prompt unless its turn is a typed wake (its interval carries
  * a nonce), and so is any other non-wake interval that started after the receipt or progressed after the close.
  * The writer's own turn is exempt by id. The writer's turn is live, holding the release, only through another
- * open interval that progressed while the writer's turn ran: a session's turns are sequential, so that is a
- * concurrent chat, while one last seen before the writer's turn began is history.
+ * open interval that progressed while the writer's turn ran: a session's turns are sequential, so an open
+ * interval of the same writer key that started at or before the writer's turn (`startedAt <= ownStart`) is
+ * history whatever its last progress (covering async `PostToolUse` settlement across turns), while a
+ * different-key or unstamped interval holds the release from `ownStart` onward and one last seen before the
+ * writer's turn began is history.
  *
  * Anything short of that, a missing stamp included, returns `null` and the reading stays today's.
  * @param {Object} db Open `better-sqlite3` handle on the graph store.
