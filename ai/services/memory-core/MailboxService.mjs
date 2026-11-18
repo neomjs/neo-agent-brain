@@ -708,21 +708,28 @@ function getCanonicalTaskAssigneeForTarget(target, db = GraphService.requireDb('
 
 /**
  * @summary Enumerates bounded legacy storage spellings equivalent to one direct identity.
+ *
+ * Until the cutover activates selection by subject, a former login also stands for its renamed
+ * identity, both ways. After it, a former spelling is nobody's but its own node's: the rename
+ * migrations re-keyed the stored rows, so no history is stranded (#1814).
  * @param {*} identity Direct identity or mailbox sentinel.
  * @returns {Array<*>} De-duplicated values suitable for SQLite `IN (...)` predicates.
+ * @throws {Error} `SUBJECT_BINDING_UNAVAILABLE` when the activation cannot be read for a direct identity.
  * @private
  */
 function getMailboxIdentityStorageVariants(identity) {
     const
         normalized = normalizeMailboxIdentityForComparison(identity),
-        canonical  = resolveAgentIdentityAlias(normalized)?.id ?? normalized;
-    if (typeof canonical !== 'string' || !canonical.startsWith('@') || canonical.includes(':')) {
+        direct     = typeof normalized === 'string' && normalized.startsWith('@') && !normalized.includes(':'),
+        former     = direct && !isSubjectSelectionActive(GraphService.db?.storage?.db),
+        canonical  = (former && resolveAgentIdentityAlias(normalized)?.id) || normalized;
+    if (!direct) {
         return [canonical];
     }
 
     const
         root         = IDENTITY_ROOTS_BY_ID.get(canonical),
-        formerLogins = Array.isArray(root?.properties?.formerLogins) ? root.properties.formerLogins : [],
+        formerLogins = former && Array.isArray(root?.properties?.formerLogins) ? root.properties.formerLogins : [],
         handles      = [canonical, ...formerLogins.map(item => normalizeMailboxIdentityForComparison(item))]
             .filter(item => typeof item === 'string' && item.startsWith('@') && !item.includes(':'));
 
@@ -4631,10 +4638,12 @@ class MailboxService extends Base {
         const
             me                      = normalizeMailboxIdentityForComparison(boundIdentity),
             rawTarget               = normalizeMailboxIdentityForComparison(to || me),
-            toAlias                 = to ? resolveAgentIdentityAlias(rawTarget) : null,
+            // a former login names its renamed identity only until the cutover activates selection by subject (#1814)
+            formerLogins            = Boolean(to || fromIdentity) && !isSubjectSelectionActive(GraphService.db?.storage?.db),
+            toAlias                 = to && formerLogins ? resolveAgentIdentityAlias(rawTarget) : null,
             target                  = toAlias?.id ?? rawTarget,
             rawFromIdentity         = normalizeMailboxIdentityForComparison(fromIdentity),
-            fromIdentityAlias       = fromIdentity ? resolveAgentIdentityAlias(rawFromIdentity) : null,
+            fromIdentityAlias       = fromIdentity && formerLogins ? resolveAgentIdentityAlias(rawFromIdentity) : null,
             normalizedFromIdentity  = fromIdentityAlias?.id ?? rawFromIdentity,
             resolvedIdentityAliases = {
                 ...(toAlias ? {to: toAlias} : {}),

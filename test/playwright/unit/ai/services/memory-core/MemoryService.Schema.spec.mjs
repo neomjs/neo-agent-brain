@@ -14,12 +14,14 @@ setup({
 });
 
 import {test, expect}                              from '@playwright/test';
+import Database                                    from 'better-sqlite3';
 import Neo                                         from 'neo.mjs/src/Neo.mjs';
 import * as core                                   from 'neo.mjs/src/core/_export.mjs';
 import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../../../../../ai/graph/identityRoots.mjs';
 import MemoryService                               from '../../../../../../ai/services/memory-core/MemoryService.mjs';
 import StorageRouter                               from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
 import RequestContextService                       from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import {activateSubjectBinding}                    from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
 import {drainMemoryWal}                            from './util.mjs';
 
 /**
@@ -211,26 +213,61 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
         expect(linkNodesCalls.some(([, , relationship]) => relationship === 'SPAWNED_MEMORY')).toBe(true);
     });
 
-    test('resolveMemoryTrustTier resolves canonical roster ids and all formerLogins aliases to their owning trust tier (#1279)', () => {
-        expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@neo-gemini-julia'})).toBe(TRUST_TIERS.PEER_TRUSTED);
-        expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@neo-gemini-maryam'})).toBe(TRUST_TIERS.PEER_TRUSTED);
+    test.describe('resolveMemoryTrustTier across the cutover (#1279, #1814)', () => {
+        const
+            FORMER_LOGINS = ['@neo-gemini-pro', 'neo-gemini-pro', '@neo-gemini-3-1-pro', '@neo-fable', 'neo-fable', '@neo-gpt', 'neo-gpt', '@neo-opus-4-7', '@neo-claude-opus'],
+            resolve       = agentIdentity => MemoryService.constructor.resolveMemoryTrustTier({agentIdentity}),
+            // A released spelling someone registered since: a live node of its own, with its own tier
+            reclaimed     = {id: '@neo-gpt', type: 'AgentIdentity', properties: {trustTier: TRUST_TIERS.INTERNAL_AUTHORED}};
 
-        for (const formerLogin of [
-            '@neo-gemini-pro',
-            'neo-gemini-pro',
-            '@neo-gemini-3-1-pro',
-            '@neo-fable',
-            'neo-fable',
-            '@neo-gpt',
-            'neo-gpt',
-            '@neo-opus-4-7',
-            '@neo-claude-opus'
-        ]) {
-            expect(
-                MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: formerLogin}),
-                `formerLogin ${formerLogin}`
-            ).toBe(TRUST_TIERS.PEER_TRUSTED);
+        let originals;
+
+        /** Points GraphService at a physical connection whose activation the arm decides; the graph holds the roster and the reclaimed node. */
+        function useGraph({activated}) {
+            const sqlite = new Database(':memory:');
+            if (activated) sqlite.transaction(() => activateSubjectBinding(sqlite, {cutoverRevision: 'cutover-fixture', at: 1}))();
+
+            GraphService.db                    = {storage: {db: sqlite}, nodes: new Map()};
+            GraphService.getNodeRecord         = ({id}) => id === reclaimed.id ? reclaimed : (IDENTITIES.find(identity => identity.id === id) ?? null);
+            GraphService.listNodeRecordsByType = () => ({records: []});
         }
+
+        test.beforeEach(() => {
+            originals = {db: GraphService.db, getNodeRecord: GraphService.getNodeRecord, listNodeRecordsByType: GraphService.listNodeRecordsByType};
+        });
+
+        test.afterEach(() => {
+            Object.assign(GraphService, originals);
+        });
+
+        test('while dormant, every formerLogins alias resolves to its owning resident ahead of a reclaimed spelling', () => {
+            useGraph({activated: false});
+
+            expect(resolve('@neo-gemini-julia')).toBe(TRUST_TIERS.PEER_TRUSTED);
+            expect(resolve('@neo-gemini-maryam')).toBe(TRUST_TIERS.PEER_TRUSTED);
+            for (const formerLogin of FORMER_LOGINS) {
+                expect(resolve(formerLogin), `formerLogin ${formerLogin}`).toBe(TRUST_TIERS.PEER_TRUSTED);
+            }
+        });
+
+        test('after the cutover, the exact node comes first and a former spelling confers no tier', () => {
+            useGraph({activated: true});
+
+            expect(resolve('@neo-gemini-julia')).toBe(TRUST_TIERS.PEER_TRUSTED);
+            expect(resolve('@neo-gpt')).toBe(TRUST_TIERS.INTERNAL_AUTHORED);
+            for (const formerLogin of FORMER_LOGINS.filter(login => login.replace(/^@/, '') !== 'neo-gpt')) {
+                expect(resolve(formerLogin), `formerLogin ${formerLogin}`).toBe(TRUST_TIERS.UNCLASSIFIED);
+            }
+        });
+
+        test('an unreadable activation confers no former tier, never the dormant answer', () => {
+            GraphService.db = null;
+
+            expect(resolve('@neo-gemini-julia')).toBe(TRUST_TIERS.PEER_TRUSTED);
+            for (const formerLogin of FORMER_LOGINS) {
+                expect(resolve(formerLogin), `formerLogin ${formerLogin}`).toBe(TRUST_TIERS.UNCLASSIFIED);
+            }
+        });
     });
 
     test('resolveMemoryTrustTier resolves auto-provisioned AgentIdentity graph nodes from GraphService (#1279)', () => {
