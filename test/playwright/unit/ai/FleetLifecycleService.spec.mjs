@@ -5575,6 +5575,63 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         }
     });
 
+    test('a refused binding logs the seat, the refusal code and the generation; a Stop during binding logs nothing', async () => {
+        const
+            warnings = [],
+            origWarn = console.warn,
+            pinned   = {family:'antigravity', generationId:'b'.repeat(64), shortVersion:'2.33.0', buildVersion:'2.33.0'};
+
+        console.warn = msg => warnings.push(msg);
+
+        try {
+            const fixture = installAntigravitySeat(), signal = FleetLifecycleService.beginStart('seat');
+
+            try {
+                await expect(FleetLifecycleService.start('seat', {
+                    startSignal           : signal,
+                    launchAdmission       : ADMISSION,
+                    remoteMcpCapability   : {harnessType:'antigravity', binaryPath:process.execPath, launchBinaryPath:process.execPath, harnessGeneration:pinned},
+                    bindAntigravityProject: async () => { throw Object.assign(new Error('Antigravity project binding refused (route-mismatch).'), {code:'route-mismatch'}) }
+                })).rejects.toMatchObject({code:'ANTIGRAVITY_BINDING_FAILED'});
+
+                expect(warnings).toEqual([`[FleetLifecycleService] seat 'seat' Antigravity binding refused (route-mismatch) on generation 2.33.0 (${'b'.repeat(12)}); the seat was stopped.`])
+            } finally {
+                FleetLifecycleService.finishStart('seat', signal);
+                await FleetLifecycleService.stop('seat');
+                fs.rmSync(fixture.root, {recursive:true, force:true})
+            }
+
+            warnings.length = 0;
+
+            const
+                fixture2 = installAntigravitySeat(),
+                signal2  = FleetLifecycleService.beginStart('seat'),
+                entered  = Promise.withResolvers(),
+                gate     = Promise.withResolvers();
+
+            try {
+                const start = FleetLifecycleService.start('seat', {
+                    startSignal           : signal2,
+                    launchAdmission       : ADMISSION,
+                    bindAntigravityProject: async () => { entered.resolve(); await gate.promise }
+                });
+                await entered.promise;
+                await FleetLifecycleService.stop('seat');
+                gate.resolve();
+
+                expect(await start).toMatchObject({canceled:true});
+                expect(warnings).toEqual([])
+            } finally {
+                gate.resolve();
+                FleetLifecycleService.finishStart('seat', signal2);
+                await FleetLifecycleService.stop('seat');
+                fs.rmSync(fixture2.root, {recursive:true, force:true})
+            }
+        } finally {
+            console.warn = origWarn
+        }
+    });
+
     test('a reused process birth after Antigravity binding revokes admission without signaling the new process', async () => {
         const
             fixture = installAntigravitySeat(),
