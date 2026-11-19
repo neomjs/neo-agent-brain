@@ -1488,6 +1488,8 @@ class FleetLifecycleService extends Base {
      * @summary Finish a curated Antigravity Start only after its trusted project binding succeeds.
      * The reservation remains reserved across the await. Failure or Stop revokes that exact generation
      * before ordinary process cleanup; successful activation requires the same tracked live PID/birth.
+     * A refused binding, never a Stop, leaves one Fleet log line naming the seat, the refusal code and the
+     * harness generation it ran.
      * @param {Object} options
      * @returns {Promise<Object>} Running status after binding, or a finite canceled Start result.
      * @private
@@ -1603,6 +1605,17 @@ class FleetLifecycleService extends Base {
         }
 
         cleanupUnresolved ||= revokeFailed || cleanupFailed;
+
+        if (!signal.aborted) {
+            // the Start answers the cockpit with a fixed refusal, so this line is the only record of which step refused
+            const
+                generation = opts.remoteMcpCapability?.harnessGeneration,
+                code       = typeof failureCause?.code === 'string' && /^[\w-]{1,64}$/.test(failureCause.code) ? failureCause.code : failureReason;
+
+            console.warn(`[FleetLifecycleService] seat '${id}' Antigravity binding refused (${code})` +
+                (generation ? ` on generation ${generation.shortVersion} (${String(generation.generationId).slice(0, 12)})` : '') +
+                (cleanupUnresolved ? '; its cleanup is unresolved.' : '; the seat was stopped.'))
+        }
 
         if (cleanupUnresolved) {
             const error = new Error(`FleetLifecycleService.start: Antigravity project binding failed; cleanup for agent '${id}' is unresolved.`,
