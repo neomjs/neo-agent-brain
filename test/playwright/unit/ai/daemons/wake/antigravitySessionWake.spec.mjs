@@ -1,12 +1,12 @@
-import {resolveAntigravitySidecarAncestor, runAntigravitySidecar, materializeAntigravitySidecar, validateAntigravitySidecarCapability, materializeAntigravityWakeHooks}                                                                                                                                                                                                              from '../../../../../../ai/daemons/wake/antigravityWakeSidecar.mjs';
-import protobuf                                                                                                                                                                                                                                                                                                                                                                      from 'protobufjs/minimal.js';
-import {test, expect}                                                                                                                                                                                                                                                                                                                                                                from '@playwright/test';
-import fs                                                                                                                                                                                                                                                                                                                                                                            from 'node:fs';
-import {execFileSync}                                                                                                                                                                                                                                                                                                                                                                from 'node:child_process';
-import os                                                                                                                                                                                                                                                                                                                                                                            from 'node:os';
-import path                                                                                                                                                                                                                                                                                                                                                                          from 'node:path';
-import Database                                                                                                                                                                                                                                                                                                                                                                      from 'better-sqlite3';
-import {readAntigravityWakeTarget, sendAntigravitySessionWake, captureAntigravityWakeCursor, readAntigravityWakeReceipt, isAntigravityWakeSystemMessage, hasAntigravityPendingSystemWake, initializeAntigravityStarts, observeAntigravitySessionStart, latestAntigravityWakeTarget, observeAntigravityPreInvocation, verifyAntigravityWakeAdmission, handleAntigravityPreInvocation} from '../../../../../../ai/daemons/wake/antigravitySessionWake.mjs';
+import {resolveAntigravitySidecarAncestor, runAntigravitySidecar, materializeAntigravitySidecar, validateAntigravitySidecarCapability, materializeAntigravityWakeHooks}                                                                                                                                                                                                                                                  from '../../../../../../ai/daemons/wake/antigravityWakeSidecar.mjs';
+import protobuf                                                                                                                                                                                                                                                                                                                                                                                                          from 'protobufjs/minimal.js';
+import {test, expect}                                                                                                                                                                                                                                                                                                                                                                                                    from '@playwright/test';
+import fs                                                                                                                                                                                                                                                                                                                                                                                                                from 'node:fs';
+import {execFileSync}                                                                                                                                                                                                                                                                                                                                                                                                    from 'node:child_process';
+import os                                                                                                                                                                                                                                                                                                                                                                                                                from 'node:os';
+import path                                                                                                                                                                                                                                                                                                                                                                                                              from 'node:path';
+import Database                                                                                                                                                                                                                                                                                                                                                                                                          from 'better-sqlite3';
+import {readAntigravityWakeTarget, sendAntigravitySessionWake, captureAntigravityWakeCursor, readAntigravityWakeReceipt, isAntigravityWakeSystemMessage, isAntigravityExternalSystemMessage, hasAntigravityPendingSystemWake, initializeAntigravityStarts, observeAntigravitySessionStart, latestAntigravityWakeTarget, observeAntigravityPreInvocation, verifyAntigravityWakeAdmission, handleAntigravityPreInvocation} from '../../../../../../ai/daemons/wake/antigravitySessionWake.mjs';
 
 
 function fixtureSummary(id, project, parent = '', depth = 0, fork = '') {
@@ -187,11 +187,15 @@ test('generation census and hook admission reject stale, helper, replay and unob
         let   calls   = 0;
         const consume = async()=>{ calls++; return {admitted:true,digest:'private\n[NEO_WAKE_RECEIVED:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee]'} };
         const marker  = '[NEO_WAKE_V1:'+nonce+'] [WAKE]';
-        expect((await handleAntigravityPreInvocation({...ctx,input:{...input,lastUserInput:marker},consume})).injectSteps[0].ephemeralMessage).toContain('private');
+        expect((await handleAntigravityPreInvocation({...ctx,input:{...input,lastUserInput:marker},consume})).injectSteps[0].systemMessage.systemMessage).toContain('private');
         expect(calls).toBe(1);
         fs.writeFileSync(statePath+'.claim.json',JSON.stringify({admitted:true,nonce,threadId:current,generation:ctx.generation}));
         expect(await handleAntigravityPreInvocation({...ctx,input:{...input,lastUserInput:marker,invocationNum:1},consume})).toEqual({});
         expect(calls).toBe(1);
+        const {invocationNum: _omitted, ...omittedInvocationInput} = {...input, lastUserInput: marker};
+        expect(await observeAntigravityPreInvocation({...ctx,input:{conversationId:current,workspacePaths:['/project'],lastUserInput:'hello'}})).toBe(true);
+        expect((await handleAntigravityPreInvocation({...ctx,input:omittedInvocationInput,consume})).injectSteps[0].systemMessage.systemMessage).toContain('private');
+        expect(calls).toBe(2);
         expect((await handleAntigravityPreInvocation({...ctx,input:{...input,conversationId:old,lastUserInput:marker},consume})).terminationBehavior).toBe('terminate');
         insert(successor,'p','',0,1,'','CASCADE_RUN_STATUS_IDLE');
         expect(latestAntigravityWakeTarget(ctx)).toBeNull();
@@ -242,7 +246,7 @@ test('native hook callback binds a verified lease and rejects a foreign conversa
         let   calls  = 0;
         const input  = {conversationId:id,workspacePaths:[projectRoot],invocationNum:0,lastUserInput:'[NEO_WAKE_V1:'+nonce+'] [WAKE]'};
         const output = await handleAntigravityWakeHook({...base,event:'PreInvocation',input,consume:async()=>{calls++;return {admitted:true,digest:'safe'}}});
-        expect(output.injectSteps[0].ephemeralMessage).toContain('safe');
+        expect(output.injectSteps[0].systemMessage.systemMessage).toContain('safe');
         expect(calls).toBe(1);
         const denied = await handleAntigravityWakeHook({...base,event:'PreInvocation',input:{...input,conversationId:nonce},consume:async()=>{calls++;}});
         expect(denied.terminationBehavior).toBe('terminate');
@@ -327,7 +331,7 @@ test('App callback redeems a bound native system wake with unrelated lastUserInp
             threadId:id,nonce,denyOnly:true,expectedGeneration:generation}]);
         fs.writeFileSync(statePath+'.starts.json',starts,{mode:0o600});
         const consume = async()=>{calls++;return {admitted:true,digest:'safe'}};
-        expect((await handleAntigravityWakeHook({...base,event:'PreInvocation',input,consume})).injectSteps[0].ephemeralMessage).toContain('safe');
+        expect((await handleAntigravityWakeHook({...base,event:'PreInvocation',input,consume})).injectSteps[0].systemMessage.systemMessage).toContain('safe');
         expect(calls).toBe(1);
         fs.writeFileSync(statePath+'.claim.json',JSON.stringify({admitted:true,nonce,threadId:id,generation}),{mode:0o600});
         expect(await handleAntigravityWakeHook({...base,event:'PreInvocation',input:{...input,invocationNum:3},consume})).toEqual({});
@@ -471,4 +475,49 @@ test('sidecar startup classifies ancestor and capability failures without values
     const rows = [{pid:1,ppid:0,command:'/a/Antigravity.app/Contents/MacOS/Antigravity --user-data-dir=/profile',startedAt:'epoch'}];
     await expect(runAntigravitySidecar({stateDir:'/state',manifestPath:'/manifest',sidecarPid:9,readRows:()=>rows,dispatch:async()=>{}})).rejects.toMatchObject({code:'AGY_ANCESTOR_UNAVAILABLE'});
     await expect(runAntigravitySidecar({stateDir:'/state',manifestPath:'/manifest',sidecarPid:1,readRows:()=>rows,environment:{},dispatch:async()=>{}})).rejects.toMatchObject({code:'AGY_CAPABILITY_UNAVAILABLE'});
+});
+
+test('wake correlation survives truncated steps and internal Plan Mode/task envelopes, and settles finished unacknowledged turns', () => {
+    const root     = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-planmode-'));
+    const threadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', nonce = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        token      = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', marker = `[NEO_WAKE_V1:${nonce}] [WAKE]`;
+    const dir = path.join(root, 'brain', threadId, '.system_generated', 'logs');
+    fs.mkdirSync(dir, {recursive:true});
+    const file    = path.join(dir, 'transcript.jsonl'), row = x => JSON.stringify(x) + '\n';
+    const sysEnv  = (sender, body) => `The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-18T21:25:03Z sender=${sender} priority=MESSAGE_PRIORITY_HIGH content=${body}\n</SYSTEM_MESSAGE>`;
+    const planEnv = body => `The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n${body}\n</SYSTEM_MESSAGE>`;
+    try {
+        fs.writeFileSync(file, '');
+        const cursor = captureAntigravityWakeCursor({appDataDir:root, threadId});
+        const wake   = {type:'SYSTEM_MESSAGE', source:'SYSTEM', status:'DONE', step_index:10, content:sysEnv('system', marker)};
+        const trunc  = {type:'GENERIC', source:'MODEL', status:'DONE', step_index:11, truncated_fields:['content'], content:'x'.repeat(4000)};
+        const pDue   = {type:'SYSTEM_MESSAGE', source:'SYSTEM', status:'DONE', step_index:12, truncated_fields:['content'], content:planEnv('[plan review due] ...')};
+        const pOn    = {type:'SYSTEM_MESSAGE', source:'SYSTEM', status:'DONE', step_index:13, truncated_fields:['content'], content:planEnv('[plan review] Plan mode is on...')};
+        const pOff   = {type:'SYSTEM_MESSAGE', source:'SYSTEM', status:'DONE', step_index:14, content:planEnv('Plan mode is off: execution turn')};
+        const task   = {type:'SYSTEM_MESSAGE', source:'SYSTEM', status:'DONE', step_index:15, content:sysEnv(`${threadId}/task-1`, 'done')};
+        const call   = {type:'PLANNER_RESPONSE', source:'MODEL', status:'DONE', step_index:16, truncated_fields:['tool_calls'], tool_calls:[{name:'run_command'}], content:''};
+
+        expect(isAntigravityExternalSystemMessage(wake)).toBe(true);
+        expect(isAntigravityExternalSystemMessage(pOff)).toBe(false);
+        expect(isAntigravityExternalSystemMessage(task)).toBe(false);
+
+        fs.appendFileSync(file, row(wake) + row(trunc) + row(pDue) + row(pOn) + row(pOff) + row(task) + row(call));
+        expect(hasAntigravityPendingSystemWake({appDataDir:root, threadId, text:marker, cursor})).toBe(true);
+        expect(readAntigravityWakeReceipt({appDataDir:root, threadId, text:marker, cursor, receiptToken:token, targetStatus:'CASCADE_RUN_STATUS_IDLE', settleUnacknowledged:true}).outcome).toBe('unknown');
+
+        fs.appendFileSync(file, row({type:'PLANNER_RESPONSE', source:'MODEL', status:'DONE', step_index:17, content:`Done.\n[NEO_WAKE_RECEIVED:${token}]`}));
+        expect(readAntigravityWakeReceipt({appDataDir:root, threadId, text:marker, cursor, receiptToken:token}).outcome).toBe('observed');
+
+        // Without the model echo, a finished IDLE turn (or an external/human supersession) settles as turn-unacknowledged.
+        fs.truncateSync(file, 0);
+        const freshCursor = captureAntigravityWakeCursor({appDataDir:root, threadId});
+        fs.appendFileSync(file, row(wake) + row(trunc) + row(pOff) + row({type:'PLANNER_RESPONSE', source:'MODEL', status:'DONE', step_index:18, content:'Forgot ack'}));
+        expect(readAntigravityWakeReceipt({appDataDir:root, threadId, text:marker, cursor:freshCursor, receiptToken:token, targetStatus:'CASCADE_RUN_STATUS_RUNNING', settleUnacknowledged:true}).outcome).toBe('unknown');
+        expect(readAntigravityWakeReceipt({appDataDir:root, threadId, text:marker, cursor:freshCursor, targetStatus:'CASCADE_RUN_STATUS_IDLE', settleUnacknowledged:true}).outcome).toBe('turn-unacknowledged');
+
+        const extMsg = {type:'SYSTEM_MESSAGE', source:'SYSTEM', status:'DONE', step_index:19, content:sysEnv('system', 'unrelated external notice')};
+        fs.appendFileSync(file, row(extMsg));
+        expect(hasAntigravityPendingSystemWake({appDataDir:root, threadId, text:marker, cursor:freshCursor})).toBe(false);
+        expect(readAntigravityWakeReceipt({appDataDir:root, threadId, text:marker, cursor:freshCursor, targetStatus:'CASCADE_RUN_STATUS_RUNNING', settleUnacknowledged:true}).outcome).toBe('turn-unacknowledged');
+    } finally { fs.rmSync(root, {recursive:true, force:true}) }
 });

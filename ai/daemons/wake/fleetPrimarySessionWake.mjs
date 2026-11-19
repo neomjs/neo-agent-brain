@@ -310,13 +310,23 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         readReceipt: async ({binding,nonce,recordKey,urgent:slotUrgent,attempt}) => {
             const {threadId} = binding, text = wakeText(nonce), saved = await readPrivate(cursorPathFor(slotUrgent));
             if (saved?.nonce !== nonce) return null;
+            const activeTurn    = attempt?.deliveryMode === 'active-turn';
+            const readAgyStatus = async () => (await Promise.resolve()
+                .then(() => antigravityTransport.readAntigravityWakeTarget?.({databasePath:path.join(appDataDir,'conversation_summaries.db'),projectId,threadId}))
+                .catch(() => null))?.status ?? null;
             const claim = await readPrivate(claimPathFor(slotUrgent));
             if (claim?.nonce !== nonce) {
-                // No hook redeemed this nonce. Once its idle wake turn has ended without an acknowledgement
+                // No hook redeemed this nonce. Once its idle wake turn has ended without an acknowledgement,
                 // it never can, so the slot settles instead of holding every later wake behind it.
-                if (!isCodex || attempt?.deliveryMode === 'active-turn') return null;
-                const proof = await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptOffset:saved.cursor});
-                return proof?.state === 'turn-unacknowledged' && proof.threadId === threadId ? {...binding,recordKey,nonce,status:'unacknowledged'} : null
+                if (activeTurn) return null;
+                if (isCodex) {
+                    const proof = await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptOffset:saved.cursor});
+                    return proof?.state === 'turn-unacknowledged' && proof.threadId === threadId ? {...binding,recordKey,nonce,status:'unacknowledged'} : null
+                }
+                const proof = await antigravityTransport.readAntigravityWakeReceipt({
+                    appDataDir,threadId,text,cursor:saved.cursor,targetStatus:await readAgyStatus(),settleUnacknowledged:true
+                });
+                return proof?.outcome === 'turn-unacknowledged' ? {...binding,recordKey,nonce,status:'unacknowledged'} : null
             }
             if (claim.recordKey !== recordKey || claim.generation !== binding.generation || claim.threadId !== threadId) return null;
             if (claim.admitted === false) {
@@ -324,14 +334,19 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
                 return {...binding,recordKey,nonce,status:'not-sent'}
             }
             if (claim.admitted !== true) return null;
-            const activeTurn = attempt?.deliveryMode === 'active-turn';
-            const proof      = isCodex
+            const targetStatus = !isCodex && !activeTurn ? await readAgyStatus() : null;
+            const proof        = isCodex
                 ? (activeTurn && typeof codexTransport.readCodexActiveTurnReceipt === 'function'
                     ? await codexTransport.readCodexActiveTurnReceipt({home,threadId,text,receiptToken:claim.receiptToken,receiptOffset:saved.cursor})
                     : await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptToken:claim.receiptToken,receiptOffset:saved.cursor}))
                 : (activeTurn && typeof antigravityTransport.readAntigravityActiveTurnReceipt === 'function'
                     ? antigravityTransport.readAntigravityActiveTurnReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor})
-                    : antigravityTransport.readAntigravityWakeReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor}));
+                    : antigravityTransport.readAntigravityWakeReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor,targetStatus,settleUnacknowledged:true}));
+            if (!isCodex && !activeTurn && proof?.outcome === 'turn-unacknowledged') {
+                // The admitted idle turn has finished, so no model echo can follow; settle with
+                // acknowledged: false instead of wedging later wakes.
+                return {...binding,recordKey,nonce,status:'unacknowledged'}
+            }
             if (!['turn-started', 'turn-steered'].includes(proof?.state) && proof?.outcome !== 'observed') return null;
             if (isCodex && claim.turnId && claim.turnId !== proof.turnId) return null;
             const observedAt = typeof proof?.observedAt === 'string' ? proof.observedAt : (typeof claim.observedAt === 'string' ? claim.observedAt : null);
