@@ -74,12 +74,24 @@ function wakeText(nonce) {
 }
 
 /** @summary Reads the latest real main-session start with the owning harness's native metadata. */
-async function latestRoot(config, live, statePath, appDataDir, codexTransport, antigravityTransport, seat, inspectResident) {
+async function latestRoot(config, live, statePath, stateDir, appDataDir, codexTransport, antigravityTransport, seat, inspectResident) {
     const {family, instanceHome, projectId} = config;
     const isCodex                           = family === 'codex-desktop';
-    const target                            = isCodex
+    const databasePath                      = path.join(appDataDir, 'conversation_summaries.db');
+    if (!isCodex && typeof antigravityTransport.reconcileAntigravityStarts === 'function') {
+        await antigravityTransport.reconcileAntigravityStarts({
+            databasePath,
+            appDataDir,
+            projectId,
+            generation: live.generation,
+            statePath,
+            stateDir,
+            agentId   : config.agentId
+        }).catch(() => null);
+    }
+    const target = isCodex
         ? (await codexTransport.listCodexWakeTargets({home:deriveCodexHome({harnessType:family,instanceHome}),workspaceRoot:live.workspaceRoot}))[0]
-        : await antigravityTransport.latestAntigravityWakeTarget({instanceHome,appDataDir,databasePath:path.join(appDataDir,'conversation_summaries.db'),
+        : await antigravityTransport.latestAntigravityWakeTarget({instanceHome,appDataDir,databasePath,
             projectId,projectRoot:live.workspaceRoot,generation:live.generation,statePath});
     if (target?.root !== true) return null;
     const observation = await observePrimaryWakeSelection({
@@ -145,7 +157,7 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
         if (!live) return refuseSpent('resident-unavailable');
         if (live.generation !== binding.generation) return denied;
         let selected;
-        try { selected = await latestRoot(config,live,statePath,appDataDir,codexTransport,antigravityTransport,binding.seat,inspectResident) }
+        try { selected = await latestRoot(config,live,statePath,stateDir,appDataDir,codexTransport,antigravityTransport,binding.seat,inspectResident) }
         catch { return refuseSpent('selection-unavailable') }
         const matches = selected?.root === true && selected.threadId === threadId;
         if (selected?.root !== true) return refuseSpent('selection-unavailable');
@@ -186,7 +198,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
     const select      = async () => {
         const now = await inspectResident(config);
         if (now?.generation !== generation) return null;
-        return latestRoot(config,live,statePath,appDataDir,codexTransport,antigravityTransport,seat,inspectResident)
+        return latestRoot(config,live,statePath,stateDir,appDataDir,codexTransport,antigravityTransport,seat,inspectResident)
     };
     let before = await readBinding();
     if ((before.inflight?.status === 'unknown' || before.urgentInflight?.status === 'unknown') && before.binding) {
@@ -377,7 +389,7 @@ export async function dispatchAntigravitySidecarRecords({manifestPath,stateDir,e
         const appDataDir = path.join(os.homedir(),'.gemini','antigravity');
         await fs.mkdir(path.dirname(statePath),{recursive:true,mode:0o700});
         await antigravity.initializeAntigravityStarts({databasePath:path.join(appDataDir,'conversation_summaries.db'),
-            projectId:config.projectId,generation:live.generation,statePath});
+            appDataDir,projectId:config.projectId,generation:live.generation,statePath,stateDir,agentId:config.agentId});
         await drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route,sidecar:{environment,...app}})
     }
 }

@@ -2045,6 +2045,116 @@ test.describe('FleetManager native wake canary', () => {
         delete agent.metadata.launch; agent.seatHome = null; await FleetManager.startAgent('fixture');
         agent.seatHome = '/managed/fixture'; delete agent.metadata.repo; await FleetManager.startAgent('fixture')
     });
+
+    test('already-running Antigravity native activation fences pre-existing roots and admits the next genuine main; canceled cold Start cleans up launch census', async () => {
+        const Database                     = (await import('better-sqlite3')).default;
+        const protobuf                     = (await import('protobufjs/minimal.js')).default;
+        const {MCP_SERVERS}                = await import('../../../../../../src/fleet/contract/mcpServers.mjs');
+        const {registerAntigravityProject} = await import('../../../../../../ai/services/fleet/antigravityProjectRegistry.mjs');
+        const {
+            initializeAntigravityStarts,
+            observeAntigravitySessionStart,
+            observeAntigravityPreInvocation,
+            verifyAntigravityWakeAdmission
+        }                  = await import('../../../../../../ai/daemons/wake/antigravitySessionWake.mjs');
+        const root         = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-agy-activation-')));
+        const hostHome     = path.join(root, 'host');
+        const configDir    = path.join(hostHome, '.gemini', 'config');
+        const registryDir  = path.join(configDir, 'projects');
+        const appDataDir   = path.join(hostHome, '.gemini', 'antigravity');
+        const seatHome     = path.join(root, 'fixture');
+        const instanceHome = path.join(seatHome, 'harness', 'antigravity');
+        const workspace    = path.join(seatHome, 'org', 'repo');
+        const stateDir     = path.join(root, 'state');
+        const manifestPath = path.join(root, 'routes.json');
+        const statePath    = path.join(stateDir, 'primary-sessions', 'fixture.json');
+        const olderChat    = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+        const freshChat    = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+        const startedAt    = 'Thu Nov 19 18:49:13 2026';
+        const generation   = `42:${startedAt}`;
+        for (const dir of [registryDir, appDataDir, instanceHome, workspace, stateDir, path.dirname(statePath)]) {
+            fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+        }
+        fs.writeFileSync(manifestPath, JSON.stringify({schemaVersion: 1, routes: {}}), {mode: 0o600});
+        const {projectId} = await registerAntigravityProject({
+            registryDirectory   : registryDir,
+            profileDirectory    : instanceHome,
+            projectRoot         : workspace,
+            name                : 'fixture',
+            projectMcpAllowRules: MCP_SERVERS.map(({key}) => `mcp(neo-mjs-${key}/*)`)
+        });
+
+        const databasePath = path.join(appDataDir, 'conversation_summaries.db'), db = new Database(databasePath);
+        const makeBlob     = (id, createdMs) => {
+            const meta = protobuf.Writer.create().uint32(50).string(id).uint32(146).string(projectId).finish();
+            const sec  = Math.floor(createdMs / 1000), nanos = (createdMs - sec * 1000) * 1_000_000;
+            const ts   = protobuf.Writer.create().uint32(8).int64(sec).uint32(16).uint32(nanos).finish();
+            return Buffer.from(protobuf.Writer.create().uint32(34).string(id).uint32(58).bytes(ts).uint32(138).bytes(meta).finish());
+        };
+        try {
+            db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT, raw_summary BLOB)');
+            db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?,?)')
+                .run(olderChat, projectId, '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', makeBlob(olderChat, Date.now() - 60_000));
+
+            const agent     = {id: 'fixture', harnessType: 'antigravity', launchOwner: 'fleet', seatHome, metadata: {repo: {repoSlug: 'org/repo'}}};
+            let   running   = true;
+            const status    = {id: 'fixture', running: true, state: 'running', pid: 42, startedAt, instanceHome, launchCommand: '/app/bin', harnessGeneration: {generationId: 'g'}};
+            const lifecycle = lifecycleWithStarts({
+                getInstanceRoot                  : () => root,
+                getRegistry                      : () => ({getAgent: () => agent}),
+                isRunning                        : () => running,
+                status                           : () => ({...status, running}),
+                probeSeat                        : () => 'live',
+                processes                        : new Map([['fixture', {cwd: workspace}]]),
+                snapshotAmbientProcessEnvironment: () => ({HOME: hostHome}),
+                harnessGenerationsOf             : () => [{id: 'g', binaryPath: '/app/bin', appBundle: '/app/Antigravity.app'}]
+            });
+            FleetManager.lifecycleService = lifecycle;
+            FleetManager.managedRoot      = root;
+            FleetManager.wakeStateOptions = {
+                wakeReceiverBase        : 'http://127.0.0.1:3199',
+                wakeReceiverManifestPath: manifestPath,
+                wakeReceiverStateDir    : stateDir,
+                prepareFleetNativeWake  : async () => ({state: 'prepared', completed: ['hooks', 'sidecar']})
+            };
+            FleetManager.wakeArmFn     = async ({primarySession}) => ({state: primarySession?.projectId === projectId ? 'ready' : 'unarmed'});
+            FleetManager.rotationArmFn = async () => null;
+
+            const activated = await FleetManager.startAgent('fixture', {activateNativeWake: true, expectedStartedAt: startedAt});
+            expect(activated.wakeRoute).toEqual({state: 'ready'});
+
+            await initializeAntigravityStarts({databasePath, appDataDir, projectId, generation, statePath, stateDir, agentId: 'fixture'});
+            await observeAntigravitySessionStart({databasePath, appDataDir, projectId, projectRoot: workspace, generation, statePath, stateDir, agentId: 'fixture', input: {conversationId: olderChat, workspacePaths: [workspace]}});
+            await observeAntigravityPreInvocation({databasePath, appDataDir, projectId, projectRoot: workspace, generation, statePath, stateDir, agentId: 'fixture', input: {conversationId: olderChat, workspacePaths: [workspace], invocationNum: 0}});
+            expect(verifyAntigravityWakeAdmission({databasePath, appDataDir, projectId, threadId: olderChat, generation, statePath}).verified).toBe(false);
+
+            await observeAntigravitySessionStart({databasePath, appDataDir, projectId, projectRoot: workspace, generation, statePath, stateDir, agentId: 'fixture', input: {conversationId: freshChat, workspacePaths: [workspace]}});
+            db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?,?)')
+                .run(freshChat, projectId, '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', makeBlob(freshChat, Date.now() + 2_000));
+            await observeAntigravityPreInvocation({databasePath, appDataDir, projectId, projectRoot: workspace, generation, statePath, stateDir, agentId: 'fixture', input: {conversationId: freshChat, workspacePaths: [workspace], invocationNum: 0}});
+            expect(verifyAntigravityWakeAdmission({databasePath, appDataDir, projectId, threadId: freshChat, generation, statePath}).verified).toBe(true);
+
+            // Canceled cold Start cleans up its staged launch census.
+            running = false;
+            const entered = Promise.withResolvers(), release = Promise.withResolvers();
+            FleetManager.provisionAndStartFn = async ({prepareNativeWake}) => {
+                await prepareNativeWake({agent, instanceHome, workspaceRoot: workspace, configDir, antigravityProject: {id: projectId, name: 'fixture', root: workspace}, appDataDir});
+                expect(fs.existsSync(path.join(stateDir, 'primary-session-launches', 'fixture.json'))).toBe(true);
+                entered.resolve();
+                await release.promise;
+                return {...status, running: true};
+            };
+            const coldAttempt = FleetManager.startAgent('fixture');
+            await entered.promise;
+            for (const attempt of lifecycle.pendingStarts.get('fixture').values()) attempt.stop.abort();
+            release.resolve();
+            expect(await coldAttempt).toMatchObject({canceled: true});
+            expect(fs.existsSync(path.join(stateDir, 'primary-session-launches', 'fixture.json'))).toBe(false);
+        } finally {
+            db.close();
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
 });
 
 test.describe('Neo.ai.services.fleet.FleetManager — pending Start cancellation across the seat-home queue', () => {

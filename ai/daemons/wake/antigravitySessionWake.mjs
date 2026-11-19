@@ -11,6 +11,9 @@ import {promisify} from 'node:util';
  * attest that a session is the current seat root: the host owns that binding and sidecar custody.
  */
 const UUID                     = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const AGENT_ID                 = /^[a-z0-9][a-z0-9._-]{0,99}$/;
+const PS_LSTART_UTC            = /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/;
+const MAX_PENDING_OBSERVATIONS = 8;
 const STATES                   = new Set(['CASCADE_RUN_STATUS_IDLE', 'CASCADE_RUN_STATUS_RUNNING']);
 const EXTERNAL_SYSTEM_ENVELOPE = /^The following is a <SYSTEM_MESSAGE> not actually sent by the user\. It is provided by the system as important information to pay attention to\.\n\n<SYSTEM_MESSAGE>\n\[Message\] timestamp=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) sender=system priority=(MESSAGE_PRIORITY_[A-Z_]+) content=(.*)$/s;
 
@@ -34,7 +37,7 @@ function validateInputs(databasePath, projectId) {
 
 /**
  * @summary Reads only the native summary identity fields; malformed or ambiguous wire data is unavailable.
- * The observed schema is CascadeTrajectorySummary { trajectory_id:4, trajectory_metadata:17,
+ * The observed schema is CascadeTrajectorySummary { trajectory_id:4, created_time:7, trajectory_metadata:17,
  * fork_parent_conversation_id:24 }; metadata has parent:5, root:6, nesting_depth:17, project_id:18.
  * Proto3 omits empty optional parent/fork and zero depth. Required tuple fields must be present.
  */
@@ -59,9 +62,25 @@ function nativeIdentity(raw) {
             return result;
         };
         const summary = parse(protobuf.Reader.create(raw), {
-            4:{name:'id',wire:2}, 17:{name:'metadata',wire:2}, 24:{name:'fork',wire:2}
+            4:{name:'id',wire:2}, 7:{name:'created',wire:2}, 17:{name:'metadata',wire:2}, 24:{name:'fork',wire:2}
         });
         if (!summary.id || !summary.metadata) return null;
+        let createdAtMs = null;
+        if (summary.created) {
+            const tsReader = protobuf.Reader.create(summary.created), seenTs = new Set();
+            let   seconds  = 0, nanos = 0;
+            while (tsReader.pos < tsReader.len) {
+                const tag = tsReader.uint32(), field = tag >>> 3, wire = tag & 7;
+                if (seenTs.has(field) || wire !== 0 || (field !== 1 && field !== 2)) throw new Error('invalid timestamp');
+                seenTs.add(field);
+                if (field === 1) seconds = Number(tsReader.int64().toString());
+                else nanos = tsReader.uint32();
+            }
+            if (!Number.isSafeInteger(seconds) || seconds <= 0 || !Number.isSafeInteger(nanos) || nanos < 0 || nanos >= 1_000_000_000) {
+                throw new Error('invalid timestamp');
+            }
+            createdAtMs = seconds * 1000 + Math.floor(nanos / 1_000_000);
+        }
         const metadata = parse(protobuf.Reader.create(summary.metadata), {
             5:{name:'parent',wire:2}, 6:{name:'root',wire:2},
             17:{name:'depth',wire:0}, 18:{name:'project',wire:2}
@@ -70,7 +89,7 @@ function nativeIdentity(raw) {
         const decoder = new TextDecoder('utf-8', {fatal:true});
         const string  = value => value ? decoder.decode(value) : '';
         return {id:string(summary.id),fork:string(summary.fork),parent:string(metadata.parent),
-            root:string(metadata.root),project:string(metadata.project),depth:metadata.depth ?? 0};
+            root:string(metadata.root),project:string(metadata.project),depth:metadata.depth ?? 0,createdAtMs};
     } catch { return null }
 }
 
@@ -265,101 +284,517 @@ export function readAntigravityWakeReceipt({appDataDir,threadId,text,cursor,rece
     } catch { return unknown }
 }
 
-/** @summary Initializes the generation census before accepting any SessionStart event. */
-export async function initializeAntigravityStarts({databasePath,projectId,generation,statePath}) {
+function parseGenerationStartedAtMs(generation) {
+    if (typeof generation !== 'string') return null;
+    const idx = generation.indexOf(':');
+    if (idx <= 0) return null;
+    const raw = generation.slice(idx + 1).trim();
+    if (PS_LSTART_UTC.test(raw)) {
+        const ms = Date.parse(raw + ' UTC');
+        return Number.isFinite(ms) ? ms : null;
+    }
+    const iso = /^\d{4}-\d{2}-\d{2}T/.test(raw) ? Date.parse(raw) : NaN;
+    return Number.isFinite(iso) ? iso : null;
+}
+
+function readPrivateStartsJson(file) {
+    try {
+        const stat = fs.lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) || stat.size > 1024 * 1024) {
+            throw new Error('Invalid private wake starts record');
+        }
+        return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+    }
+}
+
+function launchCensusPath(stateDir, agentId) {
+    if (!path.isAbsolute(stateDir || '') || !AGENT_ID.test(agentId || '')) {
+        throw new TypeError('Absolute state directory and valid agentId required');
+    }
+    return path.join(stateDir, 'primary-session-launches', agentId + '.json');
+}
+
+function censusRootIds(databasePath, projectId, {allowMissingDb = false} = {}) {
     validateInputs(databasePath, projectId);
-    if (!generation || !path.isAbsolute(statePath || '')) throw new TypeError('Generation and state path required');
-    const file                  = statePath + '.starts.json';
+    if (allowMissingDb && !fs.existsSync(databasePath)) return [];
+    const ids = withDatabase(databasePath, db => db.prepare("SELECT conversation_id FROM conversation_summaries WHERE project_id=? AND parent_conversation_id='' AND nesting_depth=0").all(projectId).map(x => x.conversation_id));
+    if (ids.some(id => !UUID.test(id))) throw new Error('Invalid root census');
+    return ids;
+}
+
+function transcriptCreatedAtMs(appDataDir, threadId) {
+    if (!appDataDir) return null;
+    if (!path.isAbsolute(appDataDir) || !UUID.test(threadId || '')) return 'invalid';
+    let root;
+    try { root = fs.realpathSync(appDataDir) } catch (error) { return error.code === 'ENOENT' ? null : 'invalid' }
+    let current = root;
+    for (const part of ['brain', threadId, '.system_generated', 'logs']) {
+        current = path.join(current, part);
+        try {
+            const stat = fs.lstatSync(current);
+            if (stat.isSymbolicLink() || !stat.isDirectory()) return 'invalid';
+        } catch (error) { return error.code === 'ENOENT' ? null : 'invalid' }
+    }
+    const file = path.join(current, 'transcript.jsonl');
+    let fd;
+    try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW) }
+    catch (error) { return error.code === 'ENOENT' ? null : 'invalid' }
+    try {
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile()) return 'invalid';
+        if (stat.size === 0) return null;
+        const limit = Math.min(stat.size, 16 * 1024), buf = Buffer.alloc(limit);
+        const count = fs.readSync(fd, buf, 0, limit, 0);
+        const nl    = buf.subarray(0, count).indexOf(10);
+        if (nl < 0) return stat.size >= 16 * 1024 ? 'invalid' : null;
+        const first = JSON.parse(buf.subarray(0, nl).toString('utf8'));
+        if (!first || first.step_index !== 0 || typeof first.created_at !== 'string') return 'invalid';
+        const ms = Date.parse(first.created_at);
+        return Number.isFinite(ms) ? ms : 'invalid';
+    } catch { return 'invalid' }
+    finally { fs.closeSync(fd) }
+}
+
+function creationDisposition(row, appDataDir, baselineAtMs) {
+    const metadata = nativeIdentity(row?.raw_summary);
+    if (!metadata) return 'unknown';
+    const tCreated = transcriptCreatedAtMs(appDataDir, row.conversation_id);
+    if (tCreated === 'invalid') return 'unknown';
+    const sCreated = metadata.createdAtMs;
+    if (sCreated !== null && Number.isFinite(tCreated) && Math.abs(Math.floor(sCreated / 1000) * 1000 - tCreated) > 5000) {
+        return 'unknown';
+    }
+    if (!Number.isFinite(baselineAtMs)) return 'unattested';
+    const sFresh = sCreated !== null ? sCreated + 1 >= baselineAtMs : null;
+    const tFresh = Number.isFinite(tCreated) ? tCreated >= Math.floor(baselineAtMs / 1000) * 1000 : null;
+    if (sFresh === false || tFresh === false) return 'historical';
+    return (sFresh === true || tFresh === true) ? 'created' : 'unattested';
+}
+
+function normalizePendingStarts(entries) {
+    if (!Array.isArray(entries)) return [];
+    const byId = new Map();
+    for (const item of entries) {
+        const id       = typeof item === 'string' ? item : item?.id;
+        const deferred = typeof item === 'object' && item !== null ? item.deferred !== false : true;
+        if (!UUID.test(id || '')) continue;
+        const prev = byId.get(id);
+        byId.set(id, {id, deferred: prev ? (prev.deferred && deferred) : deferred});
+    }
+    return [...byId.values()].slice(-MAX_PENDING_OBSERVATIONS);
+}
+
+function normalizePendingWitnesses(entries) {
+    if (!Array.isArray(entries)) return [];
+    return [...new Set(entries.filter(id => UUID.test(id || '')))].slice(-MAX_PENDING_OBSERVATIONS);
+}
+
+function normalizeStartsState(state) {
+    return {
+        version         : 1,
+        ...(UUID.test(state?.launchId || '') ? {launchId: state.launchId} : {}),
+        generation      : state.generation,
+        projectId       : state.projectId,
+        priorThreadIds  : [...new Set(state.priorThreadIds)],
+        baselineAtMs    : Number.isFinite(state.baselineAtMs) ? state.baselineAtMs : null,
+        pendingStarts   : normalizePendingStarts(state.pendingStarts),
+        pendingWitnesses: normalizePendingWitnesses(state.pendingWitnesses),
+        threadId        : state.threadId || null,
+        sequence        : Number.isSafeInteger(state.sequence) && state.sequence >= 0 ? state.sequence : 0,
+        witness         : state.witness === true
+    };
+}
+
+function inspectConversationRow(databasePath, projectId, conversationId) {
+    if (!databasePath || !fs.existsSync(databasePath)) return null;
+    return withDatabase(databasePath, db => db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status, raw_summary FROM conversation_summaries WHERE project_id=? AND conversation_id=?').get(projectId, conversationId) || null);
+}
+
+function reconcileAntigravityStartsState(state, {databasePath, appDataDir = null, projectId}) {
+    if (!databasePath || !fs.existsSync(databasePath)) return null;
+    const before         = JSON.stringify(state);
+    const prior          = new Set(state.priorThreadIds);
+    let   acceptedTarget = null;
+    const snapshot       = withDatabase(databasePath, db => {
+        const ids      = db.prepare("SELECT conversation_id FROM conversation_summaries WHERE project_id=? AND parent_conversation_id='' AND nesting_depth=0").all(projectId);
+        const load     = db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status, raw_summary FROM conversation_summaries WHERE project_id=? AND conversation_id=?');
+        const nonRoots = new Set();
+        for (const pendingId of [...state.pendingStarts.map(x => x.id), ...state.pendingWitnesses]) {
+            const row = load.get(projectId, pendingId);
+            if (row && (row.parent_conversation_id !== '' || row.nesting_depth !== 0)) nonRoots.add(pendingId);
+        }
+        const additions = ids.filter(row => !prior.has(row.conversation_id)).map(row => {
+            const value = load.get(projectId, row.conversation_id);
+            return {row: value, disposition: rootDisposition(value)};
+        });
+        return {additions, nonRoots};
+    });
+    const ignored    = snapshot.additions.filter(item => item.disposition === 'fork').map(item => item.row);
+    const candidates = snapshot.additions.filter(item => item.disposition !== 'fork');
+    for (const row of ignored) {
+        if (!prior.has(row.conversation_id)) {
+            prior.add(row.conversation_id);
+            state.priorThreadIds.push(row.conversation_id);
+        }
+    }
+    state.pendingStarts    = state.pendingStarts.filter(entry => !prior.has(entry.id) && !snapshot.nonRoots.has(entry.id));
+    state.pendingWitnesses = state.pendingWitnesses.filter(id => (id === state.threadId || !prior.has(id)) && !snapshot.nonRoots.has(id));
+
+    if (candidates.length === 1) {
+        const candidate  = candidates[0], row = candidate.row, id = row?.conversation_id;
+        const startEntry = state.pendingStarts.find(entry => entry.id === id);
+        const creation   = row && candidate.disposition === 'root' ? creationDisposition(row, appDataDir, state.baselineAtMs) : 'unknown';
+        if (startEntry && candidate.disposition === 'root' && creation !== 'historical' && creation !== 'unknown' &&
+            (!startEntry.deferred || creation === 'created')) {
+            state.priorThreadIds.push(id);
+            prior.add(id);
+            state.threadId         = id;
+            state.sequence         = (state.sequence || 0) + 1;
+            state.witness          = state.pendingWitnesses.includes(id);
+            state.pendingStarts    = state.pendingStarts.filter(entry => entry.id !== id);
+            state.pendingWitnesses = state.pendingWitnesses.filter(w => w !== id);
+            acceptedTarget         = {threadId: id, projectId: row.project_id, status: row.status};
+        } else if (creation === 'historical') {
+            state.pendingStarts    = state.pendingStarts.filter(entry => entry.id !== id);
+            state.pendingWitnesses = state.pendingWitnesses.filter(w => w !== id);
+        }
+    }
+
+    if (state.threadId && !state.witness && state.pendingWitnesses.includes(state.threadId)) {
+        state.witness          = true;
+        state.pendingWitnesses = state.pendingWitnesses.filter(w => w !== state.threadId);
+    }
+
+    return {changed: JSON.stringify(state) !== before, acceptedTarget};
+}
+
+async function withStartsLocks({statePath, stateDir = null, agentId = null}, fn) {
+    const startsFile            = statePath + '.starts.json';
+    const {withOutboxLock}      = await import('./outboxLock.mjs');
+    const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
+    const candidateLaunchFile   = stateDir && agentId ? launchCensusPath(stateDir, agentId) : null;
+    const launchFile            = candidateLaunchFile && fs.existsSync(path.dirname(candidateLaunchFile)) ? candidateLaunchFile : null;
+    const run                   = () => withOutboxLock(startsFile, () => fn({startsFile, launchFile, writeFileAtomicSync}));
+    return launchFile ? withOutboxLock(launchFile, run) : run();
+}
+
+function loadOrAdoptStarts({startsFile, launchFile, databasePath, projectId, generation, baselineAtMs = null, createCensusIfMissing = false}) {
+    const old    = readPrivateStartsJson(startsFile);
+    const launch = launchFile ? readPrivateStartsJson(launchFile) : null;
+    let   dirty  = false, state = null;
+
+    if (launch && launch.generation !== null && launch.generation !== generation) {
+        fs.rmSync(launchFile, {force: true});
+    } else if (launch?.version === 1 && launch.authorized === true && launch.projectId === projectId &&
+        (launch.generation === null || launch.generation === generation)) {
+        if (!old || old.generation !== generation || old.projectId !== projectId || launch.resetGeneration === true) {
+            state = normalizeStartsState({
+                version         : 1,
+                launchId        : launch.launchId,
+                generation,
+                projectId,
+                priorThreadIds  : launch.priorThreadIds,
+                baselineAtMs    : launch.baselineAtMs,
+                pendingStarts   : launch.pendingStarts,
+                pendingWitnesses: launch.pendingWitnesses,
+                threadId        : null,
+                sequence        : 0,
+                witness         : false
+            });
+        } else {
+            state                  = normalizeStartsState(old);
+            state.pendingStarts    = normalizePendingStarts([...state.pendingStarts, ...(launch.pendingStarts || [])]);
+            state.pendingWitnesses = normalizePendingWitnesses([...state.pendingWitnesses, ...(launch.pendingWitnesses || [])]);
+        }
+        fs.rmSync(launchFile, {force: true});
+        dirty = true;
+    } else if (old?.generation === generation && old.projectId === projectId && Array.isArray(old.priorThreadIds)) {
+        state = normalizeStartsState(old);
+    } else if (createCensusIfMissing) {
+        const ids = censusRootIds(databasePath, projectId);
+        state = normalizeStartsState({
+            version         : 1,
+            generation,
+            projectId,
+            priorThreadIds  : ids,
+            baselineAtMs    : baselineAtMs ?? parseGenerationStartedAtMs(generation) ?? Date.now(),
+            pendingStarts   : [],
+            pendingWitnesses: [],
+            threadId        : null,
+            sequence        : 0,
+            witness         : false
+        });
+        dirty = true;
+    }
+
+    return {state, dirty};
+}
+
+/**
+ * @summary Captures a pre-spawn or activation root census bound to one managed Start attempt.
+ * @param {Object} options Start-scoped seat, project and receiver paths.
+ * @returns {Promise<Object|null>} The staged launch census, or null when native wake is not authorized.
+ */
+export async function stageAntigravityLaunchCensus({stateDir, databasePath, appDataDir, launchId, agentId, instanceHome,
+    projectId, projectRoot, generation = null, resetGeneration = false, authorized = false, baselineAtMs = Date.now()}) {
+    if (!authorized) return null;
+    if (!UUID.test(launchId || '') || !path.isAbsolute(instanceHome || '') || !path.isAbsolute(projectRoot || '')) {
+        throw new TypeError('Valid launchId, instanceHome and projectRoot required');
+    }
+    const dbFile = databasePath || path.join(appDataDir || '', 'conversation_summaries.db');
+    const file   = launchCensusPath(stateDir, agentId);
+    fs.mkdirSync(path.dirname(file), {recursive: true, mode: 0o700});
     const {withOutboxLock}      = await import('./outboxLock.mjs');
     const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
     return withOutboxLock(file, async () => {
-        let old = null;
-        try { old = JSON.parse(fs.readFileSync(file,'utf8')) } catch (error) { if (error.code !== 'ENOENT') throw error }
-        if (old?.generation === generation && old.projectId === projectId) return old;
-        const ids = withDatabase(databasePath, db => db.prepare("SELECT conversation_id FROM conversation_summaries WHERE project_id=? AND parent_conversation_id='' AND nesting_depth=0").all(projectId).map(x=>x.conversation_id));
-        if (ids.some(id=>!UUID.test(id))) throw new Error('Invalid root census');
-        const state = {version:1, generation, projectId, priorThreadIds:ids, threadId:null, sequence:0, witness:false};
-        writeFileAtomicSync(file, JSON.stringify(state), {mode:0o600,fsync:true});
+        const priorThreadIds = censusRootIds(dbFile, projectId, {allowMissingDb: true});
+        const record         = {
+            version         : 1,
+            launchId,
+            agentId,
+            instanceHome,
+            projectId,
+            projectRoot,
+            authorized      : true,
+            generation      : generation || null,
+            resetGeneration : resetGeneration === true,
+            priorThreadIds,
+            baselineAtMs,
+            pendingStarts   : [],
+            pendingWitnesses: []
+        };
+        writeFileAtomicSync(file, JSON.stringify(record), {mode: 0o600, fsync: true});
+        return record;
+    });
+}
+
+/**
+ * @summary Binds a pending cold-launch census to the verified child lease generation.
+ * @param {Object} options Launch and live child generation coordinates.
+ * @returns {Promise<Object|null>} Updated launch record, or null when already adopted.
+ */
+export async function bindAntigravityLaunchGeneration({stateDir, agentId, launchId, instanceHome, projectId, projectRoot, generation}) {
+    if (!generation || !UUID.test(launchId || '')) return null;
+    const file = launchCensusPath(stateDir, agentId);
+    if (!fs.existsSync(path.dirname(file))) return null;
+    const {withOutboxLock}      = await import('./outboxLock.mjs');
+    const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
+    return withOutboxLock(file, async () => {
+        const launch = readPrivateStartsJson(file);
+        if (!launch || launch.launchId !== launchId) return null;
+        if (launch.agentId !== agentId || launch.instanceHome !== instanceHome ||
+            launch.projectId !== projectId || launch.projectRoot !== projectRoot ||
+            (launch.generation !== null && launch.generation !== generation)) {
+            fs.rmSync(file, {force: true});
+            throw new Error('Antigravity launch census does not match child lease');
+        }
+        if (launch.generation !== generation) {
+            launch.generation = generation;
+            writeFileAtomicSync(file, JSON.stringify(launch), {mode: 0o600, fsync: true});
+        }
+        return launch;
+    });
+}
+
+/**
+ * @summary Withdraws any pending or adopted start baseline belonging to a canceled/failed Start attempt.
+ * @param {Object} options Receiver state directory, agentId and attempt launchId.
+ * @returns {Promise<void>}
+ */
+export async function cleanupAntigravityLaunchCensus({stateDir, agentId, launchId}) {
+    if (!path.isAbsolute(stateDir || '') || !AGENT_ID.test(agentId || '') || !UUID.test(launchId || '')) return;
+    const file             = launchCensusPath(stateDir, agentId);
+    const {withOutboxLock} = await import('./outboxLock.mjs');
+    if (fs.existsSync(path.dirname(file))) {
+        await withOutboxLock(file, async () => {
+            const launch = readPrivateStartsJson(file);
+            if (launch?.launchId === launchId) fs.rmSync(file, {force: true});
+        });
+    }
+    const sessionsDir = path.join(stateDir, 'primary-sessions');
+    let   entries     = [];
+    try { entries = fs.readdirSync(sessionsDir) } catch { return }
+    for (const name of entries) {
+        if (!name.endsWith('.json.starts.json')) continue;
+        const startsFile = path.join(sessionsDir, name);
+        await withOutboxLock(startsFile, async () => {
+            const state = readPrivateStartsJson(startsFile);
+            if (state?.launchId === launchId) fs.rmSync(startsFile, {force: true});
+        });
+    }
+}
+
+/**
+ * @summary Retains an authenticated ordinary hook observation arriving after lease bind but before manifest publication.
+ * @param {Object} options Verified App ancestor, lease, project receipt and hook payload.
+ * @returns {Promise<Boolean>} True only when matched to an active Fleet Start census.
+ */
+export async function observeAntigravityPendingLaunchHook({event, stateDir, appDataDir = null, databasePath = null,
+    agentId, instanceHome, projectId, projectRoot, generation, input}) {
+    if ((event !== 'SessionStart' && event !== 'PreInvocation') || !generation ||
+        !Array.isArray(input?.workspacePaths) || !input.workspacePaths.includes(projectRoot) ||
+        !UUID.test(input?.conversationId || '')) return false;
+    if (event === 'PreInvocation') {
+        const invocationNum = input?.invocationNum === undefined ? 0 : input.invocationNum;
+        if (!Number.isSafeInteger(invocationNum) || invocationNum < 0) return false;
+    }
+    const file = launchCensusPath(stateDir, agentId);
+    if (!fs.existsSync(path.dirname(file))) return false;
+    const {withOutboxLock}      = await import('./outboxLock.mjs');
+    const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
+    return withOutboxLock(file, async () => {
+        const launch = readPrivateStartsJson(file);
+        if (!launch || launch.version !== 1 || launch.authorized !== true || launch.agentId !== agentId ||
+            launch.instanceHome !== instanceHome || launch.projectId !== projectId || launch.projectRoot !== projectRoot ||
+            (launch.generation !== null && launch.generation !== generation)) {
+            return false;
+        }
+        launch.generation = generation;
+        const id = input.conversationId;
+        if (launch.priorThreadIds.includes(id)) {
+            writeFileAtomicSync(file, JSON.stringify(launch), {mode: 0o600, fsync: true});
+            return false;
+        }
+        const dbFile = databasePath || (appDataDir ? path.join(appDataDir, 'conversation_summaries.db') : null);
+        const row    = inspectConversationRow(dbFile, projectId, id);
+        if (row && (row.parent_conversation_id !== '' || row.nesting_depth !== 0)) {
+            writeFileAtomicSync(file, JSON.stringify(launch), {mode: 0o600, fsync: true});
+            return false;
+        }
+        if (row && rootDisposition(row) === 'fork') {
+            launch.priorThreadIds.push(id);
+            writeFileAtomicSync(file, JSON.stringify(launch), {mode: 0o600, fsync: true});
+            return false;
+        }
+        if (event === 'SessionStart') {
+            launch.pendingStarts = normalizePendingStarts([...(launch.pendingStarts || []), {id, deferred: !row}]);
+        } else {
+            launch.pendingWitnesses = normalizePendingWitnesses([...(launch.pendingWitnesses || []), id]);
+        }
+        writeFileAtomicSync(file, JSON.stringify(launch), {mode: 0o600, fsync: true});
+        return true;
+    });
+}
+
+/** @summary Initializes or reconciles the generation census and adopts any matching Start baseline. */
+export async function initializeAntigravityStarts({databasePath, appDataDir = null, projectId, generation, statePath, stateDir = null, agentId = null, baselineAtMs = null}) {
+    validateInputs(databasePath, projectId);
+    if (!generation || !path.isAbsolute(statePath || '')) throw new TypeError('Generation and state path required');
+    return withStartsLocks({statePath, stateDir, agentId}, async ({startsFile, launchFile, writeFileAtomicSync}) => {
+        const {state, dirty} = loadOrAdoptStarts({startsFile, launchFile, databasePath, projectId, generation, baselineAtMs, createCensusIfMissing: true});
+        let   changed        = dirty;
+        if (state.pendingStarts.length || state.pendingWitnesses.length) {
+            const reconciled = reconcileAntigravityStartsState(state, {databasePath, appDataDir, projectId});
+            if (reconciled?.changed) changed = true;
+        }
+        if (changed) writeFileAtomicSync(startsFile, JSON.stringify(state), {mode: 0o600, fsync: true});
         return state;
     });
 }
 
-/** @summary Records one unambiguous new SessionStart after the generation census. */
-export async function observeAntigravitySessionStart({databasePath,projectId,projectRoot,generation,statePath,input}) {
-    if (!Array.isArray(input?.workspacePaths) || !input.workspacePaths.includes(projectRoot)) return null;
-    const file                  = statePath + '.starts.json';
-    const {withOutboxLock}      = await import('./outboxLock.mjs');
-    const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
-    return withOutboxLock(file, async () => {
-        let state;
-        try { state = JSON.parse(fs.readFileSync(file,'utf8')) } catch { return null }
-        if (state?.generation !== generation || state.projectId !== projectId || !Array.isArray(state.priorThreadIds)) return null;
-
-        const prior     = new Set(state.priorThreadIds);
-        const additions = withDatabase(databasePath, db => {
-            const ids  = db.prepare("SELECT conversation_id FROM conversation_summaries WHERE project_id=? AND parent_conversation_id='' AND nesting_depth=0").all(projectId);
-            const load = db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status, raw_summary FROM conversation_summaries WHERE project_id=? AND conversation_id=?');
-            return ids.filter(row => !prior.has(row.conversation_id))
-                .map(row => {
-                    const value = load.get(projectId,row.conversation_id);
-                    return {row:value, disposition:rootDisposition(value)};
-                });
-        });
-        const ignored    = additions.filter(item => item.disposition === 'fork').map(item => item.row);
-        const candidates = additions.filter(item => item.disposition !== 'fork');
-        // A positively identified fork may be retired from the pending census. Unknown, killed,
-        // malformed or multiple possible roots stay pending and must not reactivate an older root.
-        state.priorThreadIds.push(...ignored.map(row => row.conversation_id));
-        const candidate = candidates.length === 1 ? candidates[0] : null;
-        const row       = candidate?.row;
-        const accepted  = row && row.conversation_id === input.conversationId && candidate.disposition === 'root';
-        if (accepted) {
-            state.priorThreadIds.push(row.conversation_id);
-            state.threadId = row.conversation_id;
-            state.sequence = (state.sequence || 0) + 1;
-            state.witness = false;
+/** @summary Reconciles an already-initialized or Start-staged census without inventing an untrusted baseline. */
+export async function reconcileAntigravityStarts({databasePath, appDataDir = null, projectId, generation, statePath, stateDir = null, agentId = null}) {
+    if (!databasePath || !projectId || !generation || !path.isAbsolute(statePath || '')) return null;
+    return withStartsLocks({statePath, stateDir, agentId}, async ({startsFile, launchFile, writeFileAtomicSync}) => {
+        const {state, dirty} = loadOrAdoptStarts({startsFile, launchFile, databasePath, projectId, generation, createCensusIfMissing: false});
+        if (!state) return null;
+        let changed = dirty;
+        if (state.pendingStarts.length || state.pendingWitnesses.length) {
+            const reconciled = reconcileAntigravityStartsState(state, {databasePath, appDataDir, projectId});
+            if (reconciled?.changed) changed = true;
         }
-        if (ignored.length || accepted) writeFileAtomicSync(file,JSON.stringify(state),{mode:0o600,fsync:true});
-        return accepted ? {threadId:row.conversation_id,projectId:row.project_id,status:row.status} : null;
+        if (changed) writeFileAtomicSync(startsFile, JSON.stringify(state), {mode: 0o600, fsync: true});
+        return state;
+    });
+}
+
+/** @summary Records an authenticated SessionStart after census/Start baseline and reconciles readable root metadata. */
+export async function observeAntigravitySessionStart({databasePath, appDataDir = null, projectId, projectRoot, generation, statePath, stateDir = null, agentId = null, input}) {
+    if (!Array.isArray(input?.workspacePaths) || !input.workspacePaths.includes(projectRoot) || !UUID.test(input?.conversationId || '')) return null;
+    return withStartsLocks({statePath, stateDir, agentId}, async ({startsFile, launchFile, writeFileAtomicSync}) => {
+        let state, dirty;
+        try { ({state, dirty} = loadOrAdoptStarts({startsFile, launchFile, databasePath, projectId, generation, createCensusIfMissing: false})) }
+        catch { return null }
+        if (!state) return null;
+
+        const id      = input.conversationId;
+        let   changed = dirty;
+        if (!state.priorThreadIds.includes(id)) {
+            const row = inspectConversationRow(databasePath, projectId, id);
+            if (!row || (row.parent_conversation_id === '' && row.nesting_depth === 0)) {
+                state.pendingStarts = normalizePendingStarts([...state.pendingStarts, {id, deferred: !row}]);
+                changed = true;
+            }
+        }
+        const reconciled = reconcileAntigravityStartsState(state, {databasePath, appDataDir, projectId});
+        if (reconciled?.changed) changed = true;
+        if (changed) writeFileAtomicSync(startsFile, JSON.stringify(state), {mode: 0o600, fsync: true});
+        if (reconciled?.acceptedTarget?.threadId === id) return reconciled.acceptedTarget;
+        if (state.threadId === id && fs.existsSync(databasePath)) {
+            return readAntigravityWakeTarget({databasePath, projectId, threadId: id});
+        }
+        return null;
     });
 }
 
 /** @summary Returns only a host-observed current-generation root, revalidated against App metadata. */
-export function latestAntigravityWakeTarget({databasePath,projectId,generation,statePath}) {
+export function latestAntigravityWakeTarget({databasePath, projectId, generation, statePath}) {
     try {
-        const state = JSON.parse(fs.readFileSync(statePath + '.starts.json','utf8'));
+        const state = JSON.parse(fs.readFileSync(statePath + '.starts.json', 'utf8'));
         if (state.version !== 1 || state.projectId !== projectId || state.generation !== generation || !state.threadId ||
             !Array.isArray(state.priorThreadIds)) return null;
         const roots = withDatabase(databasePath, db => db.prepare("SELECT conversation_id FROM conversation_summaries WHERE project_id=? AND parent_conversation_id='' AND nesting_depth=0").all(projectId));
         if (roots.some(row => !state.priorThreadIds.includes(row.conversation_id))) return null;
-        const target = readAntigravityWakeTarget({databasePath,projectId,threadId:state.threadId});
-        return target && Number.isSafeInteger(state.sequence) && state.sequence > 0 ? {...target,root:true,startSequence:state.sequence} : null;
+        const target = readAntigravityWakeTarget({databasePath, projectId, threadId: state.threadId});
+        return target && Number.isSafeInteger(state.sequence) && state.sequence > 0 ? {...target, root: true, startSequence: state.sequence} : null;
     } catch { return null }
 }
 
 /** @summary Reports a PreInvocation witness only for the selected current-generation root. */
-export function verifyAntigravityWakeAdmission({databasePath,appDataDir,projectId,threadId,generation,statePath}) {
+export function verifyAntigravityWakeAdmission({databasePath, appDataDir, projectId, threadId, generation, statePath}) {
     try {
-        const state = JSON.parse(fs.readFileSync(statePath + '.starts.json','utf8'));
-        const root  = latestAntigravityWakeTarget({databasePath:databasePath || path.join(appDataDir,'conversation_summaries.db'),projectId,generation,statePath});
-        return {verified:state.witness === true && root?.threadId === threadId};
-    } catch { return {verified:false} }
+        const state = JSON.parse(fs.readFileSync(statePath + '.starts.json', 'utf8'));
+        const root  = latestAntigravityWakeTarget({databasePath: databasePath || path.join(appDataDir, 'conversation_summaries.db'), projectId, generation, statePath});
+        return {verified: state.witness === true && root?.threadId === threadId};
+    } catch { return {verified: false} }
 }
 
-/** @summary Marks a native PreInvocation observation for the currently selected root. */
-export async function observeAntigravityPreInvocation({databasePath,projectId,projectRoot,generation,statePath,input}) {
+/** @summary Marks or retains a native PreInvocation observation and reconciles any deferred SessionStart. */
+export async function observeAntigravityPreInvocation({databasePath, appDataDir = null, projectId, projectRoot, generation, statePath, stateDir = null, agentId = null, allowPendingWitness = true, input}) {
     const invocationNum = input?.invocationNum === undefined ? 0 : input.invocationNum;
     if (!Array.isArray(input?.workspacePaths) || !input.workspacePaths.includes(projectRoot) ||
-        !Number.isSafeInteger(invocationNum) || invocationNum < 0) return false;
-    const file                  = statePath + '.starts.json';
-    const {withOutboxLock}      = await import('./outboxLock.mjs');
-    const {writeFileAtomicSync} = await import('../../services/shared/atomicFileWrite.mjs');
-    return withOutboxLock(file, async () => {
-        const root = latestAntigravityWakeTarget({databasePath,projectId,generation,statePath});
-        if (!root || root.threadId !== input.conversationId) return false;
-        const state = JSON.parse(fs.readFileSync(file,'utf8'));
-        state.witness = true;
-        writeFileAtomicSync(file,JSON.stringify(state),{mode:0o600,fsync:true});
+        !Number.isSafeInteger(invocationNum) || invocationNum < 0 || !UUID.test(input?.conversationId || '')) return false;
+    return withStartsLocks({statePath, stateDir, agentId}, async ({startsFile, launchFile, writeFileAtomicSync}) => {
+        let state, dirty;
+        try { ({state, dirty} = loadOrAdoptStarts({startsFile, launchFile, databasePath, projectId, generation, createCensusIfMissing: false})) }
+        catch { return false }
+        if (!state) return false;
+
+        const id      = input.conversationId;
+        let   changed = dirty;
+        if (allowPendingWitness && (state.threadId === id || !state.priorThreadIds.includes(id))) {
+            const row = inspectConversationRow(databasePath, projectId, id);
+            if (!row || (row.parent_conversation_id === '' && row.nesting_depth === 0)) {
+                const next = normalizePendingWitnesses([...state.pendingWitnesses, id]);
+                if (JSON.stringify(next) !== JSON.stringify(state.pendingWitnesses)) {
+                    state.pendingWitnesses = next;
+                    changed                = true;
+                }
+            }
+        }
+        const reconciled = reconcileAntigravityStartsState(state, {databasePath, appDataDir, projectId});
+        if (reconciled?.changed) changed = true;
+        if (changed) writeFileAtomicSync(startsFile, JSON.stringify(state), {mode: 0o600, fsync: true});
+        const root = latestAntigravityWakeTarget({databasePath, projectId, generation, statePath});
+        if (!root || root.threadId !== id) return false;
+        if (!state.witness) {
+            state.witness          = true;
+            state.pendingWitnesses = state.pendingWitnesses.filter(w => w !== id);
+            writeFileAtomicSync(startsFile, JSON.stringify(state), {mode: 0o600, fsync: true});
+        }
         return true;
     });
 }
@@ -373,7 +808,7 @@ export async function handleAntigravityPreInvocation({input,consume,...context})
     const invocationNum = input?.invocationNum === undefined ? 0 : input.invocationNum;
     if (!match || !UUID.test(match[1])) return deny;
     let observed = false;
-    try { observed = await observeAntigravityPreInvocation({...context,input}) } catch { /* Refuse and reconcile only an authenticated spent wake. */ }
+    try { observed = await observeAntigravityPreInvocation({...context, allowPendingWitness: false, input}) } catch { /* Refuse and reconcile only an authenticated spent wake. */ }
     if (!observed) {
         if (Array.isArray(input.workspacePaths) && input.workspacePaths.includes(context.projectRoot) &&
             Number.isSafeInteger(invocationNum) && invocationNum >= 0 && UUID.test(input.conversationId || '')) {

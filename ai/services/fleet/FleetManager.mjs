@@ -27,12 +27,18 @@ import {readSeatModelCatalog}                                  from './seatModel
 import {startAgentProvisioned}                                 from './startAgentProvisioned.mjs';
 import {readInstalledRuntimeGeneration, readRuntimeGeneration} from './runtimeGeneration.mjs';
 import {REPLACE_SEAT_CREDENTIAL_SCOPES}                        from '../../../src/fleet/contract/wire.mjs';
+import {randomUUID}                                            from 'node:crypto';
 import path                                                    from 'node:path';
 import fs                                                      from 'node:fs/promises';
 import {isDeepStrictEqual}                                     from 'node:util';
-import {enrollNativeWake, readNativeWakeOptIn}                 from '../../daemons/wake/fleetPrimarySessionWake.mjs';
-import {prepareFleetNativeWake, resolveCodexWakeRuntime}       from './prepareFleetNativeWake.mjs';
-import {proveRegisteredAntigravityProject}                     from './antigravityProjectRegistry.mjs';
+import {
+    stageAntigravityLaunchCensus,
+    bindAntigravityLaunchGeneration,
+    cleanupAntigravityLaunchCensus
+}                                                              from '../../daemons/wake/antigravitySessionWake.mjs';
+import {enrollNativeWake, readNativeWakeOptIn}           from '../../daemons/wake/fleetPrimarySessionWake.mjs';
+import {prepareFleetNativeWake, resolveCodexWakeRuntime} from './prepareFleetNativeWake.mjs';
+import {proveRegisteredAntigravityProject}               from './antigravityProjectRegistry.mjs';
 
 export {REPLACE_SEAT_CREDENTIAL_SCOPES};
 
@@ -597,6 +603,7 @@ class FleetManager extends Base {
 
         const lifecycle            = this.getLifecycleService(),
               startSignal          = lifecycle.beginStart(agentId),
+              nativeLaunchId       = randomUUID(),
               admissionMark        = lifecycle.getLaunchAdmission?.()?.revocationMark(agentId) ?? null,
               verifiedWakeRuntimes = new Map(),
               verifyWakeRuntime    = ({directory, pin}) => {
@@ -631,35 +638,61 @@ class FleetManager extends Base {
                         if (existing && stateDir && existing.stateDir !== stateDir) preparation = {state:'refused', reason:'receiver-mismatch'}
                     } catch { preparation = {state:'refused', reason:'enrollment-unavailable'} }
                 }
-                const mayPrepare        = family !== 'antigravity' || activateNativeWake || Boolean(existing);
+                const mayPrepare    = family !== 'antigravity' || activateNativeWake || Boolean(existing);
+                const cleanupLaunch = () => family === 'antigravity' && stateDir
+                    ? cleanupAntigravityLaunchCensus({stateDir, agentId, launchId: nativeLaunchId}).catch(() => {})
+                    : Promise.resolve();
                 const prepareNativeWake = managed && declared && mayPrepare && !preparation ? async input => {
                     startSignal.throwIfAborted();
                     if (input?.agent?.id !== agentId || input.agent.harnessType !== family || input.instanceHome !== managed.instanceHome ||
                         input.workspaceRoot !== managed.workspaceRoot) return {state:'refused', reason:'seat-mismatch'};
-                    const result = await (options.prepareFleetNativeWake || prepareFleetNativeWake)({...input, manifestPath, stateDir,
-                        allowSharedConfig: family === 'antigravity' && (activateNativeWake || Boolean(existing))});
+                    const authorized = family === 'antigravity' && (activateNativeWake || Boolean(existing));
+                    const result     = await (options.prepareFleetNativeWake || prepareFleetNativeWake)({...input, manifestPath, stateDir,
+                        allowSharedConfig: authorized});
                     startSignal.throwIfAborted();
+                    if (!wasRunning && authorized && result?.state === 'prepared' && input.antigravityProject?.id && input.appDataDir) {
+                        await stageAntigravityLaunchCensus({
+                            stateDir,
+                            appDataDir  : input.appDataDir,
+                            launchId    : nativeLaunchId,
+                            agentId,
+                            instanceHome: input.instanceHome,
+                            projectId   : input.antigravityProject.id,
+                            projectRoot : input.workspaceRoot,
+                            authorized  : true
+                        });
+                        startSignal.throwIfAborted();
+                    }
                     return result
                 } : null;
 
-                const status = activateNativeWake ? lifecycle.status(agentId) : await this.getProvisionAndStartFn()({
-                    lifecycleService    : lifecycle,
-                    managedRoot         : this.getManagedRoot(),
-                    planeBase           : this.planeBase,
-                    readParticipation   : () => this.seatParticipation(agentId),
-                    dependencySkipSignal: lifecycle.dependencySkipSignal(agentId, startSignal),
-                    admissionMark,
-                    prepareNativeWake,
-                    startSignal,
-                    agentId
-                });
+                let status;
+                try {
+                    status = activateNativeWake ? lifecycle.status(agentId) : await this.getProvisionAndStartFn()({
+                        lifecycleService    : lifecycle,
+                        managedRoot         : this.getManagedRoot(),
+                        planeBase           : this.planeBase,
+                        readParticipation   : () => this.seatParticipation(agentId),
+                        dependencySkipSignal: lifecycle.dependencySkipSignal(agentId, startSignal),
+                        admissionMark,
+                        prepareNativeWake,
+                        startSignal,
+                        agentId
+                    });
+                } catch (error) {
+                    await cleanupLaunch();
+                    throw error
+                }
 
-                startSignal.throwIfAborted();
-                if (status?.canceled) return status;
+                if (startSignal.aborted || status?.canceled) {
+                    await cleanupLaunch();
+                    startSignal.throwIfAborted();
+                    return status
+                }
                 if (wasRunning && prepareNativeWake) {
                     try {
                         const {live, record} = nativeWakeLaunch(lifecycle, agentId, status, family);
-                        let configDir;
+                        let configDir, antigravityReceipt = null, antigravityAppDataDir = null;
                         if (family === 'antigravity') {
                             const receiptFile = path.join(live.instanceHome, '.neo-fleet-project-binding.json'), stat = await fs.lstat(receiptFile);
                             if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077)) throw new Error('unproven project');
@@ -668,7 +701,9 @@ class FleetManager extends Base {
                             if (receipt.version !== 1 || receipt.projectName !== agentId || receipt.projectRoot !== record.cwd || !path.isAbsolute(hostHome || '')) throw new Error('unproven project');
                             await proveRegisteredAntigravityProject({profileDirectory:live.instanceHome, projectId:receipt.projectId,
                                 projectName:agentId, projectRoot:record.cwd, registryDirectory:path.join(hostHome,'.gemini/config/projects')});
-                            configDir = path.join(hostHome, '.gemini/config')
+                            configDir             = path.join(hostHome, '.gemini/config');
+                            antigravityReceipt    = receipt;
+                            antigravityAppDataDir = path.join(hostHome, '.gemini/antigravity')
                         }
                         startSignal.throwIfAborted();
                         const recheck = lifecycle.status(agentId);
@@ -680,15 +715,30 @@ class FleetManager extends Base {
                         if (family === 'codex-desktop') {
                             recheckCodexRuntimeStart(lifecycle, agentId, status, record, live.runtimeGeneration)
                         }
-                        preparation = await prepareNativeWake({agent, instanceHome:live.instanceHome, workspaceRoot:record.cwd, configDir, ...hookRuntime})
+                        preparation = await prepareNativeWake({agent, instanceHome:live.instanceHome, workspaceRoot:record.cwd, configDir, ...hookRuntime});
+                        if (family === 'antigravity' && activateNativeWake && !existing && preparation?.state === 'prepared' && antigravityReceipt) {
+                            await stageAntigravityLaunchCensus({
+                                stateDir,
+                                appDataDir     : antigravityAppDataDir,
+                                launchId       : nativeLaunchId,
+                                agentId,
+                                instanceHome   : live.instanceHome,
+                                projectId      : antigravityReceipt.projectId,
+                                projectRoot    : record.cwd,
+                                generation     : `${live.pid}:${live.startedAt}`,
+                                resetGeneration: true,
+                                authorized     : true
+                            });
+                        }
                     } catch (error) { preparation = {state:'refused', reason:error?.code === 'CODEX_WAKE_COMPATIBILITY_UNPROVEN'
                         ? 'codex-wake-compatibility-unproven' : 'running-seat-unproven'} }
                 } else if (!preparation) preparation = status?.nativeWakePreparation;
-                startSignal.throwIfAborted();
+                if (startSignal.aborted) { await cleanupLaunch(); startSignal.throwIfAborted() }
                 if (activateNativeWake) {
                     const current = lifecycle.status(agentId);
                     if (!current?.running || current.startedAt !== expectedStartedAt || current.pid !== status?.pid ||
                         current.harnessGeneration?.generationId !== status?.harnessGeneration?.generationId) {
+                        await cleanupLaunch();
                         return {...current, nativeWakePreparation:{state:'refused', reason:'running-seat-changed'}}
                     }
                 }
@@ -707,14 +757,20 @@ class FleetManager extends Base {
                     preparation = {...preparation, nextStep:'Check the seat wake setup and receiver configuration, then try again.'}
                 }
                 if (preparation?.state === 'refused' && (existing || activateNativeWake) || preparation?.reason === 'receiver-mismatch' || preparation?.reason === 'enrollment-unavailable') {
+                    await cleanupLaunch();
                     return {...status, nativeWakePreparation:preparation, wakeRoute:{state:'unarmed', reason:'Native wake preparation needs operator attention; the existing route was preserved.'}}
                 }
 
                 // Keep the home until a late subscription has been withdrawn after cancellation;
                 // otherwise that cleanup could remove the next Start's canonical subscription.
-                const armed = await this.armSeatWake(agentId, status, startSignal, {verifyRuntime:verifyWakeRuntime});
+                const armed = await this.armSeatWake(agentId, status, startSignal, {verifyRuntime:verifyWakeRuntime, nativeLaunchId});
 
-                if (!startSignal.aborted) return preparation ? {...armed, nativeWakePreparation:preparation} : armed;
+                if (!startSignal.aborted) {
+                    if (armed?.wakeRoute?.state !== 'ready') await cleanupLaunch();
+                    return preparation ? {...armed, nativeWakePreparation:preparation} : armed
+                }
+
+                await cleanupLaunch();
 
                 let wakeRoute = armed?.wakeRoute;
 
@@ -763,7 +819,7 @@ class FleetManager extends Base {
      * @param {Function} [options.verifyRuntime] Sealed-runtime verifier for this Start only.
      * @returns {Promise<Object>} `status`, plus `wakeRoute` and `rotationRoute` where each applies to the seat.
      */
-    async armSeatWake(agentId, status, startSignal, {verifyRuntime = readRuntimeGeneration} = {}) {
+    async armSeatWake(agentId, status, startSignal, {verifyRuntime = readRuntimeGeneration, nativeLaunchId = null} = {}) {
         const
             lifecycle = this.getLifecycleService(),
             registry  = lifecycle.getRegistry(),
@@ -804,6 +860,17 @@ class FleetManager extends Base {
                         }
                         await proveRegisteredAntigravityProject({profileDirectory: live.instanceHome, projectId: receipt.projectId,
                             projectName: agentId, projectRoot: record.cwd, registryDirectory: path.join(home, '.gemini/config/projects')});
+                        if (nativeLaunchId) {
+                            await bindAntigravityLaunchGeneration({
+                                stateDir    : optIn.stateDir,
+                                agentId,
+                                launchId    : nativeLaunchId,
+                                instanceHome: live.instanceHome,
+                                projectId   : receipt.projectId,
+                                projectRoot : record.cwd,
+                                generation  : `${live.pid}:${live.startedAt}`
+                            });
+                        }
                         primarySession = {...primarySession, projectId: receipt.projectId, projectRoot: record.cwd};
                     }
                     const recheck = lifecycle.status(agentId);

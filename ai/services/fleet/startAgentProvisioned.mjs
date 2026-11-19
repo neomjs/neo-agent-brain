@@ -848,7 +848,11 @@ async function provisionAgent({
                 startSignal.throwIfAborted();
                 nativeWakePreparation = await prepareNativeWake({agent, instanceHome:prepared.instanceHome,
                     workspaceRoot:prepared.targetRepoRoot, ...artifact,
-                    configDir:antigravityStartContext ? path.dirname(antigravityStartContext.registryDirectory) : undefined});
+                    configDir:antigravityStartContext ? path.dirname(antigravityStartContext.registryDirectory) : undefined,
+                    antigravityProject:prepared.antigravityProject ?? null,
+                    appDataDir:antigravityStartContext?.processEnvironment?.HOME
+                        ? path.join(antigravityStartContext.processEnvironment.HOME, '.gemini', 'antigravity')
+                        : null});
                 if (!nativeWakePreparation || typeof nativeWakePreparation !== 'object') {
                     nativeWakePreparation = {state:'refused', reason:'invalid-preparation-result'}
                 }
