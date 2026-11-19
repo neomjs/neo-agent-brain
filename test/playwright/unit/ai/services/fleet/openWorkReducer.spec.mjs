@@ -7,7 +7,7 @@ import {
     normalizeTerminal,
     reduceOpenWork
 } from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
-import {OPEN_WORK_SNAPSHOT} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
+import {OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_SNAPSHOT, openWorkQueryCost} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const identities = {
     byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt', 'neo-gpt-emmy': '@neo-gpt-emmy'})[login] ?? null,
@@ -694,5 +694,123 @@ test.describe('openWorkReducer — login search coverage prevents org-PR churn o
         expect([edited1, edited2, edited3].flatMap(state => state.transitions)).toEqual([]);
         expect(edited2.rows['acme/app#50'].owner).toEqual({kind: 'seat', seat: '@neo-gpt', login: 'org-b'});
         expect(edited3.rows['acme/app#50'].owner).toEqual({kind: 'unowned', seat: null, login: 'org-b'})
+    });
+});
+
+test.describe('openWorkReducer — informative pull_request_review checkSuites do not drop head CI from green (#1864)', () => {
+    const approvedNode = ({
+        rollup = 'PENDING',
+        status = {state: 'SUCCESS', contexts: [{state: 'SUCCESS'}]},
+        hasPreviousPage = false,
+        suites = []
+    } = {}) => ({
+        ...node({
+            number   : 88,
+            head     : 'b2',
+            rollup,
+            verdict  : 'APPROVED',
+            reviewers: [],
+            reviews  : [{state: 'APPROVED', author: {__typename: 'User', login: 'neo-gpt'}, commit: {oid: 'b2'}}]
+        }),
+        closingIssuesReferences: {pageInfo: {hasNextPage: false}, nodes: []},
+        commits                : {
+            nodes: [{
+                commit: {
+                    oid              : 'b2',
+                    status,
+                    statusCheckRollup: {state: rollup},
+                    checkSuites      : {pageInfo: {hasPreviousPage}, nodes: suites}
+                }
+            }]
+        }
+    });
+
+    test('snapshot queries select commit.status and checkSuite status/workflow.id at unchanged GraphQL formula cost (AC-1)', () => {
+        for (const query of [OPEN_WORK_SNAPSHOT, OPEN_WORK_OUTSIDE_SNAPSHOT]) {
+            expect(query).toMatch(/status\s*\{\s*state\s*contexts\s*\{\s*state\s*\}\s*\}/);
+            expect(query).toMatch(/checkSuites\(last:\s*100\)\s*\{\s*pageInfo\s*\{\s*hasPreviousPage\s*\}\s*nodes\s*\{\s*status\s*conclusion\s*workflowRun\s*\{\s*event\s*workflow\s*\{\s*id\s*\}/);
+        }
+        expect(openWorkQueryCost(OPEN_WORK_SNAPSHOT).formulaCost).toBe(5);
+        expect(openWorkQueryCost(OPEN_WORK_OUTSIDE_SNAPSHOT).formulaCost).toBe(6);
+    });
+
+    test('approved head stays ci: green and awaitingMerge while pull_request_review suite is queued, running, or failed (AC-2)', () => {
+        const headSuites = [
+            {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_UNIT'}}},
+            {status: 'COMPLETED', conclusion: 'SKIPPED', workflowRun: {event: 'pull_request', workflow: {id: 'WF_DEP'}}},
+            {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: null}
+        ];
+
+        for (const [rollup, reviewSuite] of [
+            ['PENDING', {status: 'QUEUED', conclusion: null, workflowRun: {event: 'pull_request_review', workflow: {id: 'WF_REV'}}}],
+            ['PENDING', {status: 'IN_PROGRESS', conclusion: null, workflowRun: {event: 'pull_request_review', workflow: {id: 'WF_REV'}}}],
+            ['FAILURE', {status: 'COMPLETED', conclusion: 'FAILURE', workflowRun: {event: 'pull_request_review', workflow: {id: 'WF_REV'}}}]
+        ]) {
+            const row = normalizePullRequest(approvedNode({rollup, suites: [...headSuites, reviewSuite]}), identities);
+            expect(row.ci).toBe('green');
+            expect(holderOf(row)).toEqual({role: 'operator', kind: 'merge', ids: []});
+        }
+
+        // A superseded failed/cancelled run of the same head workflow.id does not poison a newer green run on the same SHA.
+        const rerunGreen = normalizePullRequest(approvedNode({
+            rollup: 'PENDING',
+            status: null,
+            suites: [
+                {status: 'COMPLETED', conclusion: 'FAILURE', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASE'}}},
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASE'}}},
+                {status: 'QUEUED', conclusion: null, workflowRun: {event: 'pull_request_review', workflow: {id: 'WF_REV'}}}
+            ]
+        }), identities);
+        expect(rerunGreen.ci).toBe('green');
+        expect(holderOf(rerunGreen)).toEqual({role: 'operator', kind: 'merge', ids: []});
+    });
+
+    test('pending or failing non-review checkSuites, pending commit.status, and incomplete checkSuites pages never promote to green (AC-3)', () => {
+        const reviewPending = {status: 'IN_PROGRESS', conclusion: null, workflowRun: {event: 'pull_request_review', workflow: {id: 'WF_REV'}}};
+
+        // Pending pull_request checkSuite -> ci: 'pending'
+        const suitePending = normalizePullRequest(approvedNode({
+            rollup: 'PENDING',
+            suites: [
+                {status: 'IN_PROGRESS', conclusion: null, workflowRun: {event: 'pull_request', workflow: {id: 'WF_UNIT'}}},
+                reviewPending
+            ]
+        }), identities);
+        expect(suitePending.ci).toBe('pending');
+        expect(holderOf(suitePending)).toEqual({role: 'none', kind: null, ids: []});
+
+        // Pending legacy StatusContext (e.g. review-admission/mergeability) -> ci: 'pending'
+        const statusPending = normalizePullRequest(approvedNode({
+            rollup: 'PENDING',
+            status: {state: 'PENDING', contexts: [{state: 'PENDING'}]},
+            suites: [
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_UNIT'}}},
+                reviewPending
+            ]
+        }), identities);
+        expect(statusPending.ci).toBe('pending');
+        expect(holderOf(statusPending)).toEqual({role: 'none', kind: null, ids: []});
+
+        // Failing non-review checkSuite -> ci: 'red'
+        const suiteFailed = normalizePullRequest(approvedNode({
+            rollup: 'FAILURE',
+            suites: [
+                {status: 'COMPLETED', conclusion: 'FAILURE', workflowRun: {event: 'pull_request', workflow: {id: 'WF_UNIT'}}},
+                reviewPending
+            ]
+        }), identities);
+        expect(suiteFailed.ci).toBe('red');
+
+        // Incomplete checkSuites page (hasPreviousPage: true) falls back to statusCheckRollup.state
+        const truncated = normalizePullRequest(approvedNode({
+            rollup         : 'PENDING',
+            hasPreviousPage: true,
+            suites         : [
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_UNIT'}}},
+                reviewPending
+            ]
+        }), identities);
+        expect(truncated.ci).toBe('pending');
+        expect(truncated.partial).toBe(true);
     });
 });

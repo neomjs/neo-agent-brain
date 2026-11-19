@@ -423,11 +423,11 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
 
     test('the rotation picks an absent seat last and hands an admitted slot on from one (#1849)', () => {
         const
-            roster  = [ADA, GPT, '@neo-gemini'],
-            outside = {kind: 'outside', seat: null, login: 'contributor'},
-            offset  = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % roster.length,
+            roster                 = [ADA, GPT, '@neo-gemini'],
+            outside                = {kind: 'outside', seat: null, login: 'contributor'},
+            offset                 = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % roster.length,
             [first, second, third] = [0, 1, 2].map(step => roster[(offset + step) % roster.length]),
-            fresh   = () => {
+            fresh                  = () => {
                 const run = journey();
                 run.step(0, [{owner: outside, ci: 'pending'}], {}, {rotationSeats: roster});
                 return run
@@ -863,7 +863,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
             previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash, outsideHash].includes(entry.queryHash)),
             observed = history(), item = observed.pulses[100], base = item.quota[0];
 
-        expect(previous).toEqual({queryHash: 'd42cc876db17c72098c97f2e53a7e96a2b15ba10fafa159e1bad9c6789860524', formulaCost: 5});
+        expect(previous).toEqual({queryHash: '646e164c6f2f26aba55510f0e44506616ae47d23f7739eb2eb7e3d3d20e874b3', formulaCost: 5});
         item.quota = [
             classified(base),
             classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: previous.queryHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})
