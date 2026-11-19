@@ -1,8 +1,8 @@
-import {test, expect} from '@playwright/test';
-import {execFileSync} from 'node:child_process';
-import fs             from 'node:fs';
-import os             from 'node:os';
-import path           from 'node:path';
+import {test, expect}            from '@playwright/test';
+import {execFileSync, spawnSync} from 'node:child_process';
+import fs                        from 'node:fs';
+import os                        from 'node:os';
+import path                      from 'node:path';
 
 import {
     ABLATION,
@@ -11,13 +11,20 @@ import {
     bucketByDay,
     buildSeat,
     classifyProviderFamily,
+    collectAntigravityRecords,
+    isColdPrefill,
+    parseAntigravityTranscript,
     parseKimiWire,
     parseOpencodeRows,
+    readAntigravityConversationModel,
+    readAntigravitySummariesDb,
+    redactSensitiveTokens,
     renderReport
 } from '../../../../../../ai/scripts/diagnostics/seatCostReport.mjs';
 import {
     syntheticOpencodeRows,
     syntheticWireContent,
+    writeSyntheticAntigravityFixture,
     writeSyntheticFixtures
 } from './fixtures/seatCost/syntheticFixtures.mjs';
 
@@ -56,18 +63,21 @@ const
  * parallelized or path-scoped while failures like this are dismissed as noise.
  * @type {String|null}
  */
-let fixtureDir = null;
+let fixtureDir         = null;
+let antigravityFixture = null;
 
 test.describe('seatCostReport — harness ledger aggregation', () => {
     test.beforeAll(() => {
-        fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'seatcost-fixtures-'));
-        writeSyntheticFixtures(fixtureDir)
+        fixtureDir         = fs.mkdtempSync(path.join(os.tmpdir(), 'seatcost-fixtures-'));
+        writeSyntheticFixtures(fixtureDir);
+        antigravityFixture = writeSyntheticAntigravityFixture(fixtureDir);
     });
 
     test.afterAll(() => {
         if (fixtureDir) {
             fs.rmSync(fixtureDir, {recursive: true, force: true});
-            fixtureDir = null
+            fixtureDir         = null;
+            antigravityFixture = null
         }
     });
 
@@ -120,6 +130,10 @@ test.describe('seatCostReport — harness ledger aggregation', () => {
         expect(classifyProviderFamily({model: 'kimi-code/k3-256k'})).toBe('kimi');
         expect(classifyProviderFamily({providerID: 'anthropic', modelID: 'claude-opus-4'})).toBe('claude');
         expect(classifyProviderFamily({providerID: 'openai', modelID: 'gpt-5'})).toBe('gpt');
+        expect(classifyProviderFamily({model: 'gemini-4-carbon'})).toBe('gemini');
+        expect(classifyProviderFamily({model: 'gemini-4-hydrogen-tiered-high'})).toBe('gemini');
+        expect(classifyProviderFamily({model: 'gemini-4-neon'})).toBe('gemini');
+        expect(WARM_WINDOWS.gemini).toBeNull();
         expect(classifyProviderFamily({providerID: 'unknown-future-provider', modelID: 'x'})).toBeNull();
     });
 
@@ -140,7 +154,7 @@ test.describe('seatCostReport — harness ledger aggregation', () => {
         const seat   = buildSeat('iris', 'kimi-code', parseKimiWire(wireFixture));
         const report = renderReport([seat]);
 
-        expect(report).toContain('Ledger coverage: readers exist for kimi-code, opencode');
+        expect(report).toContain('Ledger coverage: readers exist for antigravity, kimi-code, opencode');
         expect(report).toContain('NO ledger reader (the harness produces no rows — a missing source, distinct from `unmeasured`): claude-code, claude-desktop, codex.');
     });
 
@@ -153,6 +167,7 @@ test.describe('seatCostReport — harness ledger aggregation', () => {
         // a single-harness read (Claude Code, 2026-08-09) — measure the new harness's own
         // window before it inherits the family value. That reading, not a pin edit, is the fix.
         expect(LEDGER_READERS).toEqual({
+            'antigravity'   : true,
             'claude-code'   : false,
             'claude-desktop': false,
             'codex'         : false,
@@ -224,6 +239,8 @@ test.describe('seatCostReport — harness ledger aggregation', () => {
     test('CLI --help exits 0 and documents --ablation and the public flags (AC-4)', () => {
         const output = execFileSync('node', [scriptPath, '--help'], {encoding: 'utf8'});
 
+        expect(output).toContain('--antigravity-root');
+        expect(output).toContain('--antigravity-seat');
         expect(output).toContain('--ablation');
         expect(output).toContain('--fixtures');
         expect(output).toContain('--opencode-rows');
@@ -237,5 +254,152 @@ test.describe('seatCostReport — harness ledger aggregation', () => {
         expect(output).toContain('2026-08-01');
         expect(output).not.toContain('2026-07-31');
         expect(output).not.toContain('2026-08-02');
+    });
+
+    test('antigravity transcript parser counts PLANNER_RESPONSE + CHECKPOINT compactions and >50K cold prefills', () => {
+        expect(isColdPrefill(50_000, 0)).toBe(false);
+        expect(isColdPrefill(50_001, 0)).toBe(true);
+        expect(isColdPrefill(60_000, 5_000)).toBe(true);   // 7.7% cache hit (<10%)
+        expect(isColdPrefill(60_000, 12_000)).toBe(false); // 16.7% cache hit (>=10%)
+
+        const records = parseAntigravityTranscript([
+            JSON.stringify({type: 'USER_INPUT', created_at: '2026-11-19T10:00:00Z', content: 'hi'}),
+            JSON.stringify({type: 'PLANNER_RESPONSE', created_at: '2026-11-19T10:01:00Z', input_tokens: 34_000, cache_read_tokens: 0, output_tokens: 800}),
+            JSON.stringify({type: 'PLANNER_RESPONSE', created_at: '2026-11-19T10:02:00Z', input_tokens: 110_000, cache_read_tokens: 0, output_tokens: 1_200}),
+            JSON.stringify({type: 'CHECKPOINT', created_at: '2026-11-19T10:05:00Z', input_tokens: 4_500, cache_read_tokens: 508_000, output_tokens: 9_500}),
+            'not-valid-json'
+        ].join('\n'), {model: 'gemini-4-carbon', role: 'root'});
+
+        expect(records).toHaveLength(3);
+        expect(records[0]).toMatchObject({freshInput: 34_000, coldPrefills: 0, compactions: 0, role: 'root', family: 'gemini'});
+        expect(records[1]).toMatchObject({freshInput: 110_000, coldPrefills: 1, compactions: 0, role: 'root'});
+        expect(records[2]).toMatchObject({freshInput: 4_500, cacheRead: 508_000, output: 9_500, coldPrefills: 0, compactions: 1});
+    });
+
+    test('antigravity SQLite + JSONL reader aggregates recursive (root + child) usage read-only with zero WAL creation', () => {
+        const {rootDir, maryamRootId} = antigravityFixture;
+
+        // Verify `used_claude\0false\0gemini-4-carbon` in gen_metadata resolves to gemini-4-carbon, never claude
+        expect(readAntigravityConversationModel(path.join(rootDir, 'conversations', `${maryamRootId}.db`))).toBe('gemini-4-carbon');
+
+        const maryamRecords = collectAntigravityRecords(rootDir, {workspaceFilter: 'neo-gemini-maryam'});
+        const juliaRecords  = collectAntigravityRecords(rootDir, {workspaceFilter: 'neo-gemini-julia'});
+        const maryamSeat    = buildSeat('maryam', 'antigravity', maryamRecords);
+        const juliaSeat     = buildSeat('julia',  'antigravity', juliaRecords);
+
+        expect(maryamSeat.family).toBe('gemini');
+        expect(maryamSeat.days.get('2026-11-19')).toMatchObject({
+            calls       : 6,
+            rootCalls   : 4,
+            childCalls  : 2,
+            freshInput  : 248_000,
+            cacheRead   : 785_000,
+            coldPrefills: 2,
+            compactions : 1,
+            output      : 17_000
+        });
+        expect(juliaSeat.days.get('2026-11-19')).toMatchObject({
+            calls       : 1,
+            rootCalls   : 1,
+            childCalls  : 0,
+            freshInput  : 30_000,
+            cacheRead   : 150_000,
+            coldPrefills: 0,
+            compactions : 0,
+            output      : 1_200
+        });
+
+        // Strict read-only open check: zero -wal or -shm sidecar files created on inspected stores
+        expect(fs.existsSync(path.join(rootDir, 'conversation_summaries.db-wal'))).toBe(false);
+        expect(fs.existsSync(path.join(rootDir, 'conversation_summaries.db-shm'))).toBe(false);
+        expect(fs.existsSync(path.join(rootDir, 'conversations', `${maryamRootId}.db-wal`))).toBe(false);
+    });
+
+    test('antigravity reader degrades gracefully when optional SQLite files are absent', () => {
+        const jsonlOnlyRoot = path.join(fixtureDir, 'antigravity-jsonl-only');
+        const logDir        = path.join(jsonlOnlyRoot, 'brain', '55555555-5555-4555-8555-555555555555', '.system_generated/logs');
+        fs.mkdirSync(logDir, {recursive: true});
+        fs.writeFileSync(path.join(logDir, 'transcript.jsonl'), `${JSON.stringify({
+            type             : 'PLANNER_RESPONSE',
+            created_at       : '2026-11-19T12:00:00Z',
+            input_tokens     : 75_000,
+            cache_read_tokens: 0,
+            output_tokens    : 2_500
+        })}\n`);
+
+        expect(readAntigravitySummariesDb(path.join(jsonlOnlyRoot, 'conversation_summaries.db'))).toEqual({summaries: [], parents: []});
+        expect(readAntigravityConversationModel(path.join(jsonlOnlyRoot, 'conversations/missing.db'))).toBe('');
+
+        const seat = buildSeat('antigravity', 'antigravity', collectAntigravityRecords(jsonlOnlyRoot));
+        expect(seat.family).toBeNull();
+        expect(seat.days.get('2026-11-19')).toMatchObject({
+            calls       : 1,
+            rootCalls   : 1,
+            childCalls  : 0,
+            freshInput  : 75_000,
+            coldPrefills: 1,
+            output      : 2_500
+        });
+    });
+
+    test('seatCostReport.mjs introduces zero os.homedir() .gemini/antigravity derivations (ADR-0019 §3 B5)', () => {
+        const source      = fs.readFileSync(scriptPath, 'utf8');
+        const homedirUses = source.split('\n').filter(line => line.includes('os.homedir()'));
+
+        expect(source).not.toContain('.gemini/antigravity');
+        expect(homedirUses).toHaveLength(2); // strictly the pre-existing kimi-code + opencode defaults
+    });
+
+    test('output and CLI errors redact session UUIDs, file:// URIs, and local filesystem paths', () => {
+        const sampleUuid = '095892f3-027f-47aa-8092-a13ae31f72ca';
+        const samplePath = '/Users/alice/.gemini/antigravity/brain';
+        const redacted   = redactSensitiveTokens(`seat ${sampleUuid} at ${samplePath} and file:///var/tmp/secret/log.jsonl`);
+
+        expect(redacted).not.toContain(sampleUuid);
+        expect(redacted).not.toContain('/Users/alice');
+        expect(redacted).not.toContain('/var/tmp/secret');
+        expect(redacted).toContain('<redacted-uuid>');
+        expect(redacted).toContain('<redacted-path>');
+
+        const mdOutput = execFileSync('node', [
+            scriptPath,
+            '--antigravity-seat', `maryam=${antigravityFixture.rootDir}#neo-gemini-maryam`,
+            '--antigravity-seat', `${sampleUuid}=${antigravityFixture.rootDir}#neo-gemini-julia`
+        ], {encoding: 'utf8'});
+
+        expect(mdOutput).toContain('## Antigravity (root + child)');
+        expect(mdOutput).toContain('| 2026-11-19 | maryam | 6 (4+2) | 248,000 | 785,000 | 2 | 1 | 17,000 |');
+        expect(mdOutput).toContain('| 2026-11-19 | <redacted-uuid> | 1 (1+0) | 30,000 | 150,000 | 0 | 0 | 1,200 |');
+        expect(mdOutput).not.toContain(sampleUuid);
+        expect(mdOutput).not.toContain(antigravityFixture.maryamRootId);
+        expect(mdOutput).not.toContain(antigravityFixture.rootDir);
+
+        const jsonOutput = JSON.parse(execFileSync('node', [
+            scriptPath,
+            '--antigravity-root', antigravityFixture.rootDir,
+            '--json'
+        ], {encoding: 'utf8'}));
+
+        expect(jsonOutput.antigravity).toMatchObject({
+            family : 'gemini',
+            harness: 'antigravity',
+            days   : {
+                '2026-11-19': {
+                    calls       : 7,
+                    rootCalls   : 5,
+                    childCalls  : 2,
+                    freshInput  : 278_000,
+                    cacheRead   : 935_000,
+                    coldPrefills: 2,
+                    compactions : 1,
+                    output      : 18_200
+                }
+            }
+        });
+
+        const failed = spawnSync('node', [scriptPath, '--antigravity-root', `/Users/alice/missing-${sampleUuid}`], {encoding: 'utf8'});
+        expect(failed.status).toBe(1);
+        expect(failed.stderr).not.toContain(sampleUuid);
+        expect(failed.stderr).not.toContain('/Users/alice');
     });
 });

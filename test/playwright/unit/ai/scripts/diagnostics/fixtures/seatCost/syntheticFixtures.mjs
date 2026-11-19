@@ -1,5 +1,6 @@
-import fs   from 'node:fs';
-import path from 'node:path';
+import fs              from 'node:fs';
+import {createRequire} from 'node:module';
+import path            from 'node:path';
 
 /**
  * Pre-Flight (structural fast-path): authoring `fixtures/seatCost/syntheticFixtures.mjs`
@@ -166,4 +167,88 @@ export function syntheticOpencodeRows() {
 export function writeSyntheticFixtures(dir) {
     fs.writeFileSync(path.join(dir, 'kimi-wire.jsonl'),   syntheticWireContent());
     fs.writeFileSync(path.join(dir, 'opencode-rows.json'), JSON.stringify(syntheticOpencodeRows()));
+}
+
+/**
+ * @summary Writes a deterministic synthetic Antigravity `appDataDir` tree (JSONL + SQLite) into `dir`.
+ * @param {String} dir existing target directory under `os.tmpdir()`
+ * @returns {{rootDir:String, maryamRootId:String, childId:String, grandchildId:String, juliaRootId:String}}
+ */
+export function writeSyntheticAntigravityFixture(dir) {
+    const Database     = createRequire(import.meta.url)('better-sqlite3');
+    const rootDir      = path.join(dir, 'antigravity-synthetic');
+    const maryamRootId = '11111111-1111-4111-8111-111111111111';
+    const childId      = '22222222-2222-4222-8222-222222222222';
+    const grandchildId = '33333333-3333-4333-8333-333333333333';
+    const juliaRootId  = '44444444-4444-4444-8444-444444444444';
+
+    const writeTranscript = (id, steps) => {
+        const logDir = path.join(rootDir, 'brain', id, '.system_generated/logs');
+        fs.mkdirSync(logDir, {recursive: true});
+        fs.writeFileSync(path.join(logDir, 'transcript.jsonl'), `${steps.map(s => JSON.stringify(s)).join('\n')}\n`);
+    };
+
+    writeTranscript(maryamRootId, [
+        {step_index: 0, type: 'USER_INPUT', created_at: '2026-11-19T09:59:59Z', content: 'boot'},
+        {step_index: 1, type: 'PLANNER_RESPONSE', created_at: '2026-11-19T10:00:00Z', input_tokens: 34_000, cache_read_tokens: 0, output_tokens: 1_000},
+        {step_index: 2, type: 'PLANNER_RESPONSE', created_at: '2026-11-19T10:05:00Z', input_tokens: 4_000, cache_read_tokens: 180_000, output_tokens: 2_000},
+        {step_index: 3, type: 'PLANNER_RESPONSE', created_at: '2026-11-19T10:10:00Z', input_tokens: 120_000, cache_read_tokens: 0, output_tokens: 3_000},
+        {step_index: 4, type: 'CHECKPOINT', created_at: '2026-11-19T10:20:00Z', input_tokens: 5_000, cache_read_tokens: 510_000, output_tokens: 9_000, content: '# Resuming from a compaction'},
+        {step_index: 5, type: 'GENERIC', created_at: '2026-11-19T10:21:00Z'}
+    ]);
+
+    writeTranscript(childId, [
+        {step_index: 0, type: 'PLANNER_RESPONSE', created_at: '2026-11-19T10:12:00Z', input_tokens: 25_000, cache_read_tokens: 90_000, output_tokens: 1_500}
+    ]);
+
+    writeTranscript(grandchildId, [
+        {step_index: 0, type: 'PLANNER_RESPONSE', created_at: '2026-11-19T10:15:00Z', input_tokens: 60_000, cache_read_tokens: 5_000, output_tokens: 500}
+    ]);
+
+    writeTranscript(juliaRootId, [
+        {step_index: 0, type: 'PLANNER_RESPONSE', created_at: '2026-11-19T11:00:00Z', input_tokens: 30_000, cache_read_tokens: 150_000, output_tokens: 1_200}
+    ]);
+
+    const summaryDb = new Database(path.join(rootDir, 'conversation_summaries.db'));
+    summaryDb.exec(`
+        CREATE TABLE conversation_summaries (
+            conversation_id TEXT PRIMARY KEY,
+            parent_conversation_id TEXT NOT NULL DEFAULT '',
+            nesting_depth INTEGER NOT NULL DEFAULT 0,
+            workspace_uris TEXT NOT NULL DEFAULT '',
+            app_data_dir TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE conversation_parents (
+            conversation_id TEXT PRIMARY KEY,
+            parent_id TEXT NOT NULL
+        );
+    `);
+
+    const insertSummary = summaryDb.prepare(`
+        INSERT INTO conversation_summaries (conversation_id, parent_conversation_id, nesting_depth, workspace_uris, app_data_dir)
+        VALUES (?, ?, ?, ?, ?)
+    `);
+    insertSummary.run(maryamRootId, '', 0, '["file:///synthetic/agents/neo-gemini-maryam/neomjs/neo"]', '');
+    insertSummary.run(childId, maryamRootId, 1, '["file:///synthetic/agents/neo-gemini-maryam/neomjs/neo"]', '');
+    insertSummary.run(juliaRootId, '', 0, '["file:///synthetic/agents/neo-gemini-julia/neomjs/neo"]', '');
+
+    summaryDb.prepare(`INSERT INTO conversation_parents (conversation_id, parent_id) VALUES (?, ?)`).run(grandchildId, childId);
+    summaryDb.close();
+
+    const convDir = path.join(rootDir, 'conversations');
+    fs.mkdirSync(convDir, {recursive: true});
+
+    const writeConvDb = (id, modelBlobText) => {
+        const cdb = new Database(path.join(convDir, `${id}.db`));
+        cdb.exec(`CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER NOT NULL DEFAULT 0)`);
+        const buf = Buffer.from(modelBlobText, 'utf8');
+        cdb.prepare(`INSERT INTO gen_metadata (idx, data, size) VALUES (0, ?, ?)`).run(buf, buf.length);
+        cdb.close();
+    };
+
+    writeConvDb(maryamRootId, '\x12used_claude\x00false\x00gemini-4-carbon\x00MODEL_PLACEHOLDER_M427');
+    writeConvDb(childId, '\x12gemini-4-hydrogen-tiered-high\x00');
+    writeConvDb(juliaRootId, '\x12gemini-4-carbon\x00');
+
+    return {rootDir, maryamRootId, childId, grandchildId, juliaRootId}
 }
