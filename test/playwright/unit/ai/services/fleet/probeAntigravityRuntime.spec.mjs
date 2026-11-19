@@ -1,7 +1,25 @@
-import {expect, test} from '@playwright/test';
-import fs             from 'node:fs';
-import os             from 'node:os';
-import path           from 'node:path';
+import {setup} from '../../../../setup.mjs';
+
+setup({
+    neoConfig: {
+        unitTestMode: true
+    },
+    appConfig: {
+        name             : 'ProbeAntigravityRuntimeTest',
+        isMounted        : () => true,
+        vnodeInitialising: false
+    }
+});
+
+import {expect, test}                           from '@playwright/test';
+import fs                                       from 'node:fs';
+import os                                       from 'node:os';
+import path                                     from 'node:path';
+import Neo                                      from 'neo.mjs/src/Neo.mjs';
+import * as core                                from 'neo.mjs/src/core/_export.mjs';
+import FleetLifecycleService, {SEAT_LEASE_FILE} from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import {deriveAgentInstanceHome}                from '../../../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
+import {resolveAntigravitySidecarAncestor}      from '../../../../../../ai/daemons/wake/antigravityWakeSidecar.mjs';
 import {
     classifyAntigravityRuntimeFingerprint,
     probeAntigravityRuntime,
@@ -20,9 +38,10 @@ const
     }),
     OWNER = {pid:100, startedAt:'Wed Oct 14 14:00:00 2026'},
     PROFILE_PORT = 9222,
-    PROFILE_BROWSER_PATH = '/devtools/browser/profile-browser-id';
+    PROFILE_BROWSER_PATH = '/devtools/browser/profile-browser-id',
+    REQUIRED_ASAR_MARKERS = ['remote-debugging-port', 'DevToolsActivePort', 'AGY_BROWSER_ACTIVE_PORT_FILE'];
 
-function makeBundle(root) {
+function makeBundle(root, {asarMarkers = REQUIRED_ASAR_MARKERS} = {}) {
     const
         appBundle      = path.join(root, 'Antigravity.app'),
         contents       = path.join(appBundle, 'Contents'),
@@ -33,7 +52,8 @@ function makeBundle(root) {
 
     for (const file of [binary, infoPlist, appAsar, languageServer]) {
         fs.mkdirSync(path.dirname(file), {recursive:true});
-        fs.writeFileSync(file, 'fixture-bytes', {mode:file === binary || file === languageServer ? 0o755 : 0o644});
+        fs.writeFileSync(file, file === appAsar ? asarMarkers.join('\n') : 'fixture-bytes',
+            {mode:file === binary || file === languageServer ? 0o755 : 0o644});
     }
 
     return {appBundle, binary, infoPlist, appAsar, languageServer}
@@ -285,5 +305,136 @@ test.describe('probeAntigravityRuntime', () => {
             profileDirectory, port:PROFILE_PORT + 1, browserPath:PROFILE_BROWSER_PATH,
             expectedProcess:OWNER, fileSystem:fs, execFileImpl:processInspector({processRows}).execFileImpl
         })).toMatchObject({verified:false});
+    });
+
+    test('missing app.asar remote-debugging or active-port marker refuses at admission', async () => {
+        for (const omitted of REQUIRED_ASAR_MARKERS) {
+            const
+                fixture = makeBundle(path.join(root, omitted), {asarMarkers: REQUIRED_ASAR_MARKERS.filter(marker => marker !== omitted)}),
+                result  = await probeAntigravityRuntime({
+                    selectedBinaryPath:fixture.binary,
+                    fsImpl:fs,
+                    platform:'darwin',
+                    architecture:'arm64',
+                    readBundleMetadata:supportedMetadata,
+                    hashFile:async () => RUNTIME_FIXTURE.appAsarSha256
+                });
+
+            expect(result, omitted).toEqual({
+                available : false,
+                reason    : `app-contract-marker-missing:${omitted}`,
+                binaryPath: fs.realpathSync(fixture.binary),
+                appBundle : fs.realpathSync(fixture.appBundle)
+            });
+        }
+
+        const
+            multiMissing = makeBundle(path.join(root, 'multi'), {asarMarkers: ['remote-debugging-port']}),
+            multiResult  = await probeAntigravityRuntime({
+                selectedBinaryPath:multiMissing.binary,
+                fsImpl:fs,
+                platform:'darwin',
+                architecture:'arm64',
+                readBundleMetadata:supportedMetadata,
+                hashFile:async () => RUNTIME_FIXTURE.appAsarSha256
+            });
+
+        expect(multiResult).toMatchObject({
+            available: false,
+            reason   : 'app-contract-marker-missing:DevToolsActivePort,AGY_BROWSER_ACTIVE_PORT_FILE'
+        });
+    });
+
+    test('running 2.32.2 seats launched without --remote-debugging-port=0 stay recognised alongside 2.33.0 seats', () => {
+        const
+            gen2322      = makeBundle(path.join(root, 'gen-2.32.2')),
+            gen2330      = makeBundle(path.join(root, 'gen-2.33.0')),
+            gen2322Bin   = fs.realpathSync(gen2322.binary),
+            gen2330Bin   = fs.realpathSync(gen2330.binary),
+            gen2322App   = fs.realpathSync(gen2322.appBundle),
+            gen2330App   = fs.realpathSync(gen2330.appBundle),
+            genId2322    = '2322'.repeat(16),
+            instanceRoot = path.join(root, 'agents'),
+            checkout     = path.join(root, 'checkout'),
+            agent        = {id: 'neo-gemini-julia', githubUsername: 'neo-gemini-julia', harnessType: 'antigravity'},
+            home         = deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: 'antigravity'}),
+            cmd2322      = `${gen2322Bin} --user-data-dir=${home}`,
+            cmd2330      = `${gen2330Bin} --user-data-dir=${home} --remote-debugging-port=0`,
+            originals    = {
+                registry              : FleetLifecycleService.registry,
+                instanceRoot          : FleetLifecycleService.instanceRoot,
+                harnessBinaryPaths    : FleetLifecycleService.harnessBinaryPaths,
+                harnessGenerationRoot : FleetLifecycleService.harnessGenerationRoot,
+                harnessGenerationStore: FleetLifecycleService.harnessGenerationStore,
+                processListFn         : FleetLifecycleService.processListFn,
+                processInspectFn      : FleetLifecycleService.processInspectFn,
+                processSignalFn       : FleetLifecycleService.processSignalFn,
+                leasesAdopted         : FleetLifecycleService.leasesAdopted
+            };
+
+        fs.mkdirSync(home, {recursive: true});
+        fs.mkdirSync(checkout, {recursive: true});
+
+        try {
+            FleetLifecycleService.processes.delete(agent.id);
+            FleetLifecycleService.leasesAdopted          = false;
+            FleetLifecycleService.registry               = {listAgents: () => [{id: agent.id}], getDefinition: id => id === agent.id ? agent : null};
+            FleetLifecycleService.instanceRoot           = instanceRoot;
+            FleetLifecycleService.harnessBinaryPaths     = {antigravity: gen2330Bin};
+            FleetLifecycleService.harnessGenerationRoot  = path.join(root, 'generations');
+            FleetLifecycleService.harnessGenerationStore = {
+                list: () => [{id: genId2322, appBundle: gen2322App, binaryPath: gen2322Bin, shortVersion: '2.32.2', buildVersion: '2.32.2'}]
+            };
+
+            for (const [lines, expected] of [
+                [[cmd2322], true],
+                [[cmd2330], true],
+                [[`${gen2322App}/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper --type=renderer --user-data-dir=${home}`], false],
+                [[`${gen2330Bin} --user-data-dir=${home}-other --remote-debugging-port=0`], false]
+            ]) {
+                FleetLifecycleService.processListFn = () => lines;
+                expect(FleetLifecycleService.desktopProfileInUse(agent), JSON.stringify(lines)).toBe(expected);
+            }
+
+            fs.writeFileSync(path.join(home, SEAT_LEASE_FILE), JSON.stringify({
+                agentId            : agent.id,
+                pid                : 4242,
+                pidStartedAt       : OWNER.startedAt,
+                startedAt          : '2026-11-19T13:10:00.000Z',
+                cwd                : checkout,
+                harnessGenerationId: genId2322
+            }));
+            FleetLifecycleService.processSignalFn  = (pid, signal) => { expect([pid, signal]).toEqual([4242, 0]) };
+            FleetLifecycleService.processInspectFn = pid => pid === 4242 ? {startedAt: OWNER.startedAt, exited: false, command: cmd2322} : null;
+
+            expect(FleetLifecycleService.status(agent.id)).toMatchObject({
+                id               : agent.id,
+                state            : 'running',
+                running          : true,
+                adopted          : true,
+                pid              : 4242,
+                launchCommand    : gen2322Bin,
+                harnessGeneration: {family: 'antigravity', generationId: genId2322, shortVersion: '2.32.2', buildVersion: '2.32.2'}
+            });
+
+            for (const [appBundle, command] of [[gen2322App, cmd2322], [gen2330App, cmd2330]]) {
+                expect(resolveAntigravitySidecarAncestor({
+                    sidecarPid: 9000,
+                    rows      : [
+                        {pid: 9000, ppid: 5000, startedAt: OWNER.startedAt, command: 'node antigravityWakeSidecar.mjs'},
+                        {pid: 5000, ppid: 4242, startedAt: OWNER.startedAt, command: `${appBundle}/Contents/Resources/bin/language_server`},
+                        {pid: 4242, ppid: 1,    startedAt: OWNER.startedAt, command}
+                    ]
+                })).toEqual({
+                    appPid      : 4242,
+                    appStart    : OWNER.startedAt,
+                    appBundle,
+                    instanceHome: home
+                });
+            }
+        } finally {
+            FleetLifecycleService.processes.delete(agent.id);
+            Object.assign(FleetLifecycleService, originals);
+        }
     });
 });

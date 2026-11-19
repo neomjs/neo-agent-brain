@@ -1,20 +1,19 @@
-import {execFileSync}  from 'node:child_process';
-import {createHash}    from 'node:crypto';
-import {createRequire} from 'node:module';
-import fs              from 'node:fs';
-import path            from 'node:path';
+import {execFileSync}                from 'node:child_process';
+import {createHash}                  from 'node:crypto';
+import fs                            from 'node:fs';
+import path                          from 'node:path';
+import {bundleFs, scanBundleMarkers} from './inspectAppBundle.mjs';
 
 const
-    // Electron virtualizes app.asar as a directory; this probe needs the physical bundle bytes.
-    bundleFs = process.versions.electron ? createRequire(import.meta.url)('original-fs') : fs,
-    PLIST_BUDDY = '/usr/libexec/PlistBuddy',
-    LSOF = '/usr/sbin/lsof',
-    PS = '/bin/ps',
-    ACTIVE_PORT_FILE = 'DevToolsActivePort',
-    BROWSER_PATH = /^\/devtools\/browser\/[A-Za-z0-9_-]+$/,
-    PROCESS_CHAIN_LIMIT = 16,
+    PLIST_BUDDY              = '/usr/libexec/PlistBuddy',
+    LSOF                     = '/usr/sbin/lsof',
+    PS                       = '/bin/ps',
+    ACTIVE_PORT_FILE         = 'DevToolsActivePort',
+    ASAR_MARKERS             = Object.freeze(['remote-debugging-port', ACTIVE_PORT_FILE, 'AGY_BROWSER_ACTIVE_PORT_FILE']),
+    BROWSER_PATH             = /^\/devtools\/browser\/[A-Za-z0-9_-]+$/,
+    PROCESS_CHAIN_LIMIT      = 16,
     PROCESS_QUERY_TIMEOUT_MS = 200,
-    MAX_HASH_BYTES = 512 * 1024 * 1024;
+    MAX_HASH_BYTES           = 512 * 1024 * 1024;
 
 /**
  * @summary Validate the selected app identity and measurements without freezing vendor updates.
@@ -42,11 +41,11 @@ export function classifyAntigravityRuntimeFingerprint(actual = {}) {
 }
 
 /**
- * @summary Probe the config-selected Antigravity main binary and stream-hash its app code and MCP runtime.
- * Missing resources, alternate path shapes or malformed observations refuse. New versions and
- * hashes may proceed to the live project-binding checks; hashes also detect replacement during
- * one Start. This structural probe does not prove MCP loading, instruction consumption, hooks,
- * wake delivery or a usable managed session.
+ * @summary Probe the config-selected Antigravity main binary, verify its `app.asar` remote-debugging
+ * and active-port markers, and stream-hash its app code and MCP runtime.
+ * Missing resources, dropped contract markers, alternate path shapes or malformed observations
+ * refuse; new versions/hashes proceed to live project-binding checks and detect mid-Start replacement.
+ * Does not prove MCP loading, instruction consumption, hooks, wake delivery or a usable session.
  * @param {Object} options
  * @param {String} options.selectedBinaryPath Explicit binary already resolved by the caller's harness selection.
  * @param {Object} [options.fsImpl] Physical fs reader; defaults to Electron `original-fs` or Node fs.
@@ -94,12 +93,13 @@ export async function probeAntigravityRuntime({
         appAsar        = path.join(contents, 'Resources', 'app.asar'),
         languageServer = path.join(contents, 'Resources', 'bin', 'language_server');
 
-    let metadata, appAsarSha256, languageServerSha256;
+    let metadata, appAsarSha256, languageServerSha256, asarMissing;
 
     try {
         metadata = readBundleMetadata(infoPlist);
         assertFile(fsImpl, appAsar);
         assertFile(fsImpl, languageServer, true);
+        asarMissing = scanBundleMarkers(appAsar, ASAR_MARKERS, fsImpl).missing;
 
         [appAsarSha256, languageServerSha256] = await Promise.all([
             hashFile(appAsar, fsImpl),
@@ -107,6 +107,10 @@ export async function probeAntigravityRuntime({
         ]);
     } catch {
         return unavailable('required-app-resource-or-fingerprint-unavailable', {binaryPath, appBundle})
+    }
+
+    if (asarMissing.length) {
+        return unavailable(`app-contract-marker-missing:${asarMissing.join(',')}`, {binaryPath, appBundle})
     }
 
     const fingerprints = {

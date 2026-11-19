@@ -172,12 +172,12 @@ test.describe('deriveHarnessLaunchSpec (per-family harness launch templates)', (
         }
     });
 
-    test('antigravity: same argv isolation contract; the version probe derives NULL (the binary boots the app instead of answering)', () => {
+    test('antigravity: argv isolation + opt-in --remote-debugging-port=0; the version probe derives NULL (the binary boots the app instead of answering)', () => {
         const spec = deriveHarnessLaunchSpec({harnessType: 'antigravity', instanceHome: '/srv/instances/a/antigravity', binaryPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity'});
 
         expect(spec).toEqual({
             command         : '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
-            args            : ['--user-data-dir=/srv/instances/a/antigravity'],
+            args            : ['--user-data-dir=/srv/instances/a/antigravity', '--remote-debugging-port=0'],
             env             : {},
             versionProbeArgs: null   // skip-the-probe marker: binaryVersion stays honestly null
         });
