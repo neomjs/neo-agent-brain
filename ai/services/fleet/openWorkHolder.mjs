@@ -6,7 +6,8 @@
  * An opinion counts only when it judged the current head: `reviewDecision` keeps a change request the
  * author has since pushed past, and an earlier head's approval. Opinions come from each reviewer's
  * standing approval or change request, never their latest review, which a comment can be; a comment
- * on the head is engagement only. A bot's review is not even that: no seat has looked at the PR, so an
+ * on the head is engagement only, though a change request its seat kept that way still binds a seat-owned
+ * PR's author. A bot's review is not even that: no seat has looked at the PR, so an
  * outside row stays untouched. `operator` and `rotation` are roles that name nobody; the reader
  * that renders or wakes resolves them, so no operator's handle lives here.
  *
@@ -219,10 +220,14 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         return {role: 'reviewer', kind: 'review', ids: [...requested]}
     }
 
-    // An unowned org PR owes the same routing; with no seat to hold it, the wake path escalates it
+    // An unowned org PR owes the same routing; with no seat to hold it, the wake path escalates it. A seat that reviewed
+    // this head and kept its change request (a Round-2 comment) leaves the action with the author instead.
     if (ci === 'green' && (owner?.kind === 'seat' && owner.seat || owner?.kind === 'unowned') && !draft &&
         !opinions.some(opinion => opinion.onHead)) {
-        return {role: 'author', kind: 'route-review', ids: owner.seat ? [owner.seat] : []}
+        const kept = opinions.some(opinion => opinion.state === 'CHANGES_REQUESTED' && !opinion.bot && isSeat(opinion.reviewer) &&
+            reviewedHere.has(opinion.reviewer));
+
+        return {role: 'author', kind: kept ? 'address-changes' : 'route-review', ids: owner.seat ? [owner.seat] : []}
     }
 
     if (ci === 'green' && approved && mergeable === 'MERGEABLE' && !draft) {

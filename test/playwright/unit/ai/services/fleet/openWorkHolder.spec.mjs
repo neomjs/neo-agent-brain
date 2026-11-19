@@ -245,6 +245,30 @@ test.describe('openWorkHolder — an outside PR pushed past a seat\'s review is 
     });
 });
 
+test.describe('openWorkHolder — a Round-2 comment that keeps a change request leaves the author its action (#1851)', () => {
+    const
+        B      = '@neo-gpt-euclid',
+        C      = '@neo-opus-vega',
+        by     = (reviewer, state, onHead=false) => ({reviewer, state, onHead}),
+        stands = [by(B, 'CHANGES_REQUESTED')],
+        // B requested changes on an earlier head, then reviewed this one with a comment: the request still stands
+        round2 = {reviews: [by(B, 'CHANGES_REQUESTED'), by(B, 'COMMENTED', true)], opinions: stands};
+
+    test('a seat that reviewed this head and kept its change request leaves the author addressing it (AC-1)', () => {
+        expect(holderOf(row(round2))).toEqual({role: 'author', kind: 'address-changes', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({...round2, owner: {kind: 'unowned'}}))).toEqual({role: 'author', kind: 'address-changes', ids: []})
+    });
+
+    test('a head pushed past the comment, a re-request, an approval on the head and an outside PR keep their routes (AC-2 to AC-4)', () => {
+        expect(holderOf(row({reviews: [by(B, 'CHANGES_REQUESTED'), by(B, 'COMMENTED')], opinions: stands})), 'pushed past it')
+            .toEqual({role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({...round2, requested: [B]})), 're-requested on this head').toEqual({role: 'reviewer', kind: 'review', ids: [B]});
+        expect(holderOf(row({reviews: [...round2.reviews, by(C, 'APPROVED', true)], opinions: [...stands, by(C, 'APPROVED', true)]})), 'approved on the head')
+            .toEqual({role: 'operator', kind: 'merge', ids: []});
+        expect(holderOf(row({...round2, owner: outside})), 'an outside PR').toEqual({role: 'none', kind: null, ids: []})
+    });
+});
+
 test.describe('openWorkHolder — an outside PR that names a model needs an approval from another lab', () => {
     const
         CLAUDE   = '@neo-opus-vega',
