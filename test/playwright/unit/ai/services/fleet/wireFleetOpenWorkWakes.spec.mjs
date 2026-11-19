@@ -245,7 +245,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
                 return value
             },
             wire      = (sends, readPresence) => wireFleetOpenWorkWakes({registry: {getDataDir: () => directory}, readPresence,
-                rotationSeats: roster, gateOf: openGate, now: () => at(minute), admitWake: async message => sends.push(message)});
+                rotationSeats: roster, gateOf: openGate, now: () => at(minute), admitWake: async message => ({messageId: `MESSAGE:${sends.push(message)}`})});
         let minute = 0;
 
         try {
@@ -261,6 +261,10 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
             await round(outside(10, 'green'));
             expect(sends.map(({to, kind}) => ({to, kind}))).toEqual([{to: SEAT, kind: 'triage-outside'}, {to: GPT, kind: 'triage-outside'}]);
 
+            // The ledger that records the handoff loads on the next pulse, which sends nothing new
+            minute = 11; await round(outside(11, 'green'));
+            expect(sends).toHaveLength(2);
+
             // A failed presence read marks nobody absent
             fs.rmSync(path.join(directory, 'open-work-wakes.json'));
             const unread = [], blind = wire(unread, async () => { throw new Error('presence down') });
@@ -269,6 +273,31 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
             minute = 10; await blind(outside(10, 'green'));
             expect(unread.map(({to}) => to)).toEqual([SEAT])
         } finally { fs.rmSync(directory, {recursive: true, force: true}) }
+    });
+
+    test('a spent rotation slot whose seat goes absent submits nothing more, so the next pulse still reads the ledger (#1849)', async () => {
+        let   minute = 0, absent = [];
+        const GPT     = '@neo-gpt',
+            // the roster order makes the plain hash pick land on SEAT
+            offset  = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % 2,
+            store   = memoryStore(), sends = [],
+            round   = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), routesTtlMs: 0, log: {error: () => {}},
+                rotationSeats: offset === 0 ? [SEAT, GPT] : [GPT, SEAT], readAbsent: async () => absent,
+                admitWake: async message => { sends.push(message.to); throw new Error('timeout') }}),
+            outside = minute => {
+                const value = state(minute, 'green');
+                value.snapshot.rows['acme/app#7'].owner = {kind: 'outside', seat: null, login: 'contributor'};
+                return value
+            };
+
+        for (minute = 0; minute <= 7; minute++) await round(outside(minute));
+        expect(sends).toEqual([SEAT, SEAT, SEAT, SEAT, SEAT]);
+        expect(Object.values(store.read().holding)[0]).toMatchObject({status: 'admitted', attempts: 5});
+
+        absent = [SEAT];
+        for (minute = 8; minute <= 9; minute++) await round(outside(minute));
+        expect(sends, 'the spent slot submits nothing more').toHaveLength(5);
+        expect(Object.values(store.read().holding)[0]).toMatchObject({status: 'admitted', attempts: 5, wake: {to: SEAT}})
     });
 
     test('activation survives restart and history rollover without losing pending merges', async () => {

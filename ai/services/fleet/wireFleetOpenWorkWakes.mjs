@@ -233,6 +233,8 @@ function validateLedger(ledger, now) {
             !['baseline', 'pending', 'admitted'].includes(entry.status) ||
             Object.hasOwn(entry, 'messageId') && (entry.status !== 'admitted' || !messageIdOf(entry.messageId)) ||
             Object.hasOwn(entry, 'attempts') && !validAttempts(entry.attempts) ||
+            Object.hasOwn(entry, 'handedFrom') && !(entry.wake.role === 'rotation' && Array.isArray(entry.handedFrom) &&
+                entry.handedFrom.length > 0 && entry.handedFrom.every(text)) ||
             slot !== JSON.stringify([entry.wake.repo, entry.wake.number, entry.wake.head,
                 entry.wake.role === 'rotation' ? 'rotation' : entry.wake.to, entry.wake.kind,
                 ...(entry.wake.holder ? [entry.wake.holder] : [])])) ||

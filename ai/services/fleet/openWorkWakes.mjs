@@ -191,8 +191,9 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
 
     /**
      * Holds one rotation-routed slot: an outside PR's action, or an escalation naming the holder it never picks.
-     * An admitted slot stays admitted until its seat reads absent and another seat qualifies; a quiet round baselines.
-     * A pick without an eligible seat stays pending, under a placeholder recipient that is never the holder.
+     * An admitted slot stays admitted until its seat reads absent, the plane took its wake and an unwoken seat qualifies;
+     * a quiet round baselines. A pick without an eligible seat stays pending, under a placeholder recipient that is
+     * never the holder.
      */
     const rotate = (row, kind, holder = null) => {
         const
@@ -224,20 +225,29 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             route   = quiet ? () => 'unknown' : rotationRoute,
             present = quiet ? route : seat => absent.has(seat) ? 'unreachable' : rotationRoute(seat),
             keep    = holder ? [holder] : [],
+            // The seats this slot handed on from: a wake to one again would only repeat its first receipt
+            woken   = prior?.handedFrom ?? [],
             // Nobody of another lab answers: the whole roster picks, so the PR is never left unrouted
-            pick    = byRoute => pickRotationSeat(row, kind, roster, byRoute, [...keep, ...sameLab]) ??
-                (sameLab.length ? pickRotationSeat(row, kind, roster, byRoute, keep) : null),
+            pick    = (byRoute, skip = woken) => pickRotationSeat(row, kind, roster, byRoute, [...keep, ...skip, ...sameLab]) ??
+                (sameLab.length ? pickRotationSeat(row, kind, roster, byRoute, [...keep, ...skip]) : null),
             // A re-pick keeps the slot's failed submissions counted, so a failing escalation stays bounded
             hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder, ciRepair), status,
                 ...repairRecord,
-                ...(prior?.attempts ? {attempts: prior.attempts} : {})};
+                ...(prior?.attempts ? {attempts: prior.attempts} : {}),
+                ...(woken.length ? {handedFrom: woken} : {})};
 
         current.add(slot);
         if (prior?.status === 'admitted') {
-            const next = !quiet && absent.has(prior.wake.to) ? pick(present) : null;
+            // Only a wake the plane took hands on: a spent slot has no receipt, so its count stays the last word
+            const
+                handedFrom = [...woken, prior.wake.to],
+                next       = !quiet && absent.has(prior.wake.to) && prior.messageId ? pick(present, handedFrom) : null;
 
-            if (next) wakes.push(hold(next, 'admitted').wake);
-            else if (outsideRepair) holding[slot] = {...prior, ...repairRecord};
+            if (next) {
+                // A new recipient is a new wake, so its submissions count afresh
+                holding[slot] = {wake: wakeOf(row, next, 'rotation', kind, episode, holder, ciRepair), status: 'admitted', ...repairRecord, handedFrom};
+                wakes.push(holding[slot].wake)
+            } else if (outsideRepair) holding[slot] = {...prior, ...repairRecord};
             return;
         }
 
