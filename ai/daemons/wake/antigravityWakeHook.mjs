@@ -1,11 +1,11 @@
-import fs                                                                                                                              from 'node:fs';
-import os                                                                                                                              from 'node:os';
-import path                                                                                                                            from 'node:path';
-import {fileURLToPath}                                                                                                                 from 'node:url';
-import {resolveAntigravitySidecarAncestor,readAntigravityProcessRows}                                                                  from './antigravityWakeSidecar.mjs';
-import {observeAntigravitySessionStart,observeAntigravityPreInvocation,handleAntigravityPreInvocation,hasAntigravityPendingSystemWake} from './antigravitySessionWake.mjs';
-import {readPrimarySessionWake}                                                                                                        from './primarySessionWake.mjs';
-import {consumeNativeWakePrompt}                                                                                                       from './fleetPrimarySessionWake.mjs';
+import fs                                                                                                                                                                           from 'node:fs';
+import os                                                                                                                                                                           from 'node:os';
+import path                                                                                                                                                                         from 'node:path';
+import {fileURLToPath}                                                                                                                                                              from 'node:url';
+import {resolveAntigravitySidecarAncestor,readAntigravityProcessRows}                                                                                                               from './antigravityWakeSidecar.mjs';
+import {AGENT_ID,observeAntigravitySessionStart,observeAntigravityPreInvocation,observeAntigravityPendingLaunchHook,handleAntigravityPreInvocation,hasAntigravityPendingSystemWake} from './antigravitySessionWake.mjs';
+import {readPrimarySessionWake}                                                                                                                                                     from './primarySessionWake.mjs';
+import {consumeNativeWakePrompt}                                                                                                                                                    from './fleetPrimarySessionWake.mjs';
 
 /** @module ai/daemons/wake/antigravityWakeHook
  * @summary App hook callback. No registration occurs merely by importing this module.
@@ -30,7 +30,33 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
             return r?.harnessTargetMetadata?.adapter === 'primary-session' && c?.family === 'antigravity' &&
                 c.instanceHome === app.instanceHome && c.appBundle === app.appBundle;
         });
-        if (routes.length !== 1) return reserved ? deny : {};
+        if (routes.length > 1) return reserved ? deny : {};
+        if (routes.length === 0) {
+            if (reserved || (event !== 'SessionStart' && event !== 'PreInvocation')) return reserved ? deny : {};
+            const lease   = privateJson(path.join(app.instanceHome, '.neo-fleet-seat-lease.json'));
+            const binding = privateJson(path.join(app.instanceHome, '.neo-fleet-project-binding.json'));
+            if (!AGENT_ID.test(lease.agentId || '') ||
+                lease.pid !== app.appPid || lease.pidStartedAt !== app.appStart ||
+                lease.harnessType !== 'antigravity' || !path.isAbsolute(lease.cwd || '') ||
+                path.basename(path.dirname(app.appBundle)) !== lease.harnessGenerationId ||
+                binding.version !== 1 || binding.projectName !== lease.agentId ||
+                binding.projectRoot !== lease.cwd || typeof binding.projectId !== 'string' || !binding.projectId) {
+                return {};
+            }
+            await observeAntigravityPendingLaunchHook({
+                event,
+                stateDir,
+                appDataDir,
+                databasePath: path.join(appDataDir, 'conversation_summaries.db'),
+                agentId     : lease.agentId,
+                instanceHome: app.instanceHome,
+                projectId   : binding.projectId,
+                projectRoot : lease.cwd,
+                generation  : app.appPid + ':' + app.appStart,
+                input
+            });
+            return {};
+        }
         const route = routes[0], config=route.adapterConfig.primarySession;
         const lease = privateJson(path.join(config.instanceHome,'.neo-fleet-seat-lease.json'));
         if (lease.pid !== app.appPid || lease.pidStartedAt !== app.appStart || lease.agentId !== config.agentId ||
@@ -38,8 +64,8 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
             path.basename(path.dirname(app.appBundle)) !== lease.harnessGenerationId ||
             !/^@[a-z0-9][a-z0-9-]*$/.test(route.agentIdentity || '')) return reserved ? deny : {};
         const generation = app.appPid+':'+app.appStart, statePath=path.join(stateDir,'primary-sessions',route.agentIdentity.slice(1)+'.json');
-        const context    = {databasePath:path.join(appDataDir,'conversation_summaries.db'),projectId:config.projectId,
-            projectRoot:config.projectRoot,generation,statePath,input};
+        const context    = {databasePath:path.join(appDataDir,'conversation_summaries.db'),appDataDir,projectId:config.projectId,
+            projectRoot:config.projectRoot,generation,statePath,stateDir,agentId:config.agentId,input};
         if (event === 'SessionStart') { await observeAntigravitySessionStart(context); return {} }
         if (event !== 'PreInvocation') return reserved ? deny : {};
         let   wakeInput     = input;
@@ -84,7 +110,7 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
                 if (current.binding?.threadId !== threadId || current.binding?.generation !== generation ||
                     (!matchesNormal && !matchesUrgent)) return {admitted:false};
             }
-            return consume({manifestPath,stateDir,agentId:config.agentId,family:'antigravity',threadId,nonce,denyOnly,expectedGeneration:generation})
+            return consume({manifestPath,stateDir,agentId:config.agentId,family:'antigravity',threadId,nonce,denyOnly,expectedGeneration:generation,appDataDir})
         }});
     } catch { return reserved ? deny : {} }
 }

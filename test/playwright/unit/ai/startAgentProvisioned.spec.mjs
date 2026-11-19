@@ -1379,7 +1379,14 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(events.indexOf('prepare')).toBeLessThan(events.indexOf('start'));
         expect(events.indexOf('native')).toBeGreaterThan(events.indexOf('prepare'));
         expect(events.indexOf('native')).toBeLessThan(events.indexOf('start'));
-        expect(nativeCalls).toEqual([{agent:agents.seat, instanceHome:'/instances/seat', workspaceRoot:targetRepoRoot, configDir:'/native/config'}]);
+        expect(nativeCalls).toEqual([{
+            agent             : agents.seat,
+            instanceHome      : '/instances/seat',
+            workspaceRoot     : targetRepoRoot,
+            configDir         : '/native/config',
+            antigravityProject: project,
+            appDataDir        : '/instances/seat/.gemini/antigravity'
+        }]);
         expect(status.nativeWakePreparation).toEqual({state:'prepared'});
         expect(lifecycle.calls.profile).toEqual(['seat']);
         expect(lifecycle.calls.reserve).toHaveLength(1);

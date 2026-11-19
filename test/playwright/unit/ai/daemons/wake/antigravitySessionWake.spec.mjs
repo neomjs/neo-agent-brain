@@ -1,21 +1,49 @@
-import {resolveAntigravitySidecarAncestor, runAntigravitySidecar, materializeAntigravitySidecar, validateAntigravitySidecarCapability, materializeAntigravityWakeHooks}                                                                                                                                                                                                                                                  from '../../../../../../ai/daemons/wake/antigravityWakeSidecar.mjs';
-import protobuf                                                                                                                                                                                                                                                                                                                                                                                                          from 'protobufjs/minimal.js';
-import {test, expect}                                                                                                                                                                                                                                                                                                                                                                                                    from '@playwright/test';
-import fs                                                                                                                                                                                                                                                                                                                                                                                                                from 'node:fs';
-import {execFileSync}                                                                                                                                                                                                                                                                                                                                                                                                    from 'node:child_process';
-import os                                                                                                                                                                                                                                                                                                                                                                                                                from 'node:os';
-import path                                                                                                                                                                                                                                                                                                                                                                                                              from 'node:path';
-import Database                                                                                                                                                                                                                                                                                                                                                                                                          from 'better-sqlite3';
-import {readAntigravityWakeTarget, sendAntigravitySessionWake, captureAntigravityWakeCursor, readAntigravityWakeReceipt, isAntigravityWakeSystemMessage, isAntigravityExternalSystemMessage, hasAntigravityPendingSystemWake, initializeAntigravityStarts, observeAntigravitySessionStart, latestAntigravityWakeTarget, observeAntigravityPreInvocation, verifyAntigravityWakeAdmission, handleAntigravityPreInvocation} from '../../../../../../ai/daemons/wake/antigravitySessionWake.mjs';
+import {resolveAntigravitySidecarAncestor, runAntigravitySidecar, materializeAntigravitySidecar, validateAntigravitySidecarCapability, materializeAntigravityWakeHooks} from '../../../../../../ai/daemons/wake/antigravityWakeSidecar.mjs';
+import protobuf                                                                                                                                                         from 'protobufjs/minimal.js';
+import {test, expect}                                                                                                                                                   from '@playwright/test';
+import fs                                                                                                                                                               from 'node:fs';
+import {execFileSync}                                                                                                                                                   from 'node:child_process';
+import os                                                                                                                                                               from 'node:os';
+import path                                                                                                                                                             from 'node:path';
+import Database                                                                                                                                                         from 'better-sqlite3';
+import {
+    readAntigravityWakeTarget,
+    sendAntigravitySessionWake,
+    captureAntigravityWakeCursor,
+    readAntigravityWakeReceipt,
+    isAntigravityWakeSystemMessage,
+    isAntigravityExternalSystemMessage,
+    hasAntigravityPendingSystemWake,
+    initializeAntigravityStarts,
+    reconcileAntigravityStarts,
+    observeAntigravitySessionStart,
+    latestAntigravityWakeTarget,
+    observeAntigravityPreInvocation,
+    verifyAntigravityWakeAdmission,
+    handleAntigravityPreInvocation,
+    stageAntigravityLaunchCensus,
+    bindAntigravityLaunchGeneration,
+    cleanupAntigravityLaunchCensus
+} from '../../../../../../ai/daemons/wake/antigravitySessionWake.mjs';
+import {WakeReceiverState}                                                            from '../../../../../../ai/daemons/wake/receiverState.mjs';
+import {consumeNativeWakePrompt, dispatchAntigravitySidecarRecords, enrollNativeWake} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
+import {stagePrimaryWake}                                                             from '../../../../../../ai/daemons/wake/primaryWakeSpool.mjs';
 
 
-function fixtureSummary(id, project, parent = '', depth = 0, fork = '') {
+function fixtureSummary(id, project, parent = '', depth = 0, fork = '', createdAtMs = null) {
     const metadata = protobuf.Writer.create();
     if (parent) metadata.uint32(42).string(parent);
     metadata.uint32(50).string(id);
     if (depth) metadata.uint32(136).uint32(depth);
     metadata.uint32(146).string(project);
-    const summary = protobuf.Writer.create().uint32(34).string('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee').uint32(138).bytes(metadata.finish());
+    const summary = protobuf.Writer.create().uint32(34).string('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+    if (createdAtMs !== null) {
+        const seconds = Math.floor(createdAtMs / 1000);
+        const nanos   = Math.max(0, Math.round((createdAtMs - seconds * 1000) * 1_000_000));
+        const ts      = protobuf.Writer.create().uint32(8).int64(seconds).uint32(16).uint32(nanos).finish();
+        summary.uint32(58).bytes(ts);
+    }
+    summary.uint32(138).bytes(metadata.finish());
     if (fork) summary.uint32(194).string(fork);
     return Buffer.from(summary.finish());
 }
@@ -24,9 +52,9 @@ function prepareFixtureDb(db) {
     db.exec('ALTER TABLE conversation_summaries ADD COLUMN raw_summary BLOB');
 }
 
-function insertFixture(db, id, project, parent, depth, killed, source, status) {
+function insertFixture(db, id, project, parent, depth, killed, source, status, createdAtMs = null, fork = '') {
     db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?,?)')
-        .run(id,project,parent,depth,killed,source,status,fixtureSummary(id,project,parent,depth));
+        .run(id,project,parent,depth,killed,source,status,fixtureSummary(id,project,parent,depth,fork,createdAtMs));
 }
 
 test('selects only an explicit live root in the selected project', () => {
@@ -349,7 +377,7 @@ test('App callback redeems a bound native system wake with unrelated lastUserInp
             consume:async request=>{negativeRequests.push(request);return {admitted:false}}});
         expect(denied.terminationBehavior).toBe('terminate');
         expect(negativeRequests).toEqual([{manifestPath,stateDir,agentId:'neo-test',family:'antigravity',
-            threadId:id,nonce,denyOnly:true,expectedGeneration:generation}]);
+            threadId:id,nonce,denyOnly:true,expectedGeneration:generation,appDataDir:data}]);
         fs.writeFileSync(statePath+'.starts.json',starts,{mode:0o600});
         const consume = async()=>{calls++;return {admitted:true,digest:'safe'}};
         expect((await handleAntigravityWakeHook({...base,event:'PreInvocation',input,consume})).injectSteps[0].systemMessage.systemMessage).toContain('safe');
@@ -541,4 +569,303 @@ test('wake correlation survives truncated steps and internal Plan Mode/task enve
         expect(hasAntigravityPendingSystemWake({appDataDir:root, threadId, text:marker, cursor:freshCursor})).toBe(false);
         expect(readAntigravityWakeReceipt({appDataDir:root, threadId, text:marker, cursor:freshCursor, targetStatus:'CASCADE_RUN_STATUS_RUNNING', settleUnacknowledged:true}).outcome).toBe('turn-unacknowledged');
     } finally { fs.rmSync(root, {recursive:true, force:true}) }
+});
+
+for (const order of [
+    'census-metadata-start-preinvocation',
+    'launch-metadata-start-preinvocation-premanifest-census-repeat',
+    'census-start-metadata-preinvocation',
+    'census-start-preinvocation-metadata-reconcile',
+    'census-metadata-preinvocation-start'
+]) {
+    test(`first main chat selects, witnesses and redeems signed wake once under order: ${order}`, async () => {
+        const root        = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agy-order-')));
+        const home        = path.join(root, 'profile'), data = path.join(root, 'data'), stateDir = path.join(root, 'state');
+        const projectRoot = path.join(root, 'project'), appBundle = path.join(root, 'gen', 'Antigravity.app');
+        const oldRoot     = '11111111-1111-4111-8111-111111111111';
+        const mainRoot    = '22222222-2222-4222-8222-222222222222';
+        const launchId    = '33333333-3333-4333-8333-333333333333';
+        const pid         = process.pid;
+        const procOut     = execFileSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'lstart=,command='], {
+            encoding: 'utf8', env: {LC_ALL: 'C', TZ: 'UTC'}
+        }).trim();
+        const startedAt  = procOut.match(/^(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+/)[1].replace(/\s+/g, ' ');
+        const generation = `${pid}:${startedAt}`;
+        const baselineMs = Date.parse(startedAt + ' UTC') + 500;
+        const createdMs  = baselineMs + 1500;
+        const statePath  = path.join(stateDir, 'primary-sessions', 'neo-test.json');
+        const manifest   = path.join(root, 'routes.json');
+        for (const dir of [home, data, stateDir, projectRoot, path.dirname(statePath)]) fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+        const databasePath = path.join(data, 'conversation_summaries.db'), db = new Database(databasePath);
+        try {
+            db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT)');
+            prepareFixtureDb(db);
+            insertFixture(db, oldRoot, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs - 60_000);
+
+            fs.writeFileSync(manifest, JSON.stringify({schemaVersion: 1, routes: {}}), {mode: 0o600});
+            const receiverState = new WakeReceiverState({stateDir});
+            await receiverState.init();
+            await enrollNativeWake({manifestPath: manifest, stateDir, agentId: 'neo-test', family: 'antigravity'});
+
+            fs.writeFileSync(path.join(home, '.neo-fleet-seat-lease.json'), JSON.stringify({
+                pid, pidStartedAt: startedAt, agentId: 'neo-test', harnessType: 'antigravity', cwd: projectRoot, harnessGenerationId: 'gen'
+            }), {mode: 0o600});
+            fs.writeFileSync(path.join(home, '.neo-fleet-project-binding.json'), JSON.stringify({
+                version: 1, projectId: 'p', projectName: 'neo-test', projectRoot
+            }), {mode: 0o600});
+
+            const route = {
+                agentIdentity        : '@neo-test',
+                admits               : 'wake/digest',
+                harnessTargetMetadata: {adapter: 'primary-session'},
+                adapterConfig        : {primarySession: {family: 'antigravity', agentId: 'neo-test', instanceHome: home, appBundle, projectId: 'p', projectRoot}}
+            };
+            const publishManifest = () => fs.writeFileSync(manifest, JSON.stringify({schemaVersion: 1, routes: {'WAKE_SUB:test': route}}), {mode: 0o600});
+            const rows            = [
+                {pid, ppid: 1, startedAt, command: `${appBundle}/Contents/MacOS/Antigravity --user-data-dir=${home}`},
+                {pid: pid + 100000, ppid: pid, startedAt, command: 'hook'}
+            ];
+            const hookBase = {
+                manifestPath: manifest, stateDir, appDataDir: data, sidecarPid: pid + 100000, readRows: () => rows,
+                consume     : req => consumeNativeWakePrompt({
+                    ...req, inspectResident: async () => ({pid, startedAt, generation, workspaceRoot: projectRoot})
+                })
+            };
+            const logsDir = path.join(data, 'brain', mainRoot, '.system_generated', 'logs');
+            fs.mkdirSync(logsDir, {recursive: true});
+            const transcript = path.join(logsDir, 'transcript.jsonl');
+            fs.writeFileSync(transcript, JSON.stringify({
+                step_index: 0, type: 'USER_INPUT', source: 'USER_EXPLICIT', status: 'DONE',
+                created_at: new Date(createdMs).toISOString().replace(/\.\d{3}Z$/, 'Z'), content: 'hello'
+            }) + '\n');
+
+            const insertMain = () => insertFixture(db, mainRoot, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', createdMs);
+            const fireStart  = () => handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: mainRoot, workspacePaths: [projectRoot]}});
+            const firePre    = (invocationNum = 0) => handleAntigravityWakeHook({...hookBase, event: 'PreInvocation', input: {conversationId: mainRoot, workspacePaths: [projectRoot], invocationNum, lastUserInput: 'hello'}});
+            const runCensus  = () => initializeAntigravityStarts({databasePath, appDataDir: data, projectId: 'p', generation, statePath, stateDir, agentId: 'neo-test', baselineAtMs: baselineMs});
+
+            if (order === 'census-metadata-start-preinvocation') {
+                publishManifest();
+                await runCensus();
+                insertMain();
+                await fireStart();
+                await firePre();
+            } else if (order === 'launch-metadata-start-preinvocation-premanifest-census-repeat') {
+                await stageAntigravityLaunchCensus({
+                    stateDir, databasePath, appDataDir: data, launchId, agentId: 'neo-test',
+                    instanceHome: home, projectId: 'p', projectRoot, authorized: true, baselineAtMs: baselineMs
+                });
+                insertMain();
+                // Callbacks arrive before manifest publication!
+                await fireStart();
+                await firePre(0);
+                await bindAntigravityLaunchGeneration({
+                    stateDir, agentId: 'neo-test', launchId, instanceHome: home, projectId: 'p', projectRoot, generation
+                });
+                publishManifest();
+                await runCensus();
+                // Repeated ordinary invocation/start for that same chat stays idempotent at sequence 1.
+                await fireStart();
+                await firePre(1);
+            } else if (order === 'census-start-metadata-preinvocation') {
+                publishManifest();
+                await runCensus();
+                await fireStart();
+                expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+                insertMain();
+                await firePre();
+            } else if (order === 'census-start-preinvocation-metadata-reconcile') {
+                publishManifest();
+                await runCensus();
+                await fireStart();
+                await firePre();
+                expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+                insertMain();
+                await runCensus();
+            } else if (order === 'census-metadata-preinvocation-start') {
+                publishManifest();
+                await runCensus();
+                insertMain();
+                await firePre();
+                expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+                await fireStart();
+            }
+
+            const target = latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath});
+            expect(target).toMatchObject({threadId: mainRoot, root: true, startSequence: 1});
+            expect(verifyAntigravityWakeAdmission({databasePath, appDataDir: data, projectId: 'p', threadId: mainRoot, generation, statePath}).verified).toBe(true);
+
+            // Prove end-to-end signed event redemption & single disclosure via real receiver spool + hook.
+            const envelope = {
+                eventType     : 'wake/digest',
+                agentIdentity : '@neo-test',
+                subscriptionId: 'WAKE_SUB:test',
+                payload       : {totalEvents: 1, breakdown: {sent_to_me: {count: 1, latest: {subject: 'Confidential order ' + order}}}}
+            };
+            const accepted = (await receiverState.accept({subscriptionId: 'WAKE_SUB:test', eventId: 'ev-' + order, envelope, route})).record;
+            await stagePrimaryWake(accepted, {state: receiverState, stateDir});
+            const cursor = captureAntigravityWakeCursor({appDataDir: data, threadId: mainRoot});
+            const nonce  = '44444444-4444-4444-8444-444444444444';
+            fs.writeFileSync(statePath, JSON.stringify({
+                version : 1,
+                binding : {seat: '@neo-test', family: 'antigravity', threadId: mainRoot, generation},
+                inflight: {recordKey: accepted.recordKey, nonce, status: 'unknown'}
+            }), {mode: 0o600});
+            fs.writeFileSync(statePath + '.cursor.json', JSON.stringify({nonce, cursor}), {mode: 0o600});
+            const marker  = `[NEO_WAKE_V1:${nonce}] [WAKE]`;
+            const sysBody = `The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-19T20:00:00Z sender=system priority=MESSAGE_PRIORITY_HIGH content=${marker}\n</SYSTEM_MESSAGE>`;
+            fs.appendFileSync(transcript, JSON.stringify({type: 'SYSTEM_MESSAGE', source: 'SYSTEM', status: 'DONE', step_index: 1, content: sysBody}) + '\n');
+
+            const redeemed = await handleAntigravityWakeHook({
+                ...hookBase, event: 'PreInvocation',
+                input: {conversationId: mainRoot, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: 'continue'}
+            });
+            expect(redeemed.injectSteps[0].systemMessage.systemMessage).toContain('Confidential order ' + order);
+
+            // A duplicate invocation cannot disclose twice.
+            const duplicate = await handleAntigravityWakeHook({
+                ...hookBase, event: 'PreInvocation',
+                input: {conversationId: mainRoot, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: marker}
+            });
+            expect(duplicate.terminationBehavior).toBe('terminate');
+        } finally {
+            db.close();
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+}
+
+test('fences historical resume, post-census restore/import, untrusted pre-census callbacks, multiple unordered roots, stale birth, fork, helper, cancellation and newer main handoff', async () => {
+    const root        = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agy-fences-')));
+    const home        = path.join(root, 'profile'), data = path.join(root, 'data'), stateDir = path.join(root, 'state');
+    const projectRoot = path.join(root, 'project'), appBundle = path.join(root, 'gen', 'Antigravity.app');
+    const oldRoot     = '11111111-1111-4111-8111-111111111111';
+    const preCensusId = '22222222-2222-4222-8222-222222222222';
+    const restored1   = '33333333-3333-4333-8333-333333333333';
+    const restored2   = '44444444-4444-4444-8444-444444444444';
+    const unattested  = '55555555-5555-4555-8555-555555555555';
+    const main1       = '66666666-6666-4666-8666-666666666666';
+    const helperLate  = '77777777-7777-4777-8777-777777777777';
+    const forkId      = '88888888-8888-4888-8888-888888888888';
+    const main2       = '99999999-9999-4999-8999-999999999999';
+    const unorderedA  = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const unorderedB  = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const statePath   = path.join(stateDir, 'primary-sessions', 'neo-test.json');
+    const manifest    = path.join(root, 'routes.json');
+    for (const dir of [home, data, stateDir, projectRoot, path.dirname(statePath)]) fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+    const databasePath = path.join(data, 'conversation_summaries.db'), db = new Database(databasePath);
+    const generation   = '77:Thu Nov 19 18:49:13 2026';
+    const baselineMs   = Date.parse('Thu Nov 19 18:49:13 2026 UTC') + 1000;
+    try {
+        db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT)');
+        prepareFixtureDb(db);
+        insertFixture(db, oldRoot, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs - 120_000);
+        insertFixture(db, preCensusId, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs - 30_000);
+
+        fs.writeFileSync(manifest, JSON.stringify({schemaVersion: 1, routes: {}}), {mode: 0o600});
+        fs.writeFileSync(path.join(home, '.neo-fleet-seat-lease.json'), JSON.stringify({
+            pid: 77, pidStartedAt: 'Thu Nov 19 18:49:13 2026', agentId: 'neo-test', harnessType: 'antigravity', cwd: projectRoot, harnessGenerationId: 'gen'
+        }), {mode: 0o600});
+        fs.writeFileSync(path.join(home, '.neo-fleet-project-binding.json'), JSON.stringify({
+            version: 1, projectId: 'p', projectName: 'neo-test', projectRoot
+        }), {mode: 0o600});
+        const rows = [
+            {pid: 77, ppid: 1, startedAt: 'Thu Nov 19 18:49:13 2026', command: `${appBundle}/Contents/MacOS/Antigravity --user-data-dir=${home}`},
+            {pid: 78, ppid: 77, startedAt: 'Thu Nov 19 18:49:13 2026', command: 'hook'}
+        ];
+        const hookBase = {manifestPath: manifest, stateDir, appDataDir: data, sidecarPid: 78, readRows: () => rows};
+
+        // 1. Untrusted pre-census callback (no published route AND no staged launch census) retains nothing.
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: preCensusId, workspacePaths: [projectRoot]}});
+        await handleAntigravityWakeHook({...hookBase, event: 'PreInvocation', input: {conversationId: preCensusId, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: 'hi'}});
+        expect(fs.existsSync(path.join(stateDir, 'primary-session-launches', 'neo-test.json'))).toBe(false);
+
+        const route = {
+            agentIdentity        : '@neo-test',
+            admits               : 'wake/digest',
+            harnessTargetMetadata: {adapter: 'primary-session'},
+            adapterConfig        : {primarySession: {family: 'antigravity', agentId: 'neo-test', instanceHome: home, appBundle, projectId: 'p', projectRoot}}
+        };
+        fs.writeFileSync(manifest, JSON.stringify({schemaVersion: 1, routes: {'WAKE_SUB:test': route}}), {mode: 0o600});
+
+        // Untrusted pre-census callback even WITH published route before census retains nothing.
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: preCensusId, workspacePaths: [projectRoot]}});
+        await initializeAntigravityStarts({databasePath, appDataDir: data, projectId: 'p', generation, statePath, stateDir, agentId: 'neo-test', baselineAtMs: baselineMs});
+        expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+
+        // 2. Historical resume in census cannot select.
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: oldRoot, workspacePaths: [projectRoot]}});
+        await handleAntigravityWakeHook({...hookBase, event: 'PreInvocation', input: {conversationId: oldRoot, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: 'resume'}});
+        expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+
+        // 3. Post-census historical restore/import (both Order 1 and deferred Order 3) + unattested deferred row stay rejected/pending.
+        insertFixture(db, restored1, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs - 10_000);
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: restored1, workspacePaths: [projectRoot]}});
+        await handleAntigravityWakeHook({...hookBase, event: 'PreInvocation', input: {conversationId: restored1, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: 'restored'}});
+        expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+        db.prepare('DELETE FROM conversation_summaries WHERE conversation_id = ?').run(restored1);
+
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: restored2, workspacePaths: [projectRoot]}});
+        insertFixture(db, restored2, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs - 5_000);
+        await handleAntigravityWakeHook({...hookBase, event: 'PreInvocation', input: {conversationId: restored2, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: 'restored-late'}});
+        expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+        db.prepare('DELETE FROM conversation_summaries WHERE conversation_id = ?').run(restored2);
+
+        // Deferred Order 3 row lacking creation proof (createdAtMs === null and no transcript) stays pending.
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: unattested, workspacePaths: [projectRoot]}});
+        insertFixture(db, unattested, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', null);
+        await handleAntigravityWakeHook({...hookBase, event: 'PreInvocation', input: {conversationId: unattested, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: 'unattested'}});
+        expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+        db.prepare('DELETE FROM conversation_summaries WHERE conversation_id = ?').run(unattested);
+
+        // 4. Genuine main1 selects & witnesses; delayed helper and fork never steal or block main1.
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: main1, workspacePaths: [projectRoot]}});
+        insertFixture(db, main1, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs + 2_000);
+        await handleAntigravityWakeHook({...hookBase, event: 'PreInvocation', input: {conversationId: main1, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: 'main1'}});
+        expect(verifyAntigravityWakeAdmission({databasePath, appDataDir: data, projectId: 'p', threadId: main1, generation, statePath}).verified).toBe(true);
+
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: helperLate, workspacePaths: [projectRoot]}});
+        insertFixture(db, helperLate, 'p', main1, 1, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs + 3_000);
+        await reconcileAntigravityStarts({databasePath, appDataDir: data, projectId: 'p', generation, statePath, stateDir, agentId: 'neo-test'});
+        insertFixture(db, forkId, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs + 3_500, main1);
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: forkId, workspacePaths: [projectRoot]}});
+        expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})?.threadId).toBe(main1);
+
+        // 5. Newer genuine main2 immediately fences main1, does not inherit main1's witness before PreInvocation(main2), and advances sequence to 2.
+        insertFixture(db, main2, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs + 5_000);
+        expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+        expect(verifyAntigravityWakeAdmission({databasePath, appDataDir: data, projectId: 'p', threadId: main1, generation, statePath}).verified).toBe(false);
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: main2, workspacePaths: [projectRoot]}});
+        expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toMatchObject({threadId: main2, startSequence: 2});
+        expect(verifyAntigravityWakeAdmission({databasePath, appDataDir: data, projectId: 'p', threadId: main2, generation, statePath}).verified).toBe(false);
+        await handleAntigravityWakeHook({...hookBase, event: 'PreInvocation', input: {conversationId: main2, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: 'main2'}});
+        expect(verifyAntigravityWakeAdmission({databasePath, appDataDir: data, projectId: 'p', threadId: main2, generation, statePath}).verified).toBe(true);
+
+        // 6. Multiple unordered roots fence selection and stay pending.
+        insertFixture(db, unorderedA, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs + 8_000);
+        insertFixture(db, unorderedB, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_IDLE', baselineMs + 8_500);
+        await handleAntigravityWakeHook({...hookBase, event: 'SessionStart', input: {conversationId: unorderedA, workspacePaths: [projectRoot]}});
+        await handleAntigravityWakeHook({...hookBase, event: 'PreInvocation', input: {conversationId: unorderedA, workspacePaths: [projectRoot], invocationNum: 0, lastUserInput: 'a'}});
+        expect(latestAntigravityWakeTarget({databasePath, projectId: 'p', generation, statePath})).toBeNull();
+        expect(verifyAntigravityWakeAdmission({databasePath, appDataDir: data, projectId: 'p', threadId: unorderedA, generation, statePath}).verified).toBe(false);
+
+        // 7. Stale PID/birth and canceled Start cleanup withdraw launch baselines cleanly.
+        const cancelLaunchId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+        await stageAntigravityLaunchCensus({
+            stateDir, databasePath, appDataDir: data, launchId: cancelLaunchId, agentId: 'neo-test',
+            instanceHome: home, projectId: 'p', projectRoot, authorized: true, baselineAtMs: baselineMs + 10_000
+        });
+        await expect(bindAntigravityLaunchGeneration({
+            stateDir, agentId: 'neo-test', launchId: cancelLaunchId, instanceHome: home, projectId: 'p', projectRoot: '/wrong', generation
+        })).rejects.toThrow();
+        await stageAntigravityLaunchCensus({
+            stateDir, databasePath, appDataDir: data, launchId: cancelLaunchId, agentId: 'neo-test',
+            instanceHome: home, projectId: 'p', projectRoot, authorized: true, baselineAtMs: baselineMs + 10_000
+        });
+        await cleanupAntigravityLaunchCensus({stateDir, agentId: 'neo-test', launchId: cancelLaunchId});
+        expect(fs.existsSync(path.join(stateDir, 'primary-session-launches', 'neo-test.json'))).toBe(false);
+    } finally {
+        db.close();
+        fs.rmSync(root, {recursive: true, force: true});
+    }
 });
