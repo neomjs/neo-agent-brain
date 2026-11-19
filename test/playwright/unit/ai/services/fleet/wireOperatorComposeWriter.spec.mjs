@@ -547,4 +547,78 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             FleetControlBridge.openWorkSource = original
         }
     });
+
+    test('fleetOpenWork serves viewer-scoped retained questions within maxAgeMs, coalesces concurrent reads, and invalidates on push wake or task mutation (#1865)', async () => {
+        const
+            originalOpenWork = FleetControlBridge.openWorkSource,
+            originalViewer   = FleetControlBridge.viewerIdentitySource;
+
+        let
+            tick        = 1_763_580_000_000,
+            openCount   = 3,
+            expiredCnt  = 1,
+            rpcCalls    = 0;
+
+        try {
+            FleetControlBridge.viewerIdentitySource = {resolveViewerIdentity: () => '@tobiu'};
+            FleetControlBridge.openWorkSource       = {
+                readOpenWork: () => ({state: 'ok', coverage: 'complete', seats: {julia: {}}})
+            };
+            wireOperatorComposeWriter({
+                addMessage    : async () => ({messageId: 'MESSAGE:sent'}),
+                transitionTask: async ({taskId, newState}) => ({
+                    success     : true,
+                    rowsAffected: 1,
+                    task        : {id: taskId, state: newState}
+                }),
+                observeMessages: async args => {
+                    rpcCalls++;
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                    return args.expiredWithinSpan
+                        ? {totalCount: expiredCnt, truncated: false, expiredSince: '2026-11-06T00:00:00.000Z', messages: []}
+                        : {totalCount: openCount,  truncated: false, messages: []}
+                }
+            });
+
+            // 1. Concurrent cold reads coalesce into one pair of observeMessages RPCs (2 total, not 4).
+            const [first, second] = await Promise.all([
+                FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000}),
+                FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000})
+            ]);
+            expect(rpcCalls).toBe(2);
+            expect(first.questions).toMatchObject({state: 'ok', count: 3, expired: {state: 'ok', count: 1}});
+            expect(second.questions).toEqual(first.questions);
+
+            // 2. Back-to-back read inside maxAgeMs returns retained questions immediately (0 additional RPCs).
+            openCount = 9;
+            tick += 30_000;
+            const cached = await FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000});
+            expect(rpcCalls).toBe(2);
+            expect(cached.questions.count).toBe(3);
+
+            // 3. Push invalidation clears retained cache immediately so the next read fetches fresh counts.
+            FleetControlBridge.invalidateQuestionsCache();
+            const afterPush = await FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000});
+            expect(rpcCalls).toBe(4);
+            expect(afterPush.questions.count).toBe(9);
+
+            // 4. Own-task mutation also invalidates retained questions immediately.
+            openCount = 2;
+            await FleetControlBridge.transitionOwnTask({messageId: 'MESSAGE:q1', newState: 'Completed'});
+            const afterTransition = await FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000});
+            expect(rpcCalls).toBe(6);
+            expect(afterTransition.questions.count).toBe(2);
+
+            // 5. Past maxAgeMs, retained entry expires and refreshes automatically.
+            openCount = 4;
+            tick += 120_001;
+            const afterExpiry = await FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000});
+            expect(rpcCalls).toBe(8);
+            expect(afterExpiry.questions.count).toBe(4);
+        } finally {
+            FleetControlBridge.openWorkSource       = originalOpenWork;
+            FleetControlBridge.viewerIdentitySource = originalViewer;
+            FleetControlBridge.invalidateQuestionsCache?.()
+        }
+    });
 });

@@ -64,7 +64,9 @@ import FleetRegistryService                                            from './F
 import {FLEET_BRIDGE_STATES, settleFleetBridge, superviseFleetBridge}  from './settleFleetBridge.mjs';
 import {detectMemoryCandidates}                                        from './seatMemoryImport.mjs';
 import {describeOperatorSeatConflation, operatorSeatConflationWarning} from './operatorSeatConflation.mjs';
+import {dispatchFleetRequest}                                          from './dispatchFleetRequest.mjs';
 import {startFleetBridgeServer}                                        from './fleetBridgeServer.mjs';
+import {createFleetWakeFanout}                                         from './fleetWakeFanout.mjs';
 import {probeExistingFleetServer, resolveFleetBearer, resolveFleetViewer,
         resolveFleetViewerClaim}                                          from './fleetLaunchContract.mjs';
 import {assertFleetPlaneAdmissionBearerClass,
@@ -129,6 +131,93 @@ export function formatFleetBootPhaseLine(phase, elapsedMs, detail = '') {
     return `[fleet] boot phase ${phase}: ${ms} ms${detail ? ` (${detail})` : ''}`;
 }
 
+const ROSTER_MUTATION_METHODS = new Set([
+    'adoptAgent', 'configureAgent', 'connectTenant', 'defineAgent', 'prepareRepos',
+    'releaseAgent', 'removeAgent', 'removeRepoCheckout', 'replaceSeatCredential',
+    'restartAgent', 'setAvatar', 'setPlaneCredential', 'setRepo', 'setRepos',
+    'skipAgentDependencies', 'startAgent', 'stopAgent'
+]);
+
+const MAILBOX_MUTATION_METHODS = new Set([
+    'approvePublishRevision', 'composeOperatorMessage', 'editPublishRequest',
+    'markOwnMessageRead', 'publish', 'setOperatorPresence', 'setPublishSwitch',
+    'transitionOwnTask'
+]);
+
+/**
+ * @summary Maps a Fleet wire method to the SSE invalidation topics emitted after an accepted write.
+ * @param {String} method
+ * @returns {String[]}
+ */
+export function topicsForFleetMethod(method) {
+    if (ROSTER_MUTATION_METHODS.has(method))  return ['roster'];
+    if (MAILBOX_MUTATION_METHODS.has(method)) return ['questions', 'activity'];
+    return []
+}
+
+/**
+ * @summary Evaluates whether an open-work producer pulse produced new transitions or changed coverage/snapshot availability.
+ * @param {Object|null} state
+ * @param {Object|null} [previous=null]
+ * @returns {{changed: Boolean, next: {coverage: String|null, reason: String|null, hasSnapshot: Boolean}}}
+ */
+export function didOpenWorkPulseMutate(state, previous = null) {
+    const next = {
+        coverage   : state?.coverage ?? null,
+        reason     : state?.reason   ?? null,
+        hasSnapshot: Boolean(state?.snapshot)
+    };
+
+    if (!state || typeof state !== 'object') {
+        return {changed: false, next}
+    }
+
+    const
+        observedAt   = state.observedAt ?? null,
+        pulseChanged = Array.isArray(state.transitions) && observedAt !== null &&
+            state.transitions.some(item => item?.pulse === observedAt || item?.unblock?.at === observedAt);
+
+    if (pulseChanged) return {changed: true, next};
+    if (!previous)    return {changed: next.hasSnapshot || next.coverage !== null, next};
+
+    const changed = next.coverage !== previous.coverage ||
+        next.reason !== previous.reason ||
+        next.hasSnapshot !== previous.hasSnapshot;
+
+    return {changed, next}
+}
+
+/**
+ * @summary Wraps `dispatchFleetRequest` so accepted lifecycle/mailbox mutations emit typed `fleet-topic` frames.
+ * @param {Object} [options={}]
+ * @param {Function} [options.dispatch=dispatchFleetRequest]
+ * @param {Function} [options.emitTopic]
+ * @param {Function} [options.invalidateQuestions]
+ * @returns {Function}
+ */
+export function createBridgeTopicDispatch({
+    dispatch            = dispatchFleetRequest,
+    emitTopic           = null,
+    invalidateQuestions = null
+} = {}) {
+    return async (request, bridge, admission) => {
+        const envelope = await dispatch(request, bridge, admission);
+
+        if (envelope?.ok) {
+            const topics = topicsForFleetMethod(request?.method);
+
+            if (topics.includes('questions')) {
+                invalidateQuestions?.()
+            }
+            for (const topic of topics) {
+                emitTopic?.(topic)
+            }
+        }
+
+        return envelope
+    }
+}
+
 /**
  * @summary Composes the launch contract and starts the authenticated Fleet transport.
  * @returns {Promise<void>}
@@ -190,7 +279,23 @@ async function boot() {
         nativeWakePump          = null,
         wakeRound               = null,
         server                  = null,
+        lastOpenWorkObservation = null,
         viewer;
+
+    const
+        eventFanout         = createFleetWakeFanout(),
+        emitFleetTopic      = (topic, observedAt = null) => viewer?.agentIdentityNodeId
+            ? eventFanout.publishTopic(viewer.agentIdentityNodeId, {topic, observedAt})
+            : null,
+        recordOpenWorkPulse = state => {
+            const outcome = didOpenWorkPulseMutate(state, lastOpenWorkObservation);
+            lastOpenWorkObservation = outcome.next;
+            outcome.changed && emitFleetTopic('open-work', state?.observedAt ?? null)
+        },
+        bridgeDispatch      = createBridgeTopicDispatch({
+            emitTopic          : topic => emitFleetTopic(topic),
+            invalidateQuestions: () => FleetControlBridge.invalidateQuestionsCache()
+        });
 
     /**
      * @summary The teeth a configured bearer meets, applied to a piped one, at boot and at every rotation.
@@ -251,7 +356,17 @@ async function boot() {
         fleetWakeStreamConsumer = planeAdmissionBearer ? createFleetWakeSseConsumer({
             eventsUrl : `${planeBase.replace(/\/+$/, '')}/fleet/events`,
             credential: planeAdmissionBearer,
-            pollDigest: args => planeClient.callTool('manage_wake_subscription', {action: 'poll-digest', ...args})
+            pollDigest: args => planeClient.callTool('manage_wake_subscription', {action: 'poll-digest', ...args}),
+            onFrame   : ({event, observedAt}) => {
+                if (event === 'state') {
+                    emitFleetTopic('health', observedAt)
+                } else if (event === 'wake') {
+                    FleetControlBridge.invalidateQuestionsCache();
+                    emitFleetTopic('questions', observedAt);
+                    emitFleetTopic('activity', observedAt);
+                    emitFleetTopic('roster', observedAt)
+                }
+            }
         }) : null;
         fleetWakeStreamConsumer?.start();
         armedAdmissionBearer = planeAdmissionBearer;
@@ -279,6 +394,7 @@ async function boot() {
 
         if (answer.state === 'adopted') {
             planeAdmissionBearer !== armedAdmissionBearer && armFleetSurface(planeAdmissionBearer);
+            emitFleetTopic('health');
             console.log(`[fleet] plane bearer rotated: ${answer.identity} verified plane-side; the replaced session retires once its calls settle`)
         } else {
             console.warn(`[fleet] plane bearer rotation refused: ${answer.reason}; the current bearer keeps serving`)
@@ -729,6 +845,8 @@ async function boot() {
         server = await startFleetBridgeServer({
             port,
             bearerToken,
+            dispatch      : bridgeDispatch,
+            eventFanout,
             viewerContext : viewer,
             allowedOrigins: origins,
             // The launcher's custody decision, resolved at the use site: Agent Institution arms
@@ -773,7 +891,10 @@ async function boot() {
         const copyRound = planeClient ? wireFleetOpenWorkCopy({publish: args => planeClient.callTool('publish_open_work_copy', args)}) : null;
 
         openWork = wireFleetOpenWorkSource({registry: FleetRegistryService, readPresence,
-            onPulse: state => Promise.all([wakeRound?.(state), copyRound?.(state)])});
+            onPulse: state => {
+                recordOpenWorkPulse(state);
+                return Promise.all([wakeRound?.(state), copyRound?.(state)])
+            }});
 
         // Nothing but the Fleet ever updates a seat's harness: it fetches and admits every opted-in family's
         // new builds itself, a seat adopts one at its next Start, and builds no seat holds are retired.
@@ -792,6 +913,10 @@ async function boot() {
             registry         : FleetRegistryService,
             initialSettlement: bridgeState,
             onStateChange(settlement, previousSettlement) {
+                if (settlement?.state !== previousSettlement?.state || settlement?.action === 'started' || settlement?.action === 'replaced') {
+                    emitFleetTopic('health');
+                    emitFleetTopic('roster')
+                }
                 if (settlement?.state !== FLEET_BRIDGE_STATES.READY) {
                     console.warn(`[fleet] Neural Link Bridge ${settlement?.state} on port ${settlement?.port} (${settlement?.reason}): ${settlement?.summary} Next step: ${settlement?.nextStep}`);
                 } else if (
@@ -931,6 +1056,7 @@ async function boot() {
             await lifecycle.getLaunchAdmission().closeUnclean();
             await closeObservedWorkAndPlane();
         } finally {
+            eventFanout.dispose();
             ownedServer?.close();
         }
         if (error?.code !== 'EADDRINUSE' || ownedServer) {

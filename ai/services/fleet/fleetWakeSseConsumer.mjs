@@ -87,6 +87,7 @@ export function parseSseFrames(buffer) {
  * @param {Object} [options.logger=console]
  * @param {Number} [options.retryFloorMs=5000] Initial reconnect floor; a server `retry:` hint
  *     can only raise it (tests inject a small floor, production keeps the default).
+ * @param {Function|null} [options.onFrame=null] Optional observer `{event, observedAt} => void` for relay push topics.
  * @returns {Object} `{start, stop, resolveDeliveryLiveness, describe}`
  */
 export function createFleetWakeSseConsumer({
@@ -96,7 +97,8 @@ export function createFleetWakeSseConsumer({
     fetchImpl            = null,
     now                  = Date.now,
     logger               = console,
-    retryFloorMs: initialRetryFloorMs = DEFAULT_RETRY_FLOOR_MS
+    retryFloorMs: initialRetryFloorMs = DEFAULT_RETRY_FLOOR_MS,
+    onFrame              = null
 }) {
     if (typeof eventsUrl !== 'string' || eventsUrl.trim().length === 0) {
         throw new Error('createFleetWakeSseConsumer requires an eventsUrl')
@@ -154,6 +156,15 @@ export function createFleetWakeSseConsumer({
 
             if (Number.isFinite(logId) && logId > watermark) {
                 watermark = logId
+            }
+        }
+
+        if (typeof onFrame === 'function' && (frame.event === 'state' || frame.event === 'wake')) {
+            try {
+                const stamp = frame.event === 'wake' ? lastWakeAt : lastFrameAt;
+                onFrame({event: frame.event, observedAt: new Date(stamp).toISOString()})
+            } catch (error) {
+                logger.warn?.(`[FleetWakeSseConsumer] onFrame observer failed: ${error?.message ?? error}`)
             }
         }
 

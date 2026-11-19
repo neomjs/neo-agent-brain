@@ -1,6 +1,12 @@
 import {expect, test}                                from '@playwright/test';
 import fs                                            from 'node:fs';
-import {FLEET_BOOT_PHASES, formatFleetBootPhaseLine} from '../../../../../../ai/services/fleet/devFleetServer.mjs';
+import {
+    createBridgeTopicDispatch,
+    didOpenWorkPulseMutate,
+    FLEET_BOOT_PHASES,
+    formatFleetBootPhaseLine,
+    topicsForFleetMethod
+} from '../../../../../../ai/services/fleet/devFleetServer.mjs';
 
 const source = fs.readFileSync(new URL('../../../../../../ai/services/fleet/devFleetServer.mjs', import.meta.url), 'utf8');
 
@@ -39,6 +45,10 @@ function bootSlice({enabled = true, plane = true, start, manifestPath = null}) {
             wireFleetOpenWorkSource              : options => { onPulse = options.onPulse; events.push('observe'); return {} },
             readGithubToken                      : () => null, readPresence: async () => ({}),
             assertFleetViewerMcAuthorizationClass: () => null,
+            eventFanout                          : {publishTopic() {}, dispose() {}},
+            bridgeDispatch                       : async () => ({}),
+            recordOpenWorkPulse                  : () => {},
+            emitFleetTopic                       : () => {},
             console                              : {log() {}, warn() {}}, port: 1, bearerToken: 'fixture', viewer: {}, origins: []
         },
         run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork, harnessAcquisition, nativeWakePump; ${source.slice(begin, end)} })()`);
@@ -297,6 +307,10 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                   readGithubToken                      : () => null,
                   readPresence                         : async () => ({}),
                   assertFleetViewerMcAuthorizationClass: () => null,
+                  eventFanout                          : {publishTopic() {}, dispose() {}},
+                  bridgeDispatch                       : async () => ({}),
+                  recordOpenWorkPulse                  : () => {},
+                  emitFleetTopic                       : () => {},
                   formatFleetBootPhaseLine,
                   process                              : {on() {}},
                   console                              : {log: line => logs.push(line), warn() {}, error() {}},
@@ -351,5 +365,66 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         expect(events).toContain('fail-runtime-verify');
         expect(logs.some(line => line.includes('[fleet] boot phase runtime verify:') && line.includes('failed: runtime-integrity-failed'))).toBe(true);
         expect(logs.some(line => line.includes('[fleet] boot phase recovery: 0 ms (skipped: runtime verification failed)'))).toBe(true);
+    });
+
+    test('devFleetServer push emitters classify pulse transitions, mutating bridge verbs, and bridgeSupervisor changes without chattering on idle reads (#1865)', async () => {
+        // 1. didOpenWorkPulseMutate: cold snapshot, identical idle pulse, new transition, coverage shift.
+        const p1 = didOpenWorkPulseMutate({
+            observedAt : '2026-11-19T21:30:00.000Z',
+            coverage   : 'complete',
+            reason     : null,
+            snapshot   : {rows: []},
+            transitions: []
+        }, null);
+        expect(p1.changed).toBe(true);
+
+        const p2 = didOpenWorkPulseMutate({
+            observedAt : '2026-11-19T21:31:00.000Z',
+            coverage   : 'complete',
+            reason     : null,
+            snapshot   : {rows: []},
+            transitions: [{pulse: '2026-11-19T21:20:00.000Z', kind: 'ci'}]
+        }, p1.next);
+        expect(p2.changed).toBe(false);
+
+        const p3 = didOpenWorkPulseMutate({
+            observedAt : '2026-11-19T21:32:00.000Z',
+            coverage   : 'complete',
+            reason     : null,
+            snapshot   : {rows: []},
+            transitions: [{pulse: '2026-11-19T21:32:00.000Z', kind: 'verdict'}]
+        }, p2.next);
+        expect(p3.changed).toBe(true);
+
+        const p4 = didOpenWorkPulseMutate({
+            observedAt : '2026-11-19T21:33:00.000Z',
+            coverage   : 'partial',
+            reason     : 'seat missed',
+            snapshot   : {rows: []},
+            transitions: []
+        }, p3.next);
+        expect(p4.changed).toBe(true);
+
+        // 2. topicsForFleetMethod + createBridgeTopicDispatch: read-observe stays silent; roster & mailbox writes emit + invalidate.
+        expect(topicsForFleetMethod('fleetOpenWork')).toEqual([]);
+        expect(topicsForFleetMethod('fleetRoster')).toEqual([]);
+        expect(topicsForFleetMethod('startAgent')).toEqual(['roster']);
+        expect(topicsForFleetMethod('transitionOwnTask')).toEqual(['questions', 'activity']);
+
+        const emitted = [];
+        let   invalidations = 0;
+        const wrapped = createBridgeTopicDispatch({
+            dispatch           : async req => ({ok: req.method !== 'broken', result: {}}),
+            emitTopic          : topic => emitted.push(topic),
+            invalidateQuestions: () => { invalidations++; }
+        });
+
+        await wrapped({method: 'fleetOpenWork'});
+        await wrapped({method: 'startAgent'});
+        await wrapped({method: 'transitionOwnTask'});
+        await wrapped({method: 'broken'});
+
+        expect(emitted).toEqual(['roster', 'questions', 'activity']);
+        expect(invalidations).toBe(1);
     });
 });

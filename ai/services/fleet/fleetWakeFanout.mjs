@@ -53,7 +53,8 @@ export function createFleetWakeFanout({
 } = {}) {
     const
         streamsByIdentity = new Map(), // identity -> Set<res>
-        routes            = new Map(); // subscriptionId -> {signingKey, agentIdentity}
+        routes            = new Map(), // subscriptionId -> {signingKey, agentIdentity}
+        revisionsByTopic  = new Map(); // `${identity}:${topic}` -> monotonic revision
 
     let
         armed        = false,
@@ -122,13 +123,14 @@ export function createFleetWakeFanout({
         /**
          * @summary Registers one authenticated SSE stream and takes over the response for its
          * lifetime — unless a held-connection cap refuses it, in which case NOTHING is written
-         * and the caller answers the refusal on the still-untouched response. The caller has
-         * already proven `identity` through the fleet admission chain.
+         * and the caller answers the refusal on the still-untouched response.
          * @param {String} identity Viewer identity the admission chain proved.
          * @param {Object} res Node `ServerResponse`-shaped writable to convert to SSE.
+         * @param {Object} [options={}]
+         * @param {String|null} [options.corsOrigin=null] Exact allowlisted Origin to echo with `Vary: Origin`.
          * @returns {Object} `{accepted: true}`, or `{accepted: false, reason}` with the cap named.
          */
-        registerStream(identity, res) {
+        registerStream(identity, res, {corsOrigin = null} = {}) {
             // Disposal is a closed epoch: a handler that awaited across the shutdown boundary
             // must not hand this registry a response the sweep can never end again.
             if (disposed) {
@@ -145,18 +147,20 @@ export function createFleetWakeFanout({
                 return {accepted: false, reason: 'stream cap reached (per viewer)'}
             }
 
-            // The whole handshake must land before the stream is registered: a socket that
-            // faults or is already past the backpressure bound during these writes is refused
-            // (and destroyed by the eviction path) WITHOUT ever entering the registry — a
-            // dead-at-birth stream must not hold a cap slot until a close event that may never
-            // fire on it.
             try {
-                res.writeHead(200, {
+                const headers = {
                     'content-type'     : 'text/event-stream',
                     'cache-control'    : 'no-cache, no-transform',
                     connection         : 'keep-alive',
                     'x-accel-buffering': 'no'
-                })
+                };
+
+                if (corsOrigin) {
+                    headers['access-control-allow-origin'] = corsOrigin;
+                    headers.vary                          = 'Origin'
+                }
+
+                res.writeHead(200, headers)
             } catch {
                 return {accepted: false, reason: 'stream rejected at handshake'}
             }
@@ -230,6 +234,49 @@ export function createFleetWakeFanout({
             for (const res of [...streams]) {
                 writeEvent(res, 'wake', {subscriptionId, envelope})
             }
+        },
+
+        /**
+         * @summary Publishes a secret-free invalidation topic (`event: fleet-topic`) to the streams
+         * registered under `identity`, advancing a monotonic per-topic `revision`.
+         * @param {String} identity Viewer identity owning the target streams.
+         * @param {Object} options
+         * @param {String} options.topic Canonical topic name (`open-work`, `roster`, `questions`, `activity`, `health`).
+         * @param {String|null} [options.observedAt=null] ISO observation timestamp.
+         * @param {Boolean} [options.changed=true]
+         * @returns {Object|null} `{topic, revision, observedAt, changed, delivered}` or `null` when disposed/invalid.
+         */
+        publishTopic(identity, {topic, observedAt = null, changed = true} = {}) {
+            if (disposed || typeof identity !== 'string' || !identity || typeof topic !== 'string' || !topic) {
+                return null
+            }
+
+            const
+                stamp    = now(),
+                key      = `${identity}:${topic}`,
+                revision = (revisionsByTopic.get(key) ?? 0) + 1,
+                frame    = {
+                    topic,
+                    revision,
+                    observedAt: typeof observedAt === 'string' && observedAt ? observedAt : new Date(stamp).toISOString(),
+                    changed   : Boolean(changed)
+                },
+                streams  = streamsByIdentity.get(identity);
+
+            revisionsByTopic.set(key, revision);
+            lastPushAt = stamp;
+
+            let delivered = 0;
+
+            if (streams && streams.size > 0) {
+                for (const res of [...streams]) {
+                    if (writeEvent(res, 'fleet-topic', frame)) {
+                        delivered++
+                    }
+                }
+            }
+
+            return {...frame, delivered}
         },
 
         /**
@@ -435,6 +482,7 @@ export function createFleetWakeFanout({
             streamsByIdentity.clear();
             cleanupByStream.clear();
             routes.clear();
+            revisionsByTopic.clear();
             totalStreams = 0
         }
     }

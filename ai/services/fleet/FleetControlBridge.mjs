@@ -101,6 +101,37 @@ const QUESTION_VIEWS = Object.freeze({
     expired: Object.freeze({label: 'expired-questions', noun: 'expired questions', filter: {taskStates: ['Expired'], expiredWithinSpan: true}})
 });
 
+const QUESTIONS_CACHE_BY_WRITER = new WeakMap();
+let   questionsCacheEpoch       = 0;
+
+/**
+ * @summary Invalidates retained `fleetOpenWork().questions` snapshots across viewers so the next read queries fresh counts.
+ */
+export function invalidateFleetQuestionsCache() {
+    questionsCacheEpoch++
+}
+
+/**
+ * @summary Settles a promise-or-value and invalidates the retained `questions` cache once a write completes.
+ * @param {Promise<*>|*} outcome
+ * @returns {Promise<*>|*}
+ * @private
+ */
+function invalidateQuestionsAfter(outcome) {
+    if (typeof outcome?.then === 'function') {
+        return outcome.then(value => {
+            questionsCacheEpoch++;
+            return value
+        })
+    }
+
+    if (outcome && outcome.status !== 'not-wired' && outcome.status !== 'rejected') {
+        questionsCacheEpoch++
+    }
+
+    return outcome
+}
+
 /**
  * @summary Clamps a question read's page to the mailbox mirror's bounds.
  * @param {Object} [params] `{limit, offset}`.
@@ -198,6 +229,93 @@ async function readOwnQuestions(seam, page, view = QUESTION_VIEWS.open, {timeout
         capturedAt: observedAt,
         ...(windowed ? {since: answer.expiredSince} : {})
     }
+}
+
+/**
+ * @summary Reads or serves retained `{open, expired}` question counts for `fleetOpenWork`, keyed by `(composeWriter, viewerIdentity)`
+ * and coalescing concurrent reads within `maxAgeMs`. Unbound viewers and `unavailable` responses never cache.
+ * @param {Object} bridge
+ * @param {Object} [options={}]
+ * @param {Number|null} [options.timeoutMs=null]
+ * @param {Number} [options.maxAgeMs=0]
+ * @param {Function} [options.now=Date.now]
+ * @returns {Promise<Object>}
+ * @private
+ */
+async function readRetainedQuestions(bridge, {timeoutMs = null, maxAgeMs = 0, now = Date.now} = {}) {
+    const
+        writer         = bridge?.composeWriter ?? null,
+        viewerIdentity = typeof bridge?.viewerIdentitySource?.resolveViewerIdentity === 'function'
+            ? bridge.viewerIdentitySource.resolveViewerIdentity()
+            : null,
+        clock          = typeof now === 'function' ? now : Date.now,
+        nowMs          = () => {
+            const value = clock();
+            return typeof value === 'number' ? value : new Date(value).getTime()
+        },
+        fetchPair      = async () => {
+            const [open, expired] = await Promise.all([
+                readOwnQuestions(writer, {limit: 1, offset: 0}, QUESTION_VIEWS.open,    {timeoutMs}),
+                readOwnQuestions(writer, {limit: 1, offset: 0}, QUESTION_VIEWS.expired, {timeoutMs})
+            ]);
+
+            return {
+                state  : open.state,
+                count  : open.count,
+                reason : open.reason,
+                expired: {state: expired.state, count: expired.count, since: expired.since, reason: expired.reason}
+            }
+        };
+
+    if (!writer || typeof viewerIdentity !== 'string' || !viewerIdentity || !(Number.isFinite(maxAgeMs) && maxAgeMs > 0)) {
+        return fetchPair()
+    }
+
+    let byViewer = QUESTIONS_CACHE_BY_WRITER.get(writer);
+
+    if (!byViewer) {
+        byViewer = new Map();
+        QUESTIONS_CACHE_BY_WRITER.set(writer, byViewer)
+    }
+
+    const entry = byViewer.get(viewerIdentity);
+
+    if (entry?.epoch === questionsCacheEpoch && entry.value && nowMs() - entry.settledAtMs <= maxAgeMs) {
+        return entry.value
+    }
+
+    if (entry?.inFlight && entry.inFlightEpoch === questionsCacheEpoch) {
+        return entry.inFlight
+    }
+
+    const
+        startEpoch = questionsCacheEpoch,
+        inFlight   = fetchPair().then(questions => {
+            const current = byViewer.get(viewerIdentity);
+
+            if (current?.inFlight === inFlight) current.inFlight = null;
+
+            if (startEpoch === questionsCacheEpoch && questions.state === 'ok' && questions.expired.state === 'ok') {
+                byViewer.set(viewerIdentity, {
+                    value        : questions,
+                    settledAtMs  : nowMs(),
+                    epoch        : startEpoch,
+                    inFlight     : null,
+                    inFlightEpoch: startEpoch
+                })
+            }
+
+            return questions
+        }, error => {
+            const current = byViewer.get(viewerIdentity);
+
+            if (current?.inFlight === inFlight) current.inFlight = null;
+            throw error
+        });
+
+    byViewer.set(viewerIdentity, {...(entry ?? {}), inFlight, inFlightEpoch: startEpoch});
+
+    return inFlight
 }
 
 /**
@@ -1478,28 +1596,36 @@ class FleetControlBridge extends Base {
      * @param {Object} [params] `{seat}` narrows the answer to one seat.
      * @param {Object} [options={}]
      * @param {Number} [options.timeoutMs=AiConfig.fleet.rosterAxisTimeoutMs] Axis deadline for each question count read.
+     * @param {Number} [options.maxAgeMs=AiConfig.fleet.rosterRetainedMaxAgeMs] Freshness window for viewer-scoped retained question counts.
+     * @param {Function} [options.now=Date.now] Clock seam for deterministic freshness checks.
      * @returns {Promise<Object>} the source envelope plus `questions: {state, count, reason, expired: {state, count, since, reason}}`.
      */
-    async fleetOpenWork(params = {}, {timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs} = {}) {
-        const
-            openWork = typeof this.openWorkSource?.readOpenWork === 'function'
-                ? await this.openWorkSource.readOpenWork(params)
+    async fleetOpenWork(
+        params = {},
+        {
+            timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs,
+            maxAgeMs  = AiConfig.fleet.rosterRetainedMaxAgeMs,
+            now       = Date.now
+        } = {}
+    ) {
+        const [openWork, questions] = await Promise.all([
+            typeof this.openWorkSource?.readOpenWork === 'function'
+                ? this.openWorkSource.readOpenWork(params)
                 : {state: 'unavailable', observedAt: null, coverage: 'unavailable', reason: 'fleet open-work source not wired', seats: {}},
-            // a count is complete on any page, so one row reads it
-            [open, expired] = await Promise.all([
-                readOwnQuestions(this.composeWriter, {limit: 1, offset: 0}, QUESTION_VIEWS.open, {timeoutMs}),
-                readOwnQuestions(this.composeWriter, {limit: 1, offset: 0}, QUESTION_VIEWS.expired, {timeoutMs})
-            ]);
+            readRetainedQuestions(this, {timeoutMs, maxAgeMs, now})
+        ]);
 
         return {
             ...openWork,
-            questions: {
-                state  : open.state,
-                count  : open.count,
-                reason : open.reason,
-                expired: {state: expired.state, count: expired.count, since: expired.since, reason: expired.reason}
-            }
+            questions
         }
+    }
+
+    /**
+     * @summary Clears retained `fleetOpenWork().questions` cache entries when push wakes or mailbox writes arrive.
+     */
+    invalidateQuestionsCache() {
+        invalidateFleetQuestionsCache()
     }
 
     /**
@@ -1637,7 +1763,7 @@ class FleetControlBridge extends Base {
         if (relatedTickets !== undefined) payload.relatedTickets = relatedTickets;
         if (inReplyTo      !== undefined) payload.inReplyTo      = inReplyTo;
 
-        return writer.addMessage(payload)
+        return invalidateQuestionsAfter(writer.addMessage(payload))
     }
 
     /**
@@ -1767,7 +1893,8 @@ class FleetControlBridge extends Base {
         const answer = callOwnInbox(this.composeWriter, 'transitionTask', messageId, args,
             typeof newState === 'string' && newState ? null : 'newState must be a non-empty string');
 
-        return typeof answer?.then === 'function' ? answer.catch(error => taskRefusalOf(error) ?? Promise.reject(error)) : answer
+        const handled = typeof answer?.then === 'function' ? answer.catch(error => taskRefusalOf(error) ?? Promise.reject(error)) : answer;
+        return invalidateQuestionsAfter(handled)
     }
 
     /**
@@ -1870,12 +1997,14 @@ class FleetControlBridge extends Base {
         const id = targetId.trim();
 
         try {
-            return await this.composeWriter.approvePublishRevision({
+            const approved = await this.composeWriter.approvePublishRevision({
                 taskId        : id,
                 messageId     : id,
                 revisionDigest: revisionDigest.trim(),
                 ...(revisionNumber !== undefined ? {revisionNumber} : {})
             });
+            questionsCacheEpoch++;
+            return approved;
         } catch (error) {
             const code = error?.code || 'refused';
             return {
@@ -1927,11 +2056,13 @@ class FleetControlBridge extends Base {
         }
 
         try {
-            return await this.composeWriter.editPublishRequest({
+            const edited = await this.composeWriter.editPublishRequest({
                 taskId   : id,
                 messageId: id,
                 patch    : safePatch
             });
+            questionsCacheEpoch++;
+            return edited;
         } catch (error) {
             const code = error?.code || 'refused';
             return {

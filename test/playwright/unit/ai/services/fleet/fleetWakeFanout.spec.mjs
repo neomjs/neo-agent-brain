@@ -347,5 +347,61 @@ test.describe('fleetWakeFanout - identity-keyed SSE fan-out + relay-subscription
         });
 
         expect(fanout.describeState().lastPushAt).toBe(1000)
+    });
+
+    test('publishTopic emits viewer-isolated fleet-topic frames with monotonic per-topic revisions, optional CORS headers on registerStream, and zero secret pass-through (#1865)', () => {
+        let tick = 1_763_580_000_000;
+
+        const fanout = createFleetWakeFanout({
+            logger     : {error: () => {}},
+            heartbeatMs: 0,
+            now        : () => tick
+        });
+
+        const
+            viewerStream = createStream(),
+            otherStream  = createStream();
+
+        expect(fanout.registerStream('@viewer', viewerStream, {corsOrigin: 'http://localhost:8080'})).toEqual({accepted: true});
+        expect(fanout.registerStream('@other', otherStream)).toEqual({accepted: true});
+
+        expect(viewerStream.head.headers).toMatchObject({
+            'content-type'               : 'text/event-stream',
+            'access-control-allow-origin': 'http://localhost:8080',
+            vary                         : 'Origin'
+        });
+        expect(otherStream.head.headers['access-control-allow-origin']).toBeUndefined();
+
+        const first = fanout.publishTopic('@viewer', {
+            topic      : 'open-work',
+            observedAt : '2026-11-19T21:30:00.000Z',
+            bearerToken: 'secret-bearer-must-never-leak',
+            credential : 'ghp_secret'
+        });
+
+        tick += 5_000;
+        const second = fanout.publishTopic('@viewer', {topic: 'open-work'});
+        const roster = fanout.publishTopic('@viewer', {topic: 'roster'});
+
+        expect(first).toEqual({
+            topic     : 'open-work',
+            revision  : 1,
+            observedAt: '2026-11-19T21:30:00.000Z',
+            changed   : true,
+            delivered : 1
+        });
+        expect(second).toMatchObject({topic: 'open-work', revision: 2, changed: true, delivered: 1});
+        expect(roster).toMatchObject({topic: 'roster', revision: 1, changed: true, delivered: 1});
+
+        const topics = viewerStream.events('fleet-topic').map(chunk => JSON.parse(chunk.split('\ndata: ')[1].trim()));
+        expect(topics).toEqual([
+            {topic: 'open-work', revision: 1, observedAt: '2026-11-19T21:30:00.000Z', changed: true},
+            {topic: 'open-work', revision: 2, observedAt: new Date(tick).toISOString(), changed: true},
+            {topic: 'roster',    revision: 1, observedAt: new Date(tick).toISOString(), changed: true}
+        ]);
+        expect(JSON.stringify(topics)).not.toContain('secret-bearer-must-never-leak');
+        expect(JSON.stringify(topics)).not.toContain('ghp_secret');
+        expect(otherStream.events('fleet-topic')).toEqual([]);
+        expect(fanout.describeState().lastPushAt).toBe(tick)
     })
 });
