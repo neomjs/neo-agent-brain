@@ -42,6 +42,89 @@ const CI_STATES = Object.freeze({
 });
 
 /**
+ * CheckSuite conclusions that mark head CI as failing (`red`).
+ * @type {Set<String>}
+ */
+const FAILING_CONCLUSIONS = new Set([
+    'ACTION_REQUIRED',
+    'CANCELLED',
+    'FAILURE',
+    'STALE',
+    'STARTUP_FAILURE',
+    'TIMED_OUT'
+]);
+
+/**
+ * @summary Whether a check suite belongs to an informative `pull_request_review` workflow run.
+ * @param {Object|null|undefined} suite
+ * @returns {Boolean}
+ * @private
+ */
+const isInformativeReviewSuite = suite => suite?.workflowRun?.event === 'pull_request_review';
+
+/**
+ * @summary Derive head CI state while ignoring informative `pull_request_review` check suites.
+ * A green `statusCheckRollup` is returned unchanged (the helper never demotes green), and the newest
+ * run per `workflow.id` wins because `checkSuites(last: N)` returns nodes oldest first (an ordering
+ * assumption a later query change must preserve). Falls back to `statusCheckRollup.state` when
+ * check-suite pagination is incomplete, no `pull_request_review` suite is present, or legacy inputs
+ * omit `commit.status` / suite `status`.
+ * @param {Object|undefined} commit Head commit node.
+ * @param {{nodes: Object[], complete: Boolean}} suites Backward-paginated `checkSuites` connection (oldest first).
+ * @returns {'green'|'pending'|'red'|null}
+ * @private
+ */
+function headCiOf(commit, suites) {
+    const rollup = CI_STATES[commit?.statusCheckRollup?.state] ?? null;
+
+    if (rollup === 'green' || !suites.complete || !commit || !('status' in commit) ||
+        !suites.nodes.some(isInformativeReviewSuite)) {
+        return rollup
+    }
+
+    const headSuites = suites.nodes.filter(suite => suite && !isInformativeReviewSuite(suite));
+
+    if (headSuites.some(suite => typeof suite.status !== 'string')) {
+        return rollup
+    }
+
+    const
+        latestSuites = [],
+        byWorkflow   = new Map();
+
+    for (const suite of headSuites) {
+        const workflowId = suite.workflowRun?.workflow?.id;
+        if (workflowId) {
+            byWorkflow.set(workflowId, suite);
+        } else {
+            latestSuites.push(suite);
+        }
+    }
+    latestSuites.push(...byWorkflow.values());
+
+    const
+        contextStates = Array.isArray(commit.status?.contexts)
+            ? commit.status.contexts.map(ctx => CI_STATES[ctx?.state]).filter(Boolean)
+            : [],
+        statusCi      = CI_STATES[commit.status?.state]
+            ?? (contextStates.includes('red') ? 'red'
+                : contextStates.includes('pending') ? 'pending'
+                : contextStates.includes('green') ? 'green' : null);
+
+    if (latestSuites.length === 0 && statusCi === null) return null;
+
+    if (statusCi === 'red' || latestSuites.some(suite => suite.status === 'COMPLETED' && FAILING_CONCLUSIONS.has(suite.conclusion))) {
+        return 'red'
+    }
+
+    if (statusCi === 'pending' || latestSuites.some(suite => suite.status !== 'COMPLETED')) {
+        return 'pending'
+    }
+
+    return 'green'
+}
+
+/**
  * @summary Who owns a PR: the seat its body names, or why there is none. An org account without a
  * resolvable line is `unowned`, never silently its login; any other account is `outside`. The login only
  * chooses among seats that share the named name.
@@ -169,7 +252,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         opinionsComplete = opinions.complete && opined.every(opinion => opinion.reviewer),
         targetsComplete  = targets.complete && targets.nodes.every(targetOf),
         blockedTargets   = targets.nodes.filter(issue => targetOf(issue) && issue.issueDependenciesSummary.blockedBy > 0).map(targetOf).sort(),
-        runApproval      = suites.nodes.some(suite => suite?.conclusion === 'ACTION_REQUIRED' && suite.workflowRun?.event !== 'pull_request_review')
+        runApproval      = suites.nodes.some(suite => suite?.conclusion === 'ACTION_REQUIRED' && !isInformativeReviewSuite(suite))
             ? 'action_required' : null,
         ciRepair         = outside ? normalizeCiRepair(node, identities, {apiBase}) : null;
 
@@ -179,7 +262,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         number           : node.number,
         title            : typeof node.title === 'string' ? node.title.replace(/\s+/g, ' ').trim() || null : null,
         head,
-        ci               : CI_STATES[commit?.statusCheckRollup?.state] ?? null,
+        ci               : headCiOf(commit, suites),
         verdict          : node.reviewDecision ?? null,
         mergeable        : node.mergeable ?? null,
         mergeState       : node.mergeStateStatus ?? null,

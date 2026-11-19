@@ -215,6 +215,12 @@ function snapshotQuery(name, includeOutside = false) {
             nodes {
               commit {
                 oid
+                status {
+                  state
+                  contexts {
+                    state
+                  }
+                }
                 statusCheckRollup {
                   state
                   ${includeOutside ? `contexts(first: 100) {
@@ -253,9 +259,13 @@ function snapshotQuery(name, includeOutside = false) {
                     hasPreviousPage
                   }
                   nodes {
+                    status
                     conclusion
                     workflowRun {
                       event
+                      workflow {
+                        id
+                      }
                     }
                   }
                 }
@@ -432,9 +442,10 @@ export const OPEN_WORK_FAILED_CHECKS = `
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
-    Object.freeze({queryHash: 'd42cc876db17c72098c97f2e53a7e96a2b15ba10fafa159e1bad9c6789860524', formulaCost: 5}),
+    Object.freeze({queryHash: '646e164c6f2f26aba55510f0e44506616ae47d23f7739eb2eb7e3d3d20e874b3', formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10}),
-    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_OUTSIDE_SNAPSHOT).digest('hex'), formulaCost: 6})
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_OUTSIDE_SNAPSHOT).digest('hex'), formulaCost: 6}),
+    Object.freeze({queryHash: '2e2e3ccfa6040c1638826669a93a9d9b83ef4f40980c1dd190eb733fcf7b6ce7', formulaCost: 6})
 ]);
 
 /**
