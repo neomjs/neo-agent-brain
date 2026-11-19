@@ -21,7 +21,7 @@ import path            from 'node:path';
 //     probed alive at 4s on a held pipe (claude CLI 2.1.156), clean SIGTERM stop. `--verbose` is
 //     required by the CLI when combining `--print` with `--output-format stream-json`.
 //   GUI app-bundle families are inherently long-lived (an app run IS the session) and indifferent
-//   to stdin — the held pipe is harmless there; pid/SIGTERM is the supervision handle. Empty.
+//   to stdin — empty unless the app requires an opt-in launch switch (`antigravity` remote debugging).
 // - `versionProbeArgs` — the argv for the supervisor's best-effort `binaryVersion` capture, or
 //   `null` when the family cannot answer a version ask without booting the whole app (probed:
 //   antigravity boots and emits wizard log lines instead of a version) — the supervisor SKIPS the
@@ -43,7 +43,7 @@ const HARNESS_LAUNCH_CONTRACTS = {
     'antigravity': {
         authMode        : 'in-app',
         homeArgFlag     : '--user-data-dir',
-        modeArgs        : [],
+        modeArgs        : ['--remote-debugging-port=0'],
         versionProbeArgs: null
     },
     'claude-code': {
@@ -191,13 +191,12 @@ export function getHarnessAuthMode(harnessType) {
  *   marker, so the lifecycle `authRequired` heuristic stays `null` (honest unknown) for this
  *   family.
  *
- * - **`'antigravity'`** → `{command: binaryPath, args: ['--user-data-dir=<home>'], env: {}}`.
- *   Same direct-spawn contract on the VSCode-fork main binary
- *   (`Antigravity.app/Contents/MacOS/Antigravity`). Probed (macOS): dual-instance
- *   coexistence on distinct homes, per-home profile trees, SIGTERM-clean exit 0. Its binary does
- *   NOT answer `--version` without booting the app (wizard log lines instead of a version), so
- *   `versionProbeArgs` is `null` — the supervisor skips the probe and `binaryVersion` stays
- *   honestly `null`. Auth is the in-app sign-in; `authRequired` stays `null` as above.
+ * - **`'antigravity'`** → `{command: binaryPath, args: ['--user-data-dir=<home>', '--remote-debugging-port=0'], env: {}}`.
+ *   Direct-spawn contract on `Antigravity.app/Contents/MacOS/Antigravity`; `--remote-debugging-port=0`
+ *   opts into profile-local `DevToolsActivePort` and `AGY_BROWSER_ACTIVE_PORT_FILE`. Probed (macOS):
+ *   dual-instance coexistence on distinct homes, SIGTERM-clean exit 0. Its binary cannot answer
+ *   `--version` without booting the app, so `versionProbeArgs` is `null` (`binaryVersion` stays
+ *   honestly `null`). Auth is in-app sign-in (`authRequired: null`).
  *
  * - **`'opencode'`** → `{command: binaryPath, args: ['serve', '--hostname', '127.0.0.1', '--port',
  *   '0'], env: {XDG_CONFIG_HOME: instanceHome, XDG_DATA_HOME: instanceHome, XDG_CACHE_HOME:

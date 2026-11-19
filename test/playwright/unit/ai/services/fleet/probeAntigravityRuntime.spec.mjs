@@ -20,9 +20,10 @@ const
     }),
     OWNER = {pid:100, startedAt:'Wed Oct 14 14:00:00 2026'},
     PROFILE_PORT = 9222,
-    PROFILE_BROWSER_PATH = '/devtools/browser/profile-browser-id';
+    PROFILE_BROWSER_PATH = '/devtools/browser/profile-browser-id',
+    REQUIRED_ASAR_MARKERS = ['remote-debugging-port', 'DevToolsActivePort', 'AGY_BROWSER_ACTIVE_PORT_FILE'];
 
-function makeBundle(root) {
+function makeBundle(root, {asarMarkers = REQUIRED_ASAR_MARKERS} = {}) {
     const
         appBundle      = path.join(root, 'Antigravity.app'),
         contents       = path.join(appBundle, 'Contents'),
@@ -33,7 +34,8 @@ function makeBundle(root) {
 
     for (const file of [binary, infoPlist, appAsar, languageServer]) {
         fs.mkdirSync(path.dirname(file), {recursive:true});
-        fs.writeFileSync(file, 'fixture-bytes', {mode:file === binary || file === languageServer ? 0o755 : 0o644});
+        fs.writeFileSync(file, file === appAsar ? asarMarkers.join('\n') : 'fixture-bytes',
+            {mode:file === binary || file === languageServer ? 0o755 : 0o644});
     }
 
     return {appBundle, binary, infoPlist, appAsar, languageServer}
@@ -285,5 +287,43 @@ test.describe('probeAntigravityRuntime', () => {
             profileDirectory, port:PROFILE_PORT + 1, browserPath:PROFILE_BROWSER_PATH,
             expectedProcess:OWNER, fileSystem:fs, execFileImpl:processInspector({processRows}).execFileImpl
         })).toMatchObject({verified:false});
+    });
+
+    test('missing app.asar remote-debugging or active-port marker refuses at admission', async () => {
+        for (const omitted of REQUIRED_ASAR_MARKERS) {
+            const
+                fixture = makeBundle(path.join(root, omitted), {asarMarkers: REQUIRED_ASAR_MARKERS.filter(marker => marker !== omitted)}),
+                result  = await probeAntigravityRuntime({
+                    selectedBinaryPath:fixture.binary,
+                    fsImpl:fs,
+                    platform:'darwin',
+                    architecture:'arm64',
+                    readBundleMetadata:supportedMetadata,
+                    hashFile:async () => RUNTIME_FIXTURE.appAsarSha256
+                });
+
+            expect(result, omitted).toEqual({
+                available : false,
+                reason    : `app-contract-marker-missing:${omitted}`,
+                binaryPath: fs.realpathSync(fixture.binary),
+                appBundle : fs.realpathSync(fixture.appBundle)
+            });
+        }
+
+        const
+            multiMissing = makeBundle(path.join(root, 'multi'), {asarMarkers: ['remote-debugging-port']}),
+            multiResult  = await probeAntigravityRuntime({
+                selectedBinaryPath:multiMissing.binary,
+                fsImpl:fs,
+                platform:'darwin',
+                architecture:'arm64',
+                readBundleMetadata:supportedMetadata,
+                hashFile:async () => RUNTIME_FIXTURE.appAsarSha256
+            });
+
+        expect(multiResult).toMatchObject({
+            available: false,
+            reason   : 'app-contract-marker-missing:DevToolsActivePort,AGY_BROWSER_ACTIVE_PORT_FILE'
+        });
     });
 });

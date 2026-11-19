@@ -100,6 +100,27 @@ test('sidecar requires a unique exact App ancestor and passes lease facts to the
     expect(calls[0].appPid).toBe(10);
 });
 
+test('sidecar ancestor resolves instanceHome across 2.32.2 and 2.33.0 --remote-debugging-port=0 argv shapes', () => {
+    for (const command of [
+        '/g/Antigravity.app/Contents/MacOS/Antigravity --user-data-dir=/seat/profile',
+        '/g/Antigravity.app/Contents/MacOS/Antigravity --user-data-dir=/seat/profile --remote-debugging-port=0'
+    ]) {
+        const rows = [
+            {pid: 1,  ppid: 0,  command: '/os',               startedAt: 'epoch'},
+            {pid: 10, ppid: 1,  command,                      startedAt: 'epoch'},
+            {pid: 11, ppid: 10, command: '/g/language_server', startedAt: 'later'},
+            {pid: 12, ppid: 11, command: 'sidecar',            startedAt: 'later'}
+        ];
+
+        expect(resolveAntigravitySidecarAncestor({sidecarPid: 12, rows}), command).toEqual({
+            appPid      : 10,
+            appStart    : 'epoch',
+            appBundle   : '/g/Antigravity.app',
+            instanceHome: '/seat/profile'
+        });
+    }
+});
+
 test('sidecar materializer preserves unrelated configuration and refuses a different owned target', async () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agy-install-')));
     try {

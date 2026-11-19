@@ -3910,6 +3910,47 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         }
     });
 
+    test('running 2.32.2 Antigravity seats launched without --remote-debugging-port=0 stay recognised and re-adopted alongside 2.33.0 seats', () => {
+        const
+            {home, profile} = installSeat('antigravity'),
+            agent           = FleetLifecycleService.registry.getDefinition('seat'),
+            genId           = '2322'.repeat(16),
+            genRoot         = path.join(FleetLifecycleService.instanceRoot, 'harnesses'),
+            appBundle       = path.join(genRoot, 'antigravity', genId, 'Antigravity.app'),
+            gen2322Bin      = path.join(appBundle, 'Contents', 'MacOS', 'Antigravity'),
+            cmd2322         = `${gen2322Bin} --user-data-dir=${profile}`,
+            cmd2330         = `${process.execPath} --user-data-dir=${profile} --remote-debugging-port=0`;
+
+        fs.mkdirSync(path.dirname(gen2322Bin), {recursive: true});
+        fs.symlinkSync(process.execPath, gen2322Bin);
+        FleetLifecycleService.harnessGenerationRoot  = genRoot;
+        FleetLifecycleService.harnessGenerationStore = {
+            list      : ({family}) => family === 'antigravity' ? [{id: genId, appBundle, binaryPath: gen2322Bin, shortVersion: '2.32.2', buildVersion: '2.32.2'}] : [],
+            readLedger: () => ({version: 1, admitted: [], rejected: []})
+        };
+
+        for (const [lines, expected] of [
+            [[cmd2322], true],
+            [[cmd2330], true],
+            [[`${appBundle}/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper --type=renderer --user-data-dir=${profile}`], false],
+            [[`${process.execPath} --user-data-dir=${profile}-other --remote-debugging-port=0`], false]
+        ]) {
+            FleetLifecycleService.processListFn = () => lines;
+
+            expect(FleetLifecycleService.desktopProfileInUse(agent), JSON.stringify(lines)).toBe(expected)
+        }
+
+        writeLease(home, {harnessGenerationId: genId});
+        stubProcessTable({4242: {alive: true, startedAt: STARTED_AT, command: cmd2322}});
+
+        expect(FleetLifecycleService.status('seat')).toMatchObject({
+            state            : 'running',
+            adopted          : true,
+            launchCommand    : gen2322Bin,
+            harnessGeneration: {family: 'antigravity', generationId: genId, shortVersion: '2.32.2', buildVersion: '2.32.2'}
+        })
+    });
+
     test('only the exact main process is adopted: a longer profile, an embedded profile, a helper or another program is held unidentified', () => {
         const cases = {
             prefix  : profile => `${process.execPath} --user-data-dir=${profile}-other`,
