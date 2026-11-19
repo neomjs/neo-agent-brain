@@ -193,7 +193,8 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
      * Holds one rotation-routed slot: an outside PR's action, or an escalation naming the holder it never picks.
      * An admitted slot stays admitted until its seat reads absent, the plane took its wake and an unwoken seat qualifies;
      * a quiet round baselines. A pick without an eligible seat stays pending, under a placeholder recipient that is
-     * never the holder.
+     * never the holder. A slot that leaves a seat after a failed submission counts that seat as woken: the plane may
+     * have taken the wake before its answer was lost.
      */
     const rotate = (row, kind, holder = null) => {
         const
@@ -231,10 +232,14 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             pick    = (byRoute, skip = woken) => pickRotationSeat(row, kind, roster, byRoute, [...keep, ...skip, ...sameLab]) ??
                 (sameLab.length ? pickRotationSeat(row, kind, roster, byRoute, [...keep, ...skip]) : null),
             // A re-pick keeps the slot's failed submissions counted, so a failing escalation stays bounded
-            hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder, ciRepair), status,
-                ...repairRecord,
-                ...(prior?.attempts ? {attempts: prior.attempts} : {}),
-                ...(woken.length ? {handedFrom: woken} : {})};
+            hold    = (seat, status) => {
+                const handedFrom = prior?.attempts && prior.wake.to !== seat && !woken.includes(prior.wake.to) ? [...woken, prior.wake.to] : woken;
+
+                return holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder, ciRepair), status,
+                    ...repairRecord,
+                    ...(prior?.attempts ? {attempts: prior.attempts} : {}),
+                    ...(handedFrom.length ? {handedFrom} : {})}
+            };
 
         current.add(slot);
         if (prior?.status === 'admitted') {

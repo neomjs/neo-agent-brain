@@ -300,6 +300,50 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         expect(Object.values(store.read().holding)[0]).toMatchObject({status: 'admitted', attempts: 5, wake: {to: SEAT}})
     });
 
+    test('a seat whose intake answer was lost counts as woken, so its cached receipt never certifies a new handoff (#1849)', async () => {
+        let   minute = 0, absent = [], loseAnswerOf = null;
+        const roster  = [SEAT, '@neo-gpt', '@neo-gemini'],
+            offset  = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % roster.length,
+            [first, second, third] = [0, 1, 2].map(step => roster[(offset + step) % roster.length]),
+            store   = memoryStore(), attempts = [], intakes = new Map(),
+            // The plane answers a repeat of one wake with its first receipt, and an answer can be lost after its intake committed
+            round   = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), routesTtlMs: 0, log: {error: () => {}},
+                rotationSeats: roster, readAbsent: async () => absent,
+                admitWake: async ({repo, number, head, kind, episode, to}) => {
+                    const key = JSON.stringify([repo, number, head, kind, episode, to]);
+                    attempts.push(to);
+                    intakes.has(key) || intakes.set(key, `MESSAGE:${intakes.size + 1}`);
+                    if (to === loseAnswerOf) { loseAnswerOf = null; throw new Error('timeout') }
+                    return {messageId: intakes.get(key)}
+                }}),
+            outside = minute => {
+                const value = state(minute, 'green');
+                value.snapshot.rows['acme/app#7'].owner = {kind: 'outside', seat: null, login: 'contributor'};
+                return value
+            },
+            slot    = () => Object.values(store.read().holding)[0];
+
+        for (minute = 0; minute <= 1; minute++) await round(outside(minute));
+        expect(attempts).toEqual([first]);
+
+        // first goes absent; second's intake commits, but its answer is lost
+        absent = [first]; loseAnswerOf = second; minute = 2;
+        await round(outside(minute));
+        expect(slot()).toMatchObject({status: 'pending', attempts: 1, wake: {to: second}});
+
+        // second goes absent too, so the slot moves on to third
+        absent = [first, second]; minute = 3;
+        await round(outside(minute));
+        expect(slot()).toMatchObject({status: 'admitted', wake: {to: third}});
+
+        // third goes absent while second is back: second may already hold the wake, so nobody is left to hand on to
+        absent = [first, third]; minute = 4;
+        await round(outside(minute));
+        expect(attempts, 'one attempt per intake').toEqual([first, second, third]);
+        expect(intakes.size).toBe(3);
+        expect(slot()).toMatchObject({status: 'admitted', wake: {to: third}, handedFrom: [first, second]})
+    });
+
     test('activation survives restart and history rollover without losing pending merges', async () => {
         let   minute = 0, routes = {[SEAT]: 'absent'};
         const store  = memoryStore(), sends = [], options = {store, gateOf: openGate, now: () => at(minute),

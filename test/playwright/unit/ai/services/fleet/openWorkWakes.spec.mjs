@@ -457,6 +457,15 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
         expect(triage(run, 4, [third]).wakes).toEqual([]);
         expect(slot(run)).toMatchObject({status: 'admitted', wake: {to: third}, handedFrom: [first, second]});
 
+        // A failed submission may have reached its seat before the answer was lost, so a slot that leaves it counts it as woken
+        const lost = fresh();
+        triage(lost, 1, []);
+        Object.assign(slot(lost), {status: 'pending', attempts: 1});
+        expect(triage(lost, 2, [first]).wakes.map(wake => wake.to)).toEqual([second]);
+        expect(slot(lost)).toMatchObject({attempts: 1, handedFrom: [first]});
+        receipt(lost);
+        expect(triage(lost, 3, [second]).wakes.map(wake => wake.to)).toEqual([third]);
+
         // A spent slot has no receipt: its seat going absent sends nothing, and its count stands
         const spent = fresh();
         triage(spent, 1, []);
