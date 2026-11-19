@@ -10,8 +10,8 @@ import {promisify} from 'node:util';
  * Read-only target validation and sidecar-local Antigravity dispatch. Project membership does not
  * attest that a session is the current seat root: the host owns that binding and sidecar custody.
  */
-const UUID                     = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const AGENT_ID                 = /^[a-z0-9][a-z0-9._-]{0,99}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const AGENT_ID          = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 const PS_LSTART_UTC            = /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/;
 const MAX_PENDING_OBSERVATIONS = 8;
 const STATES                   = new Set(['CASCADE_RUN_STATUS_IDLE', 'CASCADE_RUN_STATUS_RUNNING']);
@@ -284,6 +284,7 @@ export function readAntigravityWakeReceipt({appDataDir,threadId,text,cursor,rece
     } catch { return unknown }
 }
 
+/** @summary Parses `<pid>:<startedAt>` (`TZ=UTC` `ps lstart` or ISO-8601) into epoch ms, or `null`. */
 function parseGenerationStartedAtMs(generation) {
     if (typeof generation !== 'string') return null;
     const idx = generation.indexOf(':');
@@ -297,6 +298,7 @@ function parseGenerationStartedAtMs(generation) {
     return Number.isFinite(iso) ? iso : null;
 }
 
+/** @summary Reads an owner-only (`0600`), non-symlink JSON state file (`<= 1 MiB`), returning `null` on `ENOENT`. */
 function readPrivateStartsJson(file) {
     try {
         const stat = fs.lstatSync(file);
@@ -310,6 +312,7 @@ function readPrivateStartsJson(file) {
     }
 }
 
+/** @summary Resolves `<stateDir>/primary-session-launches/<agentId>.json` after validating path and `AGENT_ID`. */
 function launchCensusPath(stateDir, agentId) {
     if (!path.isAbsolute(stateDir || '') || !AGENT_ID.test(agentId || '')) {
         throw new TypeError('Absolute state directory and valid agentId required');
@@ -317,6 +320,7 @@ function launchCensusPath(stateDir, agentId) {
     return path.join(stateDir, 'primary-session-launches', agentId + '.json');
 }
 
+/** @summary Lists verified UUIDs of top-level (`parent === ''`, `nesting_depth === 0`) project summaries for pre-launch exclusion. */
 function censusRootIds(databasePath, projectId, {allowMissingDb = false} = {}) {
     validateInputs(databasePath, projectId);
     if (allowMissingDb && !fs.existsSync(databasePath)) return [];
@@ -325,6 +329,7 @@ function censusRootIds(databasePath, projectId, {allowMissingDb = false} = {}) {
     return ids;
 }
 
+/** @summary Reads `step_index === 0` `created_at` from a canonical, non-symlink transcript (`null` if not flushed yet; `'invalid'` on corruption/tamper). */
 function transcriptCreatedAtMs(appDataDir, threadId) {
     if (!appDataDir) return null;
     if (!path.isAbsolute(appDataDir) || !UUID.test(threadId || '')) return 'invalid';
@@ -358,6 +363,16 @@ function transcriptCreatedAtMs(appDataDir, threadId) {
     finally { fs.closeSync(fd) }
 }
 
+/**
+ * @summary Classifies a summary row's creation provenance into `'created'`, `'historical'`, `'unattested'`, or `'unknown'`.
+ * Rule & thresholds: (1) rejects corrupt protobuf/transcript or `> 5000` ms skew between protobuf `created_time` (`sCreated`,
+ * floored to seconds) and `step_index === 0` transcript `created_at` (`tCreated`) as `'unknown'`, blocking imported/restored
+ * historical roots replayed into SQLite while tolerating normal App summary-to-log write jitter; (2) `sCreated + 1 >= baselineAtMs`
+ * tolerates sub-millisecond `Math.floor(nanos / 1e6)` truncation against a `Date.now()` ms baseline without admitting earlier ms;
+ * (3) `tCreated >= Math.floor(baselineAtMs / 1000) * 1000` safely compares second-granularity timestamps (`ps lstart` or whole-second
+ * ISO) because pre-existing roots are already excluded by `priorThreadIds`. Returns `'historical'` if either witness precedes the
+ * baseline, `'created'` if at least one proves post-baseline creation, and `'unattested'` when neither timestamp is present yet.
+ */
 function creationDisposition(row, appDataDir, baselineAtMs) {
     const metadata = nativeIdentity(row?.raw_summary);
     if (!metadata) return 'unknown';
@@ -374,6 +389,7 @@ function creationDisposition(row, appDataDir, baselineAtMs) {
     return (sFresh === true || tFresh === true) ? 'created' : 'unattested';
 }
 
+/** @summary Deduplicates up to `MAX_PENDING_OBSERVATIONS` UUID start entries, keeping `deferred: false` once observed synchronously. */
 function normalizePendingStarts(entries) {
     if (!Array.isArray(entries)) return [];
     const byId = new Map();
@@ -387,11 +403,13 @@ function normalizePendingStarts(entries) {
     return [...byId.values()].slice(-MAX_PENDING_OBSERVATIONS);
 }
 
+/** @summary Deduplicates and bounds (`MAX_PENDING_OBSERVATIONS`) UUID `PreInvocation` witness candidates. */
 function normalizePendingWitnesses(entries) {
     if (!Array.isArray(entries)) return [];
     return [...new Set(entries.filter(id => UUID.test(id || '')))].slice(-MAX_PENDING_OBSERVATIONS);
 }
 
+/** @summary Canonicalizes `.starts.json` schema fields, bounds pending queues, and defaults missing counters fail-closed. */
 function normalizeStartsState(state) {
     return {
         version         : 1,
@@ -408,11 +426,21 @@ function normalizeStartsState(state) {
     };
 }
 
+/** @summary Fetches one `(projectId, conversationId)` summary row read-only, or `null` when DB/row is not materialized yet. */
 function inspectConversationRow(databasePath, projectId, conversationId) {
     if (!databasePath || !fs.existsSync(databasePath)) return null;
     return withDatabase(databasePath, db => db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status, raw_summary FROM conversation_summaries WHERE project_id=? AND conversation_id=?').get(projectId, conversationId) || null);
 }
 
+/**
+ * @summary Reconciles pending `SessionStart`/`PreInvocation` observations against readable SQLite summary metadata.
+ * Acceptance conjunction: forks move permanently into `priorThreadIds`, helper/subagent rows (`nonRoots`) are evicted, and a
+ * root binds `state.threadId` iff it is the *sole* non-fork post-census addition (`candidates.length === 1`), has a matching
+ * `pendingStarts` entry, passes `rootDisposition === 'root'`, and is neither `'historical'` nor `'unknown'`. A synchronous start
+ * (`deferred: false`, row already flushed during `SessionStart`) safely accepts `'unattested'` because pre-start `priorThreadIds`
+ * + live callback already bracket its creation; a deferred start (`deferred: true`, row flushed after `SessionStart`) requires
+ * `creation === 'created'` so a late SQLite backfill or workspace import without post-baseline creation proof can never self-promote.
+ */
 function reconcileAntigravityStartsState(state, {databasePath, appDataDir = null, projectId}) {
     if (!databasePath || !fs.existsSync(databasePath)) return null;
     const before         = JSON.stringify(state);
@@ -471,6 +499,7 @@ function reconcileAntigravityStartsState(state, {databasePath, appDataDir = null
     return {changed: JSON.stringify(state) !== before, acceptedTarget};
 }
 
+/** @summary Acquires `outboxLock` in fixed `launchFile -> startsFile` order (matching `cleanupAntigravityLaunchCensus`) to prevent deadlock. */
 async function withStartsLocks({statePath, stateDir = null, agentId = null}, fn) {
     const startsFile            = statePath + '.starts.json';
     const {withOutboxLock}      = await import('./outboxLock.mjs');
@@ -481,6 +510,13 @@ async function withStartsLocks({statePath, stateDir = null, agentId = null}, fn)
     return launchFile ? withOutboxLock(launchFile, run) : run();
 }
 
+/**
+ * @summary Loads current-generation `.starts.json` or one-shot adopts a Fleet-staged pre-spawn launch census (`launchFile`).
+ * Rule: a staged launch with `generation === null` (written before child PID/start exists) is adopted and unlinked by the first
+ * caller matching `(authorized: true, projectId)` — safe because every caller (`initializeAntigravityStarts` on verified route
+ * publication, or hook callbacks verified against `.neo-fleet-seat-lease.json` + ancestor PID/start) has already authenticated
+ * `generation` as the Fleet-leased child for that `instanceHome` and `projectId`, while mismatched generations evict stale files.
+ */
 function loadOrAdoptStarts({startsFile, launchFile, databasePath, projectId, generation, baselineAtMs = null, createCensusIfMissing = false}) {
     const old    = readPrivateStartsJson(startsFile);
     const launch = launchFile ? readPrivateStartsJson(launchFile) : null;

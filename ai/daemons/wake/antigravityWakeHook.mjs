@@ -1,11 +1,11 @@
-import fs                                                                                                                                                                  from 'node:fs';
-import os                                                                                                                                                                  from 'node:os';
-import path                                                                                                                                                                from 'node:path';
-import {fileURLToPath}                                                                                                                                                     from 'node:url';
-import {resolveAntigravitySidecarAncestor,readAntigravityProcessRows}                                                                                                      from './antigravityWakeSidecar.mjs';
-import {observeAntigravitySessionStart,observeAntigravityPreInvocation,observeAntigravityPendingLaunchHook,handleAntigravityPreInvocation,hasAntigravityPendingSystemWake} from './antigravitySessionWake.mjs';
-import {readPrimarySessionWake}                                                                                                                                            from './primarySessionWake.mjs';
-import {consumeNativeWakePrompt}                                                                                                                                           from './fleetPrimarySessionWake.mjs';
+import fs                                                                                                                                                                           from 'node:fs';
+import os                                                                                                                                                                           from 'node:os';
+import path                                                                                                                                                                         from 'node:path';
+import {fileURLToPath}                                                                                                                                                              from 'node:url';
+import {resolveAntigravitySidecarAncestor,readAntigravityProcessRows}                                                                                                               from './antigravityWakeSidecar.mjs';
+import {AGENT_ID,observeAntigravitySessionStart,observeAntigravityPreInvocation,observeAntigravityPendingLaunchHook,handleAntigravityPreInvocation,hasAntigravityPendingSystemWake} from './antigravitySessionWake.mjs';
+import {readPrimarySessionWake}                                                                                                                                                     from './primarySessionWake.mjs';
+import {consumeNativeWakePrompt}                                                                                                                                                    from './fleetPrimarySessionWake.mjs';
 
 /** @module ai/daemons/wake/antigravityWakeHook
  * @summary App hook callback. No registration occurs merely by importing this module.
@@ -35,7 +35,7 @@ export async function handleAntigravityWakeHook({event,input,manifestPath,stateD
             if (reserved || (event !== 'SessionStart' && event !== 'PreInvocation')) return reserved ? deny : {};
             const lease   = privateJson(path.join(app.instanceHome, '.neo-fleet-seat-lease.json'));
             const binding = privateJson(path.join(app.instanceHome, '.neo-fleet-project-binding.json'));
-            if (!/^[a-z0-9][a-z0-9._-]{0,99}$/.test(lease.agentId || '') ||
+            if (!AGENT_ID.test(lease.agentId || '') ||
                 lease.pid !== app.appPid || lease.pidStartedAt !== app.appStart ||
                 lease.harnessType !== 'antigravity' || !path.isAbsolute(lease.cwd || '') ||
                 path.basename(path.dirname(app.appBundle)) !== lease.harnessGenerationId ||
