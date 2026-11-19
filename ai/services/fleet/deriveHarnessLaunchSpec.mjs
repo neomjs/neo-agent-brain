@@ -21,7 +21,7 @@ import path            from 'node:path';
 //     probed alive at 4s on a held pipe (claude CLI 2.1.156), clean SIGTERM stop. `--verbose` is
 //     required by the CLI when combining `--print` with `--output-format stream-json`.
 //   GUI app-bundle families are inherently long-lived (an app run IS the session) and indifferent
-//   to stdin — the held pipe is harmless there; pid/SIGTERM is the supervision handle. Empty.
+//   to stdin — empty unless the app requires an opt-in launch switch (`antigravity` remote debugging).
 // - `versionProbeArgs` — the argv for the supervisor's best-effort `binaryVersion` capture, or
 //   `null` when the family cannot answer a version ask without booting the whole app (probed:
 //   antigravity boots and emits wizard log lines instead of a version) — the supervisor SKIPS the
