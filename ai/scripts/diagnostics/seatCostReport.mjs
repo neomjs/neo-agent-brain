@@ -14,7 +14,12 @@ import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
  *
  * @summary Per-seat session-cost reporter for the swarm's harness seats.
  *
- * Aggregates the two harness-local token ledgers into one per-seat, per-day table:
+ * Aggregates the three harness-local token ledgers into one per-seat, per-day table:
+ *   - antigravity: explicit `<root>/brain/<id>/.system_generated/logs/transcript.jsonl`
+ *     (`PLANNER_RESPONSE` + `CHECKPOINT` steps), `<root>/conversation_summaries.db`
+ *     (`(root + child)` recursive lineage + optional workspace filter), and optional
+ *     `<root>/conversations/<id>.db` (`gen_metadata` model ID), opened `{readonly: true,
+ *     fileMustExist: true}` with no home-directory fallback.
  *   - kimi-code: `~/.kimi-code/sessions/<wd>/<session>/agents/main/wire.jsonl` `usage.record`
  *     lines (`inputOther` / `inputCacheRead` / `inputCacheCreation` / `output`, plus `model`
  *     for provider-family classification). Consecutive records that are identical on every
@@ -50,8 +55,16 @@ import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
  * observation. It is an estimate; the provider dashboard remains the calibration authority.
  */
 
-const DAY_MS             = 86_400_000;
-const NEEDLE_WEEK_TOKENS = 30_000_000;
+const DAY_MS                           = 86_400_000;
+const NEEDLE_WEEK_TOKENS               = 30_000_000;
+const COLD_PREFILL_MIN_FRESH_TOKENS    = 50_000;
+const COLD_PREFILL_MAX_CACHE_HIT_RATIO = 0.1;
+
+const UUID_PATTERN       = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+const FILE_URI_PATTERN   = /\bfile:\/\/[^\s"'`|)\]]+/gi;
+const WIN_PATH_PATTERN   = /\b[A-Za-z]:\\[^\s"'`|)\]]+/g;
+const UNIX_ROOT_PATTERN  = /(^|[\s"'`(=:|,])\/(?:Users|home|private|var|tmp|opt|etc|Volumes|mnt|root)(?:\/[^\s"'`|)\]:,]+)+/g;
+const UNIX_MULTI_PATTERN = /(^|[\s"'`(=:|,])\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+/g;
 
 /**
  * Warm windows keyed by provider FAMILY (never by harness — a harness can host any provider).
@@ -65,15 +78,16 @@ const NEEDLE_WEEK_TOKENS = 30_000_000;
  * coming. Per-harness qualifier: the read is first-party for that one Claude Code configuration;
  * Claude Desktop stays unmeasured until its own reading lands — and no claude ledger reader
  * exists yet ({@link LEDGER_READERS}), so no claude seat renders until one does, at which moment
- * the per-harness reading is required. GPT: unmeasured — the column renders `unmeasured`, never
- * an invented number. Kimi (both harnesses, K3): measured TTL-cliff onset — hit ratio holds ≥92%
- * through ~20min gaps and degrades to ~0% past 1h (2026-08-08 cross-harness measurement).
+ * the per-harness reading is required. GPT and Gemini: unmeasured — the column renders `unmeasured`,
+ * never an invented number. Kimi (both harnesses, K3): measured TTL-cliff onset — hit ratio holds
+ * ≥92% through ~20min gaps and degrades to ~0% past 1h (2026-08-08 cross-harness measurement).
  * @type {Object<String,Number|null>}
  */
 export const WARM_WINDOWS = {
     'kimi'  : 20 * 60 * 1000,
     'claude': 60 * 60 * 1000,
-    'gpt'   : null
+    'gpt'   : null,
+    'gemini': null
 };
 
 /**
@@ -86,6 +100,7 @@ export const WARM_WINDOWS = {
  * @type {Object<String,Boolean>}
  */
 export const LEDGER_READERS = {
+    'antigravity'   : true,
     'claude-code'   : false,
     'claude-desktop': false,
     'codex'         : false,
@@ -102,24 +117,49 @@ export const ABLATION = {cappedSeat: 'iris', controlSeat: 'phoebe', cappedFrom: 
 
 const dayOf = time => new Date(time).toISOString().slice(0, 10);
 
-const blankBucket = () => ({calls: 0, freshInput: 0, cacheRead: 0, cacheWrite: 0, output: 0});
+const blankBucket = () => ({
+    calls       : 0,
+    rootCalls   : 0,
+    childCalls  : 0,
+    freshInput  : 0,
+    cacheRead   : 0,
+    cacheWrite  : 0,
+    output      : 0,
+    coldPrefills: 0,
+    compactions : 0
+});
+
+/**
+ * @summary Scrubs session UUIDs, `file://` URIs, and local filesystem paths from report text.
+ * @param {String} text
+ * @returns {String}
+ */
+export function redactSensitiveTokens(text) {
+    return String(text ?? '')
+        .replace(FILE_URI_PATTERN, '<redacted-path>')
+        .replace(UUID_PATTERN, '<redacted-uuid>')
+        .replace(WIN_PATH_PATTERN, '<redacted-path>')
+        .replace(UNIX_ROOT_PATTERN, '$1<redacted-path>')
+        .replace(UNIX_MULTI_PATTERN, '$1<redacted-path>')
+}
 
 /**
  * Classifies one ledger record's provider family from its model identity. Unknown identity
  * returns `null` — the honest signal that renders `unmeasured` downstream.
  *
  * @param {Object}   [identity]
- * @param {String}   [identity.model]      kimi-code wire `model` field (e.g. `kimi-code/k3`)
+ * @param {String}   [identity.model]      wire / transcript `model` field (e.g. `kimi-code/k3`, `gemini-4-carbon`)
  * @param {String}   [identity.providerID] opencode message `providerID` (e.g. `kimi-for-coding`)
  * @param {String}   [identity.modelID]    opencode message `modelID` (e.g. `k3`)
- * @returns {'kimi'|'claude'|'gpt'|null}
+ * @returns {'kimi'|'claude'|'gpt'|'gemini'|null}
  */
 export function classifyProviderFamily({model, providerID, modelID} = {}) {
     const haystack = `${model || ''} ${providerID || ''} ${modelID || ''}`.toLowerCase();
 
-    if (/kimi|moonshot|\bk3\b/.test(haystack))   return 'kimi';
-    if (/claude|anthropic/.test(haystack))       return 'claude';
-    if (/gpt|openai|o[134]-/.test(haystack))     return 'gpt';
+    if (/kimi|moonshot|\bk3\b/.test(haystack))                             return 'kimi';
+    if (/claude|anthropic/.test(haystack))                                 return 'claude';
+    if (/gpt|openai|o[134]-/.test(haystack))                               return 'gpt';
+    if (/gemini|google|\b(?:carbon|neon|hydrogen|argon)\b/.test(haystack)) return 'gemini';
 
     return null
 }
@@ -230,6 +270,23 @@ export function parseOpencodeRows(rows) {
 }
 
 /**
+ * @summary Lazily requires `better-sqlite3` and opens a SQLite file strictly read-only.
+ * @param {String} dbPath
+ * @returns {Object}
+ */
+function openReadonlySqlite(dbPath) {
+    let Database;
+
+    try {
+        Database = createRequire(import.meta.url)('better-sqlite3');
+    } catch {
+        throw new Error(`reading ${redactSensitiveTokens(dbPath)} needs better-sqlite3 (brain-tier install); use --fixtures for a native-free run`);
+    }
+
+    return new Database(dbPath, {readonly: true, fileMustExist: true})
+}
+
+/**
  * Reads an opencode sqlite store. better-sqlite3 is loaded lazily so the module stays
  * importable where the native dependency is absent (base install tier). The `like`
  * pre-filter only narrows the scan; the assistant-role contract is enforced by
@@ -239,21 +296,228 @@ export function parseOpencodeRows(rows) {
  * @returns {Array<{time_created:Number, data:String}>}
  */
 export function readOpencodeDb(dbPath) {
-    let Database;
-
-    try {
-        Database = createRequire(import.meta.url)('better-sqlite3');
-    } catch {
-        throw new Error(`reading ${dbPath} needs better-sqlite3 (brain-tier install); use --fixtures for a native-free run`);
-    }
-
-    const db = new Database(dbPath, {readonly: true, fileMustExist: true});
+    const db = openReadonlySqlite(dbPath);
 
     try {
         return db.prepare(`select time_created, data from message where data like '%"role":"assistant"%'`).all();
     } finally {
         db.close();
     }
+}
+
+/**
+ * @summary Evaluates whether an invocation represents a >50K full-context cold re-prefill.
+ * @param {Number} freshInput
+ * @param {Number} cacheRead
+ * @returns {Boolean}
+ */
+export function isColdPrefill(freshInput, cacheRead) {
+    if (freshInput <= COLD_PREFILL_MIN_FRESH_TOKENS) return false;
+    const totalInput = freshInput + cacheRead;
+    return cacheRead === 0 || (totalInput > 0 && (cacheRead / totalInput) < COLD_PREFILL_MAX_CACHE_HIT_RATIO)
+}
+
+/**
+ * @summary Parses Antigravity `transcript.jsonl` `PLANNER_RESPONSE` and `CHECKPOINT` steps into usage records.
+ * @param {String} content
+ * @param {Object} [options]
+ * @param {String} [options.model='']
+ * @param {'root'|'child'} [options.role='root']
+ * @returns {Array<{time:Number, freshInput:Number, cacheRead:Number, cacheWrite:Number, output:Number, coldPrefills:Number, compactions:Number, role:String, model:String, family:(String|null)}>}
+ */
+export function parseAntigravityTranscript(content, {model = '', role = 'root'} = {}) {
+    const normalizedRole = role === 'child' ? 'child' : 'root';
+    const records        = [];
+
+    for (const line of String(content || '').split('\n')) {
+        if (!line.includes('PLANNER_RESPONSE') && !line.includes('CHECKPOINT')) continue;
+
+        try {
+            const rec = JSON.parse(line);
+
+            if (rec.type !== 'PLANNER_RESPONSE' && rec.type !== 'CHECKPOINT') continue;
+
+            const time = Date.parse(rec.created_at);
+
+            if (!Number.isFinite(time)) continue;
+
+            const hasTokens = typeof rec.input_tokens === 'number'
+                || typeof rec.cache_read_tokens === 'number'
+                || typeof rec.output_tokens === 'number';
+
+            if (rec.type === 'PLANNER_RESPONSE' && !hasTokens) continue;
+
+            const freshInput    = rec.input_tokens      || 0;
+            const cacheRead     = rec.cache_read_tokens || 0;
+            const output        = rec.output_tokens     || 0;
+            const resolvedModel = rec.model || model || '';
+
+            records.push({
+                time,
+                freshInput,
+                cacheRead,
+                cacheWrite  : 0,
+                output,
+                coldPrefills: isColdPrefill(freshInput, cacheRead) ? 1 : 0,
+                compactions : rec.type === 'CHECKPOINT' ? 1 : 0,
+                role        : normalizedRole,
+                model       : resolvedModel,
+                family      : classifyProviderFamily({model: resolvedModel})
+            });
+        } catch {}
+    }
+
+    return records
+}
+
+/**
+ * @summary Reads `conversation_summaries.db` strictly read-only, returning empty lists when absent.
+ * @param {String} dbPath
+ * @returns {{summaries:Array<Object>, parents:Array<Object>}}
+ */
+export function readAntigravitySummariesDb(dbPath) {
+    if (!dbPath || !fs.existsSync(dbPath)) {
+        return {summaries: [], parents: []}
+    }
+
+    const db = openReadonlySqlite(dbPath);
+
+    try {
+        const tables = new Set(
+            db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all().map(r => r.name)
+        );
+        const summaries = tables.has('conversation_summaries')
+            ? db.prepare(`SELECT conversation_id, parent_conversation_id, nesting_depth, workspace_uris, app_data_dir FROM conversation_summaries`).all()
+            : [];
+        const parents = tables.has('conversation_parents')
+            ? db.prepare(`SELECT conversation_id, parent_id FROM conversation_parents`).all()
+            : [];
+
+        return {summaries, parents}
+    } finally {
+        db.close();
+    }
+}
+
+/**
+ * @summary Extracts the hyphenated model identifier from an optional per-conversation `gen_metadata` SQLite store.
+ * @param {String} dbPath
+ * @returns {String}
+ */
+export function readAntigravityConversationModel(dbPath) {
+    if (!dbPath || !fs.existsSync(dbPath)) return '';
+
+    const db = openReadonlySqlite(dbPath);
+
+    try {
+        const hasTable = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gen_metadata'`).get();
+
+        if (!hasTable) return '';
+
+        const rows = db.prepare(`SELECT data FROM gen_metadata ORDER BY idx DESC LIMIT 5`).all();
+
+        for (const row of rows) {
+            const raw   = Buffer.isBuffer(row.data) ? row.data.toString('latin1') : String(row.data || '');
+            const match = raw.match(/\b(?:gemini-[a-z0-9.-]+|claude-[a-z0-9.-]+|gpt-[a-z0-9.-]+)\b/i);
+
+            if (match) return match[0].toLowerCase();
+        }
+
+        return ''
+    } finally {
+        db.close();
+    }
+}
+
+/**
+ * @summary Collects `(root + child)` Antigravity usage records from an explicit `appDataDir` root.
+ * @param {String} rootDir
+ * @param {Object} [options]
+ * @param {String|null} [options.workspaceFilter=null]
+ * @returns {Array<Object>}
+ */
+export function collectAntigravityRecords(rootDir, {workspaceFilter = null} = {}) {
+    const stat = fs.statSync(rootDir);
+
+    if (!stat.isDirectory()) {
+        throw new Error(`antigravity root is not a directory: ${redactSensitiveTokens(rootDir)}`);
+    }
+
+    const {summaries, parents} = readAntigravitySummariesDb(path.join(rootDir, 'conversation_summaries.db'));
+    const summaryById          = new Map();
+    const parentByChild        = new Map();
+    const conversationIds      = new Set();
+
+    for (const row of summaries) {
+        if (!row?.conversation_id) continue;
+        summaryById.set(row.conversation_id, row);
+        conversationIds.add(row.conversation_id);
+
+        if (row.parent_conversation_id) {
+            parentByChild.set(row.conversation_id, row.parent_conversation_id);
+            conversationIds.add(row.parent_conversation_id);
+        }
+    }
+
+    for (const row of parents) {
+        if (!row?.conversation_id || !row?.parent_id) continue;
+        if (!parentByChild.has(row.conversation_id)) {
+            parentByChild.set(row.conversation_id, row.parent_id);
+        }
+        conversationIds.add(row.conversation_id);
+        conversationIds.add(row.parent_id);
+    }
+
+    const brainDir = path.join(rootDir, 'brain');
+
+    if (fs.existsSync(brainDir) && fs.statSync(brainDir).isDirectory()) {
+        for (const entry of fs.readdirSync(brainDir)) {
+            conversationIds.add(entry);
+        }
+    }
+
+    const resolveRootId = id => {
+        const seen = new Set();
+        let   cur  = id;
+
+        while (parentByChild.has(cur) && !seen.has(cur)) {
+            seen.add(cur);
+            cur = parentByChild.get(cur);
+        }
+
+        return cur
+    };
+
+    const matchesFilter = rootId => {
+        if (!workspaceFilter) return true;
+        const rootSummary = summaryById.get(rootId);
+        if (!rootSummary) return false;
+        const haystack = `${rootSummary.workspace_uris || ''} ${rootSummary.app_data_dir || ''}`;
+        return haystack.includes(workspaceFilter)
+    };
+
+    const records = [];
+
+    for (const conversationId of [...conversationIds].sort()) {
+        const rootId = resolveRootId(conversationId);
+
+        if (!matchesFilter(rootId)) continue;
+
+        const transcriptPath = path.join(brainDir, conversationId, '.system_generated/logs/transcript.jsonl');
+
+        if (!fs.existsSync(transcriptPath)) continue;
+
+        const summary = summaryById.get(conversationId);
+        const isChild = rootId !== conversationId || Number(summary?.nesting_depth) > 0;
+        const model   = readAntigravityConversationModel(path.join(rootDir, 'conversations', `${conversationId}.db`));
+
+        records.push(...parseAntigravityTranscript(fs.readFileSync(transcriptPath, 'utf8'), {
+            model,
+            role: isChild ? 'child' : 'root'
+        }));
+    }
+
+    return records
 }
 
 /**
@@ -273,10 +537,15 @@ export function bucketByDay(records, warmWindowMs) {
         const b   = byDay.get(day) || {...blankBucket(), gapsOverWindow: 0};
 
         b.calls++;
-        b.freshInput += r.freshInput;
-        b.cacheRead  += r.cacheRead;
-        b.cacheWrite += r.cacheWrite;
-        b.output     += r.output;
+        if (r.role === 'child') b.childCalls++;
+        else                    b.rootCalls++;
+
+        b.freshInput   += r.freshInput;
+        b.cacheRead    += r.cacheRead;
+        b.cacheWrite   += r.cacheWrite;
+        b.output       += r.output;
+        b.coldPrefills += r.coldPrefills || 0;
+        b.compactions  += r.compactions  || 0;
 
         byDay.set(day, b);
     }
@@ -302,7 +571,7 @@ export function bucketByDay(records, warmWindowMs) {
 const fmt = n => n.toLocaleString('en-US');
 
 /**
- * Renders the per-seat per-day report as markdown.
+ * Renders the per-seat per-day report as markdown, scrubbing session UUIDs and filesystem paths.
  *
  * @param {Array<{seat:String, harness:String, family:(String|null), days:Map<String,Object>}>} seats
  * @param {Object} [options]
@@ -323,11 +592,12 @@ export function renderReport(seats, {ablation = false} = {}) {
 
             if (!b) continue;
 
-            const raw    = b.freshInput + b.cacheRead + b.cacheWrite + b.output;
-            const needle = ((b.freshInput + b.output) / NEEDLE_WEEK_TOKENS * 100).toFixed(2) + '%';
-            const warm   = WARM_WINDOWS[seat.family] == null ? 'unmeasured' : String(b.gapsOverWindow);
+            const seatLabel = redactSensitiveTokens(seat.seat);
+            const raw       = b.freshInput + b.cacheRead + b.cacheWrite + b.output;
+            const needle    = ((b.freshInput + b.output) / NEEDLE_WEEK_TOKENS * 100).toFixed(2) + '%';
+            const warm      = WARM_WINDOWS[seat.family] == null ? 'unmeasured' : String(b.gapsOverWindow);
 
-            lines.push(`| ${day} | ${seat.seat} | ${fmt(b.calls)} | ${fmt(b.freshInput)} | ${fmt(b.cacheRead)} | ${fmt(b.cacheWrite)} | ${fmt(b.output)} | ${fmt(raw)} | ${needle} | ${warm} |`);
+            lines.push(`| ${day} | ${seatLabel} | ${fmt(b.calls)} | ${fmt(b.freshInput)} | ${fmt(b.cacheRead)} | ${fmt(b.cacheWrite)} | ${fmt(b.output)} | ${fmt(raw)} | ${needle} | ${warm} |`);
         }
     }
 
@@ -337,6 +607,30 @@ export function renderReport(seats, {ablation = false} = {}) {
           noReader = Object.keys(LEDGER_READERS).filter(harness => !LEDGER_READERS[harness]);
 
     lines.push('', `Ledger coverage: readers exist for ${covered.join(', ')}; NO ledger reader (the harness produces no rows — a missing source, distinct from \`unmeasured\`): ${noReader.length > 0 ? noReader.join(', ') : 'none'}.`);
+
+    const antigravitySeats = seats.filter(s => s.harness === 'antigravity' && s.days.size > 0);
+
+    if (antigravitySeats.length > 0) {
+        lines.push(
+            '',
+            '## Antigravity (root + child)',
+            '',
+            '| date | seat | calls (root+child) | fresh input | cache read | cold prefills (>50K) | compactions | output |',
+            '|------|------|--------------------|-------------|------------|----------------------|-------------|--------|'
+        );
+
+        for (const day of days) {
+            for (const seat of antigravitySeats) {
+                const b = seat.days.get(day);
+
+                if (!b) continue;
+
+                const seatLabel = redactSensitiveTokens(seat.seat);
+
+                lines.push(`| ${day} | ${seatLabel} | ${fmt(b.calls)} (${fmt(b.rootCalls)}+${fmt(b.childCalls)}) | ${fmt(b.freshInput)} | ${fmt(b.cacheRead)} | ${fmt(b.coldPrefills)} | ${fmt(b.compactions)} | ${fmt(b.output)} |`);
+            }
+        }
+    }
 
     if (ablation) {
         const ablationDays = days.filter(d => d >= ABLATION.cappedFrom && seats.some(s => s.days.get(d)));
@@ -354,22 +648,25 @@ export function renderReport(seats, {ablation = false} = {}) {
         }
     }
 
-    return `${lines.join('\n')}\n`
+    return redactSensitiveTokens(`${lines.join('\n')}\n`)
 }
 
 const USAGE = `Usage: node ai/scripts/diagnostics/seatCostReport.mjs [flags]
 
-Per-seat per-day session-cost table from the two harness-local token ledgers
-(kimi-code wire.jsonl usage records; opencode message token rows, assistant-only).
+Per-seat per-day session-cost table from the harness-local token ledgers
+(antigravity transcript.jsonl + conversation_summaries.db; kimi-code wire.jsonl;
+opencode message token rows, assistant-only).
 
-Ledger flags (defaults read the live ledgers on this machine):
-  --kimi-root <dir>      kimi-code sessions root (default ~/.kimi-code/sessions);
-                         collects agents/main/wire.jsonl per session (contractual source set)
-  --opencode-db <path>   opencode sqlite store (default ~/.local/share/opencode/opencode.db);
-                         needs the brain-tier better-sqlite3
-  --opencode-rows <json> read opencode rows from a JSON file instead of the live db
-  --fixtures <dir>       read fixture files (kimi-wire.jsonl + opencode-rows.json), e.g.
-                         the spec suite's deterministic synthetic fixtures
+Ledger flags:
+  --antigravity-root <dir>              explicit Antigravity appDataDir (no homedir default)
+  --antigravity-seat <seat>=<dir>[#flt] repeatable named Antigravity seat + optional workspace filter
+  --kimi-root <dir>                     kimi-code sessions root (default ~/.kimi-code/sessions);
+                                        collects agents/main/wire.jsonl per session
+  --opencode-db <path>                  opencode sqlite store (default ~/.local/share/opencode/opencode.db);
+                                        needs the brain-tier better-sqlite3
+  --opencode-rows <json>                read opencode rows from a JSON file instead of the live db
+  --fixtures <dir>                      read fixture files (kimi-wire.jsonl + opencode-rows.json), e.g.
+                                        the spec suite's deterministic synthetic fixtures
 
 Report flags:
   --from YYYY-MM-DD      include only days on/after this date
@@ -380,22 +677,62 @@ Report flags:
   --help, -h             print this text and exit 0
 `;
 
+function requireArgValue(argv, index, flag) {
+    const val = argv[index];
+
+    if (!val || val.startsWith('--')) {
+        throw new Error(`missing value for ${flag}`);
+    }
+
+    return val
+}
+
+function parseAntigravitySeatSpec(spec) {
+    const eqIndex = spec.indexOf('=');
+
+    if (eqIndex <= 0 || eqIndex === spec.length - 1) {
+        throw new Error(`invalid --antigravity-seat spec (expected <seat>=<dir>[#<filter>]): ${redactSensitiveTokens(spec)}`);
+    }
+
+    const seat = spec.slice(0, eqIndex).trim();
+    const rest = spec.slice(eqIndex + 1);
+    const hash = rest.indexOf('#');
+
+    const rootDir         = (hash === -1 ? rest : rest.slice(0, hash)).trim();
+    const workspaceFilter = hash === -1 ? null : rest.slice(hash + 1).trim() || null;
+
+    if (!seat || !rootDir) {
+        throw new Error(`invalid --antigravity-seat spec: ${redactSensitiveTokens(spec)}`);
+    }
+
+    return {seat, rootDir, workspaceFilter}
+}
+
 function parseArgs(argv) {
-    const options = {ablation: false, from: null, help: false, json: false, to: null};
+    const options = {
+        ablation        : false,
+        antigravitySeats: [],
+        from            : null,
+        help            : false,
+        json            : false,
+        to              : null
+    };
 
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
 
-        if      (arg === '--ablation')      options.ablation = true;
-        else if (arg === '--json')          options.json = true;
-        else if (arg === '--help' || arg === '-h') options.help = true;
-        else if (arg === '--from')          options.from = argv[++i];
-        else if (arg === '--to')            options.to = argv[++i];
-        else if (arg === '--kimi-root')     options.kimiRoot = argv[++i];
-        else if (arg === '--opencode-db')   options.opencodeDb = argv[++i];
-        else if (arg === '--opencode-rows') options.opencodeRows = argv[++i];
-        else if (arg === '--fixtures')      options.fixtures = argv[++i];
-        else throw new Error(`unknown argument: ${arg}`);
+        if      (arg === '--ablation')               options.ablation = true;
+        else if (arg === '--json')                   options.json = true;
+        else if (arg === '--help' || arg === '-h')   options.help = true;
+        else if (arg === '--from')                   options.from = requireArgValue(argv, ++i, arg);
+        else if (arg === '--to')                     options.to = requireArgValue(argv, ++i, arg);
+        else if (arg === '--kimi-root')              options.kimiRoot = requireArgValue(argv, ++i, arg);
+        else if (arg === '--opencode-db')            options.opencodeDb = requireArgValue(argv, ++i, arg);
+        else if (arg === '--opencode-rows')          options.opencodeRows = requireArgValue(argv, ++i, arg);
+        else if (arg === '--fixtures')               options.fixtures = requireArgValue(argv, ++i, arg);
+        else if (arg === '--antigravity-root')       options.antigravitySeats.push({seat: 'antigravity', rootDir: requireArgValue(argv, ++i, arg), workspaceFilter: null});
+        else if (arg === '--antigravity-seat')       options.antigravitySeats.push(parseAntigravitySeatSpec(requireArgValue(argv, ++i, arg)));
+        else throw new Error(`unknown argument: ${redactSensitiveTokens(arg)}`);
     }
 
     return options
@@ -436,7 +773,12 @@ function collectKimiRecords(root) {
 export function buildSeat(seatName, harness, records) {
     const family = resolveSeatFamily(records);
 
-    return {seat: seatName, harness, family, days: bucketByDay(records, WARM_WINDOWS[family] ?? null)}
+    return {
+        seat: redactSensitiveTokens(seatName),
+        harness,
+        family,
+        days: bucketByDay(records, WARM_WINDOWS[family] ?? null)
+    }
 }
 
 function main() {
@@ -448,7 +790,9 @@ function main() {
             return;
         }
 
-        const seats = [];
+        const seats               = [];
+        const hasAntigravityFlags = options.antigravitySeats.length > 0;
+        const hasKimiOrOcFlags    = Boolean(options.kimiRoot || options.opencodeDb || options.opencodeRows);
 
         if (options.fixtures) {
             const wireContent = fs.readFileSync(path.join(options.fixtures, 'kimi-wire.jsonl'), 'utf8');
@@ -458,7 +802,7 @@ function main() {
                 buildSeat('iris',   'kimi-code', parseKimiWire(wireContent)),
                 buildSeat('phoebe', 'opencode',  parseOpencodeRows(rows))
             );
-        } else {
+        } else if (!hasAntigravityFlags || hasKimiOrOcFlags) {
             const kimiRoot = options.kimiRoot || path.join(os.homedir(), '.kimi-code/sessions');
             const ocRows   = options.opencodeRows
                 ? JSON.parse(fs.readFileSync(options.opencodeRows, 'utf8'))
@@ -470,6 +814,14 @@ function main() {
             );
         }
 
+        for (const spec of options.antigravitySeats) {
+            seats.push(buildSeat(
+                spec.seat,
+                'antigravity',
+                collectAntigravityRecords(spec.rootDir, {workspaceFilter: spec.workspaceFilter})
+            ));
+        }
+
         for (const seat of seats) {
             for (const day of [...seat.days.keys()]) {
                 if (options.from && day < options.from) seat.days.delete(day);
@@ -478,15 +830,18 @@ function main() {
         }
 
         if (options.json) {
-            console.log(JSON.stringify(Object.fromEntries(seats.map(s => [
-                s.seat, {family: s.family, harness: s.harness, days: Object.fromEntries(s.days)}
-            ])), null, 2));
+            const payload = JSON.stringify(Object.fromEntries(seats.map(s => [
+                redactSensitiveTokens(s.seat),
+                {family: s.family, harness: s.harness, days: Object.fromEntries(s.days)}
+            ])), null, 2);
+
+            console.log(redactSensitiveTokens(payload));
         } else {
             process.stdout.write(renderReport(seats, {ablation: options.ablation}));
         }
     } catch (error) {
-        console.error(`Error: ${error.message}`);
-        console.error('Usage: node ai/scripts/diagnostics/seatCostReport.mjs [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--ablation] [--json] [--help]');
+        console.error(`Error: ${redactSensitiveTokens(error.message)}`);
+        console.error('Usage: node ai/scripts/diagnostics/seatCostReport.mjs [--antigravity-root <dir>] [--antigravity-seat <seat>=<dir>[#<filter>]] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--ablation] [--json] [--help]');
         console.error('  defaults read the live harness ledgers; --fixtures <dir> reads fixture files (kimi-wire.jsonl + opencode-rows.json)');
         process.exit(1);
     }
