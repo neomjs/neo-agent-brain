@@ -123,7 +123,8 @@ export function createFleetWakeFanout({
         /**
          * @summary Registers one authenticated SSE stream and takes over the response for its
          * lifetime — unless a held-connection cap refuses it, in which case NOTHING is written
-         * and the caller answers the refusal on the still-untouched response.
+         * and the caller answers the refusal on the still-untouched response. The caller has
+         * already proven `identity` through the fleet admission chain.
          * @param {String} identity Viewer identity the admission chain proved.
          * @param {Object} res Node `ServerResponse`-shaped writable to convert to SSE.
          * @param {Object} [options={}]
@@ -147,6 +148,11 @@ export function createFleetWakeFanout({
                 return {accepted: false, reason: 'stream cap reached (per viewer)'}
             }
 
+            // The whole handshake must land before the stream is registered: a socket that
+            // faults or is already past the backpressure bound during these writes is refused
+            // (and destroyed by the eviction path) WITHOUT ever entering the registry — a
+            // dead-at-birth stream must not hold a cap slot until a close event that may never
+            // fire on it.
             try {
                 const headers = {
                     'content-type'     : 'text/event-stream',

@@ -628,6 +628,12 @@ class ConfigBase extends ConfigProvider {
                  */
                 rosterRetainedMaxAgeMs: leaf(120000, 'NEO_FLEET_ROSTER_RETAINED_MAX_AGE_MS', 'number'),
                 /**
+                 * Back-to-back freshness window in ms for `FleetControlBridge#fleetOpenWork` question counts
+                 * (`0` keeps in-flight coalescing only; never a failure-retention window).
+                 * @type {number}
+                 */
+                questionsRetainedMaxAgeMs: leaf(2000, 'NEO_FLEET_QUESTIONS_RETAINED_MAX_AGE_MS', 'number'),
+                /**
                  * Whole-quit budget in milliseconds that Fleet may spend across request drain and
                  * launch-admission continuity handoff before the host's grace escalates to SIGKILL.
                  * `devFleetServer` (`cleanShutdown`) reads this leaf once at quit start (falling back

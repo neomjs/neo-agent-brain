@@ -111,8 +111,12 @@ export function invalidateFleetQuestionsCache() {
     questionsCacheEpoch++
 }
 
+function shouldInvalidateQuestions(value) {
+    return Boolean(value) && value.status !== 'not-wired' && value.status !== 'rejected'
+}
+
 /**
- * @summary Settles a promise-or-value and invalidates the retained `questions` cache once a write completes.
+ * @summary Settles a promise-or-value and invalidates the retained `questions` cache once an accepted write completes.
  * @param {Promise<*>|*} outcome
  * @returns {Promise<*>|*}
  * @private
@@ -120,12 +124,12 @@ export function invalidateFleetQuestionsCache() {
 function invalidateQuestionsAfter(outcome) {
     if (typeof outcome?.then === 'function') {
         return outcome.then(value => {
-            questionsCacheEpoch++;
+            if (shouldInvalidateQuestions(value)) questionsCacheEpoch++;
             return value
         })
     }
 
-    if (outcome && outcome.status !== 'not-wired' && outcome.status !== 'rejected') {
+    if (shouldInvalidateQuestions(outcome)) {
         questionsCacheEpoch++
     }
 
@@ -267,7 +271,7 @@ async function readRetainedQuestions(bridge, {timeoutMs = null, maxAgeMs = 0, no
             }
         };
 
-    if (!writer || typeof viewerIdentity !== 'string' || !viewerIdentity || !(Number.isFinite(maxAgeMs) && maxAgeMs > 0)) {
+    if (!writer || typeof viewerIdentity !== 'string' || !viewerIdentity || !(Number.isFinite(maxAgeMs) && maxAgeMs >= 0)) {
         return fetchPair()
     }
 
@@ -280,7 +284,7 @@ async function readRetainedQuestions(bridge, {timeoutMs = null, maxAgeMs = 0, no
 
     const entry = byViewer.get(viewerIdentity);
 
-    if (entry?.epoch === questionsCacheEpoch && entry.value && nowMs() - entry.settledAtMs <= maxAgeMs) {
+    if (maxAgeMs > 0 && entry?.epoch === questionsCacheEpoch && entry.value && nowMs() - entry.settledAtMs <= maxAgeMs) {
         return entry.value
     }
 
@@ -295,7 +299,7 @@ async function readRetainedQuestions(bridge, {timeoutMs = null, maxAgeMs = 0, no
 
             if (current?.inFlight === inFlight) current.inFlight = null;
 
-            if (startEpoch === questionsCacheEpoch && questions.state === 'ok' && questions.expired.state === 'ok') {
+            if (maxAgeMs > 0 && startEpoch === questionsCacheEpoch && questions.state === 'ok' && questions.expired.state === 'ok') {
                 byViewer.set(viewerIdentity, {
                     value        : questions,
                     settledAtMs  : nowMs(),
@@ -1596,7 +1600,7 @@ class FleetControlBridge extends Base {
      * @param {Object} [params] `{seat}` narrows the answer to one seat.
      * @param {Object} [options={}]
      * @param {Number} [options.timeoutMs=AiConfig.fleet.rosterAxisTimeoutMs] Axis deadline for each question count read.
-     * @param {Number} [options.maxAgeMs=AiConfig.fleet.rosterRetainedMaxAgeMs] Freshness window for viewer-scoped retained question counts.
+     * @param {Number} [options.maxAgeMs=AiConfig.fleet.questionsRetainedMaxAgeMs] Back-to-back freshness window for viewer-scoped question counts.
      * @param {Function} [options.now=Date.now] Clock seam for deterministic freshness checks.
      * @returns {Promise<Object>} the source envelope plus `questions: {state, count, reason, expired: {state, count, since, reason}}`.
      */
@@ -1604,7 +1608,7 @@ class FleetControlBridge extends Base {
         params = {},
         {
             timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs,
-            maxAgeMs  = AiConfig.fleet.rosterRetainedMaxAgeMs,
+            maxAgeMs  = AiConfig.fleet.questionsRetainedMaxAgeMs,
             now       = Date.now
         } = {}
     ) {

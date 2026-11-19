@@ -252,6 +252,7 @@
         "fleet.planeCredentialFd",
         "fleet.planeInternalHosts",
         "fleet.port",
+        "fleet.questionsRetainedMaxAgeMs",
         "fleet.rosterAxisTimeoutMs",
         "fleet.rosterRetainedMaxAgeMs",
         "fleet.shutdownBudgetMs",

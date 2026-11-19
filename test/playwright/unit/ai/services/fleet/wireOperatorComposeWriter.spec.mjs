@@ -495,7 +495,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
 
     test('fleetOpenWork bounds stalled observeMessages reads and returns openWork intact (#1842)', async () => {
         const
-            original        = FleetControlBridge.openWorkSource,
+            original         = FleetControlBridge.openWorkSource,
             pendingResolvers = [];
 
         try {
@@ -548,16 +548,16 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         }
     });
 
-    test('fleetOpenWork serves viewer-scoped retained questions within maxAgeMs, coalesces concurrent reads, and invalidates on push wake or task mutation (#1865)', async () => {
+    test('fleetOpenWork bounds question-count caching to fleet.questionsRetainedMaxAgeMs so external questions surface without waiting on roster failure retention (#1865)', async () => {
         const
             originalOpenWork = FleetControlBridge.openWorkSource,
             originalViewer   = FleetControlBridge.viewerIdentitySource;
 
         let
-            tick        = 1_763_580_000_000,
-            openCount   = 3,
-            expiredCnt  = 1,
-            rpcCalls    = 0;
+            tick       = 1_763_580_000_000,
+            openCount  = 3,
+            expiredCnt = 1,
+            rpcCalls   = 0;
 
         try {
             FleetControlBridge.viewerIdentitySource = {resolveViewerIdentity: () => '@tobiu'};
@@ -580,41 +580,57 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
                 }
             });
 
-            // 1. Concurrent cold reads coalesce into one pair of observeMessages RPCs (2 total, not 4).
+            // 1. Concurrent cold reads coalesce into one pair of observeMessages RPCs (2 total, not 4) using the default leaf.
             const [first, second] = await Promise.all([
-                FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000}),
-                FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000})
+                FleetControlBridge.fleetOpenWork({}, {now: () => tick}),
+                FleetControlBridge.fleetOpenWork({}, {now: () => tick})
             ]);
             expect(rpcCalls).toBe(2);
             expect(first.questions).toMatchObject({state: 'ok', count: 3, expired: {state: 'ok', count: 1}});
             expect(second.questions).toEqual(first.questions);
 
-            // 2. Back-to-back read inside maxAgeMs returns retained questions immediately (0 additional RPCs).
+            // 2. Back-to-back read inside the 2000 ms default window returns the settled pair with 0 extra RPCs.
             openCount = 9;
-            tick += 30_000;
-            const cached = await FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000});
+            tick += 500;
+            const cached = await FleetControlBridge.fleetOpenWork({}, {now: () => tick});
             expect(rpcCalls).toBe(2);
             expect(cached.questions.count).toBe(3);
 
-            // 3. Push invalidation clears retained cache immediately so the next read fetches fresh counts.
+            // 3. Push invalidation clears retained counts immediately (0 ms) so the next read fetches fresh counts.
             FleetControlBridge.invalidateQuestionsCache();
-            const afterPush = await FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000});
+            const afterPush = await FleetControlBridge.fleetOpenWork({}, {now: () => tick});
             expect(rpcCalls).toBe(4);
             expect(afterPush.questions.count).toBe(9);
 
-            // 4. Own-task mutation also invalidates retained questions immediately.
+            // 4. Own-task mutation also invalidates retained counts immediately; rejected writes leave the epoch untouched.
             openCount = 2;
             await FleetControlBridge.transitionOwnTask({messageId: 'MESSAGE:q1', newState: 'Completed'});
-            const afterTransition = await FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000});
+            const afterTransition = await FleetControlBridge.fleetOpenWork({}, {now: () => tick});
             expect(rpcCalls).toBe(6);
             expect(afterTransition.questions.count).toBe(2);
 
-            // 5. Past maxAgeMs, retained entry expires and refreshes automatically.
-            openCount = 4;
-            tick += 120_001;
-            const afterExpiry = await FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 120_000});
+            // 5. Question arrives OUTSIDE the bridge (in-process mode or dropped SSE stream — no push or write invalidation):
+            //    the very next read past the 2000 ms back-to-back lifetime reports it without waiting on the 120 s roster window.
+            openCount  = 5;
+            expiredCnt = 2;
+            tick += 2_001;
+            const afterExternalArrival = await FleetControlBridge.fleetOpenWork({}, {now: () => tick});
             expect(rpcCalls).toBe(8);
-            expect(afterExpiry.questions.count).toBe(4);
+            expect(afterExternalArrival.questions).toMatchObject({state: 'ok', count: 5, expired: {state: 'ok', count: 2}});
+
+            // 6. maxAgeMs: 0 keeps in-flight coalescing only and retains nothing after settlement.
+            openCount = 6;
+            const [zeroA, zeroB] = await Promise.all([
+                FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 0}),
+                FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 0})
+            ]);
+            expect(rpcCalls).toBe(10);
+            expect(zeroA.questions.count).toBe(6);
+            expect(zeroB.questions.count).toBe(6);
+            openCount = 7;
+            const zeroNext = await FleetControlBridge.fleetOpenWork({}, {now: () => tick, maxAgeMs: 0});
+            expect(rpcCalls).toBe(12);
+            expect(zeroNext.questions.count).toBe(7);
         } finally {
             FleetControlBridge.openWorkSource       = originalOpenWork;
             FleetControlBridge.viewerIdentitySource = originalViewer;
