@@ -221,6 +221,14 @@ export function hasAntigravityPendingSystemWake({appDataDir,threadId,text,cursor
 
 /**
  * @summary Recognizes the exact post-cursor wake followed by the private model acknowledgment, or settled unacknowledged finish.
+ * @param {Object} options
+ * @param {String} options.appDataDir Antigravity appData root directory
+ * @param {String} options.threadId Conversation UUID of the target thread
+ * @param {String} options.text Exact opaque wake marker text
+ * @param {Object} options.cursor Pre-send transcript cursor (`{path, offset}`)
+ * @param {String|null} [options.receiptToken=null] Per-attempt private acknowledgment token
+ * @param {String|null} [options.targetStatus=null] Live conversation cascade status (e.g. `'CASCADE_RUN_STATUS_IDLE'`)
+ * @param {Boolean} [options.settleUnacknowledged=false] Set true to settle finished idle or superseded unacknowledged turns
  * @returns {Object} A bounded model-response observation, `turn-unacknowledged`, or `unknown`.
  */
 export function readAntigravityWakeReceipt({appDataDir,threadId,text,cursor,receiptToken=null,targetStatus=null,settleUnacknowledged=false}) {

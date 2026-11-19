@@ -509,10 +509,7 @@ test('wake correlation survives truncated steps and internal Plan Mode/task enve
         expect(readAntigravityWakeReceipt({appDataDir:root, threadId, text:marker, cursor, receiptToken:token}).outcome).toBe('observed');
 
         // Without the model echo, a finished IDLE turn (or an external/human supersession) settles as turn-unacknowledged.
-        fs.writeFileSync(file, row(wake) + row(trunc) + row(pOff) + row({type:'PLANNER_RESPONSE', source:'MODEL', status:'DONE', step_index:18, content:'Forgot ack'}));
-        const cursor2 = captureAntigravityWakeCursor({appDataDir:root, threadId});
         fs.truncateSync(file, 0);
-        fs.writeFileSync(file, '');
         const freshCursor = captureAntigravityWakeCursor({appDataDir:root, threadId});
         fs.appendFileSync(file, row(wake) + row(trunc) + row(pOff) + row({type:'PLANNER_RESPONSE', source:'MODEL', status:'DONE', step_index:18, content:'Forgot ack'}));
         expect(readAntigravityWakeReceipt({appDataDir:root, threadId, text:marker, cursor:freshCursor, receiptToken:token, targetStatus:'CASCADE_RUN_STATUS_RUNNING', settleUnacknowledged:true}).outcome).toBe('unknown');
@@ -522,6 +519,5 @@ test('wake correlation survives truncated steps and internal Plan Mode/task enve
         fs.appendFileSync(file, row(extMsg));
         expect(hasAntigravityPendingSystemWake({appDataDir:root, threadId, text:marker, cursor:freshCursor})).toBe(false);
         expect(readAntigravityWakeReceipt({appDataDir:root, threadId, text:marker, cursor:freshCursor, targetStatus:'CASCADE_RUN_STATUS_RUNNING', settleUnacknowledged:true}).outcome).toBe('turn-unacknowledged');
-        expect(cursor2.offset).toBeGreaterThan(0);
     } finally { fs.rmSync(root, {recursive:true, force:true}) }
 });

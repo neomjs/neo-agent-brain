@@ -316,6 +316,8 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
                 .catch(() => null))?.status ?? null;
             const claim = await readPrivate(claimPathFor(slotUrgent));
             if (claim?.nonce !== nonce) {
+                // No hook redeemed this nonce. Once its idle wake turn has ended without an acknowledgement,
+                // it never can, so the slot settles instead of holding every later wake behind it.
                 if (activeTurn) return null;
                 if (isCodex) {
                     const proof = await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptOffset:saved.cursor});
@@ -341,6 +343,8 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
                     ? antigravityTransport.readAntigravityActiveTurnReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor})
                     : antigravityTransport.readAntigravityWakeReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor,targetStatus,settleUnacknowledged:true}));
             if (!isCodex && !activeTurn && proof?.outcome === 'turn-unacknowledged') {
+                // The admitted idle turn has finished, so no model echo can follow; settle with
+                // acknowledged: false instead of wedging later wakes.
                 return {...binding,recordKey,nonce,status:'unacknowledged'}
             }
             if (!['turn-started', 'turn-steered'].includes(proof?.state) && proof?.outcome !== 'observed') return null;

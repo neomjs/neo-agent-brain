@@ -112,7 +112,8 @@ function deliveredResult(attempt) {
  * @summary Serializes binding, durable admission, native effect and receipt reconciliation per seat.
  * Ordinary records use `inflight`; distinct urgent records use `urgentInflight` without evicting an
  * ambiguous ordinary attempt. Receiver record persistence owns long-term deduplication.
- * An `unacknowledged` receipt (the wake started a turn that ended without the hook redeeming it)
+ * An `unacknowledged` receipt (the wake started a turn that ended without the hook redeeming it,
+ * or an admitted Antigravity idle wake whose finished turn never echoed its private receipt)
  * settles the slot as delivered with `acknowledged: false`, so no later wake waits behind it.
  */
 export async function deliverPrimarySessionWake({statePath, seat, generation, family, recordKey, urgent = false,
