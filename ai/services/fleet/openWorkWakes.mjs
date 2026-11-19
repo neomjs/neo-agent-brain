@@ -142,6 +142,9 @@ function wakeOf(row, seat, role, kind, episode, holder = null, ciRepair = null) 
  * @param {Object<String, Number>|null} [options.exhaustedUntil=null] Native seat to the epoch milliseconds its plan
  *     resets (`capacityThrottleState.mjs#exhaustedUntilOf`). The rotation passes such a seat over until then, the way it
  *     passes an unreachable one. Work a seat holds as reviewer or author keeps routing through `routeOf` alone.
+ * @param {String[]|null} [options.absentSeats=null] Native seats that show no sign they can act: dark, with no reachable
+ *     wake. Absence is inferred, so it orders the rotation's pick rather than blocking it: such a seat is picked only
+ *     when no other seat qualifies, and an admitted slot moves on from it once one does. Held work ignores it.
  * @param {Boolean} [options.quiet=false] Baseline the observed actions without admitting sends.
  * @param {Object<String, {state: String, at: String|null}>|null} [options.deliveries=null] Delivery verdicts of admitted
  *     holder wakes, by the message id their slot recorded (`projectMessageDelivery`). Only `delivered` can make a holder
@@ -150,7 +153,7 @@ function wakeOf(row, seat, role, kind, episode, holder = null, ciRepair = null) 
  *     map. Without it no approval of a named outside PR counts, so a round that plans one reads it and plans again.
  * @returns {{wakes: Object[], ledger: Object|null}} Inputs are never mutated.
  */
-export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', rotationSeats, exhaustedUntil = null, quiet = false, deliveries = null, seatFamilies = null}) {
+export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', rotationSeats, exhaustedUntil = null, absentSeats = null, quiet = false, deliveries = null, seatFamilies = null}) {
     const
         wakes   = [],
         holding = Object.fromEntries(Object.entries(ledger?.holding ?? {}).map(([key, entry]) =>
@@ -177,6 +180,7 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         // A seat waiting for its plan to reset is unreachable for the rotation only; the roster and its offset stay whole
         rotationRoute = seat => exhaustedUntil && Object.hasOwn(exhaustedUntil, seat) && exhaustedUntil[seat] > now
             ? 'unreachable' : routeOf(seat),
+        absent        = new Set(Array.isArray(absentSeats) ? absentSeats : []),
         // An admitted holder wake the receiver recorded `delivered` at least HOLDER_SILENT_MS ago
         silent        = ({messageId}) => {
             const verdict = deliveries && typeof messageId === 'string' && Object.hasOwn(deliveries, messageId) ? deliveries[messageId] : null;
@@ -187,8 +191,10 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
 
     /**
      * Holds one rotation-routed slot: an outside PR's action, or an escalation naming the holder it never picks.
-     * An admitted slot stays admitted and a quiet round baselines. A pick without an eligible seat stays pending,
-     * under a placeholder recipient that is never the holder.
+     * An admitted slot stays admitted until its seat reads absent, the plane took its wake and an unwoken seat qualifies;
+     * a quiet round baselines. A pick without an eligible seat stays pending, under a placeholder recipient that is
+     * never the holder. A slot that leaves a seat after a failed submission counts that seat as woken: the plane may
+     * have taken the wake before its answer was lost.
      */
     const rotate = (row, kind, holder = null) => {
         const
@@ -218,21 +224,39 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
             // A seat of a lab the PR names never picks it while another seat answers
             sameLab = labs && seatFamilies ? roster.filter(seat => labs.includes(seatFamilies[seat])) : [],
             route   = quiet ? () => 'unknown' : rotationRoute,
+            present = quiet ? route : seat => absent.has(seat) ? 'unreachable' : rotationRoute(seat),
             keep    = holder ? [holder] : [],
+            // The seats this slot handed on from: a wake to one again would only repeat its first receipt
+            woken   = prior?.handedFrom ?? [],
+            // Nobody of another lab answers: the whole roster picks, so the PR is never left unrouted
+            pick    = (byRoute, skip = woken) => pickRotationSeat(row, kind, roster, byRoute, [...keep, ...skip, ...sameLab]) ??
+                (sameLab.length ? pickRotationSeat(row, kind, roster, byRoute, [...keep, ...skip]) : null),
             // A re-pick keeps the slot's failed submissions counted, so a failing escalation stays bounded
-            hold    = (seat, status) => holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder, ciRepair), status,
-                ...repairRecord,
-                ...(prior?.attempts ? {attempts: prior.attempts} : {})};
+            hold    = (seat, status) => {
+                const handedFrom = prior?.attempts && prior.wake.to !== seat && !woken.includes(prior.wake.to) ? [...woken, prior.wake.to] : woken;
+
+                return holding[slot] = {wake: wakeOf(row, seat, 'rotation', kind, episode, holder, ciRepair), status,
+                    ...repairRecord,
+                    ...(prior?.attempts ? {attempts: prior.attempts} : {}),
+                    ...(handedFrom.length ? {handedFrom} : {})}
+            };
 
         current.add(slot);
         if (prior?.status === 'admitted') {
-            if (outsideRepair) holding[slot] = {...prior, ...repairRecord};
+            // Only a wake the plane took hands on: a spent slot has no receipt, so its count stays the last word
+            const
+                handedFrom = [...woken, prior.wake.to],
+                next       = !quiet && absent.has(prior.wake.to) && prior.messageId ? pick(present, handedFrom) : null;
+
+            if (next) {
+                // A new recipient is a new wake, so its submissions count afresh
+                holding[slot] = {wake: wakeOf(row, next, 'rotation', kind, episode, holder, ciRepair), status: 'admitted', ...repairRecord, handedFrom};
+                wakes.push(holding[slot].wake)
+            } else if (outsideRepair) holding[slot] = {...prior, ...repairRecord};
             return;
         }
 
-        // Nobody of another lab answers: the whole roster picks, so the PR is never left unrouted
-        const seat = pickRotationSeat(row, kind, roster, route, [...keep, ...sameLab]) ??
-            (sameLab.length ? pickRotationSeat(row, kind, roster, route, keep) : null);
+        const seat = pick(present) ?? pick(route);
 
         if (seat && !quiet) {
             wakes.push(hold(seat, 'admitted').wake)

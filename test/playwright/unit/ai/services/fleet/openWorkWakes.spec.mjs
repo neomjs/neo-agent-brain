@@ -421,6 +421,72 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
             .toEqual([{to: ADA, role: 'author', kind: 'repair-ci'}])
     });
 
+    test('the rotation picks an absent seat last and hands an admitted slot on from one (#1849)', () => {
+        const
+            roster  = [ADA, GPT, '@neo-gemini'],
+            outside = {kind: 'outside', seat: null, login: 'contributor'},
+            offset  = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % roster.length,
+            [first, second, third] = [0, 1, 2].map(step => roster[(offset + step) % roster.length]),
+            fresh   = () => {
+                const run = journey();
+                run.step(0, [{owner: outside, ci: 'pending'}], {}, {rotationSeats: roster});
+                return run
+            },
+            triage  = (run, minute, absentSeats) => run.step(minute, [{owner: outside, ci: 'green'}], {}, {rotationSeats: roster, absentSeats}),
+            slot    = run => Object.values(run.ledger().holding)[0],
+            // The round records the plane's receipt on an admitted slot; a spent slot never gets one
+            receipt = (run, fields = {}) => Object.assign(slot(run), {messageId: 'MESSAGE:taken', ...fields});
+
+        // An absent hashed seat yields its pick; with every seat absent, the hashed seat is picked as before
+        expect(triage(fresh(), 1, [first]).wakes.map(({to, role, kind}) => ({to, role, kind}))).toEqual([{to: second, role: 'rotation', kind: 'triage-outside'}]);
+        expect(triage(fresh(), 1, roster).wakes.map(wake => wake.to)).toEqual([first]);
+
+        // A taken wake whose seat goes absent hands on under the same episode, as a new wake whose submissions count afresh
+        const run = fresh(), [admitted] = triage(run, 1, []).wakes;
+        expect(admitted.to).toBe(first);
+        receipt(run, {attempts: 3});
+        expect(triage(run, 2, [first]).wakes.map(({to, kind, episode}) => ({to, kind, episode})))
+            .toEqual([{to: second, kind: 'triage-outside', episode: admitted.episode}]);
+        expect(slot(run)).toMatchObject({status: 'admitted', handedFrom: [first]});
+        expect(slot(run)).not.toHaveProperty('attempts');
+
+        // It never hands back to a seat it woke, whose wake would only repeat its first receipt
+        receipt(run);
+        expect(triage(run, 3, [second]).wakes.map(wake => wake.to)).toEqual([third]);
+        receipt(run);
+        expect(triage(run, 4, [third]).wakes).toEqual([]);
+        expect(slot(run)).toMatchObject({status: 'admitted', wake: {to: third}, handedFrom: [first, second]});
+
+        // A failed submission may have reached its seat before the answer was lost, so a slot that leaves it counts it as woken
+        const lost = fresh();
+        triage(lost, 1, []);
+        Object.assign(slot(lost), {status: 'pending', attempts: 1});
+        expect(triage(lost, 2, [first]).wakes.map(wake => wake.to)).toEqual([second]);
+        expect(slot(lost)).toMatchObject({attempts: 1, handedFrom: [first]});
+        receipt(lost);
+        expect(triage(lost, 3, [second]).wakes.map(wake => wake.to)).toEqual([third]);
+
+        // A spent slot has no receipt: its seat going absent sends nothing, and its count stands
+        const spent = fresh();
+        triage(spent, 1, []);
+        Object.assign(slot(spent), {attempts: 5});
+        expect(triage(spent, 2, [first]).wakes).toEqual([]);
+        expect(slot(spent)).toMatchObject({status: 'admitted', attempts: 5, wake: {to: first}});
+
+        // With nobody else qualifying, the admitted slot stays and sends nothing
+        const stuck = fresh();
+        triage(stuck, 1, []);
+        receipt(stuck);
+        expect(triage(stuck, 2, roster).wakes).toEqual([]);
+        expect(slot(stuck)).toMatchObject({status: 'admitted', wake: {to: first}});
+
+        // Work an absent seat holds still routes to it
+        const held = journey();
+        held.step(0, [{ci: 'pending'}], {}, {rotationSeats: roster});
+        expect(held.step(1, [{ci: 'red'}], {}, {rotationSeats: roster, absentSeats: [ADA]}).wakes.map(({to, role, kind}) => ({to, role, kind})))
+            .toEqual([{to: ADA, role: 'author', kind: 'repair-ci'}])
+    });
+
     test('the rotation never hands an outside PR to a seat of a lab it names while another seat answers', () => {
         const
             VEGA     = '@neo-opus-vega',
