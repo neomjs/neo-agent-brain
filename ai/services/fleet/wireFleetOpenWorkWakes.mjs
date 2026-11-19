@@ -303,6 +303,8 @@ function freshWake(wake, state, now) {
  *     An unreadable or absent whole map means unknown.
  * @param {Function} [options.readExhausted] Seat to the epoch milliseconds its plan resets, read with the route map
  *     and cached with it. The rotation passes those seats over until then; an unreadable map passes nobody over.
+ * @param {Function} [options.readAbsent] The seats that show no sign they can act, read and cached with the route map.
+ *     The rotation picks them last; an unreadable list marks nobody absent.
  * @param {Function} [options.readFamilies] Seat to its model family, read and cached with the route map. A named
  *     outside PR's approval counts only from a seat of another known family; an unreadable map verifies none.
  * @param {Function} [options.now] Epoch milliseconds.
@@ -320,7 +322,7 @@ function freshWake(wake, state, now) {
  * @returns {Function} Post-pulse callback with an async stop() method; persistence errors reject.
  */
 export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = async () => null, readExhausted = async () => null,
-    readFamilies = async () => null, now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true,
+    readAbsent = async () => null, readFamilies = async () => null, now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true,
     rotationSeats, readFailedChecks = null, readDelivery = null, log = console}) {
     let running = null, queued = null, stopped = false, routes = null;
 
@@ -356,15 +358,16 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
         return verdicts
     };
 
-    /** @summary Read the route projection, the plan resets and the seats' families only when a plan has eligible work. */
+    /** @summary Read the route projection, the plan resets, the absent seats and the seats' families only when a plan has eligible work. */
     async function routeMap() {
         const time = now();
         if (!routes || time < routes.at || time - routes.at >= routesTtlMs) {
-            const settled                  = read => Promise.resolve().then(read).catch(() => null),
-                [map, exhausted, families] = await Promise.all([settled(readUndeliverable), settled(readExhausted), settled(readFamilies)]),
-                plain                      = (value, valid) => value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(valid) ? value : null;
+            const settled                          = read => Promise.resolve().then(read).catch(() => null),
+                [map, exhausted, absent, families] = await Promise.all([settled(readUndeliverable), settled(readExhausted), settled(readAbsent), settled(readFamilies)]),
+                plain                              = (value, valid) => value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(valid) ? value : null;
 
             routes = {at: time, map: plain(map, reason => reason === null || typeof reason === 'string'), exhausted: plain(exhausted, Number.isFinite),
+                absent  : Array.isArray(absent) && absent.every(seat => typeof seat === 'string') ? absent : null,
                 families: plain(families, family => typeof family === 'string' && family.length > 0)}
         }
         return routes
@@ -419,7 +422,10 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
             ledger     = stored && !stored.activation && Number.isFinite(first) && Date.parse(stored.pulse) < first ? null : stored,
             roster     = typeof rotationSeats === 'function' ? rotationSeats() : rotationSeats,
             deliveries = await deliveriesOf(ledger, time),
-            args       = {state, ledger, deliveries, ...(roster !== undefined ? {rotationSeats: roster} : {})};
+            // A seat an admitted rotation slot waits on may have gone absent, so such a ledger reads who is first
+            held       = Object.values(ledger?.holding ?? {}).some(entry => entry.status === 'admitted' && entry.wake.role === 'rotation'),
+            absentees  = held ? (await routeMap()).absent : null,
+            args       = {state, ledger, deliveries, ...(absentees ? {absentSeats: absentees} : {}), ...(roster !== undefined ? {rotationSeats: roster} : {})};
         let plan = planOpenWorkWakes({...args, now: time, quiet: !activation}), expired = 0;
 
         // A newly proven certification survives a later route timeout; this write admits no send.
@@ -430,11 +436,11 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
 
         if (plan.wakes.length) {
             if (isEnabled() !== true) return {admitted: 0, disabled: true};
-            const {map, exhausted, families} = await routeMap(), preparedAt = now();
+            const {map, exhausted, absent, families} = await routeMap(), preparedAt = now();
             if (isEnabled() !== true) return {admitted: 0, disabled: true};
             expired = plan.wakes.filter(wake => !freshWake(wake, state, preparedAt)).length;
             if (!freshObservation(state, preparedAt)) return {admitted: 0, expired};
-            plan = planOpenWorkWakes({...args, now: preparedAt, quiet: !activation, exhaustedUntil: exhausted, seatFamilies: families,
+            plan = planOpenWorkWakes({...args, now: preparedAt, quiet: !activation, exhaustedUntil: exhausted, absentSeats: absent, seatFamilies: families,
                 routeOf: seat => map && Object.hasOwn(map, seat) ? 'unreachable' : 'unknown'})
         }
 
@@ -564,6 +570,19 @@ export function undeliverableOf(presence) {
 }
 
 /**
+ * @summary The seats the Fleet's verbose presence answer shows no sign of acting: presence `dark`, and a wake that is
+ * not `reachable`, since a receiver whose route lands can open a dark seat's session. Empty when unreadable.
+ * @param {Object|null} presence A verbose `who_is_online` payload: `{agents: [{identity, state, wake: {state}}]}`.
+ * @returns {String[]}
+ */
+export function absentOf(presence) {
+    const rows = Array.isArray(presence?.agents) ? presence.agents : [];
+
+    return rows.filter(row => typeof row?.identity === 'string' && row.state === 'dark' && row.wake?.state !== 'reachable')
+        .map(row => row.identity)
+}
+
+/**
  * @summary Bind the existing producer callback to a ledger beside its state file; never start a poller.
  * @param {Object} options
  * @param {{getDataDir: Function, listAgents: Function, resolveCredential: Function}} options.registry Fleet-owned
@@ -595,6 +614,7 @@ export function wireFleetOpenWorkWakes({registry, admitWake, readPresence, readD
         ...(typeof readPresence === 'function' ? {
             readUndeliverable: async () => undeliverableOf(await answer()),
             readExhausted    : async () => exhaustedUntilOf(await answer(), (now ?? Date.now)()),
+            readAbsent       : async () => absentOf(await answer()),
             readFamilies     : async () => familiesOf(await answer())
         } : {}),
         admitWake, readDelivery, now, gateOf, isEnabled, rotationSeats, log

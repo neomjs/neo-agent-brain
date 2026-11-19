@@ -230,6 +230,47 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         expect(familiesOf({})).toBeNull()
     });
 
+    test('the presence answer marks absent seats, so a rotation slot moves on from a seat that shows no sign of acting (#1849)', async () => {
+        const
+            GPT       = '@neo-gpt',
+            // the roster order makes the plain hash pick land on SEAT, so only its absence can move the triage
+            offset    = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % 2,
+            roster    = offset === 0 ? [SEAT, GPT] : [GPT, SEAT],
+            directory = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wake-absent-')),
+            // GPT is dark, but its wake lands, so a receiver can open its session: it stays eligible
+            agents    = [{identity: SEAT, state: 'online', wake: {state: 'unknown'}}, {identity: GPT, state: 'dark', wake: {state: 'reachable'}}],
+            outside   = (minute, ci) => {
+                const value = state(minute, ci);
+                Object.assign(value.snapshot.rows['acme/app#7'], {owner: {kind: 'outside', seat: null, login: 'contributor'}});
+                return value
+            },
+            wire      = (sends, readPresence) => wireFleetOpenWorkWakes({registry: {getDataDir: () => directory}, readPresence,
+                rotationSeats: roster, gateOf: openGate, now: () => at(minute), admitWake: async message => sends.push(message)});
+        let minute = 0;
+
+        try {
+            const sends = [], presence = async () => ({agents: structuredClone(agents)});
+            let   round = wire(sends, presence);
+            await round(outside(0, 'pending')); minute = 1;
+            await round(outside(1, 'green'));
+            expect(sends.map(({to}) => to)).toEqual([SEAT]);
+
+            // SEAT goes dark with no reachable wake: a later round over the same ledger hands the slot on
+            agents[0].state = 'dark'; minute = 10;
+            round = wire(sends, presence);
+            await round(outside(10, 'green'));
+            expect(sends.map(({to, kind}) => ({to, kind}))).toEqual([{to: SEAT, kind: 'triage-outside'}, {to: GPT, kind: 'triage-outside'}]);
+
+            // A failed presence read marks nobody absent
+            fs.rmSync(path.join(directory, 'open-work-wakes.json'));
+            const unread = [], blind = wire(unread, async () => { throw new Error('presence down') });
+            minute = 0;  await blind(outside(0, 'pending'));
+            minute = 1;  await blind(outside(1, 'green'));
+            minute = 10; await blind(outside(10, 'green'));
+            expect(unread.map(({to}) => to)).toEqual([SEAT])
+        } finally { fs.rmSync(directory, {recursive: true, force: true}) }
+    });
+
     test('activation survives restart and history rollover without losing pending merges', async () => {
         let   minute = 0, routes = {[SEAT]: 'absent'};
         const store  = memoryStore(), sends = [], options = {store, gateOf: openGate, now: () => at(minute),
