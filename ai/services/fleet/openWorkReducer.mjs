@@ -55,11 +55,22 @@ const FAILING_CONCLUSIONS = new Set([
 ]);
 
 /**
+ * @summary Whether a check suite belongs to an informative `pull_request_review` workflow run.
+ * @param {Object|null|undefined} suite
+ * @returns {Boolean}
+ * @private
+ */
+const isInformativeReviewSuite = suite => suite?.workflowRun?.event === 'pull_request_review';
+
+/**
  * @summary Derive head CI state while ignoring informative `pull_request_review` check suites.
- * Falls back to `statusCheckRollup.state` when check-suite pagination is incomplete, no
- * `pull_request_review` suite is present, or legacy inputs omit `commit.status` / suite `status`.
+ * A green `statusCheckRollup` is returned unchanged (the helper never demotes green), and the newest
+ * run per `workflow.id` wins because `checkSuites(last: N)` returns nodes oldest first (an ordering
+ * assumption a later query change must preserve). Falls back to `statusCheckRollup.state` when
+ * check-suite pagination is incomplete, no `pull_request_review` suite is present, or legacy inputs
+ * omit `commit.status` / suite `status`.
  * @param {Object|undefined} commit Head commit node.
- * @param {{nodes: Object[], complete: Boolean}} suites Backward-paginated `checkSuites` connection.
+ * @param {{nodes: Object[], complete: Boolean}} suites Backward-paginated `checkSuites` connection (oldest first).
  * @returns {'green'|'pending'|'red'|null}
  * @private
  */
@@ -67,11 +78,11 @@ function headCiOf(commit, suites) {
     const rollup = CI_STATES[commit?.statusCheckRollup?.state] ?? null;
 
     if (rollup === 'green' || !suites.complete || !commit || !('status' in commit) ||
-        !suites.nodes.some(suite => suite?.workflowRun?.event === 'pull_request_review')) {
+        !suites.nodes.some(isInformativeReviewSuite)) {
         return rollup
     }
 
-    const headSuites = suites.nodes.filter(suite => suite && suite.workflowRun?.event !== 'pull_request_review');
+    const headSuites = suites.nodes.filter(suite => suite && !isInformativeReviewSuite(suite));
 
     if (headSuites.some(suite => typeof suite.status !== 'string')) {
         return rollup
@@ -241,7 +252,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         opinionsComplete = opinions.complete && opined.every(opinion => opinion.reviewer),
         targetsComplete  = targets.complete && targets.nodes.every(targetOf),
         blockedTargets   = targets.nodes.filter(issue => targetOf(issue) && issue.issueDependenciesSummary.blockedBy > 0).map(targetOf).sort(),
-        runApproval      = suites.nodes.some(suite => suite?.conclusion === 'ACTION_REQUIRED' && suite.workflowRun?.event !== 'pull_request_review')
+        runApproval      = suites.nodes.some(suite => suite?.conclusion === 'ACTION_REQUIRED' && !isInformativeReviewSuite(suite))
             ? 'action_required' : null,
         ciRepair         = outside ? normalizeCiRepair(node, identities, {apiBase}) : null;
 
