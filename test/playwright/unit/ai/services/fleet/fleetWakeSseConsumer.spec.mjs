@@ -277,5 +277,44 @@ test.describe('fleetWakeSseConsumer - the delivery-liveness observation', () => 
 
         consumer.stop();
         response.close()
+    });
+
+    test('onFrame notifies the bridge relay of state and wake observations without exposing credentials or dropping the stream on callback errors (#1865)', async () => {
+        let tick = 1_763_580_000_000;
+        const
+            response = sseResponse(),
+            seen     = [];
+
+        const consumer = createFleetWakeSseConsumer({
+            eventsUrl   : 'http://127.0.0.1:3102/fleet/events',
+            credential  : 'plane-admission-secret',
+            retryFloorMs: 10,
+            logger      : QUIET,
+            now         : () => tick,
+            fetchImpl   : async () => response,
+            onFrame     : notification => {
+                seen.push(notification);
+                if (seen.length === 1) throw new Error('observer fault must not kill stream')
+            }
+        });
+
+        consumer.start();
+        await wait(30);
+
+        response.push('event: state\ndata: {"armed":true,"armedForViewer":true,"subscriptionId":"WAKE_SUB:1"}\n\n');
+        await wait(15);
+        tick += 1_000;
+        response.push('event: wake\ndata: {"subscriptionId":"WAKE_SUB:1","envelope":{"logId":9}}\n\n');
+        await wait(25);
+
+        expect(seen).toEqual([
+            {event: 'state', observedAt: new Date(1_763_580_000_000).toISOString()},
+            {event: 'wake',  observedAt: new Date(1_763_580_001_000).toISOString()}
+        ]);
+        expect(JSON.stringify(seen)).not.toContain('plane-admission-secret');
+        expect(consumer.resolveDeliveryLiveness().alive).toBe(true);
+
+        consumer.stop();
+        response.close()
     })
 });

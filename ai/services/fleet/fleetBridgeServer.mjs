@@ -65,6 +65,8 @@ import {isLocalBearerToken}      from '../../mcp/server/shared/helpers/localBear
  *     bearer by contract — a byte-identical pair refuses startup (fail-closed), because both
  *     surfaces can share a verifier and byte-identity is exactly how one mint silently serves two
  *     audiences. `null`/empty is the honest not-armed state.
+ * @param {Object|null} [opts.eventFanout=null] Optional `{registerStream, dispose}` SSE fan-out
+ *     serving `GET /fleet/events` behind the ingress guard and disposed on `drainFleetRequests`.
  * @returns {Promise<http.Server>} resolves once the server is listening.
  * @throws {TypeError} When the bearer, viewer binding, or context runner is missing/invalid — the
  *     fail-closed startup contract of the ingress trust boundary.
@@ -80,10 +82,15 @@ export function startFleetBridgeServer({
     allowedOrigins    = ['http://localhost:8080', 'http://127.0.0.1:8080'],
     extraAllowedHosts = [],
     bearerHandshake   = false,
-    mcAuthorization   = null
+    mcAuthorization   = null,
+    eventFanout       = null
 } = {}) {
     if (!isLocalBearerToken(bearerToken)) {
         throw new TypeError('[fleet] startup refused: a canonical 32-byte unpadded-base64url bearerToken is required (fail-closed ingress)')
+    }
+
+    if (eventFanout !== null && (typeof eventFanout?.registerStream !== 'function' || typeof eventFanout?.dispose !== 'function')) {
+        throw new TypeError('[fleet] startup refused: eventFanout must be null or expose registerStream + dispose')
     }
 
     if (mcAuthorization !== null && (typeof mcAuthorization !== 'string' || !mcAuthorization.trim())) {
@@ -206,6 +213,23 @@ export function startFleetBridgeServer({
             }, decision.corsOrigin)
         }
 
+        if (req.method === 'GET' && pathname === '/fleet/events' && eventFanout) {
+            const admitted = eventFanout.registerStream(viewerContext.agentIdentityNodeId, res, {
+                corsOrigin: decision.corsOrigin
+            });
+
+            if (!admitted.accepted && !res.headersSent && !res.destroyed) {
+                res.setHeader('Connection', 'close');
+                respond(
+                    res,
+                    admitted.reason === 'stream registry disposed' ? 503 : 429,
+                    createFleetWireResponse(FLEET_WIRE_RESPONSE_STATES.refused, {error: `fleet: ${admitted.reason}`}),
+                    decision.corsOrigin
+                )
+            }
+            return
+        }
+
         if (req.method !== 'POST' || pathname !== '/fleet') {
             return respond(
                 res,
@@ -271,6 +295,7 @@ export function startFleetBridgeServer({
         if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new TypeError('Fleet drain requires a positive timeout.');
         if (drain) return drain;
         accepting = false;
+        eventFanout?.dispose();
         drain = new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 server.closeAllConnections();

@@ -19,6 +19,7 @@ import {AsyncLocalStorage}      from 'node:async_hooks';
 import Neo                      from 'neo.mjs/src/Neo.mjs';
 import * as core                from 'neo.mjs/src/core/_export.mjs';
 import {startFleetBridgeServer} from '../../../../../../ai/services/fleet/fleetBridgeServer.mjs';
+import {createFleetWakeFanout}  from '../../../../../../ai/services/fleet/fleetWakeFanout.mjs';
 import {
     createFleetWireResponse,
     FLEET_WIRE_RESPONSE_STATES
@@ -451,5 +452,93 @@ test.describe('fleetBridgeServer — the authenticated Fleet ingress', () => {
             await new Promise(resolve => serverA.close(resolve));
             await new Promise(resolve => serverB.close(resolve))
         }
+    });
+
+    test('GET /fleet/events: 404 when unwired, fail-closed on missing bearer / bad Host / bad Origin, streams state + fleet-topic with exact CORS echo when wired, and closes immediately on drainFleetRequests (#1865)', async () => {
+        // 1. Malformed eventFanout fails closed synchronously at construction.
+        expect(() => startFleetBridgeServer({
+            port         : 0,
+            bearerToken  : generateLocalBearerToken(),
+            viewerContext: viewer,
+            runInContext : (c, fn) => fn(),
+            eventFanout  : {registerStream: 'not-a-fn'}
+        })).toThrow(/eventFanout/);
+
+        // 2. Unwired default: authenticated GET /fleet/events returns 404.
+        await startServer();
+        const unwired = await rawRequest({method: 'GET', path: '/fleet/events', headers: {Authorization: `Bearer ${bearer}`}});
+        expect(unwired.status).toBe(404);
+        await new Promise(resolve => server.close(resolve));
+        server = null;
+
+        // 3. Wired eventFanout: full ingress guard + live SSE push + immediate drain teardown.
+        const fanout = createFleetWakeFanout({logger: {error: () => {}}, heartbeatMs: 0, maxStreamsPerIdentity: 1});
+        await startServer({eventFanout: fanout});
+
+        const noBearer = await rawRequest({method: 'GET', path: '/fleet/events', headers: {Origin: 'http://localhost:8080'}});
+        expect(noBearer.status).toBe(401);
+
+        const badHost = await rawRequest({method: 'GET', path: '/fleet/events', headers: {Authorization: `Bearer ${bearer}`, Host: 'evil.example:8083'}});
+        expect(badHost.status).toBe(403);
+
+        const badOrigin = await rawRequest({method: 'GET', path: '/fleet/events', headers: {Authorization: `Bearer ${bearer}`, Origin: 'http://evil.example'}});
+        expect(badOrigin.status).toBe(403);
+
+        const chunks   = [];
+        let   sseEnded = false;
+        const sseHeaders = await new Promise((resolve, reject) => {
+            const req = http.request(`${url}/fleet/events`, {
+                method : 'GET',
+                headers: {
+                    Accept       : 'text/event-stream',
+                    Authorization: `Bearer ${bearer}`,
+                    Origin       : 'http://localhost:8080'
+                }
+            }, res => {
+                res.setEncoding('utf8');
+                res.on('data', chunk => chunks.push(chunk));
+                res.on('end', () => { sseEnded = true; });
+                res.on('close', () => { sseEnded = true; });
+                resolve({status: res.statusCode, headers: res.headers});
+            });
+            req.on('error', reject);
+            req.end();
+        });
+
+        expect(sseHeaders.status).toBe(200);
+        expect(sseHeaders.headers['content-type']).toContain('text/event-stream');
+        expect(sseHeaders.headers['access-control-allow-origin']).toBe('http://localhost:8080');
+        expect(sseHeaders.headers['vary']).toBe('Origin');
+
+        // Second stream for the same viewer hits maxStreamsPerIdentity=1 and answers 429 cleanly.
+        const capped = await rawRequest({
+            method : 'GET',
+            path   : '/fleet/events',
+            headers: {Authorization: `Bearer ${bearer}`, Origin: 'http://localhost:8080'}
+        });
+        expect(capped.status).toBe(429);
+        expect(JSON.parse(capped.body).ok).toBe(false);
+
+        fanout.publishTopic(viewer.agentIdentityNodeId, {
+            topic      : 'open-work',
+            observedAt : '2026-11-19T21:35:00.000Z',
+            bearerToken: bearer
+        });
+        await new Promise(resolve => setTimeout(resolve, 20));
+
+        const joined = chunks.join('');
+        expect(joined).toContain('event: state');
+        expect(joined).toContain('event: fleet-topic');
+        expect(joined).toContain('"topic":"open-work"');
+        expect(joined).toContain('"revision":1');
+        expect(joined).not.toContain(bearer);
+
+        // 4. drainFleetRequests closes the active SSE stream immediately without waiting out the 5 s timeout.
+        const drainStartedAt = Date.now();
+        await server.drainFleetRequests(5000);
+        expect(Date.now() - drainStartedAt).toBeLessThan(500);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(sseEnded).toBe(true);
+        server = null
     })
 });
