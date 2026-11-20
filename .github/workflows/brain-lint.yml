@@ -1,0 +1,121 @@
+name: Brain Lint
+
+# The Brain's repo-local lints, one step each in one job: a push takes one runner where it took one per lint,
+# in the queue every repository of the organisation shares.
+#
+# The trigger is the union of the lints' scan surfaces, so the job runs exactly when one of them would have.
+# `ai/**` and `src/**` are Script Plane's: it walks each entrypoint's transitive import closure, so a change
+# anywhere a script can reach changes its verdict. The other entries are what the remaining lints scan
+# beyond them. `lintWorkflowScanRootParity.spec.mjs` proves scanned ⊆ watched for every lint here.
+#
+# GitHub Actions does not reliably expand YAML anchors, so `push.paths` repeats `pull_request.paths`, and
+# `OpenApiServiceParityTriggerReachability.spec.mjs` asserts the two lists stay set-equal.
+#
+# Like every lint here, this job is not a required status context on `dev`: a red result is loud on the PR
+# without making it ineligible to merge.
+#
+# Each lint keeps the environment it always ran in: the three install-free lints run on the bare checkout,
+# OpenAPI Service Parity after a scripts-free install, and the lints that read materialized config after
+# `npm run prepare`. Every lint step runs after an earlier one failed, so a red job names each failing lint.
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - '.agents/ANTIGRAVITY_RULES.md'
+      - '.gemini/**'
+      - '.github/AI_QUICK_START.md'
+      - '.github/workflows/brain-lint.yml'
+      - '.gitignore'
+      - '.npmignore'
+      - 'ai/**'
+      - 'cloud/package.json'
+      - 'deploy/cloud/**'
+      - 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'
+      - 'learn/agentos/tooling/**'
+      - 'package.json'
+      - 'src/**'
+      - 'test/**/*.mjs'
+      - 'test/playwright/mcp/**'
+      - 'test/playwright/unit/ai/mcp/server/**'
+  push:
+    branches: [dev]
+    paths:
+      - '.agents/ANTIGRAVITY_RULES.md'
+      - '.gemini/**'
+      - '.github/AI_QUICK_START.md'
+      - '.github/workflows/brain-lint.yml'
+      - '.gitignore'
+      - '.npmignore'
+      - 'ai/**'
+      - 'cloud/package.json'
+      - 'deploy/cloud/**'
+      - 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'
+      - 'learn/agentos/tooling/**'
+      - 'package.json'
+      - 'src/**'
+      - 'test/**/*.mjs'
+      - 'test/playwright/mcp/**'
+      - 'test/playwright/unit/ai/mcp/server/**'
+
+concurrency:
+  group: brain-lint-${{ github.run_attempt == '1' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Retired Primitives Check
+        if: ${{ !cancelled() }}
+        run: npm run ai:check-retired-primitives
+
+      - name: Identity Vocabulary Lint
+        if: ${{ !cancelled() }}
+        run: node ai/scripts/lint/lint-identity-vocabulary.mjs
+
+      - name: MCP Test Location Lint
+        if: ${{ !cancelled() }}
+        run: npm run ai:lint-mcp-test-locations
+
+      - name: Install dependencies
+        id: install
+        if: ${{ !cancelled() }}
+        run: npm ci --ignore-scripts
+
+      - name: OpenAPI Service Parity Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node ai/scripts/lint/lint-openapi-service-parity.mjs
+
+      - name: Materialize Brain config and skill state
+        id: prepare
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run prepare
+
+      - name: 'Config Template SSOT Lint: Class-A DB-path AiConfig mutations in tests'
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: node ai/scripts/lint/check-aiconfig-test-mutation.mjs
+
+      - name: 'Config Template SSOT Lint: ADR-0019 implementation antipatterns'
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: node ai/scripts/lint/check-aiconfig-antipatterns.mjs
+
+      - name: 'Config Template SSOT Lint: config.template.mjs leaves for inline process.env reads'
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: node ai/scripts/lint/lint-config-template-ssot.mjs
+
+      - name: Script Plane Lint
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: node ./ai/scripts/lint/lint-script-plane.mjs

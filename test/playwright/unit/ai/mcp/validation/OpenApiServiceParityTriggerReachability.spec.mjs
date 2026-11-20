@@ -8,7 +8,7 @@ import micromatch         from 'micromatch';
 import {SERVERS} from '../../../../../../ai/scripts/diagnostics/mcpHandlerSignatureCensus.mjs';
 
 const repoRoot     = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
-      workflowPath = path.join(repoRoot, '.github/workflows/openapi-service-parity-lint.yml');
+      workflowPath = path.join(repoRoot, '.github/workflows/brain-lint.yml');
 
 /**
  * TRIGGER REACHABILITY for the parity gate: does the guard actually RUN on the files it reads?
@@ -72,7 +72,9 @@ test.describe('parity gate trigger reachability', () => {
     test('NEGATIVE CONTROL: an unrelated file does NOT trigger the gate', () => {
         // Without this, a filter of `**` would satisfy every assertion above while making the gate
         // run on every commit in the repo — passing the letter of reachability and destroying its point.
-        for (const unrelated of ['src/component/Base.mjs', 'README.md', 'apps/portal/view/Viewport.mjs']) {
+        // The gate shares the Brain Lint job, whose trigger is the union of its lints' surfaces (Script
+        // Plane's `src/**` included), so the control names files that no lint there scans.
+        for (const unrelated of ['README.md', 'apps/portal/view/Viewport.mjs', 'learn/README.md']) {
             expect(micromatch.isMatch(unrelated, prPaths),  `${unrelated} must not trigger`).toBe(false);
             expect(micromatch.isMatch(unrelated, pushPaths), `${unrelated} must not trigger`).toBe(false);
         }
