@@ -316,7 +316,19 @@ test.describe('signed native wake receiver integration', () => {
     });
 
     test('a verified batch settles before a newer context deferral blocks fresh handoffs', async () => {
-        manifest.routes[sub].adapterConfig.contextGate = {maxContextTokens:100,warnContextTokens:90,activeWithinMs:5000};
+        const route = manifest.routes[sub];
+        manifest = {
+            ...manifest,
+            routes: {
+                [sub]: {
+                    ...route,
+                    adapterConfig: {
+                        ...route.adapterConfig,
+                        contextGate: {maxContextTokens:100,warnContextTokens:90,activeWithinMs:5000}
+                    }
+                }
+            }
+        };
         await fs.writeFile(manifestPath,JSON.stringify(manifest),{mode:0o600});
         let blocked = new Set();
         const pump = await useStagedReceiver({contextProbe: async record => ({
