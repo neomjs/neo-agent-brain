@@ -42,6 +42,9 @@
  * 2026-11-14). A head approval ends its review only from a seat whose family is known and is none the PR names;
  * any other leaves the review to a rotation seat. Without the seats' families no such approval can be verified,
  * so the wake round reads them and decides again.
+ *
+ * A rebase waits its turn when the reader passes the snapshot's merge line ({@link mergeLineOf}): an approved PR that
+ * conflicts behind another approved PR of its repository reads `await-merge-turn`, and rebases once that PR has merged.
  */
 
 /**
@@ -54,6 +57,54 @@ const isSeat = id => typeof id === 'string' && id.startsWith('@') && id.length >
 
 /** @summary Canonical native identity spelling; producer admission owns maintainer authorization. */
 const canonicalSeat = id => typeof id === 'string' && /^@[A-Za-z0-9._-]{1,100}$/.test(id);
+
+/** @summary A row's `owner/name#number`, the name the merge line keys and reports it by. */
+const prKey = ({repo, number}) => `${repo}#${number}`;
+
+/**
+ * @summary The merge line: per repository, the open, non-draft rows a seat approved, oldest standing approval first.
+ * Each row behind one that holds its place maps to the nearest such row ahead of it, so a conflicting row rebases once,
+ * after that row merges, instead of after every merge into a file approved PRs share.
+ *
+ * An approval keeps its row's place across the row's own new heads: once the first row merges `dev` in, its approval
+ * judged an earlier head, yet that row still merges before the rows behind it. A row holds no place for others while its
+ * read is partial, a seat requested changes on its head, a close target is blocked or its author seat is absent; a row
+ * whose approval carries no time neither waits nor holds.
+ * @param {Object[]} rows The snapshot's open rows, as {@link holderOf} reads them.
+ * @param {Object} [options]
+ * @param {String[]|null} [options.absentSeats=null] Native seats that show no sign they can act; `null` when not read.
+ * @returns {Map<String,String>} Each waiting row's `owner/name#number` to that of the row it waits for.
+ */
+export function mergeLineOf(rows, {absentSeats = null} = {}) {
+    const
+        absent = new Set(absentSeats ?? []),
+        lines  = new Map(),
+        waits  = new Map(),
+        holds  = row => !row.partial && !row.blockedTargets?.length && !(row.owner?.kind === 'seat' && absent.has(row.owner.seat)) &&
+            !row.opinions.some(opinion => opinion.onHead && opinion.state === 'CHANGES_REQUESTED' && !opinion.bot && isSeat(opinion.reviewer));
+
+    for (const row of rows) {
+        const at = Math.min(...(Array.isArray(row?.opinions) ? row.opinions : [])
+            .filter(opinion => opinion.state === 'APPROVED' && !opinion.bot && isSeat(opinion.reviewer))
+            .map(opinion => Date.parse(opinion.at)).filter(Number.isFinite));
+
+        if (row.draft || typeof row.repo !== 'string' || !Number.isSafeInteger(row.number) || !Number.isFinite(at)) continue;
+
+        lines.has(row.repo) || lines.set(row.repo, []);
+        lines.get(row.repo).push({row, at})
+    }
+
+    for (const line of lines.values()) {
+        let ahead = null;
+
+        for (const {row} of line.sort((a, b) => a.at - b.at || a.row.number - b.row.number)) {
+            ahead && waits.set(prKey(row), prKey(ahead));
+            if (holds(row)) ahead = row
+        }
+    }
+
+    return waits
+}
 
 /**
  * @summary Reuses the outside-action boundary without assigning bots, drafts or organization members to it.
@@ -129,12 +180,14 @@ export function activeCiRepairClassification(row) {
  * @param {Object} [options]
  * @param {Object<String,String>|null} [options.seatFamilies=null] Native seat to its model family, from the
  *     plane's identity reads; `null` when not read.
+ * @param {Map<String,String>|null} [options.line=null] The snapshot's {@link mergeLineOf}; `null` decides per row.
  * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown',
- *     kind: 'approve-runs'|'triage-outside'|'repair-ci'|'address-changes'|'rebase'|'review'|'route-review'|'await-prerequisite'|'merge'|null,
- *     ids: String[], targets?: String[]}} `targets` names the still-blocked issues an `await-prerequisite` PR closes.
+ *     kind: 'approve-runs'|'triage-outside'|'repair-ci'|'address-changes'|'rebase'|'await-merge-turn'|'review'|'route-review'|'await-prerequisite'|'merge'|null,
+ *     ids: String[], targets?: String[], ahead?: String}} `targets` names the still-blocked issues an `await-prerequisite`
+ *     PR closes; `ahead`, the PR an `await-merge-turn` PR waits for.
  */
 export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions, disclosedFamilies = [], blockedTargets = [], targetsComplete = false,
-    repo, number, head, ciRepairEvidence = null, ciRepairClassification = null, ciRepairRead = null}, {seatFamilies = null} = {}) {
+    repo, number, head, ciRepairEvidence = null, ciRepairClassification = null, ciRepairRead = null}, {seatFamilies = null, line = null} = {}) {
     const incomplete = partial || !Array.isArray(requested) || !Array.isArray(reviews) || !Array.isArray(opinions);
     requested = Array.isArray(requested) ? requested : [];
     reviews = Array.isArray(reviews) ? reviews : [];
@@ -182,8 +235,11 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
         const integratesRed       = ci === 'red' && !draft && (eligible || owner?.kind === 'unowned' || owner?.kind === 'seat' && isSeat(owner.seat)) &&
             opinions.some(independentApproval);
         if (ci === 'green' || integratesRed) {
-            return eligible ? {role: 'rotation', kind: 'rebase', ids: []}
-                : {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
+            const
+                rebase = eligible ? {role: 'rotation', kind: 'rebase', ids: []} : {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []},
+                ahead  = line?.get(prKey({repo, number}));
+
+            return ahead ? {...rebase, kind: 'await-merge-turn', ahead} : rebase
         }
     }
 

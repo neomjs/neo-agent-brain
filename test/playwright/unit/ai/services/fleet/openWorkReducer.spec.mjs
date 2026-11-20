@@ -411,6 +411,15 @@ test.describe('openWorkReducer — transitions, never a holder-only diff (#760)'
             .toEqual([{kind: 'head', verdict: 'CHANGES_REQUESTED'}, {kind: 'verdict', by: ['@neo-gpt']}])
     });
 
+    test('an opinion keeps when its review was submitted, the order of the merge line (#1869)', () => {
+        const approval = extra => ({state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: 'a1'}, ...extra});
+
+        expect(normalizePullRequest(node({verdict: 'APPROVED', reviews: [approval({submittedAt: '2026-11-19T23:10:00Z'})]}), identities).opinions)
+            .toEqual([{reviewer: '@neo-gpt', state: 'APPROVED', onHead: true, at: '2026-11-19T23:10:00Z'}]);
+        // a review read without its time orders nothing
+        expect(normalizePullRequest(node({verdict: 'APPROVED', reviews: [approval()]}), identities).opinions[0].at).toBe(null)
+    });
+
     test('each reviewer\'s latest review is kept, and whether it judged the current head', () => {
         const row = normalizePullRequest(node({head: 'b2', reviews: [
             {state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: 'b2'}},

@@ -84,6 +84,19 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         expect(read(() => null)).toEqual([])
     });
 
+    test('the projection reads the merge line the wake round decides with, and an absent author ahead releases it (#1869)', () => {
+        const
+            approval = minute => ({reviewer: '@neo-gpt', state: 'APPROVED', onHead: true, at: `2026-10-02T09:${minute}:00.000Z`}),
+            conflict = (number, minute, overrides) => ({...row(number), ci: 'green', verdict: 'APPROVED', mergeable: 'CONFLICTING', requested: [],
+                reviews: [approval(minute)], opinions: [approval(minute)], ...overrides}),
+            rows     = [conflict(7, 10, {owner: {kind: 'seat', seat: '@neo-opus-vega'}}), conflict(8, 20)],
+            read     = absentSeats => createFleetOpenWorkSource({producer: {getState: () => state({}, rows)}, now: at(1), absentSeats})
+                .readOpenWork().seats['@neo-opus-ada'].authored.map(({number, holder}) => [number, holder.kind, holder.ahead]);
+
+        expect(read(() => null)).toEqual([[8, 'await-merge-turn', 'acme/app#7']]);
+        expect(read(() => ['@neo-opus-vega'])).toEqual([[8, 'rebase', undefined]])
+    });
+
     test('awaitingMerge needs a complete read of the issues a PR closes: a stored pre-read row, a partial read or a blocked target stays out (#1768)', () => {
         const
             approval = {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},

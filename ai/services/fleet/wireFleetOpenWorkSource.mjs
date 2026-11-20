@@ -70,6 +70,20 @@ export function familiesOf(presence) {
 }
 
 /**
+ * @summary The seats the Fleet's verbose presence answer shows no sign of acting: presence `dark`, and a wake that is
+ * not `reachable`, since a receiver whose route lands can open a dark seat's session. Empty when unreadable. The
+ * projection and the wake round both read it, so a dark author's PR holds no place in either one's merge line.
+ * @param {Object|null} presence A verbose `who_is_online` payload: `{agents: [{identity, state, wake: {state}}]}`.
+ * @returns {String[]}
+ */
+export function absentOf(presence) {
+    const rows = Array.isArray(presence?.agents) ? presence.agents : [];
+
+    return rows.filter(row => typeof row?.identity === 'string' && row.state === 'dark' && row.wake?.state !== 'reachable')
+        .map(row => row.identity)
+}
+
+/**
  * @summary The GitHub repositories the seats work on: each working repository and other repository
  * without a non-GitHub `forge`.
  * @param {Object[]} definitions
@@ -392,13 +406,19 @@ export function wireFleetOpenWorkSource({
         timer               = setInterval(pulse, pulseMs);
 
     timer.unref?.();
-    // the pulse's last unexpired presence rows give the projection the families the wake round decides with
+    // the pulse's last unexpired presence rows give the projection the families and absent seats the wake round
+    // decides with
     bridge.openWorkSource = createFleetOpenWorkSource({
         producer,
         seatFamilies: () => {
             const rows = currentIdentityRows();
 
             return rows.length ? familiesOf({agents: rows}) : null
+        },
+        absentSeats: () => {
+            const rows = currentIdentityRows();
+
+            return rows.length ? absentOf({agents: rows}) : null
         }
     });
     pulse();

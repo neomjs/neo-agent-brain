@@ -15,7 +15,7 @@
  * `unobserved`, never shown as current work.
  */
 
-import {holderOf}                                                from './openWorkHolder.mjs';
+import {holderOf, mergeLineOf}                                   from './openWorkHolder.mjs';
 import {credentialRefusalOf}                                     from './seatGitIdentity.mjs';
 import {openWorkFreshness, STALE_AFTER_MS, UNAVAILABLE_AFTER_MS} from './openWorkFreshness.mjs';
 
@@ -24,15 +24,16 @@ import {openWorkFreshness, STALE_AFTER_MS, UNAVAILABLE_AFTER_MS} from './openWor
  * it. A row stored before the snapshot carried titles reads `null`.
  * @param {Object} row
  * @param {Boolean} stale
- * @param {Object<String,String>|null} seatFamilies The same seat-family map the wake round decides with.
+ * @param {{seatFamilies: Object<String,String>|null, line: Map<String,String>}} decide The seat families and the merge
+ *     line the wake round decides with.
  * @returns {Object}
  * @private
  */
-function summaryOf(row, stale, seatFamilies) {
+function summaryOf(row, stale, decide) {
     const {repo, number, title, head, ci, verdict, mergeable, draft, reviews, reviewRecords, observedAt} = row;
 
     return {repo, number, title: title ?? null, head, ci, verdict, mergeable, draft, reviews: reviews ?? [],
-        ...reviewRecords ? {reviewRecords} : {}, observedAt, stale, holder: holderOf(row, {seatFamilies})}
+        ...reviewRecords ? {reviewRecords} : {}, observedAt, stale, holder: holderOf(row, decide)}
 }
 
 /**
@@ -55,10 +56,12 @@ function emptySeatWork() {
  * @param {Number}   [options.unavailableAfterMs]
  * @param {Object<String,String>|null} [options.seatFamilies=null] Seat to model family, from the presence read: an
  *     outside PR that names a model reads approved only from a seat of a known other family, as in the wake round.
+ * @param {String[]|null} [options.absentSeats=null] Seats the presence read shows no sign of acting: a row ahead in
+ *     the merge line whose author is one of them holds no place, as in the wake round.
  * @returns {{state: 'ok'|'stale'|'unavailable', observedAt: String|null, coverage: String, reason: String|null,
  *     detail: String|null, unobserved: Number, seats: Object<String, {authored: Object[], reviewing: Object[], credentialRefusal: Object|null, tokenExpiresAt: String|null}>, awaitingMerge: Object[]}}
  */
-export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unavailableAfterMs = UNAVAILABLE_AFTER_MS, seatFamilies = null}) {
+export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unavailableAfterMs = UNAVAILABLE_AFTER_MS, seatFamilies = null, absentSeats = null}) {
     const
         time          = now(),
         freshnessOf   = observedAt => openWorkFreshness(observedAt, {now: time, staleAfterMs, unavailableAfterMs}),
@@ -82,9 +85,12 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
         return {state: 'unavailable', observedAt: state?.observedAt ?? null, coverage: 'unavailable', reason: state?.reason ?? null, detail: state?.detail ?? null, unobserved: 0, seats, awaitingMerge}
     }
 
+    const
+        rows   = Object.values(state.snapshot?.rows ?? {}),
+        decide = {seatFamilies, line: mergeLineOf(rows, {absentSeats})};
     let unobserved = 0;
 
-    for (const row of Object.values(state.snapshot?.rows ?? {})) {
+    for (const row of rows) {
         const rowFreshness = freshnessOf(row.observedAt);
 
         if (rowFreshness === 'unavailable') {
@@ -92,7 +98,7 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
             continue
         }
 
-        const summary = summaryOf(row, rowFreshness === 'stale', seatFamilies);
+        const summary = summaryOf(row, rowFreshness === 'stale', decide);
 
         row.owner?.seat && seat(row.owner.seat).authored.push(summary);
         row.requested.filter(id => id.startsWith('@')).forEach(id => seat(id).reviewing.push(summary));
@@ -117,11 +123,12 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
  * @param {{getState: Function}} options.producer
  * @param {Function} [options.now]
  * @param {Function} [options.seatFamilies] `() → Object<String,String>|null`, the seats' families at each read.
+ * @param {Function} [options.absentSeats] `() → String[]|null`, the seats showing no sign of acting at each read.
  * @param {Number}   [options.staleAfterMs]
  * @param {Number}   [options.unavailableAfterMs]
  * @returns {{readOpenWork: Function}}
  */
-export function createFleetOpenWorkSource({producer, now = () => Date.now(), seatFamilies = () => null, ...bounds}) {
+export function createFleetOpenWorkSource({producer, now = () => Date.now(), seatFamilies = () => null, absentSeats = () => null, ...bounds}) {
     return {
         /**
          * @summary One seat's open work, or every seat's, under the producer's envelope. The
@@ -131,7 +138,7 @@ export function createFleetOpenWorkSource({producer, now = () => Date.now(), sea
          * @returns {Object}
          */
         readOpenWork({seat = null} = {}) {
-            const projection = projectOpenWork(producer.getState(), {now, ...bounds, seatFamilies: seatFamilies()});
+            const projection = projectOpenWork(producer.getState(), {now, ...bounds, seatFamilies: seatFamilies(), absentSeats: absentSeats()});
 
             return seat
                 ? {...projection, seats: {[seat]: projection.seats[seat] ?? emptySeatWork()}}

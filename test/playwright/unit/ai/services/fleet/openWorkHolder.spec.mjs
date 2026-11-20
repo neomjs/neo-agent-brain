@@ -1,5 +1,5 @@
-import {expect, test}          from '@playwright/test';
-import {holderOf, responderOf} from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
+import {expect, test}                       from '@playwright/test';
+import {holderOf, mergeLineOf, responderOf} from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
 
 const CI_HEAD          = 'a'.repeat(40), CI_KEY = '1'.repeat(64);
 const ciEvidence       = (extra = {}) => ({head: CI_HEAD, key: CI_KEY, failedChecks: ['unit'], ...extra});
@@ -338,6 +338,66 @@ test.describe('openWorkHolder — a close target still blocked holds the merge f
         expect(holderOf(approved({...blocked, ci: 'red'}))).toEqual({role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']});
         expect(holderOf(approved({...blocked, mergeable: 'CONFLICTING'}))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
         expect(holderOf(approved({...blocked, draft: true}))).toEqual({role: 'none', kind: null, ids: []})
+    })
+});
+
+test.describe('openWorkHolder — one merge wakes one rebase: the merge line (#1869)', () => {
+    const
+        // an approval standing since 23:<minute>, on the head or an earlier one
+        approval = (minute, onHead = true) => ({reviewer: '@neo-gpt', state: 'APPROVED', onHead, at: `2026-11-19T23:${String(minute).padStart(2, '0')}:00Z`}),
+        pr       = (number, minute, overrides = {}) => row({repo: 'neomjs/neo', number, mergeable: 'CONFLICTING',
+            reviews: [approval(minute)], opinions: [approval(minute)], ...overrides}),
+        rebase   = {role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']},
+        waits    = ahead => ({role: 'author', kind: 'await-merge-turn', ids: ['@neo-opus-ada'], ahead}),
+        holders  = (rows, options) => {
+            const line = mergeLineOf(rows, options);
+
+            return rows.map(item => holderOf(item, {line}))
+        };
+
+    test('three approved PRs that conflict after one merge hold one rebase, and two name the PR they wait for (AC-1)', () => {
+        expect(holders([pr(3, 30), pr(1, 10), pr(2, 20)])).toEqual([waits('neomjs/neo#2'), rebase, waits('neomjs/neo#1')])
+    });
+
+    test('once the PR ahead merges or closes, the next one rebases (AC-2)', () => {
+        // the first PR is no longer an open row
+        expect(holders([pr(2, 20), pr(3, 30)])).toEqual([rebase, waits('neomjs/neo#2')])
+    });
+
+    test('the first PR keeps its place after it merges dev in: its approval stands on an earlier head', () => {
+        const integrated = pr(1, 10, {mergeable: 'MERGEABLE', reviews: [approval(10, false)], opinions: [approval(10, false)]});
+
+        expect(holders([integrated, pr(2, 20)])).toEqual([{role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']}, waits('neomjs/neo#1')])
+    });
+
+    test('a row ahead with changes requested on its head, a blocked close target, a draft or an absent author releases the line', () => {
+        const vega = {owner: {kind: 'seat', seat: '@neo-opus-vega', login: 'neo-opus-vega'}};
+
+        for (const [ahead, options] of [
+            [{opinions: [approval(10), {...review('CHANGES_REQUESTED'), reviewer: '@neo-opus-grace'}]}],
+            [{blockedTargets: ['neomjs/neo#21539']}],
+            [{draft: true}],
+            [vega, {absentSeats: ['@neo-opus-vega']}]
+        ]) {
+            expect(holders([pr(1, 10, ahead), pr(2, 20)], options)[1]).toEqual(rebase)
+        }
+        // a seat that is not absent still holds its place
+        expect(holders([pr(1, 10, vega), pr(2, 20)], {absentSeats: ['@neo-opus-grace']})[1]).toEqual(waits('neomjs/neo#1'))
+    });
+
+    test('the line is per repository, and a row whose approval has no time neither waits nor holds', () => {
+        const untimed = {reviews: [review('APPROVED')], opinions: [review('APPROVED')]};
+
+        expect(holders([pr(1, 10), pr(2, 20, {repo: 'neomjs/neo-agent-brain'})])).toEqual([rebase, rebase]);
+        expect(holders([pr(1, 10, untimed), pr(2, 20)])).toEqual([rebase, rebase]);
+        expect(holders([pr(1, 10), pr(2, 20, untimed)])).toEqual([rebase, rebase])
+    });
+
+    test('only a rebase waits: a merge chip keeps its holder, an outside conflict waits as the rotation\'s, and no line decides per row', () => {
+        expect(holders([pr(1, 10), pr(2, 20, {mergeable: 'MERGEABLE'})])[1]).toEqual({role: 'operator', kind: 'merge', ids: []});
+        expect(holders([pr(1, 10), pr(2, 20, {owner: outside})])[1])
+            .toEqual({role: 'rotation', kind: 'await-merge-turn', ids: [], ahead: 'neomjs/neo#1'});
+        expect(holderOf(pr(2, 20))).toEqual(rebase)
     })
 });
 
