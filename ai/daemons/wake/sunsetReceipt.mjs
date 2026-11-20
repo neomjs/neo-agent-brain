@@ -262,7 +262,7 @@ export function readSunsetReceipt(db, identity, {sinceIso, nowIso = new Date().t
             sessionRotation  : receipt.properties.sessionRotation ?? null
         },
         oldSessionId,
-        successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt} : null,
+        successor      : marker ? {id: marker.id, sentAt: marker.properties.sentAt, originSessionId: marker.properties.originSessionId ?? null} : null,
         promptedTurnAt : stamped ? stamped.promptedAt : promptedAt || null,
         liveTurnUntil  : stamped ? stamped.liveTurnUntil : liveUntil || null,
         writerClosedAt : stamped ? stamped.closedAt : closedAt,

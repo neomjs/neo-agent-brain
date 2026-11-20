@@ -4622,7 +4622,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(GraphService.db.nodes.get(malformedId).properties).not.toHaveProperty('writerTurn');
     });
 
-    test('#1739 a sunset handover to self carries the server session as originSessionId; a note to self and a message to a peer carry none', async () => {
+    test('#1739 + #1872 a sunset handover to self and the successor marker that answers it carry the server session as originSessionId; a note to self and a message to a peer carry none', async () => {
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
             await PermissionService.grantPermission({ to: '@alice', scope: 'CAN_REPLY_TO' });
         });
@@ -4632,14 +4632,18 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         await RequestContextService.run({ agentIdentityNodeId: '@alice' }, async () => {
             const send = async (key, args) => { ids[key] = (await MailboxService.addMessage(args, { serverSessionId: 'session-writer' })).messageId };
 
-            await send('handover', { to: '@alice', subject: 'Sunset handover', body: 'handover payload', taggedConcepts: ['sunset-protocol-handover'], wakeSuppressed: true });
-            await send('note',     { to: '@alice', subject: 'a note to self', body: 'note' });
-            await send('peer',     { to: '@bob', subject: 'a peer message', body: 'hello', taggedConcepts: ['sunset-protocol-handover'] });
+            await send('handover',      { to: '@alice', subject: 'Sunset handover', body: 'handover payload', taggedConcepts: ['sunset-protocol-handover'], wakeSuppressed: true });
+            await send('successor',     { to: '@alice', subject: '[sunset successor] MESSAGE:handover', body: 'picked up', taggedConcepts: ['sunset-successor'], wakeSuppressed: true });
+            await send('note',          { to: '@alice', subject: 'a note to self', body: 'note' });
+            await send('peer',          { to: '@bob', subject: 'a peer message', body: 'hello', taggedConcepts: ['sunset-protocol-handover'] });
+            await send('peerSuccessor', { to: '@bob', subject: 'a peer message', body: 'hello', taggedConcepts: ['sunset-successor'] });
         });
 
-        expect(GraphService.db.nodes.get(ids.handover).properties.originSessionId).toBe('session-writer');
+        for (const key of ['handover', 'successor']) {
+            expect(GraphService.db.nodes.get(ids[key]).properties.originSessionId, key).toBe('session-writer');
+        }
 
-        for (const key of ['note', 'peer']) {
+        for (const key of ['note', 'peer', 'peerSuccessor']) {
             expect(Object.hasOwn(GraphService.db.nodes.get(ids[key]).properties, 'originSessionId'), key).toBe(false);
         }
     });

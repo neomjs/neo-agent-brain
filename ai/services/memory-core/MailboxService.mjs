@@ -3464,7 +3464,8 @@ class MailboxService extends Base {
      *   can later prove from the stores whether this message was accepted. Internal callers only.
      * @param {String|null} [options.serverSessionId=null] The request's Memory Core session, passed by the
      *   MCP write boundary. A sunset handover to self keeps it as `originSessionId`, so the plane can tell
-     *   its writer's closing `add_memory` (saved under the same session) from another session's.
+     *   its writer's closing `add_memory` (saved under the same session) from another session's; the
+     *   successor marker that answers it keeps it too, so a completed rotation names its new session.
      * @returns {Promise<Object>}
      */
     async addMessage(args = {}, {deferProjection = false, messageId: plannedMessageId = null, serverSessionId = null} = {}) {
@@ -3897,7 +3898,7 @@ class MailboxService extends Base {
             ...writerStamp({writerKey, writerTurn})
         };
 
-        if (serverSessionId && to === sentBy && taggedConcepts.includes('sunset-protocol-handover')) {
+        if (serverSessionId && to === sentBy && ['sunset-protocol-handover', 'sunset-successor'].some(tag => taggedConcepts.includes(tag))) {
             messageProperties.originSessionId = serverSessionId
         }
 
