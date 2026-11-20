@@ -35,6 +35,19 @@ export function normalizeExpectedPlaneTarget(value) {
 }
 
 /**
+ * @summary Validates the atomic resolved seat target tuple without decoding config or inheriting object fields.
+ * @param {*} value Resolved [planeId, dataRoot]; null is absent and [] is explicitly invalid.
+ * @returns {Object|null} Detached target accepted by the wire proof, or null.
+ */
+export function normalizeSeatPlaneTarget(value) {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return null;
+    const fields = Object.getOwnPropertyDescriptors(value);
+    if (Reflect.ownKeys(fields).length !== 3 || fields.length.value !== 2 || ['0', '1'].some(key =>
+        !Object.hasOwn(fields, key) || !fields[key].enumerable || !Object.hasOwn(fields[key], 'value'))) return null;
+    return normalizeExpectedPlaneTarget({planeId: fields[0].value, dataRoot: fields[1].value});
+}
+
+/**
  * The Memory Core's route below a plane endpoint — the one every plane client composes (`<base>/mc/mcp`; the
  * ingress routes `/mc/*` to it and answers 404 elsewhere).
  * @type {String}

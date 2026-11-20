@@ -1216,8 +1216,11 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         expect(calls).toEqual(['golden-path']);
     });
 
-    test('passes deployment-mode repo enrichment toggle into golden path synthesis', async () => {
-        const calls = [];
+    test('passes deployment-mode repo enrichment toggle and viewer-bound family reader into golden path synthesis', async () => {
+        const calls       = [],
+              familyReads = [],
+              viewer      = Object.freeze({__typename: 'User', databaseId: 123, login: 'neo-gpt-emmy'}),
+              source      = Object.freeze({state: 'unavailable', code: 'family-source-fenced'});
 
         const orchestrator = createTestOrchestrator({
             kbSyncEnabled                  : false,
@@ -1234,14 +1237,25 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
             }
         });
 
+        orchestrator.readFamilySource = async function(candidate) {
+            familyReads.push({viewer: candidate, owner: this});
+            return source;
+        };
+
         orchestrator.poll();
         await Promise.resolve();
 
         expect(calls).toEqual([
             {
-                repoEnrichmentEnabled: false
+                repoEnrichmentEnabled: false,
+                readFamilySource     : expect.any(Function)
             }
         ]);
+        expect(familyReads).toEqual([]);
+        await expect(calls[0].readFamilySource(viewer)).resolves.toBe(source);
+        expect(familyReads).toHaveLength(1);
+        expect(familyReads[0].viewer).toBe(viewer);
+        expect(familyReads[0].owner).toBe(orchestrator);
     });
 
     test('keeps continuous daemon supervision outside heavy maintenance backpressure', () => {

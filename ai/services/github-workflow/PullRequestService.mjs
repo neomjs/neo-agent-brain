@@ -11,12 +11,10 @@ import RepositoryService                  from './RepositoryService.mjs';
 import {validateMergeReady}               from '../../scripts/lifecycle/validateMergeReady.mjs';
 import {mergeHoldToken, resolveMergeHold} from './shared/mergeHoldTokens.mjs';
 import {
-    groupReviewsByFamily,
-    parseSelfIdLogin,
-    resolveAuthorFamilyFromLogins,
-    resolveCrossFamilyVerdict,
-    resolveReviewerFamily
-}                           from '../graph/agentFamilyResolution.mjs';
+    createAdmittedFamilyResolver,
+    normalizeFamilyActor,
+    parseBoundSelfIdKey
+}                           from '../graph/admittedFamilyResolution.mjs';
 import {disclosedFamiliesOf} from '../graph/disclosedModelFamilies.mjs';
 import {
     ADD_PULL_REQUEST_REVIEW,
@@ -27,6 +25,7 @@ import {
 }                                              from './queries/mutations.mjs';
 import {
     buildPullRequestsWithBeliefQuery,
+    FETCH_FAMILY_REVIEW_SUMMARIES,
     FETCH_PULL_REQUESTS,
     GET_CONVERSATION,
     GET_MERGE_READINESS
@@ -542,9 +541,12 @@ function selectLatestWorkflowContexts(contexts) {
     return {contexts: selected, readable};
 }
 
-function normalizeMergeReadinessSnapshot(pullRequest) {
+function normalizeMergeReadinessSnapshot(pullRequest, viewer) {
     if (!pullRequest) {
         throw createCodedError('PR_NOT_FOUND', 'The pull request does not exist or is not visible.');
+    }
+    if (typeof pullRequest.body !== 'string') {
+        throw createCodedError('PR_SOURCE_UNREADABLE', 'The pull-request body was not acquired; author identity and disclosure are unavailable.');
     }
 
     const reviewConnection = pullRequest.reviewRequests;
@@ -563,7 +565,7 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
         // `login` rides along because the cross-family mandate is a question about WHO approved,
         // and this map is the only place the reviewer identity survives into the snapshot. It is
         // drift-safe: a login is a fixed property of a node whose arrival already moves this array.
-        .map(node => ({oid: node.commit.oid, submittedAt: node.submittedAt, login: node.author?.login ?? null}))
+        .map(node => ({oid: node.commit.oid, submittedAt: node.submittedAt, author: normalizeFamilyActor(node.author)}))
         // Sorted rather than trusting connection order: the caller reads `.at(-1)` as "latest", and
         // an ordering assumption that holds today would fail silently — as a WRONG anchor, not a
         // missing one. `oid` breaks ties so two approvals sharing a timestamp stay deterministic
@@ -579,6 +581,9 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
 
     return {
         number          : pullRequest.number,
+        createdAt       : pullRequest.createdAt ?? null,
+        viewer          : normalizeFamilyActor(viewer),
+        author          : normalizeFamilyActor(pullRequest.author),
         state           : pullRequest.state,
         mergedAt        : pullRequest.mergedAt,
         baseRefName     : pullRequest.baseRefName,
@@ -586,12 +591,9 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
         mergeStateStatus: pullRequest.mergeStateStatus,
         reviewDecision  : pullRequest.reviewDecision,
         authorLogin     : pullRequest.author?.login ?? null,
-        // The DERIVED self-id, never the body itself. This snapshot is compared by
-        // `stableStringify` across two reads to detect source drift, so carrying the raw `body`
-        // would make any prose edit mid-read invalidate the observation. Parsing once and keeping
-        // only the declared author login points the drift signal at what matters: a change to the
-        // declared author invalidates the read, a typo fix in the description does not.
-        authorSelfIdLogin: parseSelfIdLogin(pullRequest.body ?? '') ?? null,
+        // Only a protected founding identityKey can bind this literal self-id. A social name alone
+        // falls back to the immutable opener. Carry the derived key so unrelated prose edits do not drift the read.
+        authorSelfIdLogin: parseBoundSelfIdKey(pullRequest.body ?? '') ?? null,
         // An outside author's family is the one the pull request names, so the snapshot keeps
         // GitHub's association and the DERIVED families, never the body or the commit messages.
         // Commits past the read may name more families, so a read that did not reach the end says so.
@@ -600,7 +602,7 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
             body          : pullRequest.body ?? '',
             commitMessages: (pullRequest.commitMessages?.nodes || []).map(node => node?.commit?.message)
         }),
-        authorDisclosureTruncated: pullRequest.commitMessages?.pageInfo?.hasNextPage !== false,
+        authorDisclosureTruncated: !hasCompleteReviewDisclosures(pullRequest),
         // DERIVED hold facts, never raw comment bodies. Same reasoning as `authorSelfIdLogin`: this
         // snapshot is compared by `stableStringify` across two reads, so carrying comment text would
         // make any peer's unrelated comment invalidate the observation. Only comments bearing a
@@ -635,7 +637,9 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
             nodes      : reviewers
         },
         approvals       : {
-            available      : Boolean(reviewsConnection && Array.isArray(reviewsConnection.nodes)),
+            available      : Boolean(reviewsConnection && Array.isArray(reviewsConnection.nodes) &&
+                reviewsConnection.nodes.every(node => node &&
+                    ['PENDING', 'COMMENTED', 'APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(node.state))),
             hasPreviousPage: Boolean(reviewsConnection?.pageInfo?.hasPreviousPage),
             nodes          : approvals
         },
@@ -803,13 +807,45 @@ function createMergeReadinessFailure({
     });
 }
 
+/** @summary Requires the complete queried disclosure population, never a missing array masquerading as empty. */
+function hasCompleteReviewDisclosures(pr) {
+    return typeof pr.body === 'string' && Array.isArray(pr.commitMessages?.nodes) &&
+        pr.commitMessages.pageInfo?.hasNextPage === false &&
+        pr.commitMessages.nodes.every(node => typeof node?.commit?.message === 'string');
+}
+
+/**
+ * @summary Captures a whole authenticated operation or refuses an incomplete internal test binding.
+ * @param {Object} dependencies Optional complete query/rest/source bundle; omitted means production.
+ * @returns {Promise<Object>} One immutable credential/endpoint acquisition.
+ */
+async function acquireReviewOperation({query, rest, source} = {}) {
+    if (query === undefined && rest === undefined && source === undefined) {
+        return GraphqlService.createOperationClient();
+    }
+    if (typeof query !== 'function' || typeof rest !== 'function' || source?.authProvider !== 'github' ||
+        typeof source.providerBaseUrl !== 'string' || !source.providerBaseUrl) {
+        throw createCodedError('GITHUB_SOURCE_UNBOUND', 'A complete authenticated query/rest/source acquisition is required.');
+    }
+    return {query, rest, source};
+}
+
+/** @summary Compares the operation's original provider viewer with the independently bound tool principals. */
+function reviewViewerMatches(viewer, principals) {
+    return viewer?.__typename === 'User' && viewer.databaseId !== null && viewer.login &&
+        viewer.login === principals.githubLogin;
+}
+
 async function buildMergeReadinessProjection({
     prNumber,
     identityAssertion,
     owner = aiConfig.owner,
     repo = aiConfig.repo,
-    query = GraphqlService.query.bind(GraphqlService),
-    rest = GraphqlService.rest.bind(GraphqlService),
+    query,
+    rest,
+    source,
+    readFamilySource,
+    requireIdentity = true,
     now = () => new Date()
 }) {
     const observedValue = now();
@@ -826,7 +862,7 @@ async function buildMergeReadinessProjection({
         ...options
     });
 
-    if (!identityAssertion?.ok || !principals.agentIdentity || !principals.githubLogin) {
+    if (requireIdentity && (!identityAssertion?.ok || !principals.agentIdentity || !principals.githubLogin)) {
         return fail({
             code   : 'IDENTITY_BINDING_MISSING',
             message: 'The merge-readiness projection requires bound AgentIdentity and GitHub principals.',
@@ -834,14 +870,24 @@ async function buildMergeReadinessProjection({
         });
     }
 
-    const identityBindingComplete = Boolean(principals.memoryCoreIdentity);
+    const identityBindingComplete = requireIdentity && Boolean(principals.memoryCoreIdentity);
+
+    try {
+        ({query, rest, source} = await acquireReviewOperation({query, rest, source}));
+    } catch (error) {
+        return fail({code: error.code || 'GITHUB_SOURCE_UNBOUND', message: error.message});
+    }
 
     const variables = {owner, repo, prNumber};
     let firstSnapshot;
 
     try {
         const data = await query(GET_MERGE_READINESS, variables);
-        firstSnapshot = normalizeMergeReadinessSnapshot(data?.repository?.pullRequest);
+        firstSnapshot = normalizeMergeReadinessSnapshot(data?.repository?.pullRequest, data?.viewer);
+        if (!requireIdentity) principals.githubLogin = firstSnapshot.viewer.login;
+        if (!reviewViewerMatches(firstSnapshot.viewer, principals)) {
+            return fail({code: 'GITHUB_VIEWER_MISMATCH', message: 'The captured forge viewer does not match the bound tool identity.'});
+        }
         audit.push({source: 'github-graphql:pull-request-readiness', call: 1, outcome: 'read'});
     } catch (error) {
         return fail({
@@ -870,7 +916,7 @@ async function buildMergeReadinessProjection({
 
     try {
         const data = await query(GET_MERGE_READINESS, variables);
-        finalSnapshot = normalizeMergeReadinessSnapshot(data?.repository?.pullRequest);
+        finalSnapshot = normalizeMergeReadinessSnapshot(data?.repository?.pullRequest, data?.viewer);
         audit.push({source: 'github-graphql:pull-request-readiness', call: 2, outcome: 'read'});
     } catch (error) {
         return fail({
@@ -977,40 +1023,35 @@ async function buildMergeReadinessProjection({
     const approvedAtOid = snapshot.approvals.available
         ? snapshot.approvals.nodes.at(-1)?.oid
         : undefined;
-    // The §6.1 mandate, resolved here rather than inside the predicate so `validateMergeReady`
-    // stays a pure function over primitives. `approvals.nodes` is already filtered to APPROVED
-    // upstream, so re-stamping the state is a shape adapter, not a second filter.
-    //
-    // Unavailable approvals yield `undefined`, NOT an empty verdict: "the reviews were not fetched"
-    // and "nobody from another family approved" are different facts, and only the first should read
-    // as an unresolved gate. Collapsing them would report a mandate breach for a connection error.
-    //
-    // The author family resolves from the CANONICAL self-id first, opener login only as fallback.
-    // The GitHub opener can mis-resolve — an MCP `@me` drift stamps a different agent's login on the
-    // PR — and a gate reading the opener would let that drift decide merge eligibility: a body
-    // declaring a Claude author, opened under a GPT login, would certify on a same-family approval.
-    //
-    // `approvalsTruncated` rides along because the connection is bounded: a positive witness inside
-    // the window is decisive, a negative over a truncated one is missing evidence.
-    //
-    // An author who is neither rostered nor a member is an outside author, whose family is the one
-    // the pull request names (`authorDisclosedFamilies`); the verdict compares approvals against it.
+    // One registered, qualified snapshot supplies every actor and historical interval in this decision.
+    let familySource = {state: 'unavailable', code: 'family-source-unconfigured'};
+    try {
+        if (typeof readFamilySource === 'function') familySource = await readFamilySource(snapshot.viewer);
+    } catch {
+        familySource = {state: 'unavailable', code: 'family-source-unavailable'};
+    }
+    const familyResolver = createAdmittedFamilyResolver({source: familySource,
+        providerBaseUrl: source.providerBaseUrl, observedAt});
     const crossFamilyVerdict = snapshot.approvals.available
         ? {
-            ...resolveCrossFamilyVerdict({
-                authorFamily       : resolveAuthorFamilyFromLogins({
-                    selfIdLogin: snapshot.authorSelfIdLogin,
-                    openerLogin: snapshot.authorLogin
-                }, undefined, {warn: logger.warn}) ?? null,
+            ...familyResolver.resolveVerdict({
+                author             : snapshot.author,
+                createdAt          : snapshot.createdAt,
+                selfIdIdentityKey  : snapshot.authorSelfIdLogin,
                 authorAssociation  : snapshot.authorAssociation,
                 disclosedFamilies  : snapshot.authorDisclosedFamilies,
                 disclosureTruncated: snapshot.authorDisclosureTruncated,
                 approvalsTruncated : snapshot.approvals.hasPreviousPage,
-                reviews            : snapshot.approvals.nodes.map(node => ({state: 'APPROVED', author: {login: node.login}}))
+                reviews            : snapshot.approvals.nodes.map(node => ({...node, state: 'APPROVED'}))
             }),
             authorLogin: snapshot.authorSelfIdLogin || snapshot.authorLogin
         }
         : undefined;
+    const familyUnavailable = crossFamilyVerdict?.sourceState !== 'available' || crossFamilyVerdict?.qualified === false;
+    if (familyUnavailable) {
+        sourceBlockers.push({code: crossFamilyVerdict?.code || 'family-evidence-unavailable',
+            message: 'Family evidence could not be qualified; reconcile the named source or historical classification before certifying readiness.'});
+    }
 
     // The reviewer-hold gate. Unavailable comments yield `undefined` rather than an empty verdict:
     // "the comments were not fetched" and "nobody is holding" are different facts, and only the
@@ -1038,7 +1079,9 @@ async function buildMergeReadinessProjection({
     });
     const sourceMergeReady    = predicate.strictMergeReady && sourceBlockers.length === 0;
     const certifiedMergeReady = sourceMergeReady && identityBindingComplete;
-    const certification       = identityBindingComplete
+    const certification       = !requireIdentity
+        ? {outcome: 'read-only-observation', code: null, missingPrincipals: [], affects: ['b-prime-certification']}
+        : identityBindingComplete
         ? {
             outcome          : sourceMergeReady ? 'issued' : 'withheld-artifact-not-ready',
             code             : null,
@@ -1074,11 +1117,13 @@ async function buildMergeReadinessProjection({
         mergedAt       : snapshot.mergedAt,
         observedAt,
         principals,
+        acquisition    : {...source, viewer: snapshot.viewer},
         identityBinding: {
             complete: identityBindingComplete,
-            missing : identityBindingComplete ? [] : ['memoryCoreIdentity']
+            missing : identityBindingComplete ? [] : requireIdentity ? ['memoryCoreIdentity'] : ['agentIdentity', 'memoryCoreIdentity']
         },
         requiredSet,
+        familyVerdict: crossFamilyVerdict,
         contextStates: comparison.requiredStates,
         approvalAnchors,
         predicate
@@ -1090,18 +1135,19 @@ async function buildMergeReadinessProjection({
         observationId,
         mergeStateStatus: snapshot.mergeStateStatus,
         reviewDecision  : snapshot.reviewDecision,
+        approvedAt      : snapshot.approvals.nodes.at(-1)?.submittedAt ?? null,
         reviewRequests  : reviewRequests ?? null,
         emittedContexts : snapshot.checks.nodes,
         emittedOnly     : comparison.emittedOnly,
         checksGreen,
         checksVerdict,
-        verdict         : sourceMergeReady ? 'merge-ready-observed' : 'not-merge-ready',
+        verdict         : familyUnavailable ? 'unavailable' : sourceMergeReady ? 'merge-ready-observed' : 'not-merge-ready',
         certification,
         // Artifact truth leads; instrument truth follows as an independent clause. An unbound
         // certifier is equally unbound on a perfect and a broken PR, so it cannot rewrite the
         // artifact verdict or enter the blocker set.
         statement       : sourceMergeReady
-            ? `Observed strict merge-ready at ${observedAt} for ${owner}/${repo}#${prNumber} head ${snapshot.headRefOid}.${predicate.advisories.length > 0 ? ` ${predicate.advisories.length} ${predicate.advisories.length === 1 ? 'advisory requires' : 'advisories require'} a reader judgement before merge — see 'advisories'.` : ''}${!identityBindingComplete ? ' B-prime certification is unavailable because Memory Core identity is unbound; this does not change merge eligibility.' : ''}`
+            ? `Observed strict merge-ready at ${observedAt} for ${owner}/${repo}#${prNumber} head ${snapshot.headRefOid}.${predicate.advisories.length > 0 ? ` ${predicate.advisories.length} ${predicate.advisories.length === 1 ? 'advisory requires' : 'advisories require'} a reader judgement before merge — see 'advisories'.` : ''}${!requireIdentity ? ' Read-only host observation; no maintainer certificate was requested.' : !identityBindingComplete ? ' B-prime certification is unavailable because Memory Core identity is unbound; this does not change merge eligibility.' : ''}`
             : `Did not observe strict merge-readiness at ${observedAt} for ${owner}/${repo}#${prNumber} head ${snapshot.headRefOid}.`,
         blockers: [
             ...sourceBlockers,
@@ -1124,7 +1170,7 @@ async function buildMergeReadinessProjection({
             {source: 'validateMergeReady', call: 1, outcome: sourceMergeReady ? 'positive' : 'negative'},
             {
                 source : 'memory-core-identity',
-                outcome: identityBindingComplete ? 'bound' : 'unbound-certification-withheld'
+                outcome: !requireIdentity ? 'read-only-observation' : identityBindingComplete ? 'bound' : 'unbound-certification-withheld'
             }
         ],
         ...(certifiedMergeReady ? {marker: `[merge-eligible][B-prime:${observationId}]`} : {})
@@ -3313,8 +3359,9 @@ function resolveReviewBudgetActivation({
  * @param {Number} options.pr_number PR number.
  * @param {Object} options.pullRequest GraphQL PR projection.
  * @param {String} [options.reviewBudgetOverrideReason] Named bypass reason.
- * @param {String|null} options.reviewerLogin Authenticated submitting login; the budget is charged to
- * its family, and an unclassifiable login is refused rather than granted a free round.
+ * @param {Object} options.reviewer Original authenticated provider actor from this operation.
+ * @param {Object} options.familyResolver Qualified temporal reader for this decision's one snapshot.
+ * @param {String} options.observedAt Evaluation time for the prospective submission.
  * @returns {{failure: Object|null, body: String, audit: Object|null}}
  */
 function validatePrReviewBudget({
@@ -3326,7 +3373,9 @@ function validatePrReviewBudget({
     pr_number,
     pullRequest,
     reviewBudgetOverrideReason,
-    reviewerLogin
+    reviewer,
+    familyResolver,
+    observedAt
 }) {
     const activatedMs = Date.parse(activatedAt || '');
     const createdMs   = Date.parse(pullRequest?.createdAt || '');
@@ -3377,7 +3426,9 @@ function validatePrReviewBudget({
 
     const reviews = pullRequest?.reviews;
 
-    if (!Array.isArray(reviews?.nodes) || reviews?.pageInfo?.hasPreviousPage !== false) {
+    if (!Array.isArray(reviews?.nodes) || reviews?.pageInfo?.hasPreviousPage !== false ||
+        !reviews.nodes.every(review => review && typeof review.body === 'string' &&
+            ['PENDING', 'COMMENTED', 'APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state))) {
         return {
             failure: getReviewBudgetFailure(
                 pr_number,
@@ -3397,8 +3448,8 @@ function validatePrReviewBudget({
     // is this family's own rounds so far — not the PR's total. A global count let one family's exhausted
     // budget silence a family that had never reviewed, and let a family buy extra rounds by rotating
     // identities; both are answered by counting the same way the authority defines membership.
-    const reviewerFamily = resolveReviewerFamily({author: {login: reviewerLogin}});
-    const grouped        = groupReviewsByFamily(priorRequestChanges);
+    const reviewerFamily = familyResolver.classifyActor(reviewer, observedAt);
+    const grouped        = familyResolver.groupReviews(priorRequestChanges);
     const familyPrior    = reviewerFamily.classified ? (grouped.byFamily[reviewerFamily.family] || 0) : 0;
 
     const audit = {
@@ -3409,7 +3460,10 @@ function validatePrReviewBudget({
         reviewerFamily               : reviewerFamily.family,
         reviewerLogin                : reviewerFamily.login,
         familySubmittedRequestChanges: familyPrior,
-        unclassifiedPriorReviewers   : grouped.unclassified.map(entry => entry.login)
+        unclassifiedPriorReviewers   : grouped.unclassified.map(entry => entry.login),
+        familySource                 : {state: familyResolver.sourceState, code: familyResolver.code,
+            revision      : familyResolver.revision, foundingRevision: familyResolver.foundingRevision,
+            foundingDigest: familyResolver.foundingDigest}
     };
 
     // Fail CLOSED on a reviewer the identity graph cannot classify. The alternative reads as
@@ -3426,6 +3480,15 @@ function validatePrReviewBudget({
             body,
             audit: null
         }
+    }
+
+    if (grouped.unclassified.length > 0) {
+        return {
+            failure: getReviewBudgetFailure(pr_number,
+                'Prior submitted reviews have unresolved historical families. Reconcile the named source or an authorized historical correction; missing history cannot grant another round.', audit),
+            body,
+            audit: null
+        };
     }
 
     if (override.provided && !override.valid) {
@@ -3479,7 +3542,7 @@ function validatePrReviewBudget({
         // override audit is appended durably to the review body it authorized.
         const priorReEntries = priorRequestChanges.filter(review =>
             (review?.body || '').includes(REVIEW_BUDGET_OVERRIDE_MARKER) &&
-            resolveReviewerFamily(review).family === reviewerFamily.family
+            familyResolver.classifyReviewer(review).family === reviewerFamily.family
         );
 
         if (priorReEntries.length > 0) {
@@ -3498,7 +3561,7 @@ function validatePrReviewBudget({
         // of what that family reviewed, so corroboration drawn from another family's history would
         // let a reviewer borrow a causal claim they never made.
         const currentFamilyPriorHeads = priorRequestChanges
-            .filter(review => resolveReviewerFamily(review).family === reviewerFamily.family)
+            .filter(review => familyResolver.classifyReviewer(review).family === reviewerFamily.family)
             .map(review => review?.commit?.oid)
             .filter(Boolean);
 
@@ -3705,6 +3768,53 @@ class PullRequestService extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @summary Reads the same readiness sources for a host report without claiming a bound maintainer certificate.
+     * @param {Object} options Explicit {repo, prNumber} coordinates.
+     * @param {Object} dependencies Internal acquisition and qualified-reader dependencies.
+     * @returns {Promise<Object>} Read-only observation; this path never issues a B-prime marker.
+     */
+    async observeReviewReadiness({repo, prNumber}, dependencies = {}) {
+        const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
+        if (target.error) return {verdict: 'unavailable', blockers: [{code: target.code, message: target.message}]};
+        return buildMergeReadinessProjection({prNumber, owner: target.owner, repo: target.repo,
+            ...dependencies, identityAssertion: null, requireIdentity: false});
+    }
+
+    /**
+     * @summary Qualifies a batch of open-PR family summaries from one authenticated fetch and one source revision.
+     * @param {Object} options Explicit repository coordinates and bounded list limit.
+     * @param {Object} dependencies Internal transport/source seams; no public readiness fields.
+     * @returns {Promise<Object[]>} Original provider rows carrying qualified family verdicts or named unavailability.
+     */
+    async listFamilyReviewSummaries({repo, limit = 30}, dependencies = {}) {
+        const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
+        if (target.error) throw createCodedError(target.code, target.message);
+        const operation = await acquireReviewOperation(dependencies);
+        const data      = await operation.query(FETCH_FAMILY_REVIEW_SUMMARIES, {owner: target.owner, repo: target.repo, limit});
+        const viewer    = normalizeFamilyActor(data?.viewer), rows = data?.repository?.pullRequests?.nodes;
+        if (viewer.__typename !== 'User' || !viewer.databaseId || !viewer.login || !Array.isArray(rows)) {
+            throw createCodedError('GITHUB_SOURCE_UNBOUND', 'The captured open-PR acquisition is incomplete.');
+        }
+        let familySource = {state: 'unavailable', code: 'family-source-unconfigured'};
+        try {
+            if (typeof dependencies.readFamilySource === 'function') familySource = await dependencies.readFamilySource(viewer);
+        } catch {familySource = {state: 'unavailable', code: 'family-source-unavailable'};}
+        const observedAt = new Date(dependencies.now ? dependencies.now() : Date.now()).toISOString();
+        const resolver   = createAdmittedFamilyResolver({source: familySource, providerBaseUrl: operation.source.providerBaseUrl, observedAt});
+        return rows.map(row => {
+            if (!row || typeof row.body !== 'string' || !Array.isArray(row.reviews?.nodes)) {
+                throw createCodedError('GITHUB_SOURCE_UNBOUND', 'An open-PR review connection is incomplete.');
+            }
+            const pr = {...row, reviews: row.reviews.nodes, comments: row.comments?.nodes ?? [],
+                reviewRequests     : (row.reviewRequests?.nodes ?? []).map(item => item.requestedReviewer),
+                commitMessages     : (row.commitMessages?.nodes ?? []).map(item => item.commit?.message),
+                disclosureTruncated: !hasCompleteReviewDisclosures(row),
+                approvalsTruncated : row.reviews.pageInfo?.hasPreviousPage !== false};
+            return {...pr, familyVerdict: resolver.resolveVerdict(pr)};
+        });
     }
 
     /**
@@ -4286,7 +4396,7 @@ class PullRequestService extends Base {
         review_id,
         reviewBudgetOverrideReason,
         repo
-    }) {
+    }, dependencies = {}) {
         const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
 
         if (target.error) return target;
@@ -4363,7 +4473,8 @@ class PullRequestService extends Base {
             }
 
             try {
-                const idData = await GraphqlService.query(GET_PULL_REQUEST_ID, {
+                const operation = await acquireReviewOperation(dependencies);
+                const idData = await operation.query(GET_PULL_REQUEST_ID, {
                     activationIssueNumber: this.reviewBudgetActivationIssueNumber,
                     homeOwner            : aiConfig.owner,
                     homeRepo             : aiConfig.repo,
@@ -4376,6 +4487,12 @@ class PullRequestService extends Base {
                 const activationIssue = idData?.homeRepository?.activationIssue ?? idData?.repository?.activationIssue;
                 const pullRequest     = idData?.targetRepository?.pullRequest   ?? idData?.repository?.pullRequest;
                 const pullRequestId   = pullRequest?.id;
+                const viewer          = normalizeFamilyActor(idData?.viewer);
+
+                if (viewer.__typename !== 'User' || viewer.databaseId === null || !viewer.login) {
+                    throw createCodedError('GITHUB_VIEWER_UNBOUND', 'The captured acquisition did not return an immutable User viewer.');
+                }
+                if (typeof dependencies.assertViewer === 'function') await dependencies.assertViewer(viewer);
 
                 if (!pullRequestId) {
                     return {
@@ -4410,7 +4527,7 @@ class PullRequestService extends Base {
                         let states = null;
 
                         try {
-                            const resolved = await GraphqlService.query(buildIssueStatesQuery(ownerNumbers), {
+                            const resolved = await operation.query(buildIssueStatesQuery(ownerNumbers), {
                                 owner: target.owner,
                                 repo : target.repo
                             });
@@ -4482,6 +4599,18 @@ class PullRequestService extends Base {
                             outcome                    : 'pre-activation'
                         }
                     } else {
+                        const observedValue = dependencies.now ? dependencies.now() : new Date();
+                        const observedAt = new Date(observedValue).toISOString();
+                        let familySource = {state: 'unavailable', code: 'family-source-unconfigured'};
+                        try {
+                            if (typeof dependencies.readFamilySource === 'function') {
+                                familySource = await dependencies.readFamilySource(viewer);
+                            }
+                        } catch {
+                            familySource = {state: 'unavailable', code: 'family-source-unavailable'};
+                        }
+                        const familyResolver = createAdmittedFamilyResolver({source: familySource,
+                            providerBaseUrl: operation.source.providerBaseUrl, observedAt});
                         const budgetValidation = validatePrReviewBudget({
                             activatedAt                : activationPullRequest.mergedAt,
                             activationIssueNumber      : this.reviewBudgetActivationIssueNumber,
@@ -4491,13 +4620,9 @@ class PullRequestService extends Base {
                             pr_number,
                             pullRequest,
                             reviewBudgetOverrideReason,
-                            // The STARTUP-CACHED login, deliberately not the awaiting getter. Admission
-                            // is a hot path and must not acquire an identity over the network while
-                            // deciding whether to admit: a validator that makes its own round trip can
-                            // fail for reasons that have nothing to do with the review it is judging.
-                            // A cold cache resolves to null, which the budget already treats as
-                            // unclassifiable and refuses — the safe direction.
-                            reviewerLogin              : RepositoryService.viewerLogin
+                            reviewer                   : viewer,
+                            familyResolver,
+                            observedAt
                         });
 
                         if (budgetValidation.failure) {
@@ -4528,7 +4653,7 @@ class PullRequestService extends Base {
                     }
                 }
 
-                const reviewData = await GraphqlService.query(ADD_PULL_REQUEST_REVIEW, {
+                const reviewData = await operation.query(ADD_PULL_REQUEST_REVIEW, {
                     pullRequestId,
                     body: submissionBody,
                     event
@@ -4569,7 +4694,7 @@ class PullRequestService extends Base {
                 return {
                     error  : 'GraphQL API request failed',
                     message: error.message,
-                    code   : 'GRAPHQL_API_ERROR'
+                    code   : error.code || 'GRAPHQL_API_ERROR'
                 };
             }
         }

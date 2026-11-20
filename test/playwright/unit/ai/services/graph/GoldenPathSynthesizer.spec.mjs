@@ -364,7 +364,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(activity.reason).toBe('maintainer-progress-ack');
     });
 
-    test('synthesizeGoldenPath appends Active PR Cycle State from GitHub CLI output', async () => {
+    test('synthesizeGoldenPath appends Active PR Cycle State from qualified acquisition rows', async () => {
         const originalGetGraphCollection   = StorageRouter.getGraphCollection;
         const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
         const originalEmbedText            = TextEmbeddingService.embedText;
@@ -374,7 +374,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         StorageRouter.getSummaryCollection = async () => ({ get: async () => ({ documents: ['mock document'] }) });
         TextEmbeddingService.embedText = async () => [0.1, 0.2];
 
-        // Mock gh pr list output
+        // The acquisition stub owns qualification; this integration case exercises rendering only.
         const mockPrData = [
             {
                 number        : 11178,
@@ -388,7 +388,9 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
                 reviews       : [
                     { state: "CHANGES_REQUESTED", body: "Needs more scope reduction.", submittedAt: "2026-05-11T00:00:00Z", author: {login: "neo-opus-ada"} }
                 ],
-                comments: []
+                comments     : [],
+                familyVerdict: {sourceState: 'available', qualified: true, crossFamily: false,
+                    authorFamilies: ['gemini'], approvingFamilies: [], approvalsTruncated: false}
             }
         ];
 
@@ -409,11 +411,8 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(handoffContent).toContain('## Active PR Cycle State');
         expect(handoffContent).toContain('(Source: GitHub Live; Status at generation: current; Fresh until:');
         expect(handoffContent).toContain('### Recent Open PRs (`1` of `1` items)');
-        // The fixture's ONLY review is a CHANGES_REQUESTED from a cross-family reviewer, so the
-        // honest answer is `no` — a blocked PR is the opposite of covered. This assertion read
-        // `yes` while the predicate counted reviews of any state: the Golden Path was telling
-        // readers that a PR its cross-family reviewer BLOCKED was covered by them.
-        // Pinning the distinction rather than the value, so the arm fails in either direction.
+        // The acquirer reports this complete zero-approval population as a known negative. Raw
+        // CHANGES_REQUESTED activity is not approval; rendering preserves the supplied verdict.
         expect(handoffContent).toContain('cross-family reviewed: no');
         expect(handoffContent).toContain('- **PR #11178**: feat(ai): Automate PR Cycle State Extraction');
         expect(handoffContent).not.toContain('](https://github.com/');
@@ -810,14 +809,15 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(section).toContain('### Recent Open PRs (`0` of `0` items)');
     });
 
-    test('#17702 Active PR rendering keeps author-drift warnings on the Memory Core logger', () => {
+    test('#1512 Active PR rendering reports unavailable instead of inferring author drift from social names', () => {
         const consoleWarnings = [], memoryCoreWarnings = [], originalConsoleWarn = console.warn;
+        let section;
 
         console.warn = message => consoleWarnings.push(message);
         logger.warn   = message => memoryCoreWarnings.push(message);
 
         try {
-            GoldenPathSynthesizer.constructor.renderActivePrCycleState({
+            section = GoldenPathSynthesizer.constructor.renderActivePrCycleState({
                 capturedAt: new Date('2026-08-24T14:00:00.000Z'),
                 now       : new Date('2026-08-24T14:00:00.000Z'),
                 prs       : [{
@@ -833,8 +833,8 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             console.warn = originalConsoleWarn
         }
 
-        expect(memoryCoreWarnings).toHaveLength(1);
-        expect(memoryCoreWarnings[0]).toContain('author identity drift');
+        expect(section).toContain('cross-family reviewed: unavailable (family-verdict-unavailable)');
+        expect(memoryCoreWarnings).toEqual([]);
         expect(consoleWarnings).toEqual([])
     });
 
@@ -2834,7 +2834,10 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             headRefOid    : `sha-${number}`,
             reviewRequests: [],
             reviews       : number === 12 ? [{state: 'APPROVED', body: 'LGTM', submittedAt: '2026-05-12T01:00:00Z', author: {login: 'neo-opus-ada'}}] : [],
-            comments      : []
+            comments      : [],
+            familyVerdict : {sourceState: 'available', qualified: true, outside: true, authorFamilies: [],
+                crossFamily        : number === 12 ? null : false, approvingFamilies: number === 12 ? ['claude'] : [],
+                disclosureTruncated: false, approvalsTruncated: false}
         }));
 
         try {

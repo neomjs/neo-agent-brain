@@ -290,6 +290,66 @@ and `publication-restore-fenced` requires the separately admitted recovery path,
 setup and retry cannot provide. Unknown or corrupt storage is unavailable, not a promise that a retry
 will repair it. These source contracts and their fixtures do not establish installed acceptance.
 
+## Review consumers
+
+[PullRequestService](../../ai/services/github-workflow/PullRequestService.mjs) acquires original
+GitHub `User.databaseId` values and timestamps through a captured
+[GraphqlService operation](../../ai/services/github-workflow/GraphqlService.mjs). Its token and
+GraphQL/REST endpoint pair stay fixed through retries and review creation. The API base is part of
+the subject key; an opaque GraphQL node id, a login or a cached viewer cannot replace the stable id.
+Missing actor fields and partially injected acquisitions refuse before a decision.
+
+Each decision reads one complete qualified family snapshot. The
+[admitted resolver](../../ai/services/graph/admittedFamilyResolution.mjs) classifies submitted reviews
+at `submittedAt`, including prior-head and repair re-entry accounting. For readiness it unions every
+author family from PR creation through the observation, including an intermediate switch followed
+by a return. An unclassified author span remains uncertifiable. An unclassified approval supplies no
+qualifying family; the literal family `unknown` is still ordinary data.
+
+An anchored literal `@identity` in an `Authored by` line selects a subject only when the protected
+founding source binds that exact identity key. A social name, alias, model label or current seat key
+does not create that binding. Without it, use the immutable opener; with a distinct bound self-id,
+union both subjects' complete author intervals. Outside-author model disclosures retain their separate
+policy, including all named families and unread-commit uncertainty.
+
+The GitHub Server passes its own reader into its own dispatch registry and checks the captured viewer
+against that reader's MC identity proof. Shared handoff renderers consume qualified results rather
+than recomputing from logins. The running MC server uses its boot-owned source; a separate orchestrator
+uses an explicitly bound registered client and closes it after the read. Missing plane inputs produce
+unavailability. A host observation has no maintainer-bound B-prime certificate. Body-only review
+updates preserve their existing transport and do not acquire family history.
+
+The bootstrap environment carries `NEO_SEAT_PLANE_TARGET` as JSON. Its leaf decodes that once into
+the atomic `[planeId, dataRoot]` value at `seat.planeTarget`; `null` is unconfigured and `[]` marks
+malformed input. Consumers validate the complete tuple. Resolved overlays and runtime overrides use
+the tuple, not raw JSON text. Replace or clear the whole value: a partial tuple refuses, while the
+Provider's existing object-patch behavior can retain the previous whole tuple rather than retarget it.
+
+Adopting these consumers requires a qualified source for the reviewing seats first. Without it,
+managed Request Changes on post-cutover PRs refuses and merge readiness is unavailable; approval
+remains unaffected. The provisioning/census witness and each seat's qualified read are the rollout
+gate. Source tests cannot substitute for those observations.
+
+For `family-source-configuration-unavailable`, restore the declared remote credential and plane target;
+do not borrow the forge token or local data root. For a viewer mismatch, reconcile the owner’s captured
+credential bindings. Malformed or fenced sources follow the source remedies above. Unclassified
+history needs an authorized correction where its provenance allows one, or a PR created after that
+interval; a first confirmation is not backdated. Review history that cannot be classified cannot grant
+an extra budget round.
+
+### Consumer regression witnesses
+
+These source-only controls retain the rejected strategies and their next consumer. They prove neither
+installed provisioning nor the complete live Fleet census.
+
+| Question and input | Decisive counterexample and disposition | Next consumer |
+| --- | --- | --- |
+| Can current family charge old reviews? A reviewer switches after an RC. | Current lookup charges the wrong family and rewrites re-entry/head eligibility. Use the original submission time. | [Managed decision controls](../../test/playwright/unit/ai/services/github-workflow/PullRequestFamilyDecisions.spec.mjs) |
+| Do equal endpoint families certify an author? GPT → Claude → GPT during one PR. | Endpoint-only comparison misses Claude. Use the full interval union. | [Temporal resolver controls](../../test/playwright/unit/ai/services/graph/admittedFamilyResolution.spec.mjs) |
+| Does a positive nested boolean override unavailable evidence? | Focus printed ready despite an unavailable enclosing verdict. Explicit unavailability now dominates. | [Focus rendering controls](../../test/playwright/unit/ai/services/graph/focusV1Section.spec.mjs) |
+| Can separate authenticated calls form one decision? Change endpoints and credentials during a retry. | The old retry/read/mutation sequence switched acquisitions. Capture one endpoint pair and credential. | [Operation transport controls](../../test/playwright/unit/ai/services/github-workflow/GraphqlService.spec.mjs) |
+| Does a missing row mean an empty source? Omit commit messages or supply null/unknown-state review rows. | The old readers could discard them and authorize from the smaller population. Reject incomplete disclosure/history; preserve a truly complete zero-approval population as a known negative. | [Decision controls](../../test/playwright/unit/ai/services/github-workflow/PullRequestFamilyDecisions.spec.mjs) and temporal resolver controls above |
+
 ## Test Pollution Hazard
 
 **The Incident:** On 2026-04-22 (session `15852d91`) and 2026-04-23 (session `8968b9f6`), the production `AgentIdentity` nodes were wiped. This was traced back to a test-pollution anti-pattern in the Playwright test suite.

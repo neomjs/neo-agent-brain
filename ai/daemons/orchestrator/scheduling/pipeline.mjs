@@ -187,6 +187,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             conceptDiscoveryService                : orchestrator.conceptDiscoveryService,
             remDigestion                           : orchestrator.remDigestion,
             goldenPathSynthesizer                  : orchestrator.goldenPathSynthesizer,
+            readFamilySource                       : viewer => orchestrator.readFamilySource(viewer),
             healthService                          : orchestrator.healthService,
             maintenanceBackpressureService         : orchestrator.maintenanceBackpressureService,
             primaryRepoSyncService                 : orchestrator.primaryRepoSyncService,
@@ -723,7 +724,8 @@ async function runGoldenPathTask({taskName, reason, services, repoEnrichmentEnab
     services.healthService?.recordTaskOutcome?.(taskName, 'running', { reason, startedAt: new Date().toISOString() });
     try {
         const outcome = await services.goldenPathSynthesizer.synthesizeGoldenPath({
-            repoEnrichmentEnabled
+            repoEnrichmentEnabled,
+            readFamilySource: services.readFamilySource
         });
 
         if (outcome?.status === 'failed' || outcome?.wroteHandoff !== true) {
