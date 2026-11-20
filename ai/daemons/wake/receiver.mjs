@@ -48,12 +48,13 @@ import {
     hasPrimaryWakeRecipient,
     SPOOL_CONTENTION_REASONS,
     isUrgentWakeRecord,
+    primaryWakeSpoolPath,
     readPrimaryWakeBatchReceipt,
     primaryWakeSeatForAddress,
     stagePrimaryWake
 } from './primaryWakeSpool.mjs';
-import {readNativeWakeOptIn}  from './nativeWakeEnrollment.mjs';
-import {isUrgentWakeEnvelope} from '../../services/memory-core/wakeCoalescePolicy.mjs';
+import {readNativeWakeOptIn, readPrivateWakeJson} from './nativeWakeEnrollment.mjs';
+import {isUrgentWakeEnvelope}                     from '../../services/memory-core/wakeCoalescePolicy.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 
@@ -369,7 +370,8 @@ export function createWakeReceiver({
     // degrades immediately with no retry — so a correctly-published route went permanently deaf on its
     // first wake, and the only remedy was the restart an incident is most likely to forbid.
     let activeManifest = manifest;
-    let drainPromise   = Promise.resolve();
+    let runningDrain   = null;
+    let queuedDrain    = null;
     let rotationRetry  = null;
 
     const inFlight = new Set();
@@ -451,15 +453,32 @@ export function createWakeReceiver({
         return Object.keys(next.routes).length
     };
 
-    const drain = () => {
-        drainPromise = drainPromise.then(async () => {
-            const rawList = await watched.list('pending'),
-                  pending = [
-                      ...rawList.filter(item => isUrgentWakeRecord(item)),
-                      ...rawList.filter(item => !isUrgentWakeRecord(item))
+    const runDrainPass = async () => {
+            const rawList          = await watched.list('pending'),
+                  isSpoolContended = item => SPOOL_CONTENTION_REASONS.includes(item.deferReason),
+                  pending          = [
+                      ...rawList.filter(item => isUrgentWakeRecord(item) && !isSpoolContended(item)),
+                      ...rawList.filter(item => isUrgentWakeRecord(item) && isSpoolContended(item)),
+                      ...rawList.filter(item => !isUrgentWakeRecord(item) && !isSpoolContended(item)),
+                      ...rawList.filter(item => !isUrgentWakeRecord(item) && isSpoolContended(item))
                   ];
 
-            const batchReceipts = new Map();
+            const batchReceipts          = new Map(),
+                  urgentBlockerBySeat    = new Map(),
+                  normalBlockerBySeat    = new Map(),
+                  stagedCandidatesBySeat = new Map(),
+                  isStagedBatchCandidate = async (seat, currentRoute, recordKey) => {
+                      if (currentRoute.adapterConfig?.primarySession?.family !== 'codex-desktop' ||
+                          !currentRoute.adapterConfig?.contextGate) {
+                          return false;
+                      }
+                      if (!stagedCandidatesBySeat.has(seat)) {
+                          const pointer = await readPrivateWakeJson(primaryWakeSpoolPath(state.stateDir, seat)).catch(() => null);
+                          stagedCandidatesBySeat.set(seat, new Set(Array.isArray(pointer?.candidates) ? pointer.candidates : []));
+                      }
+                      return stagedCandidatesBySeat.get(seat).has(recordKey);
+                  };
+
             for (const record of pending) {
                 // Only a presently admitted route may send a native wake. A legacy pending snapshot may
                 // adopt the native route, but a native snapshot is never downgraded back to GUI typing.
@@ -472,12 +491,13 @@ export function createWakeReceiver({
                 if (receipt) {
                     const finishedAt = new Date(clock()).toISOString();
                     await watched.transition(record.recordKey,'pending','delivered',{
-                        expectedRecipient : receipt.recipient,
+                        expectedRecipient  : receipt.recipient,
                         recipientObservedAt: receipt.recipientObservedAt || finishedAt,
-                        waitStage         : 'delivered',
-                        hostStagedAt      : record.hostStagedAt || finishedAt,
-                        namedDependency   : null,
-                        dispatchFinishedAt: finishedAt,
+                        waitStage          : 'delivered',
+                        hostStagedAt       : record.hostStagedAt || finishedAt,
+                        namedDependency    : null,
+                        blockedByWake      : null,
+                        dispatchFinishedAt : finishedAt,
                         ...(receipt.acknowledged === false ? {acknowledged:false} : {})
                     });
                     continue;
@@ -488,6 +508,18 @@ export function createWakeReceiver({
                         record.envelope?.subscriptionId !== record.subscriptionId ||
                         record.envelope?.eventType !== WAKE_DIGEST_EVENT_TYPE || !newNative) {
                         await watched.transition(record.recordKey, 'pending', 'pending', {deferReason: 'primary-session-route-unavailable'});
+                        continue;
+                    }
+                }
+                if (newNative && isSpoolContended(record)) {
+                    const seat       = current.agentIdentity,
+                          isOrdinary = record.deferReason === 'earlier native wake outstanding',
+                          blockerKey = isOrdinary
+                              ? normalBlockerBySeat.get(seat)
+                              : urgentBlockerBySeat.get(seat);
+
+                    if (blockerKey && record.blockedByWake === blockerKey &&
+                        !(isOrdinary && await isStagedBatchCandidate(seat, current, record.recordKey))) {
                         continue;
                     }
                 }
@@ -580,7 +612,8 @@ export function createWakeReceiver({
                 // to compact or rotate; the mailbox stays the authority, so nothing is ever lost.
                 // A rotation is exempt: it exists because the session is full, so a size read
                 // could only hold it back from the one act that empties it.
-                const gateConfig = dispatching.route?.adapterConfig?.contextGate;
+                const gateConfig        = dispatching.route?.adapterConfig?.contextGate;
+                let   contextGateWarned = Boolean(dispatching.contextGateWarned);
 
                 if (gateConfig && contextProbe && !isSessionRotation(dispatching.envelope)) {
                     const probe = await track('drain', contextProbe(dispatching)).catch(() => null);
@@ -648,10 +681,13 @@ export function createWakeReceiver({
                     }
 
                     if (gate.gateOutcome === 'unknown') {
-                        logger.warn?.(
-                            `[Wake Receiver] context gate could not probe ${record.subscriptionId}; ` +
-                            `delivering fail-open (never silently withheld)`
-                        );
+                        if (!contextGateWarned) {
+                            logger.warn?.(
+                                `[Wake Receiver] context gate could not probe ${record.subscriptionId}; ` +
+                                `delivering fail-open (never silently withheld)`
+                            );
+                            contextGateWarned = true;
+                        }
                     } else if (gate.gateOutcome === 'warn') {
                         logger.warn?.(
                             `[Wake Receiver] context gate warns ${record.subscriptionId}: session at ` +
@@ -660,7 +696,8 @@ export function createWakeReceiver({
                     }
                 }
 
-                let outcome = 'failed';
+                const pendingGatePatch = contextGateWarned ? {contextGateWarned: true} : {};
+                let   outcome          = 'failed';
                 let outcomeReason;
                 let expectedRecipient;
                 let nativeRecipientObservedAt = null;
@@ -669,7 +706,7 @@ export function createWakeReceiver({
                 // A manifest can change while context probing awaited. Do not let a captured GUI
                 // snapshot type after that route has been cut over to native delivery.
                 if (activeManifest.routes[record.subscriptionId] !== current) {
-                    await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'route-changed-before-dispatch'});
+                    await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'route-changed-before-dispatch', ...pendingGatePatch});
                     continue;
                 }
 
@@ -686,7 +723,7 @@ export function createWakeReceiver({
                         try { enrollment = manifestPath && await readNativeOptIn({manifestPath, agentId: config?.agentId, family: config?.family}) }
                         catch { /* unavailable enrollment must hold, never fall back */ }
                         if (!enrollment || enrollment.stateDir !== state.stateDir) {
-                            await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-enrollment-unproven'});
+                            await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-enrollment-unproven', ...pendingGatePatch});
                             continue;
                         }
                     }
@@ -705,11 +742,11 @@ export function createWakeReceiver({
                                 optIn = exists ? await readNativeOptIn({manifestPath, agentId, family}) : null;
                             }
                             catch {
-                                await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-opt-in-unreadable'});
+                                await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-opt-in-unreadable', ...pendingGatePatch});
                                 continue;
                             }
                             if (optIn) {
-                                await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-cutover-pending'});
+                                await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-cutover-pending', ...pendingGatePatch});
                                 continue;
                             }
                         }
@@ -727,9 +764,25 @@ export function createWakeReceiver({
                     }
 
                     if (native && ['pending', 'unknown'].includes(outcome)) {
-                        const attemptIso      = new Date(clock()).toISOString(),
-                              deferReason     = String(result?.reason || 'primary-session-unresolved'),
-                              spoolBlocked    = SPOOL_CONTENTION_REASONS.includes(deferReason),
+                        const attemptIso   = new Date(clock()).toISOString(),
+                              deferReason  = String(result?.reason || 'primary-session-unresolved'),
+                              spoolBlocked = SPOOL_CONTENTION_REASONS.includes(deferReason),
+                              seat         = dispatching.route.agentIdentity,
+                              urgentRecord = isUrgentWakeRecord(dispatching);
+
+                        if (!spoolBlocked) {
+                            if (urgentRecord && !urgentBlockerBySeat.has(seat)) {
+                                urgentBlockerBySeat.set(seat, record.recordKey);
+                            } else if (!urgentRecord && !normalBlockerBySeat.has(seat)) {
+                                normalBlockerBySeat.set(seat, record.recordKey);
+                            }
+                        }
+
+                        const blockedByWake = spoolBlocked
+                                  ? (deferReason === 'earlier native wake outstanding'
+                                      ? normalBlockerBySeat.get(seat)
+                                      : urgentBlockerBySeat.get(seat)) || null
+                                  : null,
                               awaitingReceipt = outcome === 'unknown' || deferReason === 'native-recipient:receipt-unproven',
                               waitStage       = awaitingReceipt
                                   ? 'waiting-for-receipt'
@@ -742,14 +795,16 @@ export function createWakeReceiver({
                             ...(stagedAt ? {hostStagedAt: stagedAt} : {}),
                             waitStage,
                             namedDependency: namedDependency || null,
+                            blockedByWake,
                             ...(awaitingReceipt ? {nativeInitiatedAt: dispatching.nativeInitiatedAt || attemptIso} : {}),
-                            ...(expectedRecipient ? {expectedRecipient} : {})
+                            ...(expectedRecipient ? {expectedRecipient} : {}),
+                            ...pendingGatePatch
                         });
                         continue;
                     }
 
                     if (native && (outcome !== 'delivered' || !hasPrimaryWakeRecipient(result?.recipient, {seat:dispatching.route.agentIdentity, recordKey:dispatching.recordKey}))) {
-                        await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-invalid-outcome'});
+                        await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-invalid-outcome', ...pendingGatePatch});
                         continue;
                     }
                     if (native && typeof result?.recipientObservedAt === 'string') {
@@ -815,7 +870,8 @@ export function createWakeReceiver({
                             deferCount,
                             deferredAt : new Date().toISOString(),
                             deferReason: outcomeReason || 'interactive-dialog-pending',
-                            ...(rotation ? {seatHolder: dispatching.seatHolder ?? null, frontLostCount: frontLost} : {})
+                            ...(rotation ? {seatHolder: dispatching.seatHolder ?? null, frontLostCount: frontLost} : {}),
+                            ...pendingGatePatch
                         });
                         logger.warn?.(rotation
                             ? `[Wake Receiver] rotation DEFERRED ${record.subscriptionId} (${outcomeReason}); ` +
@@ -839,11 +895,12 @@ export function createWakeReceiver({
                 await watched.transition(record.recordKey, 'dispatching', outcome, {
                     ...(outcomeReason ? {outcomeReason} : {}),
                     ...(expectedRecipient ? {expectedRecipient} : {}),
+                    ...(outcome === 'pending' ? pendingGatePatch : {}),
                     ...(outcome === 'delivered' ? {
                         waitStage          : 'delivered',
                         recipientObservedAt: nativeRecipientObservedAt || finishedIso,
                         ...(nativeUnacknowledged ? {acknowledged: false} : {}),
-                        ...(isNative ? {hostStagedAt: dispatching.hostStagedAt || finishedIso, namedDependency: null} : {})
+                        ...(isNative ? {hostStagedAt: dispatching.hostStagedAt || finishedIso, namedDependency: null, blockedByWake: null} : {})
                     } : {}),
                     dispatchFinishedAt: finishedIso
                 });
@@ -855,11 +912,31 @@ export function createWakeReceiver({
                     );
                 }
             }
-        }).catch(error => {
-            logger.error?.(`[Wake Receiver] drain failed: ${error.message}`);
-        });
+    };
 
-        return drainPromise;
+    // Coalesce concurrent drain triggers (incoming POST /wake bursts, rotation retries, periodic timer)
+    // to at most one trailing pass behind the pass currently running.
+    const drain = () => {
+        if (!runningDrain) {
+            const current = runDrainPass()
+                .catch(error => {
+                    logger.error?.(`[Wake Receiver] drain failed: ${error.message}`);
+                })
+                .finally(() => {
+                    runningDrain = null;
+                });
+            runningDrain = current;
+            return current;
+        }
+
+        if (!queuedDrain) {
+            queuedDrain = runningDrain.then(() => {
+                queuedDrain = null;
+                return drain();
+            });
+        }
+
+        return queuedDrain;
     };
 
     const server = http.createServer(async (request, response) => {
