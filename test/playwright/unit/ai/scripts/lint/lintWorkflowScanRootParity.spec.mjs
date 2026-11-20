@@ -20,51 +20,74 @@ import {SCAN_SURFACE as SCRIPT_PLANE_SURFACE}    from '../../../../../../ai/scri
  * - `imported` registry entries take the lint's own exported scan surface as SSOT — a lint that
  *   gains a scan root widens its exported surface in the same edit, and an unwidened workflow
  *   filter fails here without any registry change.
- * - `declared` entries carry the surface as reviewed constants beside the workflow name, verified
+ * - `declared` entries carry the surface as reviewed constants beside the lint's name, verified
  *   against the lint's source at registration; converting them to `imported` is the follow-up path.
  * - The completeness walk derives the workflow set from `.github/workflows/*-lint.yml`: a new
- *   path-filtered lint workflow must register here or this spec fails; a registry entry whose
- *   workflow disappeared fails as stale.
+ *   path-filtered lint workflow must register the lints it runs here or this spec fails; a registry
+ *   entry whose workflow disappeared fails as stale.
  * - Coverage is asserted on representative sample paths generated from each surface glob (deep and
  *   shallow), matched against the workflow's patterns per trigger with GitHub-Actions glob
  *   semantics ('**' spans zero or more segments). A trigger without a `paths` filter is covered by
  *   construction — it always runs.
- * - Reproducibility inputs are part of the surface: every registered workflow must also watch its
- *   own lint script and its own workflow file.
+ * - Reproducibility inputs are part of the surface: a registered lint's workflow must also watch the
+ *   lint's script and the workflow file itself.
  */
 
 const ROOT_DIR      = path.resolve(process.cwd());
 const WORKFLOWS_DIR = path.join(ROOT_DIR, '.github/workflows');
 
 /**
- * The registry: one entry per path-filtered lint workflow.
+ * The registry: one entry per lint that a path-filtered lint workflow runs.
  *
+ * `workflow` is the `*-lint.yml` file whose triggers must re-run the lint; several lints share one.
  * `surface` lists every glob (or literal file) whose changes can change the lint's verdict.
  * `scriptRel` is the lint implementation the workflow executes (a verdict input by definition).
  * `source` marks whether the surface is imported from the lint (SSOT) or declared here.
  */
 const REGISTRY = Object.freeze({
-    'script-plane-lint.yml': {
+    'Script Plane Lint': {
+        workflow : 'brain-lint.yml',
         scriptRel: 'ai/scripts/lint/lint-script-plane.mjs',
         source   : 'imported',
         surface  : SCRIPT_PLANE_SURFACE
     },
-    'config-template-ssot-lint.yml': {
+    'Config Template SSOT Lint': {
+        workflow : 'brain-lint.yml',
         scriptRel: 'ai/scripts/lint/lint-config-template-ssot.mjs',
         source   : 'imported',
         surface  : CONFIG_TEMPLATE_SURFACE
     },
-    'identity-vocabulary-lint.yml': {
+    'Identity Vocabulary Lint': {
+        workflow : 'brain-lint.yml',
         scriptRel: 'ai/scripts/lint/lint-identity-vocabulary.mjs',
         source   : 'declared',
         surface  : ['ai/mcp/server/*/openapi.yaml']
     },
-    'mcp-test-location-lint.yml': {
+    'MCP Test Location Lint': {
+        workflow : 'brain-lint.yml',
         scriptRel: 'ai/scripts/lint/lint-mcp-test-locations.mjs',
         source   : 'imported',
         surface  : MCP_LOCATION_SURFACE
     },
-    'openapi-service-parity-lint.yml': {
+    // Its categories scan any file under `ai/` (`openapi.yaml` included), plus `ACTIVE_ANTIGRAVITY_ROOTS` and
+    // `RETIRED_ACTIVE_PATHS`. The untracked ones stay listed because a PR can add them.
+    'Retired Primitives Check': {
+        workflow : 'brain-lint.yml',
+        scriptRel: 'ai/scripts/diagnostics/check-retired-primitives.mjs',
+        source   : 'declared',
+        surface  : [
+            '.agents/ANTIGRAVITY_RULES.md',
+            '.gemini/concepts/**',
+            '.gemini/settings.template.json',
+            '.github/AI_QUICK_START.md',
+            '.gitignore',
+            '.npmignore',
+            'ai/**',
+            'learn/agentos/tooling/**'
+        ]
+    },
+    'OpenAPI Service Parity Lint': {
+        workflow : 'brain-lint.yml',
         scriptRel: 'ai/scripts/lint/lint-openapi-service-parity.mjs',
         source   : 'declared',
         surface  : [
@@ -170,11 +193,12 @@ test.describe('lint workflow scan-root parity (scanned ⊆ watched, mechanically
             return Boolean(pull_request || push)
         });
 
-        const unregistered = pathFiltered.filter(name => !REGISTRY[name]);
-        const stale        = Object.keys(REGISTRY).filter(name => !lintWorkflows.includes(name));
+        const registered   = new Set(Object.values(REGISTRY).map(entry => entry.workflow));
+        const unregistered = pathFiltered.filter(name => !registered.has(name));
+        const stale        = Object.keys(REGISTRY).filter(lint => !lintWorkflows.includes(REGISTRY[lint].workflow));
 
-        expect(unregistered, 'a new path-filtered lint workflow must register its scan surface here '
-            + '(imported from the lint where possible, declared otherwise)').toEqual([]);
+        expect(unregistered, 'a new path-filtered lint workflow must register the scan surface of each lint it runs '
+            + 'here (imported from the lint where possible, declared otherwise)').toEqual([]);
         expect(stale, 'a registry entry must not outlive its workflow').toEqual([]);
     });
 
@@ -185,29 +209,31 @@ test.describe('lint workflow scan-root parity (scanned ⊆ watched, mechanically
         }
     });
 
-    for (const [workflowName, entry] of Object.entries(REGISTRY)) {
-        test(`${workflowName}: every scan surface sample is watched on both triggers`, () => {
+    for (const [lint, entry] of Object.entries(REGISTRY)) {
+        const workflowName = entry.workflow;
+
+        test(`${lint} (${workflowName}): every scan surface sample is watched on both triggers`, () => {
             const triggerPaths = readWorkflowPaths(workflowName);
 
             for (const trigger of ['pull_request', 'push']) {
                 const gaps = coverageGaps(entry.surface, triggerPaths[trigger]);
 
-                expect(gaps, `${workflowName} ${trigger}: these scanned paths would not re-run the lint — `
+                expect(gaps, `${lint} ${trigger}: these scanned paths would not re-run the lint — `
                     + `the introducing PR lands ungated and the next unrelated run turns red`).toEqual([])
             }
         });
 
-        test(`${workflowName}: watches its own lint script and itself`, () => {
+        test(`${lint} (${workflowName}): its workflow watches the lint script and itself`, () => {
             const triggerPaths = readWorkflowPaths(workflowName);
             const selfInputs   = [entry.scriptRel, `.github/workflows/${workflowName}`];
 
             expect(fs.existsSync(path.join(ROOT_DIR, entry.scriptRel)),
-                `${workflowName}: registered lint script must exist`).toBe(true);
+                `${lint}: registered lint script must exist`).toBe(true);
 
             for (const trigger of ['pull_request', 'push']) {
                 const gaps = coverageGaps(selfInputs, triggerPaths[trigger]);
 
-                expect(gaps, `${workflowName} ${trigger}: the lint's own implementation and workflow `
+                expect(gaps, `${lint} ${trigger}: the lint's own implementation and workflow `
                     + `are verdict inputs and must re-run it`).toEqual([])
             }
         })

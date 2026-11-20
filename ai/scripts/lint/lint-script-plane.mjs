@@ -60,7 +60,7 @@ export const SCAN_SURFACE = Object.freeze([
     'ai/scripts/lint/explicitGraphStoreOwnership.mjs',
     'ai/scripts/lint/lint-script-plane.mjs',
     'ai/scripts/lint/scriptPlaneClosure.mjs',
-    '.github/workflows/script-plane-lint.yml'
+    '.github/workflows/brain-lint.yml'
 ]);
 
 /**
@@ -249,7 +249,7 @@ export function readPackageScripts(projectRoot = PROJECT_ROOT) {
  * @summary `ai/scripts` modules a GitHub workflow invokes directly, without going through npm.
  *
  * The npm block is not the whole invocation surface. Several workflows run a script straight —
- * `run: node ./ai/scripts/lint/lint-script-plane.mjs`, in `script-plane-lint.yml` — so an npm-only
+ * `run: node ./ai/scripts/lint/lint-script-plane.mjs`, in `brain-lint.yml` — so an npm-only
  * census misses them, and the omission was self-demonstrating: **this lint invokes itself from a
  * workflow and did not score itself.** A guard blind to its own execution path is the shape it
  * exists to catch.
