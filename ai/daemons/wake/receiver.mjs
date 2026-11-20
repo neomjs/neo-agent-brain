@@ -337,6 +337,7 @@ export function verifyWakeSignature(rawBody, signingKey, signature) {
  * @param {Function} [options.clock=Date.now] The clock a rotation's deadline is read against.
  * @param {Function} [options.readScreenLocked] `() => Boolean|null`, the host's lock state; a locked screen
  *   parks a rotation without an activation (`sessionRotation.mjs`).
+ * @param {Function} [options.readSpoolPointer] Async JSON reader for the primary spool pointer (`readPrivateWakeJson`).
  * @param {String|null} [options.listenerStateDir] Where the Claude wake listener records each seat's holder
  *   (`<identity>.json`); defaults to `listeners` beside the manifest, the layout `wakeListenerHook.mjs` writes.
  * @returns {{server:http.Server,drain:Function,setManifest:Function,track:Function}}
@@ -347,6 +348,7 @@ export function createWakeReceiver({
     dispatch           = dispatchLocalWake,
     dispatchPrimary    = stagePrimaryWake,
     readNativeOptIn    = readNativeWakeOptIn,
+    readSpoolPointer   = readPrivateWakeJson,
     manifestPath       = null,
     contextProbe       = probeSessionContext,
     logger             = console,
@@ -457,10 +459,8 @@ export function createWakeReceiver({
             const rawList          = await watched.list('pending'),
                   isSpoolContended = item => SPOOL_CONTENTION_REASONS.includes(item.deferReason),
                   pending          = [
-                      ...rawList.filter(item => isUrgentWakeRecord(item) && !isSpoolContended(item)),
-                      ...rawList.filter(item => isUrgentWakeRecord(item) && isSpoolContended(item)),
-                      ...rawList.filter(item => !isUrgentWakeRecord(item) && !isSpoolContended(item)),
-                      ...rawList.filter(item => !isUrgentWakeRecord(item) && isSpoolContended(item))
+                      ...rawList.filter(item => isUrgentWakeRecord(item)),
+                      ...rawList.filter(item => !isUrgentWakeRecord(item))
                   ];
 
             const batchReceipts          = new Map(),
@@ -473,7 +473,7 @@ export function createWakeReceiver({
                           return false;
                       }
                       if (!stagedCandidatesBySeat.has(seat)) {
-                          const pointer = await readPrivateWakeJson(primaryWakeSpoolPath(state.stateDir, seat)).catch(() => null);
+                          const pointer = await track('drain', readSpoolPointer(primaryWakeSpoolPath(state.stateDir, seat))).catch(() => null);
                           stagedCandidatesBySeat.set(seat, new Set(Array.isArray(pointer?.candidates) ? pointer.candidates : []));
                       }
                       return stagedCandidatesBySeat.get(seat).has(recordKey);
