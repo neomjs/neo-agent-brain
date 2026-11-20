@@ -14,6 +14,11 @@ import {
     verifyWakeSignature
 } from '../../../../../../ai/daemons/wake/receiver.mjs';
 import {WakeReceiverState} from '../../../../../../ai/daemons/wake/receiverState.mjs';
+import {
+    primaryWakeSpoolPath,
+    stagePrimaryWake,
+    urgentPrimaryWakeSpoolPath
+} from '../../../../../../ai/daemons/wake/primaryWakeSpool.mjs';
 
 test.describe('ai/daemons/wake/receiver', () => {
     const subscriptionId = 'WAKE_SUB:test';
@@ -1281,5 +1286,501 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
         expect((await post(url)).status).toBe(202);
         await new Promise(resolve => setTimeout(resolve, Math.max(...Object.values(bounds)) + 500));
         expect(stuck).toEqual([]);
+    });
+});
+
+test.describe('ai/daemons/wake/receiver — pending native spool & drain cost (#1840)', () => {
+    const subscriptionId = 'WAKE_SUB:drain-cost';
+    const signingKey     = 'c'.repeat(64);
+    const agentIdentity  = '@neo-gemini-julia';
+
+    let server, state, stateDir;
+
+    test.beforeEach(async () => {
+        stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-wake-1840-'));
+        state    = new WakeReceiverState({stateDir});
+        await state.init();
+    });
+
+    test.afterEach(async () => {
+        if (server) {
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+            server = null;
+        }
+        await fs.rm(stateDir, {recursive: true, force: true});
+    });
+
+    function buildNativeManifest() {
+        const instanceHome = path.join(stateDir, 'agents', 'neo-gemini-julia', 'harness', 'antigravity');
+        return {
+            optIn   : {agentId: 'neo-gemini-julia', family: 'antigravity', stateDir},
+            manifest: {
+                schemaVersion: 1,
+                routes       : {
+                    [subscriptionId]: {
+                        signingKey,
+                        agentIdentity,
+                        admits               : 'wake/digest',
+                        harnessTargetMetadata: {
+                            adapter        : 'primary-session',
+                            addressType    : 'userDataDir',
+                            instanceAddress: instanceHome
+                        },
+                        adapterConfig: {
+                            attemptTimeoutMs: 100,
+                            contextGate     : {maxContextTokens: 250_000, warnContextTokens: 200_000},
+                            primarySession  : {
+                                instanceHome,
+                                appBundle     : '/Applications/Antigravity.app',
+                                agentId       : 'neo-gemini-julia',
+                                family        : 'antigravity',
+                                hookNodePath  : '/bin/node',
+                                hookModulePath: '/brain/hook.mjs'
+                            }
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    test('skips 300 ordinary pending records behind an outstanding urgent native wake on the second pass, then dispatches all 300 after the urgent wake settles', async () => {
+        const {manifest, optIn} = buildNativeManifest(),
+              publicRoute       = {
+                  agentIdentity,
+                  harnessTargetMetadata: manifest.routes[subscriptionId].harnessTargetMetadata,
+                  adapterConfig        : manifest.routes[subscriptionId].adapterConfig
+              },
+              logLines             = [],
+              dispatchPrimaryCalls = [],
+              transitionedKeys     = [],
+              originalTransition   = state.transition.bind(state);
+
+        state.transition = async (recordKey, ...rest) => {
+            transitionedKeys.push(recordKey);
+            return originalTransition(recordKey, ...rest);
+        };
+
+        const receiver = createWakeReceiver({
+            manifest,
+            state,
+            manifestPath   : path.join(stateDir, 'routes.json'),
+            readNativeOptIn: async () => optIn,
+            contextProbe   : async () => null,
+            dispatchPrimary: async (record, options) => {
+                dispatchPrimaryCalls.push(record.recordKey);
+                return stagePrimaryWake(record, options);
+            },
+            logger: {
+                log  : line => logLines.push(line),
+                warn : line => logLines.push(line),
+                error: line => logLines.push(line)
+            }
+        });
+        server = receiver.server;
+
+        const baseMs       = Date.parse('2026-11-18T12:00:00.000Z'),
+              urgentAccept = await state.accept({
+                  subscriptionId,
+                  eventId       : 'wake-digest:urgent-0',
+                  sourceEventIds: ['MESSAGE:urgent-0'],
+                  acceptedAt    : new Date(baseMs).toISOString(),
+                  metadata      : {urgent: true, priority: 'high'},
+                  route         : publicRoute,
+                  envelope      : {
+                      schemaVersion: '1.0',
+                      eventType    : 'wake/digest',
+                      eventId      : 'wake-digest:urgent-0',
+                      subscriptionId,
+                      agentIdentity,
+                      payload      : {
+                          totalEvents   : 1,
+                          urgent        : true,
+                          sourceEventIds: ['MESSAGE:urgent-0'],
+                          breakdown     : {sent_to_me: {count: 1, highestPriority: 'high', latest: {messageId: 'MESSAGE:urgent-0', priority: 'high'}}}
+                      }
+                  }
+              }),
+              urgentKey      = urgentAccept.record.recordKey,
+              ordinaryKeys   = new Set();
+
+        for (let index = 1; index <= 300; index++) {
+            const eventId  = `wake-digest:ordinary-${index}`,
+                  msgId    = `MESSAGE:ordinary-${index}`,
+                  accepted = await state.accept({
+                      subscriptionId,
+                      eventId,
+                      sourceEventIds: [msgId],
+                      acceptedAt    : new Date(baseMs + index * 10).toISOString(),
+                      metadata      : {urgent: false, priority: 'normal'},
+                      route         : publicRoute,
+                      envelope      : {
+                          schemaVersion: '1.0',
+                          eventType    : 'wake/digest',
+                          eventId,
+                          subscriptionId,
+                          agentIdentity,
+                          payload      : {
+                              totalEvents   : 1,
+                              sourceEventIds: [msgId],
+                              breakdown     : {sent_to_me: {count: 1, highestPriority: 'normal', latest: {messageId: msgId, priority: 'normal'}}}
+                          }
+                      }
+                  });
+            ordinaryKeys.add(accepted.record.recordKey);
+        }
+
+        // Pass 1: stages the urgent wake and stamps initial spool contention on the 300 ordinary records.
+        await receiver.drain();
+
+        const beforePass2 = new Map();
+        for (const key of ordinaryKeys) {
+            const stat   = await fs.stat(state.getRecordPath(key)),
+                  record = await state.read(key);
+            expect(record.deferReason).toBe('urgent native wake outstanding');
+            beforePass2.set(key, {ino: stat.ino, mtimeMs: stat.mtimeMs, updatedAt: record.updatedAt});
+        }
+
+        transitionedKeys.length     = 0;
+        dispatchPrimaryCalls.length = 0;
+        logLines.length             = 0;
+
+        // Pass 2: nothing changed — none of the 300 ordinary records is rewritten or logged.
+        await receiver.drain();
+
+        expect(transitionedKeys.filter(key => ordinaryKeys.has(key))).toEqual([]);
+        expect(dispatchPrimaryCalls.filter(key => ordinaryKeys.has(key))).toEqual([]);
+        expect(logLines).toEqual([]);
+
+        for (const [key, baseline] of beforePass2.entries()) {
+            const stat   = await fs.stat(state.getRecordPath(key)),
+                  record = await state.read(key);
+            expect({ino: stat.ino, mtimeMs: stat.mtimeMs, updatedAt: record.updatedAt}).toEqual(baseline);
+        }
+
+        // Settle the urgent wake via its spool result, then run the next pass: all 300 dispatch again.
+        const urgentPointer = urgentPrimaryWakeSpoolPath(stateDir, agentIdentity);
+        await fs.writeFile(urgentPointer + '.result', JSON.stringify({
+            recordKey: urgentKey,
+            subscriptionId,
+            recipient: {
+                seat      : agentIdentity,
+                generation: '69018:2026-11-20T19:26:00.000Z',
+                recordKey : urgentKey,
+                threadId  : '11111111-1111-4111-8111-111111111111',
+                nonce     : '22222222-2222-4222-8222-222222222222'
+            }
+        }), {mode: 0o600});
+
+        dispatchPrimaryCalls.length = 0;
+        await receiver.drain();
+
+        expect((await state.read(urgentKey)).state).toBe('delivered');
+        const redispatchedOrdinary = dispatchPrimaryCalls.filter(key => ordinaryKeys.has(key));
+        expect(redispatchedOrdinary).toHaveLength(300);
+        expect(new Set(redispatchedOrdinary).size).toBe(300);
+    });
+
+    test('draining one record with an unprobeable context gate three times logs the warning once', async () => {
+        const {manifest, optIn} = buildNativeManifest(),
+              publicRoute       = {
+                  agentIdentity,
+                  harnessTargetMetadata: manifest.routes[subscriptionId].harnessTargetMetadata,
+                  adapterConfig        : manifest.routes[subscriptionId].adapterConfig
+              },
+              warnLines         = [];
+        let probeCount = 0;
+
+        const receiver = createWakeReceiver({
+            manifest,
+            state,
+            manifestPath   : path.join(stateDir, 'routes.json'),
+            readNativeOptIn: async () => optIn,
+            contextProbe   : async () => { probeCount++; return null; },
+            dispatchPrimary: async () => ({status: 'pending', reason: 'native-recipient:awaiting-readiness'}),
+            logger         : {log() {}, error() {}, warn: line => warnLines.push(line)}
+        });
+        server = receiver.server;
+
+        await state.accept({
+            subscriptionId,
+            eventId       : 'wake-digest:unprobeable-1',
+            sourceEventIds: ['MESSAGE:unprobeable-1'],
+            route         : publicRoute,
+            envelope      : {
+                schemaVersion: '1.0',
+                eventType    : 'wake/digest',
+                eventId      : 'wake-digest:unprobeable-1',
+                subscriptionId,
+                agentIdentity,
+                payload      : {totalEvents: 1, sourceEventIds: ['MESSAGE:unprobeable-1']}
+            }
+        });
+
+        await receiver.drain();
+        await receiver.drain();
+        await receiver.drain();
+
+        expect(probeCount).toBe(3);
+        expect(warnLines.filter(line => line.includes('context gate could not probe'))).toHaveLength(1);
+    });
+
+    test('coalesces a burst of concurrent drain triggers while a pass is running into one trailing pass', async () => {
+        const {manifest, optIn} = buildNativeManifest(),
+              originalList      = state.list.bind(state);
+        let listCalls = 0,
+              releaseFirstPass,
+              enteredFirstPass;
+        const firstPassGate  = new Promise(resolve => { releaseFirstPass = resolve; }),
+              firstPassReady = new Promise(resolve => { enteredFirstPass = resolve; });
+
+        state.list = async filter => {
+            listCalls++;
+            if (listCalls === 1) {
+                enteredFirstPass();
+                await firstPassGate;
+            }
+            return originalList(filter);
+        };
+
+        const receiver = createWakeReceiver({
+            manifest,
+            state,
+            manifestPath   : path.join(stateDir, 'routes.json'),
+            readNativeOptIn: async () => optIn,
+            logger         : {log() {}, warn() {}, error() {}}
+        });
+        server = receiver.server;
+
+        const pass1 = receiver.drain();
+        await firstPassReady;
+
+        const burst = Array.from({length: 8}, () => receiver.drain());
+        releaseFirstPass();
+        await Promise.all([pass1, ...burst]);
+
+        expect(listCalls).toBe(2);
+    });
+
+    test('preserves acceptance order when a blocking spool slot settles and a fresh same-priority wake arrives before the next drain (ordinary and urgent)', async () => {
+        for (const urgent of [false, true]) {
+            const subDir    = await fs.mkdtemp(path.join(stateDir, urgent ? 'urgent-' : 'ordinary-')),
+                  laneState = new WakeReceiverState({stateDir: subDir});
+            await laneState.init();
+
+            const instanceHome = path.join(subDir, 'agents', 'neo-gemini-julia', 'harness', 'antigravity'),
+                  optIn        = {agentId: 'neo-gemini-julia', family: 'antigravity', stateDir: subDir},
+                  routeDef     = {
+                      signingKey,
+                      agentIdentity,
+                      admits               : 'wake/digest',
+                      harnessTargetMetadata: {
+                          adapter        : 'primary-session',
+                          addressType    : 'userDataDir',
+                          instanceAddress: instanceHome
+                      },
+                      adapterConfig: {
+                          attemptTimeoutMs: 100,
+                          primarySession  : {
+                              instanceHome,
+                              appBundle     : '/Applications/Antigravity.app',
+                              agentId       : 'neo-gemini-julia',
+                              family        : 'antigravity',
+                              hookNodePath  : '/bin/node',
+                              hookModulePath: '/brain/hook.mjs'
+                          }
+                      }
+                  },
+                  publicRoute = {
+                      agentIdentity,
+                      harnessTargetMetadata: routeDef.harnessTargetMetadata,
+                      adapterConfig        : routeDef.adapterConfig
+                  },
+                  manifest = {schemaVersion: 1, routes: {[subscriptionId]: routeDef}},
+                  receiver = createWakeReceiver({
+                      manifest,
+                      state          : laneState,
+                      manifestPath   : path.join(subDir, 'routes.json'),
+                      readNativeOptIn: async () => optIn,
+                      logger         : {log() {}, warn() {}, error() {}}
+                  });
+
+            try {
+                const baseMs    = Date.parse('2026-11-20T12:00:00.000Z'),
+                      acceptOne = async (label, offsetMs) => {
+                          const eventId = `wake-digest:${label}`,
+                                msgId   = `MESSAGE:${label}`,
+                                res     = await laneState.accept({
+                                    subscriptionId,
+                                    eventId,
+                                    sourceEventIds: [msgId],
+                                    acceptedAt    : new Date(baseMs + offsetMs).toISOString(),
+                                    metadata      : {urgent, priority: urgent ? 'high' : 'normal'},
+                                    route         : publicRoute,
+                                    envelope      : {
+                                        schemaVersion: '1.0',
+                                        eventType    : 'wake/digest',
+                                        eventId,
+                                        subscriptionId,
+                                        agentIdentity,
+                                        payload      : {
+                                            totalEvents   : 1,
+                                            urgent,
+                                            sourceEventIds: [msgId],
+                                            breakdown     : {
+                                                sent_to_me: {
+                                                    count          : 1,
+                                                    highestPriority: urgent ? 'high' : 'normal',
+                                                    latest         : {messageId: msgId, priority: urgent ? 'high' : 'normal'}
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                          return res.record.recordKey;
+                      };
+
+                const keyA = await acceptOne('A', 0),
+                      keyB = await acceptOne('B', 100);
+
+                // Pass 1: A claims the spool slot; older waiter B defers behind A.
+                await receiver.drain();
+
+                const pointerPath = urgent
+                    ? urgentPrimaryWakeSpoolPath(subDir, agentIdentity)
+                    : primaryWakeSpoolPath(subDir, agentIdentity);
+
+                expect(JSON.parse(await fs.readFile(pointerPath, 'utf8')).recordKey).toBe(keyA);
+                expect((await laneState.read(keyB)).deferReason).toBe(
+                    urgent ? 'earlier urgent native wake outstanding' : 'earlier native wake outstanding'
+                );
+
+                // Settle A and accept fresh same-priority C before the next drain pass runs.
+                await fs.writeFile(pointerPath + '.result', JSON.stringify({
+                    recordKey: keyA,
+                    subscriptionId,
+                    recipient: {
+                        seat      : agentIdentity,
+                        generation: '69018:2026-11-20T19:26:00.000Z',
+                        recordKey : keyA,
+                        threadId  : '11111111-1111-4111-8111-111111111111',
+                        nonce     : '22222222-2222-4222-8222-222222222222'
+                    }
+                }), {mode: 0o600});
+                const keyC = await acceptOne('C', 200);
+
+                // Pass 2: A settles, older B must claim the freed slot ahead of newer C.
+                await receiver.drain();
+
+                expect((await laneState.read(keyA)).state).toBe('delivered');
+                expect(JSON.parse(await fs.readFile(pointerPath, 'utf8')).recordKey).toBe(keyB);
+                expect((await laneState.read(keyB)).deferReason).toBe('awaiting the native recipient');
+                expect((await laneState.read(keyC)).deferReason).toBe(
+                    urgent ? 'earlier urgent native wake outstanding' : 'earlier native wake outstanding'
+                );
+                expect((await laneState.read(keyC)).blockedByWake).toBe(keyB);
+            } finally {
+                receiver.server.closeAllConnections?.();
+                await new Promise(resolve => receiver.server.close(resolve));
+            }
+        }
+    });
+
+    test('tracks the staged Codex candidate pointer read on the drain watchdog path', async () => {
+        const codexSeat    = '@neo-gpt-euclid',
+              codexSub     = 'WAKE_SUB:codex-watchdog',
+              instanceHome = path.join(stateDir, 'agents', 'neo-gpt-euclid', 'harness', 'codex-desktop'),
+              optIn        = {agentId: 'neo-gpt-euclid', family: 'codex-desktop', stateDir},
+              routeDef     = {
+                  signingKey,
+                  agentIdentity        : codexSeat,
+                  admits               : 'wake/digest',
+                  harnessTargetMetadata: {
+                      adapter        : 'primary-session',
+                      addressType    : 'codexHome',
+                      instanceAddress: instanceHome
+                  },
+                  adapterConfig: {
+                      attemptTimeoutMs: 100,
+                      contextGate     : {maxContextTokens: 250_000, warnContextTokens: 200_000},
+                      primarySession  : {
+                          instanceHome,
+                          appBundle: '/Applications/Codex.app',
+                          agentId  : 'neo-gpt-euclid',
+                          family   : 'codex-desktop'
+                      }
+                  }
+              },
+              publicRoute = {
+                  agentIdentity        : codexSeat,
+                  harnessTargetMetadata: routeDef.harnessTargetMetadata,
+                  adapterConfig        : routeDef.adapterConfig
+              },
+              manifest = {schemaVersion: 1, routes: {[codexSub]: routeDef}},
+              stuck    = [];
+
+        let holdPointerRead = false,
+            releasePointerRead,
+            enteredHeldRead;
+        const heldPointerGate  = new Promise(resolve => { releasePointerRead = resolve; }),
+              heldPointerReady = new Promise(resolve => { enteredHeldRead = resolve; });
+
+        const receiver = createWakeReceiver({
+            manifest,
+            state,
+            manifestPath    : path.join(stateDir, 'routes.json'),
+            readNativeOptIn : async () => optIn,
+            contextProbe    : async () => ({totalTokens: 50_000}),
+            readSpoolPointer: async filePath => {
+                if (holdPointerRead) {
+                    enteredHeldRead();
+                    await heldPointerGate;
+                }
+                return JSON.parse(await fs.readFile(filePath, 'utf8'));
+            },
+            stepBoundsMs      : {accept: 500, drain: 80, dispatchHeadroom: 500},
+            watchdogIntervalMs: 15,
+            onStuck           : entry => stuck.push(entry),
+            logger            : {log() {}, warn() {}, error() {}}
+        });
+        server = receiver.server;
+
+        const baseMs = Date.parse('2026-11-20T12:10:00.000Z');
+        for (const [index, label] of ['A', 'B'].entries()) {
+            const eventId = `wake-digest:codex-${label}`,
+                  msgId   = `MESSAGE:codex-${label}`;
+            await state.accept({
+                subscriptionId: codexSub,
+                eventId,
+                sourceEventIds: [msgId],
+                acceptedAt    : new Date(baseMs + index * 50).toISOString(),
+                metadata      : {urgent: false, priority: 'normal'},
+                route         : publicRoute,
+                envelope      : {
+                    schemaVersion : '1.0',
+                    eventType     : 'wake/digest',
+                    eventId,
+                    subscriptionId: codexSub,
+                    agentIdentity : codexSeat,
+                    payload       : {totalEvents: 1, sourceEventIds: [msgId]}
+                }
+            });
+        }
+
+        // Pass 1: A stages as anchor and B becomes a staged batch candidate with deferReason 'earlier native wake outstanding'.
+        await receiver.drain();
+
+        // Pass 2 + queued Pass 3: hold only the candidate-pointer read past the 80 ms drain bound.
+        holdPointerRead = true;
+        const activePass = receiver.drain(),
+              queuedPass = receiver.drain();
+
+        await heldPointerReady;
+        await expect.poll(() => stuck.map(entry => entry.step), {timeout: 1000}).toEqual(['drain']);
+
+        holdPointerRead = false;
+        releasePointerRead();
+        await Promise.all([activePass, queuedPass]);
     });
 });
