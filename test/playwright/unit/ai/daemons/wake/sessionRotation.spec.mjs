@@ -310,13 +310,28 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
 
         expect(result).toBe('delivered');
 
-        const lines = typedPaste(calls)[0].args.map(String);
+        const lines = typedPaste(calls)[0].args.map(String),
+              fence = lines.findIndex(line => line.includes('Seat holder changed before the fresh session')),
+              clear = lines.findIndex(line => line.includes('"before prompt clear"'));
 
         expect(lines).not.toContain('      keystroke "n" using command down');
-        expect(lines.some(line => line.includes('Seat holder changed before the fresh session'))).toBe(true);
+        // A session claimed by hand since the shortcut stops the script before its first key
+        expect(fence).toBeGreaterThan(-1);
+        expect(fence).toBeLessThan(clear);
         expect(lines.some(line => line.includes('"before fresh session"'))).toBe(true);
         expect(lines.some(line => line.includes('Rotation deadline passed before the fresh session'))).toBe(true);
         expect(lines.at(-1)).toBe(PROMPT)
+    });
+
+    test('#1871: a seat claimed since the shortcut vetoes a resumed attempt without a keystroke', async () => {
+        const calls  = [];
+        const result = await dispatchLocalWake({...rotationRecord(), sessionOpened: true}, quietEffects({
+            rotationGuard: () => ROTATION_SUPERSEDED,
+            spawnAsync   : async (command, args) => { calls.push({command, args}); return '' }
+        }));
+
+        expect(result).toEqual({outcome: 'failed', outcomeReason: ROTATION_SUPERSEDED});
+        expect(typedPaste(calls)).toHaveLength(0)
     });
 
     test('#1770 (Emmy\'s Round 1): a lock that engages while the pid is resolved defers the rotation without a keystroke', async () => {
