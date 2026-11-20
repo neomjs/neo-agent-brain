@@ -85,8 +85,16 @@ export const ROTATION_RETRY_MS = 1000;
 export const ROTATION_ACTIVATION_LOST = 'activation-lost';
 
 /**
- * Failure reason: the seat's window lost the front {@link ROTATION_MAX_ACTIVATION_LOSSES} times, each before
- * its fresh-session keystroke, so nothing opened.
+ * Defer reason: the seat's window lost the front after its fresh-session keystroke, so the session it opened
+ * waits empty. The next attempt resumes there without a second keystroke, counted against
+ * {@link ROTATION_MAX_ACTIVATION_LOSSES} like a lost activation.
+ * @type {String}
+ */
+export const ROTATION_SESSION_OPENED = 'session-opened-front-lost';
+
+/**
+ * Failure reason: the seat's window lost the front {@link ROTATION_MAX_ACTIVATION_LOSSES} times. Nothing opened,
+ * unless the record says `sessionOpened`: then its fresh session waits empty.
  * @type {String}
  */
 export const ROTATION_FRONT_LOST = 'session-rotate-front-lost';
@@ -274,6 +282,19 @@ export function isPreKeystrokeFailure(reason) {
  */
 export function isPreSessionFailure(reason) {
     return isPreKeystrokeFailure(reason) || /before fresh session/.test(String(reason ?? ''))
+}
+
+/**
+ * @summary Whether a failed rotation script lost the front after its fresh-session keystroke, so the session it
+ * opened waits empty and the next attempt resumes there instead of pressing Cmd+N again. The phases after Cmd+N
+ * assert `"before prompt clear"`, `"before wake clipboard set"` and `"before wake paste"`.
+ * @param {String} [reason] The adapter's `outcomeReason`: the script's error text.
+ * @returns {Boolean}
+ */
+export function isPostSessionFrontLost(reason) {
+    const text = String(reason ?? '');
+
+    return /lost frontmost status/.test(text) && /before (prompt clear|wake clipboard set|wake paste)/.test(text)
 }
 
 /**

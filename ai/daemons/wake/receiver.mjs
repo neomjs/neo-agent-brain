@@ -32,6 +32,7 @@ import {
     ROTATION_MAX_AGE_MS,
     ROTATION_RETRY_MS,
     ROTATION_SCREEN_LOCKED,
+    ROTATION_SESSION_OPENED,
     ROTATION_SUPERSEDED,
     SESSION_ROTATE_EVENT_TYPE,
     WAKE_DIGEST_EVENT_TYPE,
@@ -761,7 +762,10 @@ export function createWakeReceiver({
                     if (outcome === 'deferred') {
                         const deferCount = (dispatching.deferCount || 0) + 1,
                               rotation   = isSessionRotation(dispatching.envelope),
-                              frontLost  = (dispatching.frontLostCount || 0) + (outcomeReason === ROTATION_ACTIVATION_LOST ? 1 : 0);
+                              lostFront  = outcomeReason === ROTATION_ACTIVATION_LOST || outcomeReason === ROTATION_SESSION_OPENED,
+                              frontLost  = (dispatching.frontLostCount || 0) + (lostFront ? 1 : 0),
+                              // Once Cmd+N opened the session, every later attempt resumes in it
+                              sessionOpened = dispatching.sessionOpened === true || outcomeReason === ROTATION_SESSION_OPENED;
 
                         if (!rotation && deferCount > DIALOG_DEFER_BOUND) {
                             await watched.transition(record.recordKey, 'dispatching', 'failed', {
@@ -781,14 +785,16 @@ export function createWakeReceiver({
                         // cannot keep it fails the rotation rather than being asked until the hold ends.
                         if (rotation && frontLost >= ROTATION_MAX_ACTIVATION_LOSSES) {
                             await watched.transition(record.recordKey, 'dispatching', 'failed', {
-                                outcomeReason     : ROTATION_FRONT_LOST,
+                                outcomeReason : ROTATION_FRONT_LOST,
                                 deferCount,
-                                frontLostCount    : frontLost,
+                                frontLostCount: frontLost,
+                                ...(sessionOpened ? {sessionOpened} : {}),
                                 dispatchFinishedAt: new Date(clock()).toISOString()
                             });
                             logger.error?.(
                                 `[Wake Receiver] rotation FRONT-LOST ${record.subscriptionId}: the seat's window lost ` +
-                                `the front ${frontLost} times before the fresh session; failed without opening one`
+                                `the front ${frontLost} times; ` +
+                                (sessionOpened ? 'failed with its fresh session open and empty' : 'failed without opening a session')
                             );
                             continue;
                         }
@@ -797,7 +803,8 @@ export function createWakeReceiver({
                             deferCount,
                             deferredAt : new Date().toISOString(),
                             deferReason: outcomeReason || 'interactive-dialog-pending',
-                            ...(rotation ? {seatHolder: dispatching.seatHolder ?? null, frontLostCount: frontLost} : {})
+                            ...(rotation ? {seatHolder: dispatching.seatHolder ?? null, frontLostCount: frontLost} : {}),
+                            ...(sessionOpened ? {sessionOpened} : {})
                         });
                         logger.warn?.(rotation
                             ? `[Wake Receiver] rotation DEFERRED ${record.subscriptionId} (${outcomeReason}); ` +

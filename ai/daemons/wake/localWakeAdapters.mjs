@@ -24,7 +24,9 @@ import {
     ROTATION_ACTIVATION_LOST,
     ROTATION_EXPIRED,
     ROTATION_SCREEN_LOCKED,
+    ROTATION_SESSION_OPENED,
     evaluateHumanInput,
+    isPostSessionFrontLost,
     isPreSessionFailure,
     isRotationExpired,
     isSessionRotation,
@@ -797,16 +799,22 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
         freshSessionCutoffSec: rotation ? Math.floor(rotationDeadline(record) / 1000) : null,
         freshSessionHolder   : rotation ? effects.rotationHolder || null : null,
         instancePid,
+        sessionOpened        : rotation && record.sessionOpened === true,
         tabShortcut          : resolvedMeta.tabShortcut
     });
     const outcome = await spawnOsascriptOnce(effects, args, record.subscriptionId);
 
     // A rotation whose window lost the front before its fresh-session keystroke opened nothing, so it may try
-    // again (`ROTATION_MAX_ACTIVATION_LOSSES`); past that point Cmd+N may have opened a session, and a retry
-    // would open two.
-    // A lock that engaged during the activation or before Cmd+N took the front, and waits as a lock does.
+    // again (`ROTATION_MAX_ACTIVATION_LOSSES`). A lock that engaged during the activation or before Cmd+N took
+    // the front, and waits as a lock does.
     if (rotation && outcome?.outcome === 'failed' && isPreSessionFailure(outcome.outcomeReason)) {
         return {outcome: 'deferred', outcomeReason: effects.readScreenLocked?.() === true ? ROTATION_SCREEN_LOCKED : ROTATION_ACTIVATION_LOST}
+    }
+
+    // Lost after Cmd+N: the session it opened waits empty, so the next attempt resumes there (`sessionOpened`)
+    // instead of opening a second one.
+    if (rotation && outcome?.outcome === 'failed' && isPostSessionFrontLost(outcome.outcomeReason)) {
+        return {outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED}
     }
 
     return outcome;
@@ -891,10 +899,12 @@ export function processAutomationIdLines(indent = '  ') {
  *   record right before Cmd+N and refuses the keystroke when another session holds the seat, when the
  *   record cannot be read, or when a record appeared where none was.
  * @param {Number|null} [options.instancePid] Resolved Unix PID when instance-addressed.
+ * @param {Boolean} [options.sessionOpened=false] An earlier attempt's Cmd+N opened the session and the front was
+ *   lost before the paste: the script keeps the holder, front and cutoff checks, and skips the keystroke and its wait.
  * @param {String} [options.tabShortcut] Command-key shortcut for the harness tab.
  * @returns {String[]} `osascript` argv fragments ending with the digest.
  */
-export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, freshSessionCutoffSec = null, freshSessionHolder = null, instancePid, tabShortcut}) {
+export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, freshSessionShortcut = null, freshSessionCutoffSec = null, freshSessionHolder = null, instancePid, sessionOpened = false, tabShortcut}) {
     const fencedFreshSession = Boolean(freshSessionShortcut) && Number.isFinite(freshSessionCutoffSec);
     const escapedAppName     = escapeAppleScript(appName);
     const targetPid          = instancePid ? String(instancePid) : '';
@@ -986,9 +996,11 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
                 '-e', `      if rotationNow >= ${Math.floor(freshSessionCutoffSec)} then error "Rotation deadline passed before the fresh session"`
             );
         }
-        args.push('-e', `      keystroke "${escapeAppleScript(freshSessionShortcut)}" using command down`);
-        // The new session's composer renders before it takes input.
-        args.push('-e', '      delay 1.5');
+        if (!sessionOpened) {
+            args.push('-e', `      keystroke "${escapeAppleScript(freshSessionShortcut)}" using command down`);
+            // The new session's composer renders before it takes input.
+            args.push('-e', '      delay 1.5');
+        }
     }
     if (focusSeedSequence === 'r-undo') {
         args.push('-e', '      keystroke "r"', '-e', '      delay 0.2', '-e', '      keystroke "z" using command down', '-e', '      delay 0.2');

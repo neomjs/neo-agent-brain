@@ -14,6 +14,7 @@ import {
     ROTATION_MAX_ACTIVATION_LOSSES,
     ROTATION_MAX_AGE_MS,
     ROTATION_SCREEN_LOCKED,
+    ROTATION_SESSION_OPENED,
     ROTATION_SUPERSEDED,
     SESSION_ROTATE_EVENT_TYPE,
     admittedEventType,
@@ -21,6 +22,7 @@ import {
     evaluateHumanInput,
     hasReceiptIdentity,
     isHumanInputDefer,
+    isPostSessionFrontLost,
     isPreKeystrokeFailure,
     isPreSessionFailure,
     isRotationExpired,
@@ -201,6 +203,16 @@ test.describe('ai/daemons/wake/sessionRotation — the contract', () => {
         expect(isPreSessionFailure(undefined)).toBe(false)
     });
 
+    test('#1871: only a front lost after Cmd+N resumes in the session it opened', () => {
+        // Vega's 2026-11-20 rotation, verbatim from the receiver's record.
+        expect(isPostSessionFrontLost('4848:4854: execution error: Target app lost frontmost status before wake paste (-2700)')).toBe(true);
+        expect(isPostSessionFrontLost('execution error: Target app lost frontmost status before prompt clear (-2700)')).toBe(true);
+        expect(isPostSessionFrontLost('execution error: Target app lost frontmost status before wake clipboard set (-2700)')).toBe(true);
+        expect(isPostSessionFrontLost('execution error: Target app lost frontmost status before fresh session (-2700)')).toBe(false);
+        expect(isPostSessionFrontLost('execution error: Seat holder changed before the fresh session (-2700)')).toBe(false);
+        expect(isPostSessionFrontLost(undefined)).toBe(false)
+    });
+
     test('only a failure in the activation phase typed nothing', () => {
         // Grace's 21:04Z rotation, verbatim from the receiver's record.
         expect(isPreKeystrokeFailure('4154:4160: execution error: Target app lost frontmost status after activation (-2700)')).toBe(true);
@@ -273,7 +285,7 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
         expect(typedPaste(calls)).toHaveLength(0)
     });
 
-    test('a window that loses the front before the first keystroke defers the rotation; a later loss fails it', async () => {
+    test('#1871: a front lost before the first keystroke asks again, one lost after Cmd+N resumes, and a refusal stays final', async () => {
         const run = message => dispatchLocalWake(rotationRecord(), quietEffects({
             spawnAsync: async (command, args) => {
                 if (args.some(arg => String(arg).includes('keystroke "v"'))) throw new Error(message);
@@ -283,8 +295,28 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
 
         expect(await run('4154:4160: execution error: Target app lost frontmost status after activation (-2700)'))
             .toEqual({outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST});
-        expect(await run('execution error: Target app lost frontmost status before wake paste (-2700)'))
+        expect(await run('4848:4854: execution error: Target app lost frontmost status before wake paste (-2700)'))
+            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED});
+        expect(await run('execution error: Seat holder changed before the fresh session (-2700)'))
             .toMatchObject({outcome: 'failed'})
+    });
+
+    test('#1871: a resumed rotation keeps the holder, front and cutoff checks, and pastes without a second Cmd+N', async () => {
+        const calls  = [];
+        const result = await dispatchLocalWake({...rotationRecord(), sessionOpened: true}, quietEffects({
+            rotationHolder: {path: '/seats/neo-opus-ada/listener.json', sessionId: 'session-old'},
+            spawnAsync    : async (command, args) => { calls.push({command, args}); return '' }
+        }));
+
+        expect(result).toBe('delivered');
+
+        const lines = typedPaste(calls)[0].args.map(String);
+
+        expect(lines).not.toContain('      keystroke "n" using command down');
+        expect(lines.some(line => line.includes('Seat holder changed before the fresh session'))).toBe(true);
+        expect(lines.some(line => line.includes('"before fresh session"'))).toBe(true);
+        expect(lines.some(line => line.includes('Rotation deadline passed before the fresh session'))).toBe(true);
+        expect(lines.at(-1)).toBe(PROMPT)
     });
 
     test('#1770 (Emmy\'s Round 1): a lock that engages while the pid is resolved defers the rotation without a keystroke', async () => {
@@ -300,7 +332,7 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
         expect(typedPaste(calls)).toHaveLength(0)
     });
 
-    test('#1770 (Emmy\'s Round 1): a lock seen after a failed activation defers as a lock; after a keystroke the failure stands', async () => {
+    test('#1770 (Emmy\'s Round 1): a lock seen after a failed activation defers as a lock; after Cmd+N the rotation resumes in its session (#1871)', async () => {
         let   locked = false;
         const run    = message => dispatchLocalWake(rotationRecord(), quietEffects({
             readScreenLocked: () => locked,
@@ -315,9 +347,9 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
 
         locked = false;
 
-        // Past the activation a key may already be out, so the failure is not turned into a retry.
+        // Past Cmd+N the session is open: the next attempt waits for the unlock, then resumes without a second Cmd+N.
         expect(await run('execution error: Target app lost frontmost status before wake paste (-2700)'))
-            .toMatchObject({outcome: 'failed'})
+            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED})
     });
 
     test('#1770 (Emmy\'s Round 1): a front lost right before Cmd+N defers the rotation, as a lock when the script ran into one', async () => {
@@ -846,6 +878,23 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
             deferCount    : ROTATION_MAX_ACTIVATION_LOSSES + 1
         });
         expect(dispatched).toHaveLength(ROTATION_MAX_ACTIVATION_LOSSES + 1)
+    });
+
+    test('#1871: a front lost after Cmd+N is asked again in the opened session, and fails at the cap with it marked open', async () => {
+        const opened = () => ({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED}),
+              quick  = rotationReceiver(Array.from({length: ROTATION_MAX_ACTIVATION_LOSSES}, opened), {rotationRetryMs: 20});
+
+        await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: heldEnvelope()});
+        await quick.drain();
+
+        await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
+        expect(dispatched[0].sessionOpened).toBeUndefined();
+        expect(dispatched[1]).toMatchObject({sessionOpened: true, frontLostCount: 1});
+        expect(await state.read(rotationKey)).toMatchObject({
+            outcomeReason : ROTATION_FRONT_LOST,
+            frontLostCount: ROTATION_MAX_ACTIVATION_LOSSES,
+            sessionOpened : true
+        })
     });
 
     test('#1770 AC-2: a rotation accepted on a locked screen waits past its minute with no dispatch, then types after the unlock', async () => {
