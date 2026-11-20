@@ -48,6 +48,7 @@ function snapshotQuery(name, includeOutside = false) {
           title
           isDraft
           headRefOid
+          baseRefName
           reviewDecision
           mergeable
           mergeStateStatus

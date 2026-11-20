@@ -239,9 +239,10 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         // whether each review judged the current head, and whether a bot wrote it
         judged    = item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head,
             ...(item?.author?.__typename === 'Bot' ? {bot: true} : {})}),
-        // each reviewer's latest review (a comment included), and their standing approval or change request
+        // each reviewer's latest review (a comment included), and their standing approval or change request, with
+        // when it was given: the merge line orders approved PRs by it
         reviewed  = reviews.nodes.map(judged),
-        opined    = opinions.nodes.map(judged),
+        opined    = opinions.nodes.map(item => ({...judged(item), at: item?.submittedAt ?? null})),
         // the conversation's latest comments and submitted reviews, oldest first
         turns     = [...connectionOf(node.comments).nodes.map(item => turnOf(item, item?.createdAt, identities)),
             ...connectionOf(node.reviews).nodes.map(item => turnOf(item, item?.submittedAt, identities))]
@@ -262,6 +263,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         number           : node.number,
         title            : typeof node.title === 'string' ? node.title.replace(/\s+/g, ' ').trim() || null : null,
         head,
+        base             : node.baseRefName ?? null,
         ci               : headCiOf(commit, suites),
         verdict          : node.reviewDecision ?? null,
         mergeable        : node.mergeable ?? null,

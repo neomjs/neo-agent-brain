@@ -1639,3 +1639,45 @@ test.describe('openWorkWakes — an owed reply wakes beside the holder, once per
         expect(replies(run.step(3, pr([said(-1), said(2), said(3)]), {}, {rotationSeats: roster})), 'once per episode').toEqual([])
     });
 });
+
+test.describe('openWorkWakes — one merge wakes one rebase (#1869)', () => {
+    const
+        approval = minute => ({reviewer: GPT, state: 'APPROVED', onHead: true, at: iso(minute)}),
+        pr       = (number, minute, overrides = {}) => ({number, ci: 'green', mergeable: 'CONFLICTING',
+            opinions: [approval(minute)], reviews: [approval(minute)], ...overrides}),
+        rebases  = result => result.wakes.filter(wake => wake.kind === 'rebase').map(wake => wake.pr);
+
+    test('three approved PRs that conflict after one merge wake one rebase, and none for the two that wait (AC-1)', () => {
+        const run = journey();
+
+        run.step(0, []);
+        expect(rebases(run.step(1, [pr(9, -30), pr(7, -50), pr(8, -40)]))).toEqual(['acme/app#7'])
+    });
+
+    test('once the PR ahead merges, the next one is woken to rebase, once (AC-2)', () => {
+        const run = journey();
+
+        run.step(0, []);
+        run.step(1, [pr(7, -50), pr(8, -40), pr(9, -30)]);
+        // the first PR merged, so it is no longer an open row
+        expect(rebases(run.step(2, [pr(8, -40), pr(9, -30)], {transitions: [merged(2)]}))).toEqual(['acme/app#8']);
+        expect(rebases(run.step(3, [pr(8, -40), pr(9, -30)]))).toEqual([])
+    });
+
+    test('an absent author ahead holds no place: the PR behind is woken beside it', () => {
+        const run = journey(), vega = {owner: {kind: 'seat', seat: '@neo-opus-vega'}};
+
+        run.step(0, []);
+        expect(rebases(run.step(1, [pr(7, -50, vega), pr(8, -40)], {}, {absentSeats: ['@neo-opus-vega']})))
+            .toEqual(['acme/app#7', 'acme/app#8'])
+    });
+
+    test('a lead the round does not decide holds no place: a partial red native head lets the follower rebase', () => {
+        const run = journey();
+
+        run.step(0, []);
+        // the round skips the partially read lead, so it must not hold the follower either
+        expect(run.step(1, [pr(7, -50, {partial: true, ci: 'red'}), pr(8, -40)]).wakes.map(wake => [wake.pr, wake.kind]))
+            .toEqual([['acme/app#8', 'rebase']])
+    });
+});

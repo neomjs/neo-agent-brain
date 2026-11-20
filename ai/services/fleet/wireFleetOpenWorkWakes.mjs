@@ -12,9 +12,9 @@
 import path                                                                 from 'path';
 import {exhaustedUntilOf}                                                   from './capacityThrottleState.mjs';
 import {OPEN_WORK_FAILED_CHECKS}                                            from '../github-workflow/queries/openWorkQueries.mjs';
-import {familiesOf, fileStore, seatReaders}                                 from './wireFleetOpenWorkSource.mjs';
+import {absentOf, familiesOf, fileStore, seatReaders}                       from './wireFleetOpenWorkSource.mjs';
 import {HOLDER_SILENT_MS, planOpenWorkWakes, wakeGateOf}                    from './openWorkWakes.mjs';
-import {ciRepairEvidenceOf}                                                 from './openWorkHolder.mjs';
+import {ciRepairEvidenceOf, mergeLineOf}                                    from './openWorkHolder.mjs';
 import {isOpenWorkCiRepair, isOpenWorkFailedChecks, OPEN_WORK_HOLDER_KINDS} from './openWorkWakeMessage.mjs';
 import {openWorkFreshness}                                                  from './openWorkFreshness.mjs';
 
@@ -424,8 +424,10 @@ export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = a
             ledger     = stored && !stored.activation && Number.isFinite(first) && Date.parse(stored.pulse) < first ? null : stored,
             roster     = typeof rotationSeats === 'function' ? rotationSeats() : rotationSeats,
             deliveries = await deliveriesOf(ledger, time),
-            // A seat an admitted rotation slot waits on may have gone absent, so such a ledger reads who is first
-            held       = Object.values(ledger?.holding ?? {}).some(entry => entry.status === 'admitted' && entry.wake.role === 'rotation'),
+            // A seat an admitted rotation slot waits on may have gone absent, so such a ledger reads who is first; so does
+            // a PR waiting in the merge line, which an absent author ahead releases though no wake is planned yet
+            held       = Object.values(ledger?.holding ?? {}).some(entry => entry.status === 'admitted' && entry.wake.role === 'rotation') ||
+                mergeLineOf(Object.values(state?.snapshot?.rows ?? {}), {now: time}).size > 0,
             absentees  = held ? (await routeMap()).absent : null,
             args       = {state, ledger, deliveries, ...(absentees ? {absentSeats: absentees} : {}), ...(roster !== undefined ? {rotationSeats: roster} : {})};
         let plan = planOpenWorkWakes({...args, now: time, quiet: !activation}), expired = 0;
@@ -569,19 +571,6 @@ export function undeliverableOf(presence) {
     return Object.fromEntries(rows
         .filter(row => typeof row?.identity === 'string' && row.wake?.state === 'undeliverable')
         .map(row => [row.identity, typeof row.wake.reason === 'string' ? row.wake.reason : null]))
-}
-
-/**
- * @summary The seats the Fleet's verbose presence answer shows no sign of acting: presence `dark`, and a wake that is
- * not `reachable`, since a receiver whose route lands can open a dark seat's session. Empty when unreadable.
- * @param {Object|null} presence A verbose `who_is_online` payload: `{agents: [{identity, state, wake: {state}}]}`.
- * @returns {String[]}
- */
-export function absentOf(presence) {
-    const rows = Array.isArray(presence?.agents) ? presence.agents : [];
-
-    return rows.filter(row => typeof row?.identity === 'string' && row.state === 'dark' && row.wake?.state !== 'reachable')
-        .map(row => row.identity)
 }
 
 /**

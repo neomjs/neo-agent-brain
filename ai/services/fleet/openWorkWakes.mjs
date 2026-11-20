@@ -35,11 +35,11 @@
  * 2026-11-14); a seat whose family is unknown stays eligible. When no other seat answers, the whole roster picks, so
  * the PR is never left unrouted; that seat's arrival check sees the lab and hands the approval on.
  */
-import {createHash}                                                                                            from 'node:crypto';
-import {openWorkFreshness}                                                                                     from './openWorkFreshness.mjs';
-import {activeCiRepairClassification, ciRepairEvidenceOf, holderOf, isEligibleOutsidePullRequest, responderOf} from './openWorkHolder.mjs';
-import {isOpenWorkCiIncompleteReads, OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf}                    from './openWorkWakeMessage.mjs';
-import {OPEN_WORK_QUERY_COSTS}                                                                                 from '../github-workflow/queries/openWorkQueries.mjs';
+import {createHash}                                                                                                                                      from 'node:crypto';
+import {openWorkFreshness}                                                                                                                               from './openWorkFreshness.mjs';
+import {activeCiRepairClassification, ciRepairEvidenceOf, decidableRow, holderOf, incompleteRow, isEligibleOutsidePullRequest, mergeLineOf, responderOf} from './openWorkHolder.mjs';
+import {isOpenWorkCiIncompleteReads, OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf}                                                              from './openWorkWakeMessage.mjs';
+import {OPEN_WORK_QUERY_COSTS}                                                                                                                           from '../github-workflow/queries/openWorkQueries.mjs';
 
 /** @summary How long a holder's delivered wake may stay unanswered before its holder reads silent. */
 export const HOLDER_SILENT_MS = 4 * 60 * 60 * 1000;
@@ -98,10 +98,6 @@ function labsOf(row) {
         ? row.disclosedFamilies : null
 }
 
-/** @summary Missing list coverage cannot certify review, reply, integration or merge absence. */
-const incompleteRow = row => row.partial !== false || !Array.isArray(row.requested) ||
-    !Array.isArray(row.reviews) || !Array.isArray(row.opinions);
-
 /** @summary Copies normalized coverage diagnostics; legacy rows get no invented specific missing read. */
 function ciIncompleteReadsOf(row) {
     const reads = row.ciRepairIncompleteReads;
@@ -144,7 +140,8 @@ function wakeOf(row, seat, role, kind, episode, holder = null, ciRepair = null) 
  *     passes an unreachable one. Work a seat holds as reviewer or author keeps routing through `routeOf` alone.
  * @param {String[]|null} [options.absentSeats=null] Native seats that show no sign they can act: dark, with no reachable
  *     wake. Absence is inferred, so it orders the rotation's pick rather than blocking it: such a seat is picked only
- *     when no other seat qualifies, and an admitted slot moves on from it once one does. Held work ignores it.
+ *     when no other seat qualifies, and an admitted slot moves on from it once one does. Held work ignores it, except
+ *     that an absent author's PR holds no place in the merge line ({@link mergeLineOf}).
  * @param {Boolean} [options.quiet=false] Baseline the observed actions without admitting sends.
  * @param {Object<String, {state: String, at: String|null}>|null} [options.deliveries=null] Delivery verdicts of admitted
  *     holder wakes, by the message id their slot recorded (`projectMessageDelivery`). Only `delivered` can make a holder
@@ -329,17 +326,18 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         for (const seat of ids.filter(native)) holdSeat(row, seat, role, responder.kind, rowBaseline, responder.episode)
     };
 
+    const line = mergeLineOf(Object.values(state.snapshot.rows), {seatFamilies, absentSeats, now});
+
     for (const row of Object.values(state.snapshot.rows)) {
         if (!hasIdentity(row)) continue;
 
         const incomplete = incompleteRow(row);
-        if (openWorkFreshness(row.observedAt, {now}) !== 'ok' ||
-            incomplete && !(row.ci === 'red' && isEligibleOutsidePullRequest(row))) {
+        if (!decidableRow(row, now)) {
             if (baseline) baselines[row.key] = row.head;
             continue
         }
 
-        const holder = holderOf(incomplete ? {...row, partial: true} : row, {seatFamilies});
+        const holder = holderOf(incomplete ? {...row, partial: true} : row, {seatFamilies, line});
 
         if (holder.role === 'unknown') {
             if (baseline) baselines[row.key] = row.head;
