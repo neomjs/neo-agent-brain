@@ -38,7 +38,7 @@ import {
     primaryWakeSpoolPath,
     urgentPrimaryWakeSpoolPath
 } from './primaryWakeSpool.mjs';
-import {WakeReceiverState}                                       from './receiverState.mjs';
+import {TERMINAL_STATES, WakeReceiverState}                      from './receiverState.mjs';
 import {observePrimaryWakeSelection}                             from './primaryWakeSelection.mjs';
 import {readPrivateWakeJson as readPrivate, readNativeWakeOptIn} from './nativeWakeEnrollment.mjs';
 export {enrollNativeWake, readNativeWakeOptIn}                                  from './nativeWakeEnrollment.mjs';
@@ -460,17 +460,33 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
             !['pending','dispatching'].includes(anchor.state)) return pending('ordinary record changed');
         if (anchor.deferReason?.startsWith('context-gate:')) return pending('ordinary record deferred by context');
         if (!eligibleBatchRecord(anchor, subscriptionId, publicRoute)) return commit();
-        const records = [anchor];
-        const keys    = Array.isArray(pointer.candidates) ? pointer.candidates.slice(0, MAX_PRIMARY_WAKE_BATCH_EVENTS - 1) : [];
+        const candidates = [],
+              keys       = Array.isArray(pointer.candidates) ? pointer.candidates.slice(0, MAX_PRIMARY_WAKE_BATCH_EVENTS - 1) : [];
+
+        // Staging reflects eligibility at the time of each receiver pass. Order by original acceptance
+        // before selecting a prefix, so a later append cannot move older waiting content behind it.
         for (const key of keys) {
-            if (!isKey(key)) break;
+            if (!isKey(key)) return commit();
             const record = await state.read(key).catch(() => null);
+            if (typeof record?.acceptedAt !== 'string') return commit();
+            candidates.push(record)
+        }
+
+        const records = [anchor];
+        candidates.sort((left, right) => left.acceptedAt.localeCompare(right.acceptedAt));
+
+        for (const record of candidates) {
+            if (!validReceiverRecord(record, subscriptionId, publicRoute.agentIdentity)) break;
+            if (TERMINAL_STATES.has(record.state) || isIdleOnlyEnvelope(record.envelope)) continue;
+            if (record.acceptedAt < anchor.acceptedAt) return commit();
+            // The receiver enters dispatching before its next gate check. Prior eligibility cannot
+            // admit this record or let a newer content record pass it while that check is in flight.
             if (!eligibleBatchRecord(record, subscriptionId, publicRoute) || record.expectedRecipient || record.nativeInitiatedAt ||
-                record.state !== 'pending' || record.deferReason !== 'earlier native wake outstanding') continue;
+                record.state !== 'pending' || record.deferReason !== 'earlier native wake outstanding') break;
             records.push(record)
         }
-        const ordered = [anchor, ...records.slice(1).sort((left,right) => left.acceptedAt.localeCompare(right.acceptedAt))];
-        return commit(selectPrimaryWakeBatch(ordered))
+
+        return commit(selectPrimaryWakeBatch(records))
     });
 
     const drainPointer = async pointerPath => {

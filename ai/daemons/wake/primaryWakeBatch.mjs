@@ -66,7 +66,8 @@ export function formatPrimaryWakeBatch(records) {
 /**
  * @summary Selects a bounded prefix with at least two indivisible receiver records.
  * The caller supplies a vetted, ordered snapshot from one subscription, with its spool anchor first.
- * Stop at the first ineligible record so the existing singleton path preserves queue order.
+ * The caller stops its content prefix at waiting records and leaves idle-only nudges on their own path.
+ * This selector then stops at the first source-identity or size boundary.
  * @param {Object[]} records Ordered, eligible ordinary receiver records.
  * @returns {Object[]|undefined} Ordered record keys and source event identities, or undefined for singleton delivery.
  */

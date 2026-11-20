@@ -209,6 +209,23 @@ test.describe('signed native wake receiver integration', () => {
     async function useStagedReceiver({drain = true, subscriptionId = sub, contextProbe} = {}) {
         if (drain) await receiver.drain();
         await new Promise(resolve => server.close(resolve));
+        if (contextProbe) {
+            const route = manifest.routes[subscriptionId];
+            manifest = {
+                ...manifest,
+                routes: {
+                    ...manifest.routes,
+                    [subscriptionId]: {
+                        ...route,
+                        adapterConfig: {
+                            ...route.adapterConfig,
+                            contextGate: {maxContextTokens:100,warnContextTokens:90,activeWithinMs:5000}
+                        }
+                    }
+                }
+            };
+            await fs.writeFile(manifestPath,JSON.stringify(manifest),{mode:0o600});
+        }
         let now = Date.now();
         receiver = createWakeReceiver({manifest,state,manifestPath,contextProbe,clock: () => now++,logger:{log(){},warn(){},error(){}}});
         server = receiver.server;
@@ -316,44 +333,82 @@ test.describe('signed native wake receiver integration', () => {
     });
 
     test('a verified batch settles before a newer context deferral blocks fresh handoffs', async () => {
-        const route = manifest.routes[sub];
-        manifest = {
-            ...manifest,
-            routes: {
-                [sub]: {
-                    ...route,
-                    adapterConfig: {
-                        ...route.adapterConfig,
-                        contextGate: {maxContextTokens:100,warnContextTokens:90,activeWithinMs:5000}
-                    }
-                }
-            }
-        };
-        await fs.writeFile(manifestPath,JSON.stringify(manifest),{mode:0o600});
-        let blocked = new Set();
-        const pump = await useStagedReceiver({contextProbe: async record => ({
-            contextTokens: blocked.has(record.eventId) ? 101 : 10
-        })});
-        for (const index of [1,2,3]) expect((await post(index)).status).toBe(202);
-        await receiver.drain();
-        // A pointer can still list a member whose newest context check deferred it.
-        blocked = new Set(['event-2']);
+        let contextTokens = 10;
+        const pump = await useStagedReceiver({contextProbe: async () => ({contextTokens})});
+        for (const index of [1,2]) expect((await post(index)).status).toBe(202);
         await receiver.drain();
         await pump();
         expect(sends).toBe(1);
         expect(consumed[0]).toContain('2 events for @fixture');
 
         // The verified batch can settle after context growth now blocks all future sends.
-        blocked = new Set(['event-1','event-2','event-3','event-4']);
+        contextTokens = 101;
         await receiver.drain();
-        expect((await state.list('delivered')).map(record => record.sourceEventIds)).toEqual([['MESSAGE:1'],['MESSAGE:3']]);
+        expect((await state.list('delivered')).map(record => record.sourceEventIds)).toEqual([['MESSAGE:1'],['MESSAGE:2']]);
 
-        expect((await post(4)).status).toBe(202);
+        expect((await post(3)).status).toBe(202);
         await receiver.drain(); await pump(); await receiver.drain();
         expect(sends).toBe(1);
-        expect(await state.list('pending')).toEqual([2,4].map(index =>
-            expect.objectContaining({eventId:`event-${index}`,deferReason:'context-gate:101>100'})
-        ));
+        expect(await state.list('pending')).toEqual([
+            expect.objectContaining({eventId:'event-3',deferReason:'context-gate:101>100'})
+        ]);
+    });
+
+    for (const hold of ['dispatching', 'context deferred']) {
+        test(`preserves acceptance order when an older staged candidate is ${hold}`, async () => {
+            let blocked = true;
+            const pump = await useStagedReceiver({contextProbe: async record => ({
+                contextTokens: blocked && record.eventId === 'event-2' ? 101 : 10
+            })});
+
+            for (const index of [1,2,3]) expect((await post(index)).status).toBe(202);
+            await receiver.drain();
+            // B was held on the first pass, so it stages after C when the gate opens.
+            blocked = false;
+            await receiver.drain();
+            const [, b, c] = await state.list('pending');
+            const pointer = JSON.parse(await fs.readFile(path.join(stateDir,'primary-sessions','fixture.request.json'),'utf8'));
+            expect(pointer.candidates).toEqual([c.recordKey,b.recordKey]);
+
+            if (hold === 'dispatching') {
+                // Interrupt between the receiver's dispatching transition and its fresh eligibility check.
+                await state.transition(b.recordKey,'pending','dispatching');
+            } else {
+                blocked = true;
+                await receiver.drain();
+                expect((await state.read(b.recordKey)).deferReason).toBe('context-gate:101>100');
+            }
+
+            await pump();
+            expect(sends).toBe(1);
+            expect(consumed[0]).toContain('1 events for @fixture');
+
+            if (hold === 'dispatching') await state.transition(b.recordKey,'dispatching','pending');
+            blocked = false;
+            await receiver.drain();
+            expect((await state.list('delivered')).map(record => record.eventId)).toEqual(['event-1']);
+            await pump(); await receiver.drain();
+            expect(sends).toBe(2);
+            expect(consumed[1]).toContain('2 events for @fixture');
+            expect((await state.list('delivered')).map(record => record.eventId)).toEqual(['event-1','event-2','event-3'])
+        });
+    }
+
+    test('an idle-only nudge uses its individual receipt while content batches around it', async () => {
+        const pump = await useStagedReceiver();
+        expect((await post(1)).status).toBe(202);
+        expect((await post(2,['PULSE:idle-nudge'],envelope => {
+            envelope.payload.breakdown = {heartbeat_pulse:{count:1,sources:{'idle-out-nudge':1}}}
+        })).status).toBe(202);
+        expect((await post(3)).status).toBe(202);
+        await receiver.drain(); await pump(); await receiver.drain();
+        expect(sends).toBe(1);
+        expect((await state.list('delivered')).map(record => record.eventId)).toEqual(['event-1','event-3']);
+        expect((await state.list('pending')).map(record => record.eventId)).toEqual(['event-2']);
+        await receiver.drain(); await pump(); await receiver.drain();
+        expect(sends).toBe(2);
+        const [ordinary,nudge] = await state.list('delivered');
+        expect(nudge.expectedRecipient.nonce).not.toBe(ordinary.expectedRecipient.nonce);
     });
 
     test('an urgent pointer staged during the idle proof preempts the ordinary batch before its claim', async () => {

@@ -42,6 +42,7 @@ function matchesProof(binding, proof) {
 
 /**
  * @summary Confirms that the receiver has committed every original record before retiring its native receipt.
+ * A frozen member must remain settleable as delivered: another terminal state would hold the slot.
  * @param {Object|null} attempt The durable in-flight slot, or its legacy singleton shape.
  * @param {Function} isRecordedDelivered Reads one receiver record by key.
  * @returns {Promise<Boolean>}
