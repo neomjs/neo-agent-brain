@@ -35,11 +35,11 @@
  * 2026-11-14); a seat whose family is unknown stays eligible. When no other seat answers, the whole roster picks, so
  * the PR is never left unrouted; that seat's arrival check sees the lab and hands the approval on.
  */
-import {createHash}                                                                                                         from 'node:crypto';
-import {openWorkFreshness}                                                                                                  from './openWorkFreshness.mjs';
-import {activeCiRepairClassification, ciRepairEvidenceOf, holderOf, isEligibleOutsidePullRequest, mergeLineOf, responderOf} from './openWorkHolder.mjs';
-import {isOpenWorkCiIncompleteReads, OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf}                                 from './openWorkWakeMessage.mjs';
-import {OPEN_WORK_QUERY_COSTS}                                                                                              from '../github-workflow/queries/openWorkQueries.mjs';
+import {createHash}                                                                                                                        from 'node:crypto';
+import {openWorkFreshness}                                                                                                                 from './openWorkFreshness.mjs';
+import {activeCiRepairClassification, ciRepairEvidenceOf, holderOf, incompleteRow, isEligibleOutsidePullRequest, mergeLineOf, responderOf} from './openWorkHolder.mjs';
+import {isOpenWorkCiIncompleteReads, OPEN_WORK_WAKE_REASONS as REASONS, unblockedEpisodeOf}                                                from './openWorkWakeMessage.mjs';
+import {OPEN_WORK_QUERY_COSTS}                                                                                                             from '../github-workflow/queries/openWorkQueries.mjs';
 
 /** @summary How long a holder's delivered wake may stay unanswered before its holder reads silent. */
 export const HOLDER_SILENT_MS = 4 * 60 * 60 * 1000;
@@ -97,10 +97,6 @@ function labsOf(row) {
     return row?.owner?.kind === 'outside' && Array.isArray(row.disclosedFamilies) && row.disclosedFamilies.length
         ? row.disclosedFamilies : null
 }
-
-/** @summary Missing list coverage cannot certify review, reply, integration or merge absence. */
-const incompleteRow = row => row.partial !== false || !Array.isArray(row.requested) ||
-    !Array.isArray(row.reviews) || !Array.isArray(row.opinions);
 
 /** @summary Copies normalized coverage diagnostics; legacy rows get no invented specific missing read. */
 function ciIncompleteReadsOf(row) {
@@ -330,7 +326,7 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         for (const seat of ids.filter(native)) holdSeat(row, seat, role, responder.kind, rowBaseline, responder.episode)
     };
 
-    const line = mergeLineOf(Object.values(state.snapshot.rows), {absentSeats});
+    const line = mergeLineOf(Object.values(state.snapshot.rows), {seatFamilies, absentSeats, now});
 
     for (const row of Object.values(state.snapshot.rows)) {
         if (!hasIdentity(row)) continue;

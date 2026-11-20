@@ -87,7 +87,7 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
 
     const
         rows   = Object.values(state.snapshot?.rows ?? {}),
-        decide = {seatFamilies, line: mergeLineOf(rows, {absentSeats})};
+        decide = {seatFamilies, line: mergeLineOf(rows, {seatFamilies, absentSeats, now: time})};
     let unobserved = 0;
 
     for (const row of rows) {

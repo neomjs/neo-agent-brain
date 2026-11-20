@@ -343,14 +343,16 @@ test.describe('openWorkHolder — a close target still blocked holds the merge f
 
 test.describe('openWorkHolder — one merge wakes one rebase: the merge line (#1869)', () => {
     const
+        NOW      = Date.parse('2026-11-20T00:00:00Z'),
         // an approval standing since 23:<minute>, on the head or an earlier one
         approval = (minute, onHead = true) => ({reviewer: '@neo-gpt', state: 'APPROVED', onHead, at: `2026-11-19T23:${String(minute).padStart(2, '0')}:00Z`}),
-        pr       = (number, minute, overrides = {}) => row({repo: 'neomjs/neo', number, mergeable: 'CONFLICTING',
-            reviews: [approval(minute)], opinions: [approval(minute)], ...overrides}),
+        // a row the last pulse observed completely
+        pr       = (number, minute, overrides = {}) => row({repo: 'neomjs/neo', number, mergeable: 'CONFLICTING', partial: false,
+            observedAt: new Date(NOW).toISOString(), reviews: [approval(minute)], opinions: [approval(minute)], ...overrides}),
         rebase   = {role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']},
         waits    = ahead => ({role: 'author', kind: 'await-merge-turn', ids: ['@neo-opus-ada'], ahead}),
         holders  = (rows, options) => {
-            const line = mergeLineOf(rows, options);
+            const line = mergeLineOf(rows, {now: NOW, ...options});
 
             return rows.map(item => holderOf(item, {line}))
         };
@@ -383,6 +385,25 @@ test.describe('openWorkHolder — one merge wakes one rebase: the merge line (#1
         }
         // a seat that is not absent still holds its place
         expect(holders([pr(1, 10, vega), pr(2, 20)], {absentSeats: ['@neo-opus-grace']})[1]).toEqual(waits('neomjs/neo#1'))
+    });
+
+    test('a row ahead neither reader acts on releases the line: a stale carry, unread close targets, a kept change request', () => {
+        const
+            B      = '@neo-gpt-euclid',
+            // a partial pulse carried the row unobserved for an hour
+            stale  = {observedAt: new Date(NOW - 61 * 60000).toISOString()},
+            unread = {mergeable: 'MERGEABLE', targetsComplete: false},
+            // B requested changes on an earlier head and kept them with a comment on this one
+            kept   = {mergeable: 'MERGEABLE', reviews: [{reviewer: B, state: 'CHANGES_REQUESTED', onHead: false}, {reviewer: B, state: 'COMMENTED', onHead: true}],
+                opinions: [approval(10, false), {reviewer: B, state: 'CHANGES_REQUESTED', onHead: false}]};
+
+        expect(holderOf(pr(1, 10, unread)).role).toBe('unknown');
+        expect(holderOf(pr(1, 10, kept)).kind).toBe('address-changes');
+        for (const ahead of [stale, unread, kept]) {
+            expect(holders([pr(1, 10, ahead), pr(2, 20)])[1]).toEqual(rebase)
+        }
+        // control: the same row ahead, fresh and read completely, holds its place
+        expect(holders([pr(1, 10, {mergeable: 'MERGEABLE'}), pr(2, 20)])[1]).toEqual(waits('neomjs/neo#1'))
     });
 
     test('the line is per repository and base branch, and a row whose approval has no time neither waits nor holds', () => {

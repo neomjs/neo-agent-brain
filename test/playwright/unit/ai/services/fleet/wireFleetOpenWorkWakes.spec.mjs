@@ -215,8 +215,8 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
                 return value
             },
             triage = async readFamilies => {
-                let minute = 0;
-                const sends = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute),
+                let   minute = 0;
+                const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute),
                     rotationSeats: roster, readFamilies, admitWake: async value => sends.push(value)});
                 await round(named(0, 'pending')); minute = 1;
                 await round(named(1, 'green'));
@@ -277,13 +277,13 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
 
     test('a spent rotation slot whose seat goes absent submits nothing more, so the next pulse still reads the ledger (#1849)', async () => {
         let   minute = 0, absent = [];
-        const GPT     = '@neo-gpt',
+        const GPT    = '@neo-gpt',
             // the roster order makes the plain hash pick land on SEAT
             offset  = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % 2,
             store   = memoryStore(), sends = [],
             round   = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), routesTtlMs: 0, log: {error: () => {}},
                 rotationSeats: offset === 0 ? [SEAT, GPT] : [GPT, SEAT], readAbsent: async () => absent,
-                admitWake: async message => { sends.push(message.to); throw new Error('timeout') }}),
+                admitWake    : async message => { sends.push(message.to); throw new Error('timeout') }}),
             outside = minute => {
                 const value = state(minute, 'green');
                 value.snapshot.rows['acme/app#7'].owner = {kind: 'outside', seat: null, login: 'contributor'};
@@ -300,16 +300,49 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         expect(Object.values(store.read().holding)[0]).toMatchObject({status: 'admitted', attempts: 5, wake: {to: SEAT}})
     });
 
+    test('an author going absent ahead in the merge line is read on a pulse that plans no wake, so the follower rebases once (#1869)', async () => {
+        let   minute = 0, absent = [];
+        const VEGA   = '@neo-opus-vega', store = memoryStore(), sends = [],
+            approval = when => ({reviewer: '@neo-gpt', state: 'APPROVED', onHead: true, at: iso(when)}),
+            round    = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), routesTtlMs: 0, log: {error: () => {}},
+                readAbsent: async () => absent, admitWake: async message => { sends.push(message.to) }}),
+            // Vega's PR was approved before Ada's; a merge into dev leaves both conflicting
+            line     = (minute, mergeable = 'CONFLICTING') => {
+                const value = state(minute, 'green'), lead = value.snapshot.rows['acme/app#7'];
+
+                Object.assign(lead, {owner: {kind: 'seat', seat: VEGA}, mergeable, reviews: [approval(-50)], opinions: [approval(-50)],
+                    blockedTargets: [], targetsComplete: true});
+                value.snapshot.rows['acme/app#8'] = {...lead, key: 'acme/app#8', number: 8, owner: {kind: 'seat', seat: SEAT},
+                    reviews: [approval(-40)], opinions: [approval(-40)]};
+                return value
+            };
+
+        // the first round is a quiet baseline: both PRs wait on the operator's merge
+        await round(line(0, 'MERGEABLE'));
+        minute = 1;
+        await round(line(1));
+        expect(sends, 'only the PR ahead is woken to rebase').toEqual([VEGA]);
+
+        absent = [VEGA];
+        minute = 2;
+        await round(line(2));
+        expect(sends, 'the absent author ahead releases the follower').toEqual([VEGA, SEAT]);
+
+        minute = 3;
+        await round(line(3));
+        expect(sends, 'once').toEqual([VEGA, SEAT])
+    });
+
     test('a seat whose intake answer was lost counts as woken, so its cached receipt never certifies a new handoff (#1849)', async () => {
         let   minute = 0, absent = [], loseAnswerOf = null;
-        const roster  = [SEAT, '@neo-gpt', '@neo-gemini'],
+        const roster = [SEAT, '@neo-gpt', '@neo-gemini'],
             offset  = createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, 'triage-outside'])).digest().readUInt32BE(0) % roster.length,
             [first, second, third] = [0, 1, 2].map(step => roster[(offset + step) % roster.length]),
             store   = memoryStore(), attempts = [], intakes = new Map(),
             // The plane answers a repeat of one wake with its first receipt, and an answer can be lost after its intake committed
             round   = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), routesTtlMs: 0, log: {error: () => {}},
                 rotationSeats: roster, readAbsent: async () => absent,
-                admitWake: async ({repo, number, head, kind, episode, to}) => {
+                admitWake    : async ({repo, number, head, kind, episode, to}) => {
                     const key = JSON.stringify([repo, number, head, kind, episode, to]);
                     attempts.push(to);
                     intakes.has(key) || intakes.set(key, `MESSAGE:${intakes.size + 1}`);
@@ -598,7 +631,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
 
     test('a failed rotation send keeps its attempt count through the re-pick (#1678)', async () => {
         let   minute = 0, attempts = 0;
-        const store   = memoryStore(), round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), log: {error: () => {}},
+        const store  = memoryStore(), round = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(minute), log: {error: () => {}},
                 rotationSeats: [SEAT, '@neo-gpt'], admitWake: async () => { attempts++; throw new Error('timeout') }}),
             outside = minute => {
                 const value = state(minute, 'green');
@@ -1180,8 +1213,8 @@ test.describe('wireFleetOpenWorkWakes — a holder is certified silent only from
         const many = (minute, last = 1) => {
             const rows = Object.fromEntries(Array.from({length: 101}, (_, index) => {
                 const number = index + 1, red = minute >= (number === 101 ? last : 1),
-                    row = {key: `acme/app#${number}`, repo: 'acme/app', number, head: HEAD, owner: {kind: 'seat', seat: SEAT},
-                        ci: red ? 'red' : 'pending', verdict: null, mergeable: 'MERGEABLE', draft: false,
+                    row      = {key: `acme/app#${number}`, repo: 'acme/app', number, head: HEAD, owner: {kind: 'seat', seat: SEAT},
+                        ci       : red ? 'red' : 'pending', verdict: null, mergeable: 'MERGEABLE', draft: false,
                         requested: [], reviews: [], opinions: [], partial: false, observedAt: iso(minute)};
                 return [row.key, row]
             }));
@@ -1189,7 +1222,7 @@ test.describe('wireFleetOpenWorkWakes — a holder is certified silent only from
         };
 
         for (const secondBatch of ['answers', 'throws']) {
-            const sends = [], asked = [];
+            const sends  = [], asked = [];
             let   minute = 0;
             const round  = createOpenWorkWakeRound({
                 store       : memoryStore(), gateOf: openGate, now: () => at(minute), rotationSeats: [SEAT, ROTATION], log: {},

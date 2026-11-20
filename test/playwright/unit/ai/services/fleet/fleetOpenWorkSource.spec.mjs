@@ -87,7 +87,7 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
     test('the projection reads the merge line the wake round decides with, and an absent author ahead releases it (#1869)', () => {
         const
             approval = minute => ({reviewer: '@neo-gpt', state: 'APPROVED', onHead: true, at: `2026-10-02T09:${minute}:00.000Z`}),
-            conflict = (number, minute, overrides) => ({...row(number), ci: 'green', verdict: 'APPROVED', mergeable: 'CONFLICTING', requested: [],
+            conflict = (number, minute, overrides) => ({...row(number), ci: 'green', verdict: 'APPROVED', mergeable: 'CONFLICTING', requested: [], partial: false,
                 reviews: [approval(minute)], opinions: [approval(minute)], ...overrides}),
             rows     = [conflict(7, 10, {owner: {kind: 'seat', seat: '@neo-opus-vega'}}), conflict(8, 20)],
             read     = absentSeats => createFleetOpenWorkSource({producer: {getState: () => state({}, rows)}, now: at(1), absentSeats})

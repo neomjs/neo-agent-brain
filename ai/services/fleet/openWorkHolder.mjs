@@ -47,6 +47,8 @@
  * conflicts behind another approved PR of its repository reads `await-merge-turn`, and rebases once that PR has merged.
  */
 
+import {openWorkFreshness} from './openWorkFreshness.mjs';
+
 /**
  * @summary A native seat's reviewer id; a login without a seat names nobody a wake can reach.
  * @param {*} id
@@ -61,6 +63,13 @@ const canonicalSeat = id => typeof id === 'string' && /^@[A-Za-z0-9._-]{1,100}$/
 /** @summary A row's `owner/name#number`, the name the merge line keys and reports it by. */
 const prKey = ({repo, number}) => `${repo}#${number}`;
 
+/** @summary Missing list coverage cannot certify review, reply, integration or merge absence. */
+export const incompleteRow = row => row.partial !== false || !Array.isArray(row.requested) ||
+    !Array.isArray(row.reviews) || !Array.isArray(row.opinions);
+
+/** @summary The holders whose PR is not on its way to a merge, so it holds no place for the rows behind it. */
+const releasesLine = holder => holder.role === 'unknown' || holder.kind === 'address-changes' || holder.kind === 'await-prerequisite';
+
 /**
  * @summary The merge line: per repository and base branch, the open, non-draft rows a seat approved, oldest standing
  * approval first.
@@ -68,21 +77,25 @@ const prKey = ({repo, number}) => `${repo}#${number}`;
  * after that row merges, instead of after every merge into a file approved PRs share.
  *
  * An approval keeps its row's place across the row's own new heads: once the first row merges `dev` in, its approval
- * judged an earlier head, yet that row still merges before the rows behind it. A row holds no place for others while its
- * read is partial, a seat requested changes on its head, a close target is blocked or its author seat is absent; a row
+ * judged an earlier head, yet that row still merges before the rows behind it. A row holds a place for others only while
+ * both readers would act on it: freshly observed, its author seat not absent, and its own holder, read with the wake
+ * round's coverage rule ({@link incompleteRow}), neither unknown nor waiting on changes or on a blocked close target. A row
  * whose approval carries no time neither waits nor holds.
  * @param {Object[]} rows The snapshot's open rows, as {@link holderOf} reads them.
  * @param {Object} [options]
+ * @param {Object<String,String>|null} [options.seatFamilies=null] As {@link holderOf} takes it.
  * @param {String[]|null} [options.absentSeats=null] Native seats that show no sign they can act; `null` when not read.
+ * @param {Number} [options.now=Date.now()] Epoch milliseconds the rows' freshness is read at.
  * @returns {Map<String,String>} Each waiting row's `owner/name#number` to that of the row it waits for.
  */
-export function mergeLineOf(rows, {absentSeats = null} = {}) {
+export function mergeLineOf(rows, {seatFamilies = null, absentSeats = null, now = Date.now()} = {}) {
     const
         absent = new Set(absentSeats ?? []),
         lines  = new Map(),
         waits  = new Map(),
-        holds  = row => !row.partial && !row.blockedTargets?.length && !(row.owner?.kind === 'seat' && absent.has(row.owner.seat)) &&
-            !row.opinions.some(opinion => opinion.onHead && opinion.state === 'CHANGES_REQUESTED' && !opinion.bot && isSeat(opinion.reviewer));
+        holds  = row => openWorkFreshness(row.observedAt, {now}) === 'ok' && !(row.owner?.kind === 'seat' && absent.has(row.owner.seat)) &&
+            // a blocked close target holds the merge whatever the head's next action is
+            !row.blockedTargets?.length && !releasesLine(holderOf(incompleteRow(row) ? {...row, partial: true} : row, {seatFamilies}));
 
     for (const row of rows) {
         const at = Math.min(...(Array.isArray(row?.opinions) ? row.opinions : [])
