@@ -93,11 +93,13 @@ function insertSelfMessage(db, id, minutesAgo, {identity = SEAT, handover = true
     })
 }
 
-// The live shape of a successor marker (Vega's MESSAGE:8a2e1490, replying to her handover MESSAGE:a55cc803).
-function insertSuccessor(db, id, minutesAgo, inReplyTo, identity = SEAT) {
+// The live shape of a successor marker (Vega's MESSAGE:8a2e1490, replying to her handover MESSAGE:a55cc803);
+// the server stamps the session it was sent from as `originSessionId`.
+function insertSuccessor(db, id, minutesAgo, inReplyTo, identity = SEAT, originSessionId) {
     insertNode(db, id, 'MESSAGE', {
         from          : identity, to: identity, subject: '[sunset successor]', sentAt: at(minutesAgo), inReplyTo,
-        taggedConcepts: ['sunset-successor'], wakeSuppressed: true
+        taggedConcepts: ['sunset-successor'], wakeSuppressed: true,
+        ...(originSessionId ? {originSessionId} : {})
     })
 }
 
@@ -390,11 +392,32 @@ test.describe('session-rotation lane (#1383)', () => {
         expect(sent).toEqual([]);
         expect(notes).toEqual([]);
         expect(outcome.completed).toBe(1);
-        // a marker names no sender session, so no memory after it is attributed to the successor
+        // an unstamped marker names no sender session, so no memory after it is attributed to the successor
         expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({
             state: 'completed', successorMessageId: 'MESSAGE:successor', oldSessionId: 'session-old', newSessionId: null, heldMessages: 2
         });
-        expect(logs.some(({level, message}) => level === 'INFO' && message.includes('session-old → successor MESSAGE:successor'))).toBe(true)
+        expect(logs.some(({level, message}) => level === 'INFO' && message.includes('session-old → successor MESSAGE:successor in session unstamped'))).toBe(true)
+    });
+
+    test('#1872 AC-1: a completed rotation names the new session the earliest marker was sent from', async () => {
+        const db = createGraph();
+
+        insertRoute(db);
+        insertMemory(db, 'mem-old', 40, 'session-old');
+        insertSelfMessage(db, 'MESSAGE:receipt', 30, {sessionRotation: {
+            state       : 'requested', eventId: rotationEventId('MESSAGE:receipt'), subscriptionId: 'WAKE_SUB:rotate',
+            oldSessionId: 'session-old', requestedAt: at(29), deliveredAt: at(29)
+        }});
+        insertSuccessor(db, 'MESSAGE:successor', 8, 'MESSAGE:receipt', SEAT, 'session-fresh');
+        insertSuccessor(db, 'MESSAGE:successor-again', 7, 'MESSAGE:receipt', SEAT, 'session-other');
+
+        const {outcome, logs} = await runLane(db);
+
+        expect(outcome.completed).toBe(1);
+        expect(rotationOf(db, 'MESSAGE:receipt')).toMatchObject({
+            state: 'completed', successorMessageId: 'MESSAGE:successor', oldSessionId: 'session-old', newSessionId: 'session-fresh'
+        });
+        expect(logs.some(({level, message}) => level === 'INFO' && message.includes('session-old → successor MESSAGE:successor in session session-fresh'))).toBe(true)
     });
 
     test('AC-12: a rotation open past its window is recorded incomplete and requests nothing else', async () => {
