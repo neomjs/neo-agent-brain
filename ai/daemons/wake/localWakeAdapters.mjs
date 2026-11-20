@@ -22,6 +22,7 @@ import {withOutboxLock}      from './outboxLock.mjs';
 import {
     ROTATION_ABORTED,
     ROTATION_ACTIVATION_LOST,
+    ROTATION_DESTINATION_UNPROVEN,
     ROTATION_EXPIRED,
     ROTATION_PROCESS_CHANGED,
     ROTATION_SCREEN_LOCKED,
@@ -774,10 +775,17 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
     // The human-input read comes last, after every awaited preparation: a quiet reading taken before
     // the pid lookup or the dialog probe can be stale by the first keystroke.
     if (rotation) {
-        const humanInput = evaluateHumanInput(await effects.readHumanIdleMs());
+        const idleMs     = await effects.readHumanIdleMs(),
+              humanInput = evaluateHumanInput(idleMs);
 
         if (humanInput.action === 'defer') {
             return {outcome: 'deferred', outcomeReason: humanInput.reason}
+        }
+
+        // A resume types only while nothing can have moved its window off the opened session: keyboard or pointer
+        // input since the front was lost may have switched the chat, and nothing else observes that session.
+        if (record.sessionOpened === true && !(idleMs >= effects.now() - Date.parse(record.sessionOpenedAt))) {
+            return {outcome: 'failed', outcomeReason: ROTATION_DESTINATION_UNPROVEN}
         }
 
         // The lock is read at the same boundary: one that engaged while the pid, dialog or idle reads ran
@@ -819,9 +827,14 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
     }
 
     // Lost after Cmd+N: the session it opened waits empty in this process, so the next attempt resumes there
-    // instead of opening a second one.
+    // instead of opening a second one, if no one has touched the keyboard or pointer since this moment.
     if (rotation && outcome?.outcome === 'failed' && isPostSessionFrontLost(outcome.outcomeReason)) {
-        return {outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedPid: instancePid}
+        return {
+            outcome         : 'deferred',
+            outcomeReason   : ROTATION_SESSION_OPENED,
+            sessionOpenedAt : new Date(effects.now()).toISOString(),
+            sessionOpenedPid: instancePid
+        }
     }
 
     return outcome;

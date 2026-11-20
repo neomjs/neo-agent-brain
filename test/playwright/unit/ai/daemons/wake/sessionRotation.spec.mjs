@@ -9,6 +9,7 @@ import {
     HUMAN_INPUT_QUIET_MS,
     HUMAN_INPUT_UNKNOWN,
     ROTATION_ACTIVATION_LOST,
+    ROTATION_DESTINATION_UNPROVEN,
     ROTATION_EXPIRED,
     ROTATION_FRONT_LOST,
     ROTATION_MAX_ACTIVATION_LOSSES,
@@ -103,8 +104,9 @@ const typedPaste = calls => calls.filter(call => call.args.some(arg => String(ar
 const isKey    = line => /^\s*(keystroke|key code)\b/.test(line);
 const firstKey = lines => lines.findIndex(isKey);
 
-// A rotation whose earlier attempt opened its session in the process the resolver still returns (`4242`).
-const resumedRecord = () => ({...rotationRecord(), sessionOpened: true, sessionOpenedPid: 4242});
+// A rotation whose earlier attempt opened its session in the process the resolver still returns (`4242`), a second
+// ago: quietEffects' idle reading (HUMAN_INPUT_QUIET_MS) covers that second, so no one has touched the input since.
+const resumedRecord = () => ({...rotationRecord(), sessionOpened: true, sessionOpenedAt: new Date(Date.now() - 1000).toISOString(), sessionOpenedPid: 4242});
 
 test.describe('ai/daemons/wake/sessionRotation — the contract', () => {
     test('only a SESSION_ROTATE route admits session/rotate; every other route admits the wake digest', () => {
@@ -305,7 +307,7 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
             .toEqual({outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST});
         // The opened session's process travels with the defer, so the resume can be bound to it.
         expect(await run('4848:4854: execution error: Target app lost frontmost status before wake paste (-2700)'))
-            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedPid: 4242});
+            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedAt: expect.any(String), sessionOpenedPid: 4242});
         expect(await run('execution error: Seat holder changed before the fresh session (-2700)'))
             .toMatchObject({outcome: 'failed'})
     });
@@ -378,6 +380,28 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
         expect(lines).not.toContain('      keystroke "n" using command down')
     });
 
+    test('#1871 (Euclid\'s Round 2): a resume stops without a key once someone used the keyboard or pointer since the front was lost', async () => {
+        const calls = [],
+              run   = record => dispatchLocalWake(record, quietEffects({
+                  rotationGuard: () => null,
+                  // Quiet for five seconds: long enough to type, too short to cover the minute since the loss
+                  readHumanIdleMs: () => 5000,
+                  spawnAsync     : async (command, args) => { calls.push({command, args}); return '' }
+              })),
+              anyKey = () => calls.some(call => call.args.some(arg => isKey(String(arg))));
+
+        expect(await run({...resumedRecord(), sessionOpenedAt: new Date(Date.now() - 60_000).toISOString()}))
+            .toEqual({outcome: 'failed', outcomeReason: ROTATION_DESTINATION_UNPROVEN});
+        // A loss with no recorded moment proves nothing either
+        expect(await run({...resumedRecord(), sessionOpenedAt: undefined}))
+            .toEqual({outcome: 'failed', outcomeReason: ROTATION_DESTINATION_UNPROVEN});
+        expect(anyKey()).toBe(false);
+
+        // The same reading covers a loss four seconds ago: nothing touched the input since, so the resume types
+        expect(await run({...resumedRecord(), sessionOpenedAt: new Date(Date.now() - 4000).toISOString()})).toBe('delivered');
+        expect(typedPaste(calls)).toHaveLength(1)
+    });
+
     test('#1871: a seat claimed since the shortcut vetoes a resumed attempt without a keystroke', async () => {
         const calls  = [];
         const result = await dispatchLocalWake(resumedRecord(), quietEffects({
@@ -419,7 +443,7 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
 
         // Past Cmd+N the session is open: the next attempt waits for the unlock, then resumes without a second Cmd+N.
         expect(await run('execution error: Target app lost frontmost status before wake paste (-2700)'))
-            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedPid: 4242})
+            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedAt: expect.any(String), sessionOpenedPid: 4242})
     });
 
     test('#1770 (Emmy\'s Round 1): a front lost right before Cmd+N defers the rotation, as a lock when the script ran into one', async () => {
@@ -951,8 +975,14 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
     });
 
     test('#1871: a front lost after Cmd+N is asked again in the opened session\'s process, and fails at the cap with it marked open', async () => {
-        // Only the first opening names the process; a later result naming another cannot move the binding.
-        const opened = (_, attempt) => ({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedPid: attempt ? 4343 : 4242}),
+        // Only the first opening names the process and the moment; a later result naming others cannot move them.
+        const first  = '2026-11-20T00:06:43.814Z',
+              opened = (_, attempt) => ({
+                  outcome         : 'deferred',
+                  outcomeReason   : ROTATION_SESSION_OPENED,
+                  sessionOpenedAt : attempt ? '2026-11-20T00:07:00.000Z' : first,
+                  sessionOpenedPid: attempt ? 4343 : 4242
+              }),
               quick  = rotationReceiver(Array.from({length: ROTATION_MAX_ACTIVATION_LOSSES}, opened), {rotationRetryMs: 20});
 
         await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: heldEnvelope()});
@@ -960,12 +990,13 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
 
         await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
         expect(dispatched[0].sessionOpened).toBeUndefined();
-        expect(dispatched[1]).toMatchObject({sessionOpened: true, sessionOpenedPid: 4242, frontLostCount: 1});
-        expect(dispatched.at(-1)).toMatchObject({sessionOpened: true, sessionOpenedPid: 4242});
+        expect(dispatched[1]).toMatchObject({sessionOpened: true, sessionOpenedAt: first, sessionOpenedPid: 4242, frontLostCount: 1});
+        expect(dispatched.at(-1)).toMatchObject({sessionOpened: true, sessionOpenedAt: first, sessionOpenedPid: 4242});
         expect(await state.read(rotationKey)).toMatchObject({
             outcomeReason   : ROTATION_FRONT_LOST,
             frontLostCount  : ROTATION_MAX_ACTIVATION_LOSSES,
             sessionOpened   : true,
+            sessionOpenedAt : first,
             sessionOpenedPid: 4242
         })
     });

@@ -86,11 +86,19 @@ export const ROTATION_ACTIVATION_LOST = 'activation-lost';
 
 /**
  * Defer reason: the seat's window lost the front after its fresh-session keystroke, so the session it opened
- * waits empty in that process (`sessionOpenedPid`). The next attempt resumes there without a second keystroke,
- * counted against {@link ROTATION_MAX_ACTIVATION_LOSSES} like a lost activation.
+ * waits empty in that process (`sessionOpenedPid`). The next attempt resumes there without a second keystroke while
+ * no one has used the keyboard or pointer since the loss (`sessionOpenedAt`), counted against
+ * {@link ROTATION_MAX_ACTIVATION_LOSSES} like a lost activation.
  * @type {String}
  */
 export const ROTATION_SESSION_OPENED = 'session-opened-front-lost';
+
+/**
+ * Failure reason: someone used the keyboard or pointer after a rotation's window lost the front following its
+ * fresh-session keystroke, so the chat that window shows may no longer be the session the keystroke opened.
+ * @type {String}
+ */
+export const ROTATION_DESTINATION_UNPROVEN = 'session-rotate-destination-unproven';
 
 /**
  * Failure reason: a resumed rotation found the seat's profile answered by a process other than the one whose

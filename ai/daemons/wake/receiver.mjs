@@ -764,12 +764,14 @@ export function createWakeReceiver({
                               rotation   = isSessionRotation(dispatching.envelope),
                               lostFront  = outcomeReason === ROTATION_ACTIVATION_LOST || outcomeReason === ROTATION_SESSION_OPENED,
                               frontLost  = (dispatching.frontLostCount || 0) + (lostFront ? 1 : 0),
-                              // Once Cmd+N opened the session, every later attempt resumes in it, and only in the
-                              // process whose Cmd+N opened it: the first pid recorded stays
+                              // Once Cmd+N opened the session, every later attempt resumes in it, only in the process
+                              // and from the moment the first loss recorded
                               sessionOpened = dispatching.sessionOpened === true || outcomeReason === ROTATION_SESSION_OPENED,
+                              openedBy      = dispatching.sessionOpened === true ? dispatching : result,
                               opened        = sessionOpened ? {
                                   sessionOpened,
-                                  sessionOpenedPid: dispatching.sessionOpened === true ? dispatching.sessionOpenedPid : result?.sessionOpenedPid
+                                  sessionOpenedAt : openedBy?.sessionOpenedAt,
+                                  sessionOpenedPid: openedBy?.sessionOpenedPid
                               } : {};
 
                         if (!rotation && deferCount > DIALOG_DEFER_BOUND) {
