@@ -3,27 +3,32 @@
  * @summary Exchanges record keys and receipted outcomes across the receiver/Fleet boundary.
  * The graphless receiver persists the signed envelope. Fleet alone inspects harness databases.
  */
-import fs                         from 'node:fs/promises';
-import path                       from 'node:path';
-import {withOutboxLock}           from './outboxLock.mjs';
+import fs                                                        from 'node:fs/promises';
+import path                                                      from 'node:path';
+import {withOutboxLock}                                          from './outboxLock.mjs';
 import {matchesPrimaryWakeMember, MAX_PRIMARY_WAKE_BATCH_EVENTS} from './primaryWakeBatch.mjs';
-import {primaryWakeAttemptRecorded, readPrimarySessionWake} from './primarySessionWake.mjs';
-import {readPrivateWakeJson}      from './nativeWakeEnrollment.mjs';
-import {writeFileAtomic}          from '../../services/shared/atomicFileWrite.mjs';
-import {deriveAgentInstanceHome}  from '../../services/fleet/deriveAgentInstanceHome.mjs';
-import {deriveHarnessWakeAddress} from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
+import {primaryWakeAttemptRecorded, readPrimarySessionWake}      from './primarySessionWake.mjs';
+import {readPrivateWakeJson}                                     from './nativeWakeEnrollment.mjs';
+import {writeFileAtomic}                                         from '../../services/shared/atomicFileWrite.mjs';
+import {deriveAgentInstanceHome}                                 from '../../services/fleet/deriveAgentInstanceHome.mjs';
+import {deriveHarnessWakeAddress}                                from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
 
 const keyPattern = /^[a-f0-9]{64}$/;
 const uuid       = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
 export const ACTIVE_TURN_UNAVAILABLE_REASON = 'native-recipient:active-turn-adapter-unavailable';
 export const ACTIVE_TURN_ADAPTER_DEPENDENCY = '#1741';
-export const NATIVE_DIAGNOSTIC_REASONS      = Object.freeze([
+export const ROOT_START_CHANGED             = 'selection-root-start-changed';
+export const NATIVE_DISPATCH_REASONS        = Object.freeze([
     'native-recipient:resident-unavailable',
     'native-recipient:selection-unavailable',
-    'native-recipient:receipt-unproven',
-    'native-recipient:awaiting-readiness',
+    `native-recipient:${ROOT_START_CHANGED}`,
     ACTIVE_TURN_UNAVAILABLE_REASON
+]);
+export const NATIVE_DIAGNOSTIC_REASONS      = Object.freeze([
+    ...NATIVE_DISPATCH_REASONS,
+    'native-recipient:receipt-unproven',
+    'native-recipient:awaiting-readiness'
 ]);
 
 /** @summary Validates a native receipt against the exact signed record and mailbox principal. */

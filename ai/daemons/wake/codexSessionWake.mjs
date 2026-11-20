@@ -12,6 +12,7 @@ import {execFile, execFileSync, spawn} from 'node:child_process';
 import {createHash}                    from 'node:crypto';
 import {promisify}                     from 'node:util';
 import {withOutboxLock}                from './outboxLock.mjs';
+import {codexThreadStartMs}            from './primaryWakeSelection.mjs';
 import {writeFileAtomic}               from '../../services/shared/atomicFileWrite.mjs';
 
 const run        = promisify(execFile), UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -160,7 +161,10 @@ export async function verifyCodexWakeAdmission(options) {
 
 function readIndex(home, query, ...params) {
     const db = new Database(path.join(home, 'state_5.sqlite'), {readonly: true, fileMustExist: true});
-    try { return db.prepare(query).all(...params) } finally { db.close() }
+    try {
+        db.function('thread_start_ms', {deterministic: true}, codexThreadStartMs);
+        return db.prepare(query).all(...params)
+    } finally { db.close() }
 }
 
 async function openRollout(home, file, threadId) {
@@ -179,32 +183,71 @@ async function openRollout(home, file, threadId) {
     }
 }
 
+/** @summary Finds the newest proven root in one native ordering; the 101st row bounds unseen ties and forks. */
+async function newestCodexRoot(rows, order, read) {
+    let winner, start;
+    for (const row of rows) {
+        if (winner && row[order] < start) break;
+        const root = await read(row);
+        if (!root) continue;
+        if (winner) throw new Error('Codex latest root start is ambiguous');
+        winner = root;
+        start  = row[order]
+    }
+    if (rows.length > 100 && (!winner || rows[100][order] >= start)) {
+        throw new Error('Codex newest root cannot be determined within the candidate bound')
+    }
+    return winner
+}
+
 /**
  * @summary Lists indexed, unarchived Desktop user roots in one workspace. No result asserts liveness or ownership.
  * @param {Object} options
  * @param {String} options.home Absolute seat home.
  * @param {String} options.workspaceRoot Absolute exact workspace path.
- * @returns {Promise<Object[]>} Plausible roots; the caller must establish the current owner independently.
+ * @returns {Promise<Object[]>} At most one root. Its optional threadStartMs requires both native orders and the rollout workspace to agree.
  */
 export async function listCodexWakeTargets({home, workspaceRoot}) {
     if (!path.isAbsolute(home || '') || !path.isAbsolute(workspaceRoot || '')) throw new Error('Absolute paths required');
-    const rows    = readIndex(home, 'SELECT id, created_at_ms FROM threads WHERE cwd = ? AND source = ? AND thread_source = ? AND originator = ? AND attached_thread_parent_id IS NULL ORDER BY created_at_ms DESC LIMIT 101', workspaceRoot, 'vscode', 'user', 'Codex Desktop');
-    const results = [];
-    for (const row of rows) {
-        if (results.length && row.created_at_ms < results[0].startedAt) break;
-        try { results.push(await readCodexWakeTarget({home, threadId: row.id})) }
-        catch (error) {
-            if (error.code === 'CODEX_NON_ROOT') continue;
-            throw error
+    // Both rankings and the unrankable-ID check see the same index snapshot. Only competitive roots need rollout I/O.
+    const rows = readIndex(home, `
+        WITH candidates AS MATERIALIZED (
+            SELECT id, created_at_ms, thread_start_ms(id) AS threadStartMs FROM threads
+            WHERE cwd = ? AND source = 'vscode' AND thread_source = 'user' AND originator = 'Codex Desktop'
+                AND attached_thread_parent_id IS NULL
+        ), indexed AS (
+            SELECT * FROM candidates ORDER BY created_at_ms DESC LIMIT 101
+        ), allocated AS (
+            SELECT * FROM candidates WHERE threadStartMs IS NOT NULL ORDER BY threadStartMs DESC LIMIT 101
+        ), ranked AS (
+            SELECT *, 'created_at_ms' AS ordering FROM indexed
+            UNION ALL SELECT *, 'threadStartMs' AS ordering FROM allocated
+        )
+        SELECT ranked.*, threads.rollout_path, threads.cwd, threads.archived,
+            NOT EXISTS (SELECT 1 FROM candidates WHERE threadStartMs IS NULL) AS allRanked
+        FROM ranked JOIN threads USING (id)
+        ORDER BY ordering, CASE ordering WHEN 'created_at_ms' THEN ranked.created_at_ms ELSE threadStartMs END DESC`, workspaceRoot);
+    const roots = new Map();
+    const read  = async row => {
+        if (!roots.has(row.id)) {
+            try { roots.set(row.id, await readCodexRolloutRoot(home, row.id, row)) }
+            catch (error) {
+                if (error.code !== 'CODEX_NON_ROOT') throw error;
+                roots.set(row.id, null)
+            }
         }
+        return roots.get(row.id)
+    };
+    const newest  = key => newestCodexRoot(rows.filter(row => row.ordering === key), key, read);
+    const indexed = await newest('created_at_ms');
+    if (!indexed) return [];
+    const threadStartMs = codexThreadStartMs(indexed.target.threadId);
+    if (!threadStartMs) return [indexed.target];
+    const allocated = await newest('threadStartMs');
+    if (allocated?.target.threadId !== indexed.target.threadId) {
+        throw new Error('Codex index and thread allocation orders disagree')
     }
-    // The 101st row is a sentinel: only an older timestamp proves that no uninspected
-    // root can tie or precede the newest root. An empty inventory beyond the bound is unknown.
-    if (rows.length > 100 && (!results.length || rows[100].created_at_ms >= results[0].startedAt)) {
-        throw new Error('Codex newest root cannot be determined within the candidate bound')
-    }
-    if (results.length > 1 && results[0].startedAt === results[1].startedAt) throw new Error('Codex latest root start is ambiguous');
-    return results
+    return [rows[0].allRanked && indexed.workspaceVerified ? {...indexed.target, threadStartMs} : indexed.target]
 }
 
 /**
@@ -220,6 +263,12 @@ export async function readCodexWakeTarget({home, threadId}) {
     const row  = rows[0];
     if (rows.length !== 1 || row.source !== 'vscode' || row.thread_source !== 'user' ||
         row.originator !== 'Codex Desktop' || row.attached_thread_parent_id !== null) throw new Error('Codex session is not a proven Desktop user root');
+    return (await readCodexRolloutRoot(home, threadId, row)).target
+}
+
+/** @summary Verifies root identity and cursor on the owned rollout; legacy headers may omit the workspace. */
+async function readCodexRolloutRoot(home, threadId, row) {
+    validate(home, threadId);
     const file = row.rollout_path, {handle, size, device, inode} = await openRollout(home, file, threadId);
     let first, boundaryHash;
     try {
@@ -242,9 +291,13 @@ export async function readCodexWakeTarget({home, threadId}) {
     if (meta.forked_from_id != null || meta.parent_thread_id != null || meta.attached_thread === true) {
         const error = new Error('Codex session is a fork or attached child'); error.code = 'CODEX_NON_ROOT'; throw error
     }
+    if (meta.cwd !== undefined && meta.cwd !== row.cwd) throw new Error('Codex root workspace disagrees with the index');
     if (!Number.isSafeInteger(row.created_at_ms) || row.created_at_ms <= 0) throw new Error('Codex root start is unavailable');
     if (row.archived !== 0) throw new Error('Codex session is not a proven eligible Desktop root');
-    return {home, threadId, root: true, workspaceRoot: row.cwd, startedAt: row.created_at_ms, rolloutPath: file, receiptOffset: {offset: size, device, inode, boundaryHash}}
+    return {
+        target           : {home, threadId, root: true, workspaceRoot: row.cwd, startedAt: row.created_at_ms, rolloutPath: file, receiptOffset: {offset: size, device, inode, boundaryHash}},
+        workspaceVerified: meta.cwd === row.cwd
+    }
 }
 
 /**

@@ -4,14 +4,14 @@ import fs                                                                       
 import os                                                                                                                                   from 'node:os';
 import path                                                                                                                                 from 'node:path';
 import {createWakeReceiver, loadWakeReceiverManifest}                                                                                       from '../../../../../../ai/daemons/wake/receiver.mjs';
-import {projectMessageDelivery}                                                                                                            from '../../../../../../ai/services/memory-core/wakeDeliveryProjection.mjs';
+import {projectMessageDelivery}                                                                                                             from '../../../../../../ai/services/memory-core/wakeDeliveryProjection.mjs';
 import {WakeReceiverState}                                                                                                                  from '../../../../../../ai/daemons/wake/receiverState.mjs';
 import {dispatchFleetPrimarySessionWake, drainFleetPrimaryWakeRecord, startFleetPrimaryWakePump, consumeNativeWakePrompt, enrollNativeWake} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
 
 test.describe('signed native wake receiver integration', () => {
     let root, stateDir, manifestPath, state, server, receiver, url, manifest, delivered, sends, consumed, mode, lastNonce, nativeInputs;
     const agentId  = 'fixture-seat', seat = '@fixture', family = 'codex-desktop', sub = 'WAKE_SUB:fixture', key = 'a'.repeat(64),
-          threadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+          threadId = '01990000-0000-7000-8000-000000000001';
     let config, transport;
     const resident = async () => ({pid: 123, startedAt: 'start', generation: '123:start', workspaceRoot: '/fixture/work'});
     const env      = (index, sourceEventIds = [`MESSAGE:${index}`]) => ({schemaVersion:'1.0',eventType:'wake/digest',eventId:`event-${index}`,subscriptionId:sub,
@@ -99,30 +99,47 @@ test.describe('signed native wake receiver integration', () => {
         expect(sends).toBe(1);
     });
 
-    test('default signed receiver stages for Fleet and consumes its correlated result', async () => {
+    test('the receiver holds an unproven 13 ms rewrite, reconciles the same bound root and drains the next record', async () => {
         await new Promise(resolve => server.close(resolve));
         receiver = createWakeReceiver({manifest,state,manifestPath,logger:{log(){},warn(){},error(){}}});
         server = receiver.server; await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
         url = `http://127.0.0.1:${server.address().port}/wake`;
-        expect((await post(1)).status).toBe(202);
+        const urgent = envelope => {envelope.payload.urgent = true; envelope.payload.breakdown.sent_to_me.highestPriority = 'high'};
+        expect((await post(1, undefined, urgent)).status).toBe(202);
         await receiver.drain();
         expect(await state.list('pending')).toHaveLength(1);
         expect(sends).toBe(0);
         const pump = route => drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId:sub,route,
             dispatch:(record, options) => dispatchFleetPrimarySessionWake(record,{...options,inspectResident:resident,codexTransport:transport})});
+        const [target] = await transport.listCodexWakeTargets();
+        transport.readCodexWakeActivity = async () => ({state:'busy'});
+        await pump(manifest.routes[sub]); // Save the original selection without initiating a send.
+        transport.readCodexWakeActivity = async () => ({state:'idle'});
+        transport.listCodexWakeTargets = async () => [{...target, startedAt:target.startedAt + 13}];
+        expect((await post(2)).status).toBe(202);
+        await pump(manifest.routes[sub]); await receiver.drain();
+        expect(await state.list('pending')).toEqual(expect.arrayContaining([
+            expect.objectContaining({eventId:'event-1',urgent:true,deferReason:'native-recipient:selection-root-start-changed',waitStage:'waiting-for-chat-boundary'}),
+            expect.objectContaining({eventId:'event-2',urgent:false,deferReason:'urgent native wake outstanding',waitStage:'waiting-for-spool'})
+        ]));
+        expect(sends).toBe(0);
+        transport.listCodexWakeTargets = async () => [{...target, startedAt:target.startedAt + 13,
+            threadStartMs:0x019900000000, workspaceRoot:'/fixture/work'}];
         await pump(manifest.routes[sub]);
         await receiver.drain();
         expect(await state.list('delivered')).toHaveLength(1);
         expect(sends).toBe(1);
-        expect((await post(1)).status).toBe(200);
-        await receiver.drain(); await pump(manifest.routes[sub]);
-        expect(sends).toBe(1);
-        expect((await post(2)).status).toBe(202); await receiver.drain();
+        expect((await post(1, undefined, urgent)).status).toBe(200);
+        await receiver.drain();
+        await pump(manifest.routes[sub]); await receiver.drain();
+        expect((await state.list('delivered')).map(record => record.eventId).sort()).toEqual(['event-1','event-2']);
+        expect(sends).toBe(2);
+        expect((await post(3)).status).toBe(202); await receiver.drain();
         const changed = structuredClone(manifest); changed.routes[sub].harnessTargetMetadata.adapter = 'osascript';
         await fs.writeFile(manifestPath,JSON.stringify(changed),{mode:0o600}); receiver.setManifest(changed);
         await pump(changed.routes[sub]); await receiver.drain();
-        expect(sends).toBe(1);
-        expect(await state.list('delivered')).toHaveLength(1);
+        expect(sends).toBe(2);
+        expect(await state.list('delivered')).toHaveLength(2);
     });
 
     test('one idle catch-up handoff delivers every source event in the staged normal backlog', async () => {
@@ -236,7 +253,7 @@ test.describe('signed native wake receiver integration', () => {
     }
 
     test('a bounded native batch keeps excess source events pending in acceptance order', async () => {
-        const pump = await useStagedReceiver();
+        const pump    = await useStagedReceiver();
         const sources = prefix => Array.from({length:24}, (_, index) => `MESSAGE:${prefix}-${index}`);
         const batches = [sources('a'), sources('b'), ['MESSAGE:overflow']];
 
@@ -255,7 +272,7 @@ test.describe('signed native wake receiver integration', () => {
     });
 
     test('a bounded native batch stops before the rendered UTF-8 byte limit', async () => {
-        const pump = await useStagedReceiver();
+        const pump      = await useStagedReceiver();
         const largeText = 'é'.repeat(4600);
         expect((await post(1, ['MESSAGE:wide-subject'], envelope => {
             envelope.payload.breakdown.sent_to_me.latest.subject = largeText;
@@ -333,8 +350,8 @@ test.describe('signed native wake receiver integration', () => {
     });
 
     test('a verified batch settles before a newer context deferral blocks fresh handoffs', async () => {
-        let contextTokens = 10;
-        const pump = await useStagedReceiver({contextProbe: async () => ({contextTokens})});
+        let   contextTokens = 10;
+        const pump          = await useStagedReceiver({contextProbe: async () => ({contextTokens})});
         for (const index of [1,2]) expect((await post(index)).status).toBe(202);
         await receiver.drain();
         await pump();
@@ -356,8 +373,8 @@ test.describe('signed native wake receiver integration', () => {
 
     for (const hold of ['dispatching', 'context deferred']) {
         test(`preserves acceptance order when an older staged candidate is ${hold}`, async () => {
-            let blocked = true;
-            const pump = await useStagedReceiver({contextProbe: async record => ({
+            let   blocked = true;
+            const pump    = await useStagedReceiver({contextProbe: async record => ({
                 contextTokens: blocked && record.eventId === 'event-2' ? 101 : 10
             })});
 
@@ -367,7 +384,7 @@ test.describe('signed native wake receiver integration', () => {
             blocked = false;
             await receiver.drain();
             const [, b, c] = await state.list('pending');
-            const pointer = JSON.parse(await fs.readFile(path.join(stateDir,'primary-sessions','fixture.request.json'),'utf8'));
+            const pointer  = JSON.parse(await fs.readFile(path.join(stateDir,'primary-sessions','fixture.request.json'),'utf8'));
             expect(pointer.candidates).toEqual([c.recordKey,b.recordKey]);
 
             if (hold === 'dispatching') {

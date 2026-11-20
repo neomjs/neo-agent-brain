@@ -182,6 +182,86 @@ test.describe('Codex session wake', () => {
     });
 
 
+    async function addCandidate(threadId, indexedAt, metadata = {}) {
+        const rollout = path.join(path.dirname(file), `rollout-2026-11-14-${threadId}.jsonl`);
+        const db      = new Database(path.join(home, 'state_5.sqlite'));
+        try {
+            db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, 0, ?, ?, ?, NULL)').run(threadId, rollout, home, indexedAt, 'vscode', 'user', 'Codex Desktop')
+        } finally { db.close() }
+        await fs.writeFile(rollout, line(meta({id:threadId, session_id:threadId, cwd:home, ...metadata})));
+        return rollout
+    }
+
+    test('the same eligible root retains its allocation witness through the observed 13 ms index change', async () => {
+        const threadId  = '01a1f979-7d2d-7000-8000-000000000001';
+        const allocated = Date.parse('2026-11-20T15:00:51.117Z'), indexed = Date.parse('2026-11-20T15:00:51.119Z');
+        const rollout   = await addCandidate(threadId, indexed, {timestamp:'2026-11-20T15:00:51.132Z'});
+        const latest    = async () => (await listCodexWakeTargets({home, workspaceRoot:home}))[0];
+        expect(await latest()).toMatchObject({threadId, startedAt:indexed, threadStartMs:allocated});
+        const db = new Database(path.join(home, 'state_5.sqlite'));
+        try { db.prepare('UPDATE threads SET created_at_ms=? WHERE id=?').run(indexed + 13, threadId) } finally { db.close() }
+        expect(await latest()).toMatchObject({threadId, startedAt:indexed + 13, threadStartMs:allocated});
+        expect(await readCodexWakeTarget({home, threadId})).not.toHaveProperty('threadStartMs');
+        await fs.writeFile(rollout, line(meta({id:threadId, session_id:threadId})));
+        expect(await latest()).not.toHaveProperty('threadStartMs');
+        await fs.writeFile(rollout, line(meta({id:threadId, session_id:threadId, cwd:path.dirname(home)})));
+        await expect(latest()).rejects.toThrow('workspace')
+    });
+
+    test('allocation ties and conflicting winners hold before a native queue command', async () => {
+        await fs.writeFile(file, line(meta({cwd:home})));
+        const other        = '01a1da8b-d4eb-76c0-9d88-f413805c5389';
+        const tied         = '01a1da8b-d4eb-76c0-9d88-f413805c5390';
+        const latest       = () => listCodexWakeTargets({home, workspaceRoot:home});
+        const otherRollout = await addCandidate(other, 2);
+        await addCandidate(tied, 3);
+        await addCandidate(crypto.randomUUID(), 1);
+        await expect(latest()).rejects.toThrow('ambiguous');
+        const db = new Database(path.join(home, 'state_5.sqlite'));
+        try {
+            db.prepare('DELETE FROM threads WHERE id=?').run(tied);
+            db.prepare('UPDATE threads SET created_at_ms=4 WHERE id=?').run(id)
+        } finally { db.close() }
+        await expect(latest()).rejects.toThrow('disagree');
+        await expect(sendCodexSessionWake({home, threadId:id, binary:'/bin/codex', text:`[NEO_WAKE_V1:${queueId}] [WAKE]`,
+            execute:async () => { throw new Error('unexpected queue command') }})).rejects.toThrow('disagree');
+        await fs.writeFile(otherRollout, 'malformed\n');
+        await expect(latest()).rejects.toThrow('Invalid Codex session metadata')
+    });
+
+    test('an unrankable older index candidate leaves only the legacy witness even beyond 101 rows', async () => {
+        await fs.writeFile(file, line(meta({cwd:home})));
+        const db = new Database(path.join(home, 'state_5.sqlite'));
+        try {
+            db.prepare('UPDATE threads SET created_at_ms=500 WHERE id=?').run(id);
+            const insert = db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, 0, ?, ?, ?, NULL)');
+            for (let i = 1; i <= 102; i++) {
+                insert.run(`01a1da8b-d4e9-76c0-9d88-${i.toString(16).padStart(12, '0')}`, '/unread-historical-rollout', home, i, 'vscode', 'user', 'Codex Desktop')
+            }
+            expect((await listCodexWakeTargets({home, workspaceRoot:home}))[0].threadStartMs).toBe(0x01a1da8bd4ea);
+            const legacy = crypto.randomUUID();
+            await addCandidate(legacy, 1);
+            const [target] = await listCodexWakeTargets({home, workspaceRoot:home});
+            expect(target.threadId).toBe(id);
+            expect(target).not.toHaveProperty('threadStartMs');
+            db.prepare('UPDATE threads SET created_at_ms=501 WHERE id=?').run(legacy);
+            const [legacyWinner] = await listCodexWakeTargets({home, workspaceRoot:home});
+            expect(legacyWinner.threadId).toBe(legacy);
+            expect(legacyWinner).not.toHaveProperty('threadStartMs')
+        } finally { db.close() }
+    });
+
+    test('an allocation tie at the sentinel cannot silently defer to the index winner', async () => {
+        await fs.writeFile(file, line(meta({cwd:home})));
+        const db = new Database(path.join(home, 'state_5.sqlite'));
+        try { db.prepare('UPDATE threads SET created_at_ms=2 WHERE id=?').run(id) } finally { db.close() }
+        for (let i = 1; i <= 101; i++) {
+            const fork = `01a1da8b-d4ea-76c0-8abc-${i.toString(16).padStart(12, '0')}`;
+            await addCandidate(fork, 1, {forked_from_id:id})
+        }
+        await expect(listCodexWakeTargets({home, workspaceRoot:home})).rejects.toThrow('candidate bound')
+    });
+
     test('the 101-row sentinel holds only when an unseen newest root or tie remains possible', async () => {
         const db     = new Database(path.join(home, 'state_5.sqlite'));
         const insert = db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, 0, ?, ?, ?, NULL)');

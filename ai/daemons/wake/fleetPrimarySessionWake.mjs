@@ -4,19 +4,19 @@
  * The signed event identifies a peer. Only the host manifest, admitted bundle and live process lease
  * supply local paths. An opt-in is scoped to one Fleet agent and one receiver state directory.
  */
-import {execFile}                                                              from 'node:child_process';
-import {randomUUID}                                                            from 'node:crypto';
-import fs                                                                      from 'node:fs/promises';
-import os                                                                      from 'node:os';
-import path                                                                    from 'node:path';
-import {isDeepStrictEqual, promisify}                                          from 'node:util';
-import {deriveCodexHome, guiProfileDir}                                        from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
-import {writeFileAtomic}                                                       from '../../services/shared/atomicFileWrite.mjs';
-import * as antigravity                                                        from './antigravitySessionWake.mjs';
-import * as codex                                                              from './codexSessionWake.mjs';
-import {formatLocalWakeDigest}                                                 from './localWakeAdapters.mjs';
-import {isIdleOnlyEnvelope}                                                    from './contextGatePolicy.mjs';
-import {withOutboxLock}                                                        from './outboxLock.mjs';
+import {execFile}                       from 'node:child_process';
+import {randomUUID}                     from 'node:crypto';
+import fs                               from 'node:fs/promises';
+import os                               from 'node:os';
+import path                             from 'node:path';
+import {isDeepStrictEqual, promisify}   from 'node:util';
+import {deriveCodexHome, guiProfileDir} from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
+import {writeFileAtomic}                from '../../services/shared/atomicFileWrite.mjs';
+import * as antigravity                 from './antigravitySessionWake.mjs';
+import * as codex                       from './codexSessionWake.mjs';
+import {formatLocalWakeDigest}          from './localWakeAdapters.mjs';
+import {isIdleOnlyEnvelope}             from './contextGatePolicy.mjs';
+import {withOutboxLock}                 from './outboxLock.mjs';
 import {
     formatPrimaryWakeBatch,
     matchesPrimaryWakeMember,
@@ -35,7 +35,9 @@ import {
     hasPrimaryWakeRecipient,
     isSpoolPointerActive,
     isUrgentWakeRecord,
+    NATIVE_DISPATCH_REASONS,
     primaryWakeSpoolPath,
+    ROOT_START_CHANGED,
     urgentPrimaryWakeSpoolPath
 } from './primaryWakeSpool.mjs';
 import {TERMINAL_STATES, WakeReceiverState}                      from './receiverState.mjs';
@@ -125,10 +127,17 @@ async function latestRoot(config, live, statePath, stateDir, appDataDir, codexTr
     const observation = await observePrimaryWakeSelection({
         selectionPath:statePath + '.selection.json',seat,family,generation:live.generation,threadId:target.threadId,
         order:isCodex ? target.startedAt : target.startSequence,
-        proof:{verified:true,kind:isCodex ? 'codex-start' : 'antigravity-sequence'},
+        proof:{verified:true,kind:isCodex ? 'codex-start' : 'antigravity-sequence',threadStartMs:isCodex ? target.threadStartMs : undefined},
+        verifyContinuity:async () => {
+            const {binding} = await readPrimarySessionWake({statePath});
+            return binding?.seat === seat && binding.family === family && binding.generation === live.generation &&
+                binding.threadId === target.threadId && target.workspaceRoot === live.workspaceRoot
+        },
         verifyGeneration:async () => (await inspectResident(config))?.generation === live.generation
     });
-    return observation.status === 'accepted' ? target : null
+    if (observation.status === 'accepted') return target;
+    if (isCodex && observation.reason === 'root start changed') return {root:false, reason:ROOT_START_CHANGED};
+    return null
 }
 
 /**
@@ -201,7 +210,7 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
         try { selected = await latestRoot(config,live,statePath,stateDir,appDataDir,codexTransport,antigravityTransport,binding.seat,inspectResident) }
         catch { return refuseSpent('selection-unavailable') }
         const matches = selected?.root === true && selected.threadId === threadId;
-        if (selected?.root !== true) return refuseSpent('selection-unavailable');
+        if (selected?.root !== true) return refuseSpent(selected?.reason || 'selection-unavailable');
         // Serialize only the grant of mailbox contents with a manifest change. No native
         // command or inventory scan runs under this global publication lock.
         return withOutboxLock(manifestPath,async () => {
@@ -273,11 +282,11 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
     let selected;
     if (await slotReady(before.inflight) && await slotReady(before.urgentInflight)) {
         selected = await select().catch(() => null);
-        if (!selected?.root) return pending('latest started main session is unproven');
+        if (!selected?.root) return pending(selected?.reason ? `native-recipient:${selected.reason}` : 'latest started main session is unproven');
         if (before.binding?.threadId !== selected.threadId || before.binding?.generation !== generation) {
             const result = await bindPrimarySession({statePath,seat,generation,family,threadId:selected.threadId,
-                expectedVersion:before.version,proveTarget:select,isRecordedDelivered:recorded});
-            if (result.status !== 'bound') return pending(result.reason)
+                expectedVersion:before.version,proveTarget:async () => (selected = await select()),isRecordedDelivered:recorded});
+            if (result.status !== 'bound') return pending(selected?.root === false ? `native-recipient:${selected.reason}` : result.reason)
         }
     }
     const prior = await readBinding();
@@ -301,6 +310,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         readTarget: async (binding, {urgent: slotUrgent} = {}) => {
             if (binding.generation !== generation) return null;
             const root = await select();
+            if (root?.root === false) return {root:false, reason:`native-recipient:${root.reason}`};
             if (root?.threadId !== binding.threadId) return null;
             if (isCodex) {
                 const activity = await codexTransport.readCodexWakeActivity({home, threadId:root.threadId});
@@ -345,7 +355,10 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         send: async ({binding,nonce,urgent:slotUrgent,attempt,target}) => {
             if (binding.generation !== generation || (currentRoute && !await currentRoute())) return {status:'not-sent'};
             const {threadId} = binding, text = wakeText(nonce), root = await select();
-            if (root?.threadId !== threadId) return {status:'not-sent'};
+            if (root?.threadId !== threadId) {
+                if (root?.root === false) denialReason = root.reason;
+                return {status:'not-sent'}
+            }
             if (isCodex && verifyCodexRoute && !await verifyCodexRoute(config, live).catch(() => false)) return {status:'not-sent'};
             const cursor = isCodex ? root.receiptOffset : antigravityTransport.captureAntigravityWakeCursor({appDataDir,threadId});
             await writeFileAtomic(cursorPathFor(slotUrgent), JSON.stringify({nonce,cursor}), {mode:0o600,fsync:true});
@@ -384,7 +397,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
             }
             if (claim.recordKey !== recordKey || claim.generation !== binding.generation || claim.threadId !== threadId) return null;
             if (claim.admitted === false) {
-                denialReason = ['resident-unavailable', 'selection-unavailable'].includes(claim.reason) ? claim.reason : null;
+                denialReason = ['resident-unavailable', 'selection-unavailable', ROOT_START_CHANGED].includes(claim.reason) ? claim.reason : null;
                 return {...binding,recordKey,nonce,status:'not-sent'}
             }
             if (claim.admitted !== true) return null;
@@ -497,7 +510,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
             return {active:false}
         }
         const batchCapable = pointerPath === normalPath && config.family === 'codex-desktop';
-        const result = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute,verifyCodexRoute,
+        const result       = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute,verifyCodexRoute,
             ...(batchCapable ? {commitNormalAttempt: commit => commitOrdinary(record.recordKey,commit)} : {})});
         if (result?.status === 'delivered' && hasPrimaryWakeRecipient(result.recipient, {seat:route.agentIdentity, recordKey:record.recordKey})) {
             const {recordKey} = record;
@@ -511,7 +524,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
             return {active:false}
         }
         // Only fixed diagnostics cross back to the receiver; never project vendor errors or payloads.
-        const reason = ['native-recipient:resident-unavailable', 'native-recipient:selection-unavailable', ACTIVE_TURN_UNAVAILABLE_REASON].includes(result?.reason)
+        const reason = NATIVE_DISPATCH_REASONS.includes(result?.reason)
             ? result.reason : result?.status === 'unknown' ? 'native-recipient:receipt-unproven' : 'native-recipient:awaiting-readiness';
         const dependency = reason === ACTIVE_TURN_UNAVAILABLE_REASON ? (result?.dependency || ACTIVE_TURN_ADAPTER_DEPENDENCY) : null;
         await writeFileAtomic(pointerPath+'.status', JSON.stringify({
