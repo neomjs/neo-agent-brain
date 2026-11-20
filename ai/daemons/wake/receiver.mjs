@@ -764,8 +764,13 @@ export function createWakeReceiver({
                               rotation   = isSessionRotation(dispatching.envelope),
                               lostFront  = outcomeReason === ROTATION_ACTIVATION_LOST || outcomeReason === ROTATION_SESSION_OPENED,
                               frontLost  = (dispatching.frontLostCount || 0) + (lostFront ? 1 : 0),
-                              // Once Cmd+N opened the session, every later attempt resumes in it
-                              sessionOpened = dispatching.sessionOpened === true || outcomeReason === ROTATION_SESSION_OPENED;
+                              // Once Cmd+N opened the session, every later attempt resumes in it, and only in the
+                              // process whose Cmd+N opened it: the first pid recorded stays
+                              sessionOpened = dispatching.sessionOpened === true || outcomeReason === ROTATION_SESSION_OPENED,
+                              opened        = sessionOpened ? {
+                                  sessionOpened,
+                                  sessionOpenedPid: dispatching.sessionOpened === true ? dispatching.sessionOpenedPid : result?.sessionOpenedPid
+                              } : {};
 
                         if (!rotation && deferCount > DIALOG_DEFER_BOUND) {
                             await watched.transition(record.recordKey, 'dispatching', 'failed', {
@@ -788,7 +793,7 @@ export function createWakeReceiver({
                                 outcomeReason : ROTATION_FRONT_LOST,
                                 deferCount,
                                 frontLostCount: frontLost,
-                                ...(sessionOpened ? {sessionOpened} : {}),
+                                ...opened,
                                 dispatchFinishedAt: new Date(clock()).toISOString()
                             });
                             logger.error?.(
@@ -804,7 +809,7 @@ export function createWakeReceiver({
                             deferredAt : new Date().toISOString(),
                             deferReason: outcomeReason || 'interactive-dialog-pending',
                             ...(rotation ? {seatHolder: dispatching.seatHolder ?? null, frontLostCount: frontLost} : {}),
-                            ...(sessionOpened ? {sessionOpened} : {})
+                            ...opened
                         });
                         logger.warn?.(rotation
                             ? `[Wake Receiver] rotation DEFERRED ${record.subscriptionId} (${outcomeReason}); ` +

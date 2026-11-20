@@ -13,6 +13,7 @@ import {
     ROTATION_FRONT_LOST,
     ROTATION_MAX_ACTIVATION_LOSSES,
     ROTATION_MAX_AGE_MS,
+    ROTATION_PROCESS_CHANGED,
     ROTATION_SCREEN_LOCKED,
     ROTATION_SESSION_OPENED,
     ROTATION_SUPERSEDED,
@@ -97,6 +98,13 @@ const quietEffects = overrides => ({
 });
 
 const typedPaste = calls => calls.filter(call => call.args.some(arg => String(arg).includes('keystroke "v"')));
+
+// The script's first key of any kind: a fence that should stop a script typing nothing is checked against this.
+const isKey    = line => /^\s*(keystroke|key code)\b/.test(line);
+const firstKey = lines => lines.findIndex(isKey);
+
+// A rotation whose earlier attempt opened its session in the process the resolver still returns (`4242`).
+const resumedRecord = () => ({...rotationRecord(), sessionOpened: true, sessionOpenedPid: 4242});
 
 test.describe('ai/daemons/wake/sessionRotation — the contract', () => {
     test('only a SESSION_ROTATE route admits session/rotate; every other route admits the wake digest', () => {
@@ -295,15 +303,16 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
 
         expect(await run('4154:4160: execution error: Target app lost frontmost status after activation (-2700)'))
             .toEqual({outcome: 'deferred', outcomeReason: ROTATION_ACTIVATION_LOST});
+        // The opened session's process travels with the defer, so the resume can be bound to it.
         expect(await run('4848:4854: execution error: Target app lost frontmost status before wake paste (-2700)'))
-            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED});
+            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedPid: 4242});
         expect(await run('execution error: Seat holder changed before the fresh session (-2700)'))
             .toMatchObject({outcome: 'failed'})
     });
 
-    test('#1871: a resumed rotation keeps the holder, front and cutoff checks, and pastes without a second Cmd+N', async () => {
+    test('#1871 (Euclid\'s Round 1): a resume runs its holder, front and cutoff checks before its first key, Claude\'s tab shortcut included', async () => {
         const calls  = [];
-        const result = await dispatchLocalWake({...rotationRecord(), sessionOpened: true}, quietEffects({
+        const result = await dispatchLocalWake(resumedRecord(), quietEffects({
             rotationHolder: {path: '/seats/neo-opus-ada/listener.json', sessionId: 'session-old'},
             spawnAsync    : async (command, args) => { calls.push({command, args}); return '' }
         }));
@@ -311,21 +320,67 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
         expect(result).toBe('delivered');
 
         const lines = typedPaste(calls)[0].args.map(String),
-              fence = lines.findIndex(line => line.includes('Seat holder changed before the fresh session')),
-              clear = lines.findIndex(line => line.includes('"before prompt clear"'));
+              key   = firstKey(lines),
+              at    = text => lines.findIndex(line => line.includes(text));
 
+        // Claude's defaults make the tab shortcut the first key; no second Cmd+N follows it.
+        expect(lines[key]).toBe('      keystroke "3" using command down');
         expect(lines).not.toContain('      keystroke "n" using command down');
-        // A session claimed by hand since the shortcut stops the script before its first key
-        expect(fence).toBeGreaterThan(-1);
-        expect(fence).toBeLessThan(clear);
-        expect(lines.some(line => line.includes('"before fresh session"'))).toBe(true);
-        expect(lines.some(line => line.includes('Rotation deadline passed before the fresh session'))).toBe(true);
+
+        for (const check of ['Seat holder changed before the fresh session', '"before fresh session"', 'Rotation deadline passed before the fresh session']) {
+            expect(at(check)).toBeGreaterThan(-1);
+            expect(at(check)).toBeLessThan(key)
+        }
         expect(lines.at(-1)).toBe(PROMPT)
+    });
+
+    test('#1871 (Euclid\'s Round 1): a holder that changes after the receiver\'s check stops the resumed script before any key', async () => {
+        const passed = [];
+        const result = await dispatchLocalWake(resumedRecord(), quietEffects({
+            rotationGuard : () => null,
+            rotationHolder: {path: '/seats/neo-opus-ada/listener.json', sessionId: 'session-old'},
+            // The script as it runs once another session owns the record: the holder comparison is where it stops.
+            spawnAsync    : async (command, args) => {
+                if (!args.some(arg => String(arg).includes('keystroke "v"'))) return '';
+
+                for (const line of args.map(String)) {
+                    if (line.includes('Seat holder changed before the fresh session')) {
+                        throw new Error('execution error: Seat holder changed before the fresh session (-2700)')
+                    }
+                    if (isKey(line)) passed.push(line)
+                }
+                return ''
+            }
+        }));
+
+        expect(result).toEqual({outcome: 'failed', outcomeReason: 'execution error: Seat holder changed before the fresh session (-2700)'});
+        expect(passed).toEqual([])
+    });
+
+    test('#1871 (Euclid\'s Round 1): a resume whose profile now resolves to another process stops without a key; its own process resumes', async () => {
+        const calls = [],
+              run   = pid => dispatchLocalWake(resumedRecord(), quietEffects({
+                  resolveGuiInstancePid: async () => pid,
+                  rotationGuard        : () => null,
+                  rotationHolder       : {path: '/seats/neo-opus-ada/listener.json', sessionId: 'session-old'},
+                  spawnAsync           : async (command, args) => { calls.push({command, args}); return '' }
+              }));
+
+        // The app restarted behind the same profile, and no session claimed the seat: nothing runs at all.
+        expect(await run(4343)).toEqual({outcome: 'failed', outcomeReason: ROTATION_PROCESS_CHANGED});
+        expect(calls).toEqual([]);
+
+        expect(await run(4242)).toBe('delivered');
+
+        const lines = typedPaste(calls)[0].args.map(String);
+
+        expect(lines).toContain('  set targetProcessId to "4242"');
+        expect(lines).not.toContain('      keystroke "n" using command down')
     });
 
     test('#1871: a seat claimed since the shortcut vetoes a resumed attempt without a keystroke', async () => {
         const calls  = [];
-        const result = await dispatchLocalWake({...rotationRecord(), sessionOpened: true}, quietEffects({
+        const result = await dispatchLocalWake(resumedRecord(), quietEffects({
             rotationGuard: () => ROTATION_SUPERSEDED,
             spawnAsync   : async (command, args) => { calls.push({command, args}); return '' }
         }));
@@ -364,7 +419,7 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
 
         // Past Cmd+N the session is open: the next attempt waits for the unlock, then resumes without a second Cmd+N.
         expect(await run('execution error: Target app lost frontmost status before wake paste (-2700)'))
-            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED})
+            .toEqual({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedPid: 4242})
     });
 
     test('#1770 (Emmy\'s Round 1): a front lost right before Cmd+N defers the rotation, as a lock when the script ran into one', async () => {
@@ -895,8 +950,9 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
         expect(dispatched).toHaveLength(ROTATION_MAX_ACTIVATION_LOSSES + 1)
     });
 
-    test('#1871: a front lost after Cmd+N is asked again in the opened session, and fails at the cap with it marked open', async () => {
-        const opened = () => ({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED}),
+    test('#1871: a front lost after Cmd+N is asked again in the opened session\'s process, and fails at the cap with it marked open', async () => {
+        // Only the first opening names the process; a later result naming another cannot move the binding.
+        const opened = (_, attempt) => ({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedPid: attempt ? 4343 : 4242}),
               quick  = rotationReceiver(Array.from({length: ROTATION_MAX_ACTIVATION_LOSSES}, opened), {rotationRetryMs: 20});
 
         await state.accept({subscriptionId: 'WAKE_SUB:rotate', eventId: 'session-rotate:MESSAGE:r1', envelope: heldEnvelope()});
@@ -904,11 +960,13 @@ test.describe('ai/daemons/wake/sessionRotation — the receiver', () => {
 
         await expect.poll(async () => (await state.read(rotationKey)).state, {timeout: 2_000}).toBe('failed');
         expect(dispatched[0].sessionOpened).toBeUndefined();
-        expect(dispatched[1]).toMatchObject({sessionOpened: true, frontLostCount: 1});
+        expect(dispatched[1]).toMatchObject({sessionOpened: true, sessionOpenedPid: 4242, frontLostCount: 1});
+        expect(dispatched.at(-1)).toMatchObject({sessionOpened: true, sessionOpenedPid: 4242});
         expect(await state.read(rotationKey)).toMatchObject({
-            outcomeReason : ROTATION_FRONT_LOST,
-            frontLostCount: ROTATION_MAX_ACTIVATION_LOSSES,
-            sessionOpened : true
+            outcomeReason   : ROTATION_FRONT_LOST,
+            frontLostCount  : ROTATION_MAX_ACTIVATION_LOSSES,
+            sessionOpened   : true,
+            sessionOpenedPid: 4242
         })
     });
 

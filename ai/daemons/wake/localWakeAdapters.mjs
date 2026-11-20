@@ -23,6 +23,7 @@ import {
     ROTATION_ABORTED,
     ROTATION_ACTIVATION_LOST,
     ROTATION_EXPIRED,
+    ROTATION_PROCESS_CHANGED,
     ROTATION_SCREEN_LOCKED,
     ROTATION_SESSION_OPENED,
     evaluateHumanInput,
@@ -746,6 +747,12 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
         instancePid = target.pid;
     }
 
+    // A resume types only where its session opened: another process behind the profile (the app restarted, or
+    // another instance answers it now) never showed that session, so the rotation stops without a key.
+    if (rotation && record.sessionOpened === true && instancePid !== record.sessionOpenedPid) {
+        return {outcome: 'failed', outcomeReason: ROTATION_PROCESS_CHANGED}
+    }
+
     // Dialog gate — read before writing. A readable non-text focus means a pending
     // interactive prompt owns the input path: defer (the receiver parks and reschedules under a
     // bound) rather than type the wake into the operator's dialog. Any probe failure that does not
@@ -811,10 +818,10 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
         return {outcome: 'deferred', outcomeReason: effects.readScreenLocked?.() === true ? ROTATION_SCREEN_LOCKED : ROTATION_ACTIVATION_LOST}
     }
 
-    // Lost after Cmd+N: the session it opened waits empty, so the next attempt resumes there (`sessionOpened`)
+    // Lost after Cmd+N: the session it opened waits empty in this process, so the next attempt resumes there
     // instead of opening a second one.
     if (rotation && outcome?.outcome === 'failed' && isPostSessionFrontLost(outcome.outcomeReason)) {
-        return {outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED}
+        return {outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedPid: instancePid}
     }
 
     return outcome;
@@ -900,7 +907,8 @@ export function processAutomationIdLines(indent = '  ') {
  *   record cannot be read, or when a record appeared where none was.
  * @param {Number|null} [options.instancePid] Resolved Unix PID when instance-addressed.
  * @param {Boolean} [options.sessionOpened=false] An earlier attempt's Cmd+N opened the session and the front was
- *   lost before the paste: the script keeps the holder, front and cutoff checks, and skips the keystroke and its wait.
+ *   lost before the paste: the script skips the keystroke and its wait, and runs the holder, front and cutoff checks
+ *   before its first key instead.
  * @param {String} [options.tabShortcut] Command-key shortcut for the harness tab.
  * @returns {String[]} `osascript` argv fragments ending with the digest.
  */
@@ -965,6 +973,38 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
         ...resolveTargetProcessLines('    ', addressedProcess)
     ];
 
+    // The rotation's fence: the holder, the front and the clock, read in that order right before the key it guards.
+    const fence = [];
+    if (freshSessionShortcut) {
+        // The record also names the session a wake was delivered to, so only its `owner.sessionId` is compared.
+        if (freshSessionHolder?.path && freshSessionHolder.sessionId) {
+            fence.push(
+                '-e', `      tell current application to set rotationHolderNow to (do shell script "/usr/bin/plutil -extract owner.sessionId raw -o - " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}")`,
+                '-e', `      if rotationHolderNow is not "${escapeAppleScript(freshSessionHolder.sessionId)}" then error "Seat holder changed before the fresh session"`
+            );
+        } else if (freshSessionHolder?.path) {
+            // No holder at the first attempt: the record must still be absent, so a session opened since is seen.
+            fence.push(
+                '-e', `      tell current application to set rotationHolderNow to (do shell script "test -e " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}" & " && echo present || true")`,
+                '-e', '      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"'
+            );
+        }
+        // The front is asserted again, since a lock can engage between the activation and here; the clock is
+        // read last, so neither the child's start nor the holder read can carry the keystroke past the cutoff.
+        if (fencedFreshSession) {
+            fence.push(
+                '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before fresh session")',
+                '-e', '      tell current application to set rotationNow to ((do shell script "/bin/date +%s") as integer)',
+                '-e', `      if rotationNow >= ${Math.floor(freshSessionCutoffSec)} then error "Rotation deadline passed before the fresh session"`
+            );
+        }
+    }
+
+    // A resume opens nothing, so its fence precedes its first key, the tab shortcut included. A first attempt's
+    // fence stays against Cmd+N: placed before the tab shortcut, it would leave the tab's delay for the front to
+    // move, and Cmd+N would land in another app.
+    if (sessionOpened) args.push(...fence);
+
     if (tabShortcut) {
         const shifted = String(tabShortcut).startsWith('shift+');
         const key     = shifted ? String(tabShortcut).slice(6) : String(tabShortcut);
@@ -973,34 +1013,10 @@ export function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequ
             : `      keystroke "${escapeAppleScript(key)}" using command down`);
         args.push('-e', '      delay 0.5');
     }
-    if (freshSessionShortcut) {
-        // The record also names the session a wake was delivered to, so only its `owner.sessionId` is compared.
-        if (freshSessionHolder?.path && freshSessionHolder.sessionId) {
-            args.push(
-                '-e', `      tell current application to set rotationHolderNow to (do shell script "/usr/bin/plutil -extract owner.sessionId raw -o - " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}")`,
-                '-e', `      if rotationHolderNow is not "${escapeAppleScript(freshSessionHolder.sessionId)}" then error "Seat holder changed before the fresh session"`
-            );
-        } else if (freshSessionHolder?.path) {
-            // No holder at the first attempt: the record must still be absent, so a session opened since is seen.
-            args.push(
-                '-e', `      tell current application to set rotationHolderNow to (do shell script "test -e " & quoted form of "${escapeAppleScript(freshSessionHolder.path)}" & " && echo present || true")`,
-                '-e', '      if rotationHolderNow is not "" then error "Seat holder appeared before the fresh session"'
-            );
-        }
-        // The front is asserted again, since a lock can engage between the activation and here; the clock is
-        // read last, so neither the child's start nor the holder read can carry the keystroke past the cutoff.
-        if (fencedFreshSession) {
-            args.push(
-                '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before fresh session")',
-                '-e', '      tell current application to set rotationNow to ((do shell script "/bin/date +%s") as integer)',
-                '-e', `      if rotationNow >= ${Math.floor(freshSessionCutoffSec)} then error "Rotation deadline passed before the fresh session"`
-            );
-        }
-        if (!sessionOpened) {
-            args.push('-e', `      keystroke "${escapeAppleScript(freshSessionShortcut)}" using command down`);
-            // The new session's composer renders before it takes input.
-            args.push('-e', '      delay 1.5');
-        }
+    if (freshSessionShortcut && !sessionOpened) {
+        args.push(...fence, '-e', `      keystroke "${escapeAppleScript(freshSessionShortcut)}" using command down`);
+        // The new session's composer renders before it takes input.
+        args.push('-e', '      delay 1.5');
     }
     if (focusSeedSequence === 'r-undo') {
         args.push('-e', '      keystroke "r"', '-e', '      delay 0.2', '-e', '      keystroke "z" using command down', '-e', '      delay 0.2');
