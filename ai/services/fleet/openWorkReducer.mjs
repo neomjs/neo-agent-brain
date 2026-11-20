@@ -263,6 +263,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         number           : node.number,
         title            : typeof node.title === 'string' ? node.title.replace(/\s+/g, ' ').trim() || null : null,
         head,
+        base             : node.baseRefName ?? null,
         ci               : headCiOf(commit, suites),
         verdict          : node.reviewDecision ?? null,
         mergeable        : node.mergeable ?? null,

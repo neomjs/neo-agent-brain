@@ -385,10 +385,13 @@ test.describe('openWorkHolder — one merge wakes one rebase: the merge line (#1
         expect(holders([pr(1, 10, vega), pr(2, 20)], {absentSeats: ['@neo-opus-grace']})[1]).toEqual(waits('neomjs/neo#1'))
     });
 
-    test('the line is per repository, and a row whose approval has no time neither waits nor holds', () => {
+    test('the line is per repository and base branch, and a row whose approval has no time neither waits nor holds', () => {
         const untimed = {reviews: [review('APPROVED')], opinions: [review('APPROVED')]};
 
         expect(holders([pr(1, 10), pr(2, 20, {repo: 'neomjs/neo-agent-brain'})])).toEqual([rebase, rebase]);
+        // a release PR into main holds no place for the PRs into dev
+        expect(holders([pr(1, 10, {base: 'main'}), pr(2, 20, {base: 'dev'})])).toEqual([rebase, rebase]);
+        expect(holders([pr(1, 10, {base: 'dev'}), pr(2, 20, {base: 'dev'})])).toEqual([rebase, waits('neomjs/neo#1')]);
         expect(holders([pr(1, 10, untimed), pr(2, 20)])).toEqual([rebase, rebase]);
         expect(holders([pr(1, 10), pr(2, 20, untimed)])).toEqual([rebase, rebase])
     });

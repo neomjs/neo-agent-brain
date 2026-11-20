@@ -62,7 +62,8 @@ const canonicalSeat = id => typeof id === 'string' && /^@[A-Za-z0-9._-]{1,100}$/
 const prKey = ({repo, number}) => `${repo}#${number}`;
 
 /**
- * @summary The merge line: per repository, the open, non-draft rows a seat approved, oldest standing approval first.
+ * @summary The merge line: per repository and base branch, the open, non-draft rows a seat approved, oldest standing
+ * approval first.
  * Each row behind one that holds its place maps to the nearest such row ahead of it, so a conflicting row rebases once,
  * after that row merges, instead of after every merge into a file approved PRs share.
  *
@@ -90,8 +91,11 @@ export function mergeLineOf(rows, {absentSeats = null} = {}) {
 
         if (row.draft || typeof row.repo !== 'string' || !Number.isSafeInteger(row.number) || !Number.isFinite(at)) continue;
 
-        lines.has(row.repo) || lines.set(row.repo, []);
-        lines.get(row.repo).push({row, at})
+        // a merge into another base branch changes nothing a PR into this one has to rebase onto
+        const key = `${row.repo}@${row.base ?? ''}`;
+
+        lines.has(key) || lines.set(key, []);
+        lines.get(key).push({row, at})
     }
 
     for (const line of lines.values()) {
