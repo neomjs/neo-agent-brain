@@ -48,6 +48,7 @@ import {
     hasPrimaryWakeRecipient,
     SPOOL_CONTENTION_REASONS,
     isUrgentWakeRecord,
+    readPrimaryWakeBatchReceipt,
     primaryWakeSeatForAddress,
     stagePrimaryWake
 } from './primaryWakeSpool.mjs';
@@ -458,12 +459,29 @@ export function createWakeReceiver({
                       ...rawList.filter(item => !isUrgentWakeRecord(item))
                   ];
 
+            const batchReceipts = new Map();
             for (const record of pending) {
                 // Only a presently admitted route may send a native wake. A legacy pending snapshot may
                 // adopt the native route, but a native snapshot is never downgraded back to GUI typing.
                 const current   = activeManifest.routes[record.subscriptionId],
                       oldNative = record.route?.harnessTargetMetadata?.adapter === 'primary-session',
                       newNative = current?.harnessTargetMetadata?.adapter === 'primary-session';
+                // Receipt projection is not a new send. Finish an already observed batch before
+                // checking today's route or context, even if the old subscription has been removed.
+                const receipt = oldNative && await track('drain',readPrimaryWakeBatchReceipt(record,state.stateDir,batchReceipts)).catch(() => null);
+                if (receipt) {
+                    const finishedAt = new Date(clock()).toISOString();
+                    await watched.transition(record.recordKey,'pending','delivered',{
+                        expectedRecipient : receipt.recipient,
+                        recipientObservedAt: receipt.recipientObservedAt || finishedAt,
+                        waitStage         : 'delivered',
+                        hostStagedAt      : record.hostStagedAt || finishedAt,
+                        namedDependency   : null,
+                        dispatchFinishedAt: finishedAt,
+                        ...(receipt.acknowledged === false ? {acknowledged:false} : {})
+                    });
+                    continue;
+                }
                 if (oldNative || newNative) {
                     if (!current || current.agentIdentity !== record.route?.agentIdentity ||
                         current.agentIdentity !== record.envelope?.agentIdentity ||

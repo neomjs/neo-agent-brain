@@ -6,6 +6,8 @@
 import fs                         from 'node:fs/promises';
 import path                       from 'node:path';
 import {withOutboxLock}           from './outboxLock.mjs';
+import {matchesPrimaryWakeMember, MAX_PRIMARY_WAKE_BATCH_EVENTS} from './primaryWakeBatch.mjs';
+import {primaryWakeAttemptRecorded, readPrimarySessionWake} from './primarySessionWake.mjs';
 import {readPrivateWakeJson}      from './nativeWakeEnrollment.mjs';
 import {writeFileAtomic}          from '../../services/shared/atomicFileWrite.mjs';
 import {deriveAgentInstanceHome}  from '../../services/fleet/deriveAgentInstanceHome.mjs';
@@ -78,10 +80,22 @@ export function isUrgentWakeRecord(record) {
     return record?.urgent === true
 }
 
-async function isSpoolPointerActive(entry, state) {
+/**
+ * @summary Keeps a staged pointer occupied until its persisted receipt covers every linked record.
+ * @param {Object|null} entry The selected spool pointer.
+ * @param {Object} state The receiver's record store.
+ * @param {Object|null} [attempt] The corresponding native attempt, when present.
+ * @returns {Promise<Boolean>}
+ */
+export async function isSpoolPointerActive(entry, state, attempt) {
     if (!entry) return false;
     if (!keyPattern.test(entry.recordKey)) return true;
     try {
+        if (attempt?.recordKey === entry.recordKey && attempt.members) {
+            return attempt.status !== 'delivered' ||
+                !await primaryWakeAttemptRecorded(attempt, async key => (await state.read(key)).state === 'delivered')
+        }
+
         return (await state.read(entry.recordKey)).state !== 'delivered'
     } catch {
         return true
@@ -109,6 +123,42 @@ async function readSpoolOutcome(pointer, record, seat, key) {
         }
     }
     return {status: 'pending', reason: 'awaiting the native recipient'}
+}
+
+/**
+ * @summary Reads a completed native batch's authoritative receipt for an original receiver record.
+ * The Fleet slot survives a lost spool publication or a removed subscription. Reading it cannot
+ * admit a future send. Legacy dispatch and ordinary singleton settlements still use spool results.
+ * @param {Object} record The immutable signed envelope's receiver record.
+ * @param {String} stateDir The receiver's local state directory.
+ * @param {Map} receipts Pass-local cache of each seat's private attempt snapshot.
+ * @returns {Promise<Object|null>}
+ */
+export async function readPrimaryWakeBatchReceipt(record, stateDir, receipts) {
+    if (!record.nativeStatus || isUrgentWakeRecord(record)) return null;
+    const seat      = record.route?.agentIdentity,
+          statePath = path.join(path.dirname(primaryWakeSpoolPath(stateDir, seat)), seat.slice(1) + '.json');
+    if (!receipts.has(seat)) receipts.set(seat, readPrimarySessionWake({statePath}));
+    return batchReceipt(record, await receipts.get(seat))
+}
+
+/** @summary Projects one member from the exact completed native attempt and its immutable binding. */
+function batchReceipt(record, sessionState) {
+    const {binding, inflight} = sessionState ?? {};
+    if (inflight?.status !== 'delivered' || !Array.isArray(inflight.members) ||
+        !inflight.members.some(member => matchesPrimaryWakeMember(record, member)) ||
+        binding?.family !== 'codex-desktop' || binding.seat !== record.route?.agentIdentity ||
+        binding.seat !== record.envelope?.agentIdentity) return null;
+
+    const recipient = {seat:binding.seat, generation:binding.generation, threadId:binding.threadId,
+        recordKey:record.recordKey, nonce:inflight.nonce};
+    if (!hasPrimaryWakeRecipient(recipient, {seat:binding.seat, recordKey:record.recordKey})) return null;
+    return {
+        status: 'delivered',
+        recipient,
+        ...(typeof inflight.recipientObservedAt === 'string' ? {recipientObservedAt:inflight.recipientObservedAt} : {}),
+        ...(inflight.acknowledged === false ? {acknowledged:false} : {})
+    }
 }
 
 /** @summary Stages a signed record for host consumption, preempting unsent ordinary pointers while preserving in-flight ones. */
@@ -145,15 +195,35 @@ export async function stagePrimaryWake(record, {state, stateDir}) {
             return readSpoolOutcome(urgentPointer, record, seat, key)
         }
 
-        if (currentNormal?.recordKey !== key) {
-            if (sessionState?.inflight?.recordKey !== key && currentUrgent?.recordKey !== key && await isSpoolPointerActive(currentUrgent, state)) {
-                return {status: 'pending', reason: 'urgent native wake outstanding'}
-            }
-            if (await isSpoolPointerActive(currentNormal, state)) {
-                return {status: 'pending', reason: 'earlier native wake outstanding'}
-            }
-            await writeFileAtomic(normalPointer, JSON.stringify({recordKey: key}), {mode: 0o600, fsync: true})
+        const receipt = batchReceipt(record, sessionState);
+        if (receipt) return receipt;
+        if (currentNormal?.recordKey === key) return readSpoolOutcome(normalPointer, record, seat, key);
+        const attempt = sessionState?.inflight;
+
+        if (sessionState?.inflight?.recordKey !== key && currentUrgent?.recordKey !== key && await isSpoolPointerActive(currentUrgent, state)) {
+            return {status: 'pending', reason: 'urgent native wake outstanding'}
         }
+
+        if (await isSpoolPointerActive(currentNormal, state, attempt)) {
+            // The receiver adds candidates only after admitting the original record to its native adapter.
+            // Once Fleet commits the attempt, the queue can no longer change its membership.
+            if (record.route?.adapterConfig?.primarySession?.family === 'codex-desktop' &&
+                attempt?.recordKey !== currentNormal.recordKey && !record.expectedRecipient && !record.nativeInitiatedAt) {
+                const candidates = Array.isArray(currentNormal.candidates) ? currentNormal.candidates : [];
+                if (candidates.length < MAX_PRIMARY_WAKE_BATCH_EVENTS - 1 && !candidates.includes(key)) {
+                    const anchor = await state.read(currentNormal.recordKey).catch(() => null);
+
+                    if (anchor?.subscriptionId === record.subscriptionId) {
+                        await writeFileAtomic(normalPointer, JSON.stringify({...currentNormal, candidates: [...candidates, key]}),
+                            {mode: 0o600, fsync: true})
+                    }
+                }
+            }
+
+            return {status: 'pending', reason: 'earlier native wake outstanding'}
+        }
+
+        await writeFileAtomic(normalPointer, JSON.stringify({recordKey: key}), {mode: 0o600, fsync: true});
         return readSpoolOutcome(normalPointer, record, seat, key)
     })
 }

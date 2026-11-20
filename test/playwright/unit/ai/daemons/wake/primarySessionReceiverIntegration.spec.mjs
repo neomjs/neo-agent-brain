@@ -4,6 +4,7 @@ import fs                                                                       
 import os                                                                                                                                   from 'node:os';
 import path                                                                                                                                 from 'node:path';
 import {createWakeReceiver, loadWakeReceiverManifest}                                                                                       from '../../../../../../ai/daemons/wake/receiver.mjs';
+import {projectMessageDelivery}                                                                                                            from '../../../../../../ai/services/memory-core/wakeDeliveryProjection.mjs';
 import {WakeReceiverState}                                                                                                                  from '../../../../../../ai/daemons/wake/receiverState.mjs';
 import {dispatchFleetPrimarySessionWake, drainFleetPrimaryWakeRecord, startFleetPrimaryWakePump, consumeNativeWakePrompt, enrollNativeWake} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
 
@@ -13,8 +14,8 @@ test.describe('signed native wake receiver integration', () => {
           threadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     let config, transport;
     const resident = async () => ({pid: 123, startedAt: 'start', generation: '123:start', workspaceRoot: '/fixture/work'});
-    const env      = index => ({schemaVersion:'1.0',eventType:'wake/digest',eventId:`event-${index}`,subscriptionId:sub,
-        agentIdentity:seat,payload:{totalEvents:1,sourceEventIds:[`MESSAGE:${index}`],breakdown:{sent_to_me:{count:1,latest:{messageId:`MESSAGE:${index}`,subject:'fixture'}}}}});
+    const env      = (index, sourceEventIds = [`MESSAGE:${index}`]) => ({schemaVersion:'1.0',eventType:'wake/digest',eventId:`event-${index}`,subscriptionId:sub,
+        agentIdentity:seat,payload:{totalEvents:sourceEventIds.length,sourceEventIds,breakdown:{sent_to_me:{count:sourceEventIds.length,latest:{messageId:sourceEventIds.at(-1),subject:'fixture'}}}}});
 
     test.beforeEach(async () => {
         root = await fs.mkdtemp(path.join(os.tmpdir(),'neo-primary-integration-'));
@@ -53,9 +54,11 @@ test.describe('signed native wake receiver integration', () => {
         url = `http://127.0.0.1:${server.address().port}/wake`;
     });
     test.afterEach(async () => {await new Promise(resolve => server.close(resolve)); await fs.rm(root,{recursive:true,force:true})});
-    async function post(index) {
-        const envelope = env(index), body = JSON.stringify(envelope), signature = crypto.createHmac('sha256',key).update(body).digest('hex');
-        return fetch(url,{method:'POST',headers:{'content-type':'application/json','x-neo-wake-subscription-id':sub,
+    async function post(index, sourceEventIds, decorate = () => {}) {
+        const envelope = env(index, sourceEventIds);
+        decorate(envelope);
+        const body = JSON.stringify(envelope), signature = crypto.createHmac('sha256',key).update(body).digest('hex');
+        return fetch(url,{method:'POST',headers:{'content-type':'application/json','x-neo-wake-subscription-id':envelope.subscriptionId,
             'x-neo-wake-event-id':envelope.eventId,'x-neo-wake-schema-version':'1.0','x-neo-wake-signature':signature},body})
     }
 
@@ -120,6 +123,333 @@ test.describe('signed native wake receiver integration', () => {
         await pump(changed.routes[sub]); await receiver.drain();
         expect(sends).toBe(1);
         expect(await state.list('delivered')).toHaveLength(1);
+    });
+
+    test('one idle catch-up handoff delivers every source event in the staged normal backlog', async () => {
+        await new Promise(resolve => server.close(resolve));
+        let activity = 'busy',
+            now      = Date.now();
+        receiver = createWakeReceiver({manifest, state, manifestPath, clock: () => now++, logger: {log(){}, warn(){}, error(){}}});
+        server = receiver.server;
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        url = `http://127.0.0.1:${server.address().port}/wake`;
+
+        const targets         = [],
+              sendSessionWake = transport.sendCodexSessionWake,
+              pump            = () => drainFleetPrimaryWakeRecord({
+                  state,
+                  stateDir,
+                  manifestPath,
+                  subscriptionId: sub,
+                  route         : manifest.routes[sub],
+                  dispatch      : (record, options) => dispatchFleetPrimarySessionWake(record, {...options, inspectResident: resident, codexTransport: transport})
+              });
+
+        transport.readCodexWakeActivity = async () => ({state: activity});
+        transport.sendCodexSessionWake  = async (input) => {
+            targets.push(input.threadId);
+            return sendSessionWake(input)
+        };
+
+        const olderBatches = Array.from({length: 16}, (_, index) =>
+                  Array.from({length: index < 5 ? 2 : 1}, (_, event) => `MESSAGE:older-${index + 1}-${event + 1}`)),
+              freshProbe   = ['MESSAGE:fresh-probe', 'MESSAGE:fresh-peer'],
+              batches      = [...olderBatches, freshProbe],
+              sourceIds    = batches.flat();
+
+        for (const [index, ids] of olderBatches.entries()) {
+            expect((await post(index, ids)).status).toBe(202);
+        }
+        await receiver.drain();
+        await pump();
+        expect((await post(olderBatches.length, freshProbe)).status).toBe(202);
+        await receiver.drain();
+        await pump();
+        await receiver.drain();
+
+        const pending = await state.list('pending');
+        expect(pending.map(record => record.sourceEventIds)).toEqual(batches);
+        expect(pending.every(record => record.urgent === false)).toBe(true);
+        expect(sourceIds).toHaveLength(23);
+        expect(sends).toBe(0);
+
+        activity = 'idle';
+        await pump();
+        await receiver.drain();
+        const firstIdleDelivered = (await state.list('delivered')).length;
+
+        // Let the legacy one-record spool finish too, so the red control measures its extra sends.
+        for (let index = 1; index < batches.length && (await state.list('pending')).length > 0; index++) {
+            await pump();
+            await receiver.drain();
+        }
+
+        expect(sends, 'all 17 records share one native handoff').toBe(1);
+        expect(firstIdleDelivered).toBe(batches.length);
+        expect(targets).toEqual([threadId]);
+        expect(consumed).toHaveLength(1);
+        expect(consumed[0]).toContain('23 events for @fixture');
+        expect(nativeInputs).toEqual([expect.stringMatching(/^\[NEO_WAKE_V1:[0-9a-f-]{36}\] \[WAKE\]$/)]);
+
+        const records = await new WakeReceiverState({stateDir}).list();
+        expect(records.map(record => record.sourceEventIds)).toEqual(batches);
+        expect(projectMessageDelivery(records, sourceIds)).toEqual(
+            Object.fromEntries(sourceIds.map(id => [id, expect.objectContaining({state: 'delivered'})]))
+        );
+
+        expect((await post(0, batches[0])).status).toBe(200);
+        expect((await post(olderBatches.length, freshProbe)).status).toBe(200);
+        await receiver.drain();
+        await pump();
+        expect(sends).toBe(1);
+        expect(consumed).toHaveLength(1);
+    });
+
+    /** @summary Restarts the graphless receiver in its normal staged mode for the catch-up controls. */
+    async function useStagedReceiver({drain = true, subscriptionId = sub, contextProbe} = {}) {
+        if (drain) await receiver.drain();
+        await new Promise(resolve => server.close(resolve));
+        if (contextProbe) {
+            const route = manifest.routes[subscriptionId];
+            manifest = {
+                ...manifest,
+                routes: {
+                    ...manifest.routes,
+                    [subscriptionId]: {
+                        ...route,
+                        adapterConfig: {
+                            ...route.adapterConfig,
+                            contextGate: {maxContextTokens:100,warnContextTokens:90,activeWithinMs:5000}
+                        }
+                    }
+                }
+            };
+            await fs.writeFile(manifestPath,JSON.stringify(manifest),{mode:0o600});
+        }
+        let now = Date.now();
+        receiver = createWakeReceiver({manifest,state,manifestPath,contextProbe,clock: () => now++,logger:{log(){},warn(){},error(){}}});
+        server = receiver.server;
+        await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+        url = `http://127.0.0.1:${server.address().port}/wake`;
+        return () => drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route:manifest.routes[subscriptionId],
+            dispatch:(record, options) => dispatchFleetPrimarySessionWake(record,{...options,inspectResident:resident,codexTransport:transport})})
+    }
+
+    test('a bounded native batch keeps excess source events pending in acceptance order', async () => {
+        const pump = await useStagedReceiver();
+        const sources = prefix => Array.from({length:24}, (_, index) => `MESSAGE:${prefix}-${index}`);
+        const batches = [sources('a'), sources('b'), ['MESSAGE:overflow']];
+
+        for (const [index, ids] of batches.entries()) expect((await post(index,ids)).status).toBe(202);
+        await receiver.drain(); await pump(); await receiver.drain();
+
+        expect(sends).toBe(1);
+        expect(consumed[0]).toContain('48 events for @fixture');
+        expect((await state.list('delivered')).map(record => record.sourceEventIds)).toEqual(batches.slice(0,2));
+        expect((await state.list('pending')).map(record => record.sourceEventIds)).toEqual(batches.slice(2));
+
+        await pump(); await receiver.drain();
+        expect(sends).toBe(2);
+        expect(consumed[1]).toContain('1 events for @fixture');
+        expect((await state.list('delivered')).map(record => record.sourceEventIds)).toEqual(batches)
+    });
+
+    test('a bounded native batch stops before the rendered UTF-8 byte limit', async () => {
+        const pump = await useStagedReceiver();
+        const largeText = 'é'.repeat(4600);
+        expect((await post(1, ['MESSAGE:wide-subject'], envelope => {
+            envelope.payload.breakdown.sent_to_me.latest.subject = largeText;
+        })).status).toBe(202);
+        expect((await post(2, ['MESSAGE:wide-task'], envelope => {
+            envelope.payload.breakdown = {task_state_changed:{count:1,latest:{taskId:largeText,newState:'Working'}}};
+        })).status).toBe(202);
+        await receiver.drain(); await pump(); await receiver.drain();
+
+        expect(sends).toBe(1);
+        expect(Buffer.byteLength(consumed[0], 'utf8')).toBeLessThanOrEqual(16 * 1024);
+        expect((await state.list('delivered')).map(record => record.sourceEventIds)).toEqual([['MESSAGE:wide-subject']]);
+        expect((await state.list('pending')).map(record => record.sourceEventIds)).toEqual([['MESSAGE:wide-task']]);
+
+        await pump(); await receiver.drain();
+        expect(sends).toBe(2);
+        expect((await state.list('pending'))).toHaveLength(0)
+    });
+
+    test('receiver restart finishes a partially projected native batch without resending or expanding its membership', async () => {
+        let pump = await useStagedReceiver();
+        mode = 'hold';
+        expect((await post(1)).status).toBe(202);
+        expect((await post(2)).status).toBe(202);
+        await receiver.drain();
+        const [anchor, member] = await state.list('pending');
+        await pump();
+        const nonce = lastNonce, claimArgs = {manifestPath,stateDir,agentId,family,threadId,nonce,turnId:'turn-1',codexTransport:transport};
+        expect(sends).toBe(1);
+        expect(await state.list('delivered')).toHaveLength(0);
+
+        expect((await post(3)).status).toBe(202);
+        await receiver.drain();
+        expect(await consumeNativeWakePrompt({...claimArgs,inspectResident: async () => ({generation:'old:process'})})).toEqual({admitted:false});
+        await pump();
+        expect(sends).toBe(1);
+        const claim = await consumeNativeWakePrompt({...claimArgs,inspectResident:resident});
+        expect(claim).toMatchObject({admitted:true,digest: expect.stringContaining('2 events for @fixture')});
+        delivered.add(nonce);
+        await pump();
+
+        const transition = state.transition;
+        state.transition = async function(key, from, to, details) {
+            if (key === member.recordKey && to === 'delivered') throw Error('fixture interruption during batch projection');
+            return transition.call(this,key,from,to,details)
+        };
+        try {
+            await receiver.drain();
+            expect((await state.read(anchor.recordKey)).state).toBe('delivered');
+            expect((await state.read(member.recordKey)).state).toBe('pending');
+        } finally {
+            state.transition = transition;
+        }
+
+        // The verified attempt survives the spool receipt, receiver restart and old subscription.
+        await fs.rm(path.join(stateDir,'primary-sessions','fixture.request.json.result'));
+        const replacement = 'WAKE_SUB:replacement';
+        manifest = {...manifest,routes:{[replacement]:manifest.routes[sub]}};
+        await fs.writeFile(manifestPath,JSON.stringify(manifest),{mode:0o600});
+        pump = await useStagedReceiver({drain:false,subscriptionId:replacement});
+        await receiver.drain();
+        expect(sends).toBe(1);
+        expect((await state.read(member.recordKey)).expectedRecipient).toMatchObject({recordKey:member.recordKey,nonce});
+        expect((await state.list('pending')).map(record => record.sourceEventIds)).toEqual([['MESSAGE:3']]);
+        await expect(consumeNativeWakePrompt({...claimArgs,inspectResident:resident})).resolves.toEqual({admitted:false});
+
+        mode = 'consume';
+        expect((await post(4,['MESSAGE:replacement'],envelope => {envelope.subscriptionId = replacement})).status).toBe(202);
+        await receiver.drain(); await pump(); await receiver.drain();
+        expect(sends).toBe(2);
+        expect((await state.list('delivered')).map(record => record.sourceEventIds)).toEqual(
+            [['MESSAGE:1'],['MESSAGE:2'],['MESSAGE:replacement']]
+        );
+        expect((await state.list('pending')).map(record => record.sourceEventIds)).toEqual([['MESSAGE:3']]);
+    });
+
+    test('a verified batch settles before a newer context deferral blocks fresh handoffs', async () => {
+        let contextTokens = 10;
+        const pump = await useStagedReceiver({contextProbe: async () => ({contextTokens})});
+        for (const index of [1,2]) expect((await post(index)).status).toBe(202);
+        await receiver.drain();
+        await pump();
+        expect(sends).toBe(1);
+        expect(consumed[0]).toContain('2 events for @fixture');
+
+        // The verified batch can settle after context growth now blocks all future sends.
+        contextTokens = 101;
+        await receiver.drain();
+        expect((await state.list('delivered')).map(record => record.sourceEventIds)).toEqual([['MESSAGE:1'],['MESSAGE:2']]);
+
+        expect((await post(3)).status).toBe(202);
+        await receiver.drain(); await pump(); await receiver.drain();
+        expect(sends).toBe(1);
+        expect(await state.list('pending')).toEqual([
+            expect.objectContaining({eventId:'event-3',deferReason:'context-gate:101>100'})
+        ]);
+    });
+
+    for (const hold of ['dispatching', 'context deferred']) {
+        test(`preserves acceptance order when an older staged candidate is ${hold}`, async () => {
+            let blocked = true;
+            const pump = await useStagedReceiver({contextProbe: async record => ({
+                contextTokens: blocked && record.eventId === 'event-2' ? 101 : 10
+            })});
+
+            for (const index of [1,2,3]) expect((await post(index)).status).toBe(202);
+            await receiver.drain();
+            // B was held on the first pass, so it stages after C when the gate opens.
+            blocked = false;
+            await receiver.drain();
+            const [, b, c] = await state.list('pending');
+            const pointer = JSON.parse(await fs.readFile(path.join(stateDir,'primary-sessions','fixture.request.json'),'utf8'));
+            expect(pointer.candidates).toEqual([c.recordKey,b.recordKey]);
+
+            if (hold === 'dispatching') {
+                // Interrupt between the receiver's dispatching transition and its fresh eligibility check.
+                await state.transition(b.recordKey,'pending','dispatching');
+            } else {
+                blocked = true;
+                await receiver.drain();
+                expect((await state.read(b.recordKey)).deferReason).toBe('context-gate:101>100');
+            }
+
+            await pump();
+            expect(sends).toBe(1);
+            expect(consumed[0]).toContain('1 events for @fixture');
+
+            if (hold === 'dispatching') await state.transition(b.recordKey,'dispatching','pending');
+            blocked = false;
+            await receiver.drain();
+            expect((await state.list('delivered')).map(record => record.eventId)).toEqual(['event-1']);
+            await pump(); await receiver.drain();
+            expect(sends).toBe(2);
+            expect(consumed[1]).toContain('2 events for @fixture');
+            expect((await state.list('delivered')).map(record => record.eventId)).toEqual(['event-1','event-2','event-3'])
+        });
+    }
+
+    test('an idle-only nudge uses its individual receipt while content batches around it', async () => {
+        const pump = await useStagedReceiver();
+        expect((await post(1)).status).toBe(202);
+        expect((await post(2,['PULSE:idle-nudge'],envelope => {
+            envelope.payload.breakdown = {heartbeat_pulse:{count:1,sources:{'idle-out-nudge':1}}}
+        })).status).toBe(202);
+        expect((await post(3)).status).toBe(202);
+        await receiver.drain(); await pump(); await receiver.drain();
+        expect(sends).toBe(1);
+        expect((await state.list('delivered')).map(record => record.eventId)).toEqual(['event-1','event-3']);
+        expect((await state.list('pending')).map(record => record.eventId)).toEqual(['event-2']);
+        await receiver.drain(); await pump(); await receiver.drain();
+        expect(sends).toBe(2);
+        const [ordinary,nudge] = await state.list('delivered');
+        expect(nudge.expectedRecipient.nonce).not.toBe(ordinary.expectedRecipient.nonce);
+    });
+
+    test('an urgent pointer staged during the idle proof preempts the ordinary batch before its claim', async () => {
+        const pump = await useStagedReceiver();
+        expect((await post(1)).status).toBe(202);
+        expect((await post(2)).status).toBe(202);
+        await receiver.drain();
+
+        let enterProof, continueProof;
+        const proving = new Promise(resolve => {enterProof = resolve});
+        const proof   = new Promise(resolve => {continueProof = resolve});
+        transport.readCodexWakeActivity = async () => {
+            enterProof();
+            await proof;
+            return {state:'idle'}
+        };
+        const ordinary = pump();
+        try {
+            await proving;
+            expect((await post(3, ['MESSAGE:urgent'], envelope => {
+                envelope.payload.breakdown.sent_to_me.highestPriority = 'high';
+                envelope.payload.breakdown.sent_to_me.latest.priority = 'high';
+                envelope.payload.breakdown.sent_to_me.latest.subject = 'urgent fixture';
+            })).status).toBe(202);
+            await receiver.drain();
+        } finally {
+            continueProof();
+        }
+        await ordinary;
+        expect(sends).toBe(0);
+
+        await pump(); await receiver.drain();
+        expect(sends).toBe(1);
+        expect(consumed[0]).toContain('urgent fixture');
+        expect((await state.list('delivered')).map(record => record.sourceEventIds)).toEqual([['MESSAGE:urgent']]);
+        expect(await state.list('pending')).toHaveLength(2);
+
+        await pump(); await receiver.drain();
+        expect(sends).toBe(2);
+        expect(consumed[1]).toContain('2 events for @fixture');
+        expect(await state.list('delivered')).toHaveLength(3)
     });
 
     test('a wake turn that ended without the hook reaches its record as delivered without acknowledgement, and is not sent again', async () => {
