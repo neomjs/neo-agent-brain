@@ -783,7 +783,8 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
         }
 
         // A resume types only while nothing can have moved its window off the opened session: keyboard or pointer
-        // input since the front was lost may have switched the chat, and nothing else observes that session.
+        // input since the attempt that pressed Cmd+N began may have switched the chat, during the wait after the
+        // keystroke as much as after the loss, and nothing else observes that session.
         if (record.sessionOpened === true && !(idleMs >= effects.now() - Date.parse(record.sessionOpenedAt))) {
             return {outcome: 'failed', outcomeReason: ROTATION_DESTINATION_UNPROVEN}
         }
@@ -817,7 +818,9 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
         sessionOpened        : rotation && record.sessionOpened === true,
         tabShortcut          : resolvedMeta.tabShortcut
     });
-    const outcome = await spawnOsascriptOnce(effects, args, record.subscriptionId);
+    // Read before the script runs, so it never postdates the Cmd+N this attempt may press
+    const startedAt = effects.now();
+    const outcome   = await spawnOsascriptOnce(effects, args, record.subscriptionId);
 
     // A rotation whose window lost the front before its fresh-session keystroke opened nothing, so it may try
     // again (`ROTATION_MAX_ACTIVATION_LOSSES`). A lock that engaged during the activation or before Cmd+N took
@@ -827,12 +830,12 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record, s
     }
 
     // Lost after Cmd+N: the session it opened waits empty in this process, so the next attempt resumes there
-    // instead of opening a second one, if no one has touched the keyboard or pointer since this moment.
+    // instead of opening a second one, if no one has touched the keyboard or pointer since this attempt began.
     if (rotation && outcome?.outcome === 'failed' && isPostSessionFrontLost(outcome.outcomeReason)) {
         return {
             outcome         : 'deferred',
             outcomeReason   : ROTATION_SESSION_OPENED,
-            sessionOpenedAt : new Date(effects.now()).toISOString(),
+            sessionOpenedAt : new Date(startedAt).toISOString(),
             sessionOpenedPid: instancePid
         }
     }

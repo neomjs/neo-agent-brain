@@ -402,6 +402,40 @@ test.describe('ai/daemons/wake/sessionRotation — the osascript step', () => {
         expect(typedPaste(calls)).toHaveLength(1)
     });
 
+    test('#1871 (Euclid\'s Round 3): the loss dates from the attempt that pressed Cmd+N, so a chat switched during its wait never resumes', async () => {
+        const start = Date.now();
+        let   clock = start;
+
+        // The attempt presses Cmd+N, waits, and loses the front 5.4 s after it began
+        const lost = await dispatchLocalWake(rotationRecord(), quietEffects({
+            now       : () => clock,
+            spawnAsync: async (command, args) => {
+                if (args.some(arg => String(arg).includes('keystroke "v"'))) {
+                    clock += 5400;
+                    throw new Error('4848:4854: execution error: Target app lost frontmost status before wake paste (-2700)')
+                }
+                return ''
+            }
+        }));
+
+        expect(lost).toMatchObject({outcome: 'deferred', outcomeReason: ROTATION_SESSION_OPENED, sessionOpenedAt: new Date(start).toISOString()});
+
+        // Someone switched the chat 1.5 s into the attempt, during the wait after Cmd+N, then left the window. 12.4 s
+        // after the loss the idle reading covers the time since the loss but not the time since the attempt began.
+        clock += 12_400;
+
+        const calls  = [];
+        const resume = await dispatchLocalWake({...resumedRecord(), sessionOpenedAt: lost.sessionOpenedAt}, quietEffects({
+            now            : () => clock,
+            readHumanIdleMs: () => clock - (start + 1500),
+            rotationGuard  : () => null,
+            spawnAsync     : async (command, args) => { calls.push({command, args}); return '' }
+        }));
+
+        expect(resume).toEqual({outcome: 'failed', outcomeReason: ROTATION_DESTINATION_UNPROVEN});
+        expect(calls.some(call => call.args.some(arg => isKey(String(arg))))).toBe(false)
+    });
+
     test('#1871: a seat claimed since the shortcut vetoes a resumed attempt without a keystroke', async () => {
         const calls  = [];
         const result = await dispatchLocalWake(resumedRecord(), quietEffects({
