@@ -397,9 +397,13 @@ test.describe('openWorkHolder — one merge wakes one rebase: the merge line (#1
             kept   = {mergeable: 'MERGEABLE', reviews: [{reviewer: B, state: 'CHANGES_REQUESTED', onHead: false}, {reviewer: B, state: 'COMMENTED', onHead: true}],
                 opinions: [approval(10, false), {reviewer: B, state: 'CHANGES_REQUESTED', onHead: false}]};
 
+        // a partial read keeps a native author's red head theirs, yet the wake round does not decide such a row
+        const partial = {partial: true, ci: 'red'};
+
         expect(holderOf(pr(1, 10, unread)).role).toBe('unknown');
         expect(holderOf(pr(1, 10, kept)).kind).toBe('address-changes');
-        for (const ahead of [stale, unread, kept]) {
+        expect(holderOf(pr(1, 10, partial)).kind).toBe('repair-ci');
+        for (const ahead of [stale, unread, kept, partial]) {
             expect(holders([pr(1, 10, ahead), pr(2, 20)])[1]).toEqual(rebase)
         }
         // control: the same row ahead, fresh and read completely, holds its place

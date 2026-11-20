@@ -67,6 +67,18 @@ const prKey = ({repo, number}) => `${repo}#${number}`;
 export const incompleteRow = row => row.partial !== false || !Array.isArray(row.requested) ||
     !Array.isArray(row.reviews) || !Array.isArray(row.opinions);
 
+/**
+ * @summary Whether the wake round decides a row at `now`: freshly observed, and either read completely or a red outside
+ * head, whose CI investigation needs no complete read. Only such a row holds a place in the merge line.
+ * @param {Object} row Normalized producer row.
+ * @param {Number} now Epoch milliseconds.
+ * @returns {Boolean}
+ */
+export function decidableRow(row, now) {
+    return openWorkFreshness(row.observedAt, {now}) === 'ok' &&
+        !(incompleteRow(row) && !(row.ci === 'red' && isEligibleOutsidePullRequest(row)))
+}
+
 /** @summary The holders whose PR is not on its way to a merge, so it holds no place for the rows behind it. */
 const releasesLine = holder => holder.role === 'unknown' || holder.kind === 'address-changes' || holder.kind === 'await-prerequisite';
 
@@ -78,9 +90,9 @@ const releasesLine = holder => holder.role === 'unknown' || holder.kind === 'add
  *
  * An approval keeps its row's place across the row's own new heads: once the first row merges `dev` in, its approval
  * judged an earlier head, yet that row still merges before the rows behind it. A row holds a place for others only while
- * both readers would act on it: freshly observed, its author seat not absent, and its own holder, read with the wake
- * round's coverage rule ({@link incompleteRow}), neither unknown nor waiting on changes or on a blocked close target. A row
- * whose approval carries no time neither waits nor holds.
+ * both readers would act on it: the wake round decides it ({@link decidableRow}), its author seat is not absent, and its
+ * own holder, read with the round's coverage rule ({@link incompleteRow}), is neither unknown nor waiting on changes or on
+ * a blocked close target. A row whose approval carries no time neither waits nor holds.
  * @param {Object[]} rows The snapshot's open rows, as {@link holderOf} reads them.
  * @param {Object} [options]
  * @param {Object<String,String>|null} [options.seatFamilies=null] As {@link holderOf} takes it.
@@ -93,7 +105,7 @@ export function mergeLineOf(rows, {seatFamilies = null, absentSeats = null, now 
         absent = new Set(absentSeats ?? []),
         lines  = new Map(),
         waits  = new Map(),
-        holds  = row => openWorkFreshness(row.observedAt, {now}) === 'ok' && !(row.owner?.kind === 'seat' && absent.has(row.owner.seat)) &&
+        holds  = row => decidableRow(row, now) && !(row.owner?.kind === 'seat' && absent.has(row.owner.seat)) &&
             // a blocked close target holds the merge whatever the head's next action is
             !row.blockedTargets?.length && !releasesLine(holderOf(incompleteRow(row) ? {...row, partial: true} : row, {seatFamilies}));
 

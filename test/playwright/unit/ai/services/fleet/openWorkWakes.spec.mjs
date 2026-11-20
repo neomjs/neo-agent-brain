@@ -1671,4 +1671,13 @@ test.describe('openWorkWakes — one merge wakes one rebase (#1869)', () => {
         expect(rebases(run.step(1, [pr(7, -50, vega), pr(8, -40)], {}, {absentSeats: ['@neo-opus-vega']})))
             .toEqual(['acme/app#7', 'acme/app#8'])
     });
+
+    test('a lead the round does not decide holds no place: a partial red native head lets the follower rebase', () => {
+        const run = journey();
+
+        run.step(0, []);
+        // the round skips the partially read lead, so it must not hold the follower either
+        expect(run.step(1, [pr(7, -50, {partial: true, ci: 'red'}), pr(8, -40)]).wakes.map(wake => [wake.pr, wake.kind]))
+            .toEqual([['acme/app#8', 'rebase']])
+    });
 });
