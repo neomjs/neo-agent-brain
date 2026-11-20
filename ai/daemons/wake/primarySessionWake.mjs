@@ -40,13 +40,31 @@ function matchesProof(binding, proof) {
     return proof?.root === true && proof.threadId === binding.threadId
 }
 
+/**
+ * @summary Confirms that the receiver has committed every original record before retiring its native receipt.
+ * @param {Object|null} attempt The durable in-flight slot, or its legacy singleton shape.
+ * @param {Function} isRecordedDelivered Reads one receiver record by key.
+ * @returns {Promise<Boolean>}
+ */
+export async function primaryWakeAttemptRecorded(attempt, isRecordedDelivered) {
+    const {members, recordKey} = attempt;
+    if (members !== undefined && (!Array.isArray(members) || members.length < 2 || members[0]?.recordKey !== recordKey)) return false;
+    const keys = members ? members.map(member => member.recordKey) : [recordKey];
+
+    for (const key of keys) {
+        if (await isRecordedDelivered(key) !== true) return false;
+    }
+
+    return true
+}
+
 async function retireRecordedSlot(statePath, state, slotKey, isRecordedDelivered) {
     const attempt = state[slotKey];
     if (attempt?.status !== 'delivered' || typeof isRecordedDelivered !== 'function') {
         return {state, retired: null, unrecorded: attempt?.status === 'delivered' ? attempt : null}
     }
     let recorded = false;
-    try { recorded = await isRecordedDelivered(attempt.recordKey) === true } catch { /* retain receipt */ }
+    try { recorded = await primaryWakeAttemptRecorded(attempt, isRecordedDelivered) } catch { /* retain receipt */ }
     if (!recorded) {
         return {state, retired: null, unrecorded: attempt}
     }
@@ -117,7 +135,7 @@ function deliveredResult(attempt) {
  * settles the slot as delivered with `acknowledged: false`, so no later wake waits behind it.
  */
 export async function deliverPrimarySessionWake({statePath, seat, generation, family, recordKey, urgent = false,
-    readTarget, send, readReceipt, isRecordedDelivered}) {
+    readTarget, send, readReceipt, isRecordedDelivered, commitNormalAttempt}) {
     if (!/^[a-f0-9]{64}$/.test(recordKey ?? '') ||
         ![readTarget, send, readReceipt, isRecordedDelivered].every(fn => typeof fn === 'function')) {
         return {status: 'pending', reason: 'invalid delivery'}
@@ -186,15 +204,21 @@ export async function deliverPrimarySessionWake({statePath, seat, generation, fa
                     }
                 }
                 if (!matchesProof(binding, target)) return {status: 'pending', reason: 'target not proven'};
-                attempt = {
-                    status: 'unknown',
-                    recordKey,
-                    nonce : randomUUID(),
-                    ...(target.deliveryMode ? {deliveryMode: target.deliveryMode} : {})
+                // The normal spool can check priority and freeze membership under its pointer lock.
+                // The commit stays under the existing recipient lock; a hook can only see the saved attempt.
+                const commit = async members => {
+                    const nextAttempt = {
+                        status: 'unknown',
+                        recordKey,
+                        nonce : randomUUID(),
+                        ...(target.deliveryMode ? {deliveryMode: target.deliveryMode} : {}),
+                        ...(members ? {members} : {})
+                    };
+                    await save(statePath, {...state, [activeSlotKey]: nextAttempt});
+                    return {binding, attempt: nextAttempt, activeSlotKey, target, initiate: true}
                 };
-                state = {...state, [activeSlotKey]: attempt};
-                await save(statePath, state);
-                return {binding, attempt, activeSlotKey, target, initiate: true}
+
+                return activeSlotKey === 'inflight' && commitNormalAttempt ? commitNormalAttempt(commit) : commit()
             }
             return {binding, attempt, activeSlotKey, target: null, initiate: false}
         });

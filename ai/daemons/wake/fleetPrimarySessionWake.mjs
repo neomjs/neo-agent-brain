@@ -15,12 +15,25 @@ import {writeFileAtomic}                                                       f
 import * as antigravity                                                        from './antigravitySessionWake.mjs';
 import * as codex                                                              from './codexSessionWake.mjs';
 import {formatLocalWakeDigest}                                                 from './localWakeAdapters.mjs';
+import {isIdleOnlyEnvelope}                                                    from './contextGatePolicy.mjs';
 import {withOutboxLock}                                                        from './outboxLock.mjs';
-import {bindPrimarySession, deliverPrimarySessionWake, readPrimarySessionWake} from './primarySessionWake.mjs';
+import {
+    formatPrimaryWakeBatch,
+    matchesPrimaryWakeMember,
+    MAX_PRIMARY_WAKE_BATCH_EVENTS,
+    selectPrimaryWakeBatch
+} from './primaryWakeBatch.mjs';
+import {
+    bindPrimarySession,
+    deliverPrimarySessionWake,
+    primaryWakeAttemptRecorded,
+    readPrimarySessionWake
+} from './primarySessionWake.mjs';
 import {
     ACTIVE_TURN_ADAPTER_DEPENDENCY,
     ACTIVE_TURN_UNAVAILABLE_REASON,
     hasPrimaryWakeRecipient,
+    isSpoolPointerActive,
     isUrgentWakeRecord,
     primaryWakeSpoolPath,
     urgentPrimaryWakeSpoolPath
@@ -67,6 +80,21 @@ export async function observePrimaryWakeResident(config, inspect = processAt) {
     if (!proc || proc.startedAt !== lease.pidStartedAt || !proc.command.startsWith(main + ' ') ||
         !(proc.command.endsWith(profile) || proc.command.includes(profile + ' '))) return null;
     return {pid: lease.pid, startedAt: proc.startedAt, generation: lease.pid + ':' + proc.startedAt, workspaceRoot: lease.cwd}
+}
+
+/** @summary Checks a receiver record's original scope before it enters a native grant. */
+function validReceiverRecord(record, subscriptionId, seat) {
+    return record?.subscriptionId === subscriptionId && record.route?.agentIdentity === seat &&
+        record.envelope?.subscriptionId === subscriptionId && record.envelope.agentIdentity === seat &&
+        record.envelope.eventType === 'wake/digest'
+}
+
+/** @summary Applies the ordinary candidate gates again when admitting or redeeming a frozen digest. */
+function eligibleBatchRecord(record, subscriptionId, publicRoute) {
+    return validReceiverRecord(record, subscriptionId, publicRoute.agentIdentity) &&
+        ['pending', 'dispatching'].includes(record.state) && !isUrgentWakeRecord(record) && !isIdleOnlyEnvelope(record.envelope) &&
+        isDeepStrictEqual(record.route.harnessTargetMetadata, publicRoute.harnessTargetMetadata) &&
+        isDeepStrictEqual(record.route.adapterConfig, publicRoute.adapterConfig)
 }
 
 function wakeText(nonce) {
@@ -131,8 +159,21 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
         if (!activeAttempt || binding?.threadId !== threadId ||
             binding.seat !== route.agentIdentity || binding.family !== family) return denied;
         const state = new WakeReceiverState({stateDir}), record = await state.read(activeAttempt.recordKey);
-        if (record.subscriptionId !== subscriptionId || record.envelope?.agentIdentity !== binding.seat ||
-            !['pending','dispatching'].includes(record.state) || record.envelope.eventType !== 'wake/digest') return denied;
+        if (!validReceiverRecord(record, subscriptionId, binding.seat) || !['pending','dispatching'].includes(record.state)) return denied;
+        let records;
+        if (activeAttempt.members) {
+            const publicRoute = {agentIdentity:route.agentIdentity,harnessTargetMetadata:route.harnessTargetMetadata,adapterConfig:route.adapterConfig};
+            const members     = activeAttempt.members;
+            if (!isNormalMatch || family !== 'codex-desktop' || !Array.isArray(members) ||
+                members.length < 2 || members.length > MAX_PRIMARY_WAKE_BATCH_EVENTS || members[0]?.recordKey !== record.recordKey) return denied;
+            records = [];
+            for (const member of members) {
+                const original = member === members[0] ? record : await state.read(member?.recordKey).catch(() => null);
+                if (!eligibleBatchRecord(original, subscriptionId, publicRoute) || !matchesPrimaryWakeMember(original, member)) return denied;
+                records.push(original)
+            }
+            if (!isDeepStrictEqual(selectPrimaryWakeBatch(records), members)) return denied
+        }
         const claimPath = statePath + (isUrgentMatch ? '.urgent.claim.json' : '.claim.json');
         const previous  = await readPrivate(claimPath);
         if (previous?.nonce === nonce) return denied;
@@ -170,7 +211,8 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
             const receiptToken = randomUUID(), observedAt = new Date().toISOString();
             await writeFileAtomic(claimPath, JSON.stringify({nonce,receiptToken,recordKey:activeAttempt.recordKey,threadId,generation:binding.generation,
                 turnId: typeof turnId === 'string' ? turnId : null, admitted:matches, ...(matches ? {observedAt} : {})}), {mode:0o600,fsync:true});
-            return matches ? {admitted:true,digest:formatLocalWakeDigest(record.envelope)+'\n[NEO_WAKE_RECEIVED:'+receiptToken+']'} : denied
+            return matches ? {admitted:true,digest:(records ? formatPrimaryWakeBatch(records) : formatLocalWakeDigest(record.envelope))+
+                '\n[NEO_WAKE_RECEIVED:'+receiptToken+']'} : denied
         })
     })
 }
@@ -182,7 +224,7 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
  * @returns {Promise<Object>} Delivered only on recipient evidence. Uncertain sends stay pending for reconciliation.
  */
 export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, manifestPath, sidecar, currentRoute, inspectResident = observePrimaryWakeResident,
-    verifyCodexRoute, codexTransport = codex, antigravityTransport = antigravity, appDataDir = path.join(os.homedir(), '.gemini', 'antigravity')} = {}) {
+    verifyCodexRoute, commitNormalAttempt, codexTransport = codex, antigravityTransport = antigravity, appDataDir = path.join(os.homedir(), '.gemini', 'antigravity')} = {}) {
     const route = record?.route, config = route?.adapterConfig?.primarySession, seat = route?.agentIdentity;
     if (!config || !bareFamily.has(config.family) || !isKey(record.recordKey)) return pending('invalid native route');
     const {family, instanceHome, appBundle, projectId} = config;
@@ -227,7 +269,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
     if (!isCodex && !sidecar) return pending('awaiting App sidecar');
     if (!isCodex && (sidecar.appPid !== live.pid || sidecar.appStart !== live.startedAt ||
         sidecar.appBundle !== appBundle || sidecar.instanceHome !== instanceHome)) return pending('sidecar does not own instance');
-    const slotReady = async attempt => !attempt || (attempt.status === 'delivered' && await recorded(attempt.recordKey));
+    const slotReady = async attempt => !attempt || (attempt.status === 'delivered' && await primaryWakeAttemptRecorded(attempt, recorded));
     let selected;
     if (await slotReady(before.inflight) && await slotReady(before.urgentInflight)) {
         selected = await select().catch(() => null);
@@ -255,7 +297,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
     const claimPathFor  = slotUrgent => statePath + (slotUrgent ? '.urgent.claim.json' : '.claim.json');
     let   denialReason  = null,
           result         = await deliverPrimarySessionWake({
-        statePath,seat,generation:deliveryGeneration,family,recordKey:record.recordKey,urgent,isRecordedDelivered:recorded,
+        statePath,seat,generation:deliveryGeneration,family,recordKey:record.recordKey,urgent,isRecordedDelivered:recorded,commitNormalAttempt,
         readTarget: async (binding, {urgent: slotUrgent} = {}) => {
             if (binding.generation !== generation) return null;
             const root = await select();
@@ -407,14 +449,40 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         isDeepStrictEqual((await readPrivate(manifestPath))?.routes?.[subscriptionId],current) &&
         (await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family}))?.stateDir === stateDir;
 
+    const urgentPath = urgentPrimaryWakeSpoolPath(stateDir,route.agentIdentity),
+          normalPath = primaryWakeSpoolPath(stateDir,route.agentIdentity);
+    const commitOrdinary = (recordKey, commit) => withOutboxLock(normalPath, async () => {
+        const pointer = await readPrivate(normalPath);
+        if (pointer?.recordKey !== recordKey || !await currentRoute()) return pending('ordinary pointer changed');
+        if (await isSpoolPointerActive(await readPrivate(urgentPath), state)) return pending('urgent native wake outstanding');
+        const anchor = await state.read(recordKey);
+        if (!validReceiverRecord(anchor, subscriptionId, publicRoute.agentIdentity) ||
+            !['pending','dispatching'].includes(anchor.state)) return pending('ordinary record changed');
+        if (anchor.deferReason?.startsWith('context-gate:')) return pending('ordinary record deferred by context');
+        if (!eligibleBatchRecord(anchor, subscriptionId, publicRoute)) return commit();
+        const records = [anchor];
+        const keys    = Array.isArray(pointer.candidates) ? pointer.candidates.slice(0, MAX_PRIMARY_WAKE_BATCH_EVENTS - 1) : [];
+        for (const key of keys) {
+            if (!isKey(key)) break;
+            const record = await state.read(key).catch(() => null);
+            if (!eligibleBatchRecord(record, subscriptionId, publicRoute) || record.expectedRecipient || record.nativeInitiatedAt ||
+                record.state !== 'pending' || record.deferReason !== 'earlier native wake outstanding') continue;
+            records.push(record)
+        }
+        const ordered = [anchor, ...records.slice(1).sort((left,right) => left.acceptedAt.localeCompare(right.acceptedAt))];
+        return commit(selectPrimaryWakeBatch(ordered))
+    });
+
     const drainPointer = async pointerPath => {
         const pointer = await readPrivate(pointerPath);
         if (!pointer || !isKey(pointer.recordKey)) return {active:false};
         const record = await state.read(pointer.recordKey);
-        if (!['pending','dispatching'].includes(record.state) || record.subscriptionId !== subscriptionId ||
-            record.envelope?.subscriptionId !== subscriptionId || record.route?.agentIdentity !== route.agentIdentity ||
-            record.envelope?.agentIdentity !== route.agentIdentity || record.envelope?.eventType !== 'wake/digest') return {active:false};
-        const result = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute,verifyCodexRoute});
+        if (!validReceiverRecord(record,subscriptionId,route.agentIdentity) || !['pending','dispatching'].includes(record.state)) {
+            return {active:false}
+        }
+        const batchCapable = pointerPath === normalPath && config.family === 'codex-desktop';
+        const result = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute,verifyCodexRoute,
+            ...(batchCapable ? {commitNormalAttempt: commit => commitOrdinary(record.recordKey,commit)} : {})});
         if (result?.status === 'delivered' && hasPrimaryWakeRecipient(result.recipient, {seat:route.agentIdentity, recordKey:record.recordKey})) {
             const {recordKey} = record;
             await writeFileAtomic(pointerPath+'.result', JSON.stringify({
@@ -439,8 +507,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         return {active:true}
     };
 
-    const urgentOutcome = await drainPointer(urgentPrimaryWakeSpoolPath(stateDir,route.agentIdentity));
-    const normalPath    = primaryWakeSpoolPath(stateDir,route.agentIdentity);
+    const urgentOutcome = await drainPointer(urgentPath);
     if (!urgentOutcome.active) {
         await drainPointer(normalPath);
         return
