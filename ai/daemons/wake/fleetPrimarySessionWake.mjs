@@ -19,6 +19,7 @@ import {isIdleOnlyEnvelope}             from './contextGatePolicy.mjs';
 import {withOutboxLock}                 from './outboxLock.mjs';
 import {
     formatPrimaryWakeBatch,
+    isBatchCapablePrimaryFamily,
     matchesPrimaryWakeMember,
     MAX_PRIMARY_WAKE_BATCH_EVENTS,
     selectPrimaryWakeBatch
@@ -173,7 +174,7 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
         if (activeAttempt.members) {
             const publicRoute = {agentIdentity:route.agentIdentity,harnessTargetMetadata:route.harnessTargetMetadata,adapterConfig:route.adapterConfig};
             const members     = activeAttempt.members;
-            if (!isNormalMatch || family !== 'codex-desktop' || !Array.isArray(members) ||
+            if (!isNormalMatch || !isBatchCapablePrimaryFamily(family) || !Array.isArray(members) ||
                 members.length < 2 || members.length > MAX_PRIMARY_WAKE_BATCH_EVENTS || members[0]?.recordKey !== record.recordKey) return denied;
             records = [];
             for (const member of members) {
@@ -509,7 +510,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         if (!validReceiverRecord(record,subscriptionId,route.agentIdentity) || !['pending','dispatching'].includes(record.state)) {
             return {active:false}
         }
-        const batchCapable = pointerPath === normalPath && config.family === 'codex-desktop';
+        const batchCapable = pointerPath === normalPath && isBatchCapablePrimaryFamily(config.family);
         const result       = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute,verifyCodexRoute,
             ...(batchCapable ? {commitNormalAttempt: commit => commitOrdinary(record.recordKey,commit)} : {})});
         if (result?.status === 'delivered' && hasPrimaryWakeRecipient(result.recipient, {seat:route.agentIdentity, recordKey:record.recordKey})) {

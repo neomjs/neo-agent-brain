@@ -819,4 +819,224 @@ test.describe('signed native wake receiver integration', () => {
         expect(sends, 'normal reconciled from its original send without duplicate turn').toBe(3);
         expect(guiCalls).toBe(0);
     });
+
+    test.describe('Antigravity primary-session catch-up batching (#1887)', () => {
+        let agySub, agySeat, agyAgent, agyThread, agyHome, agyAppBundle, agyDataDir, agySidecar, agyStatus, agySends, agyConsumed, agyOutcomes, agyTransport;
+
+        async function setupAntigravityRoute({contextProbe} = {}) {
+            await new Promise(resolve => server.close(resolve));
+            agySub       = 'WAKE_SUB:antigravity-seat';
+            agySeat      = '@neo-gemini-julia';
+            agyAgent     = 'neo-gemini-julia';
+            agyThread    = '79e7688c-da7a-4106-8be6-396cbf27c38f';
+            agyHome      = path.join(root, 'agents', agyAgent, 'harness', 'antigravity');
+            agyAppBundle = path.join(root, 'generation', 'Antigravity.app');
+            agyDataDir   = path.join(root, 'agy-appdata');
+            agySidecar   = {
+                appPid      : 405,
+                appStart    : 'birth',
+                appBundle   : agyAppBundle,
+                instanceHome: agyHome,
+                environment : {ANTIGRAVITY_AGENTAPI_EXE: '/bin/language_server'}
+            };
+            agyStatus   = 'CASCADE_RUN_STATUS_IDLE';
+            agySends    = [];
+            agyConsumed = [];
+            agyOutcomes = new Map();
+
+            const agyConfig = {
+                agentId     : agyAgent,
+                family      : 'antigravity',
+                instanceHome: agyHome,
+                appBundle   : agyAppBundle,
+                projectId   : 'proj-1',
+                projectRoot : '/fixture/work'
+            };
+
+            manifest = {
+                schemaVersion: 1,
+                routes       : {
+                    [agySub]: {
+                        agentIdentity        : agySeat,
+                        signingKey           : key,
+                        admits               : 'wake/digest',
+                        harnessTargetMetadata: {adapter: 'primary-session', addressType: 'userDataDir', instanceAddress: agyHome},
+                        adapterConfig        : {
+                            attemptTimeoutMs: 1000,
+                            primarySession  : agyConfig,
+                            ...(contextProbe ? {contextGate: {maxContextTokens: 100, warnContextTokens: 90, activeWithinMs: 5000}} : {})
+                        }
+                    }
+                }
+            };
+            await fs.writeFile(manifestPath, JSON.stringify(manifest), {mode: 0o600});
+            await loadWakeReceiverManifest(manifestPath);
+            await enrollNativeWake({manifestPath, stateDir, agentId: agyAgent, family: 'antigravity'});
+
+            const agyResident = async () => ({pid: 405, startedAt: 'birth', generation: '405:birth', workspaceRoot: '/fixture/work'});
+            agyTransport = {
+                latestAntigravityWakeTarget   : async () => ({root: true, threadId: agyThread, startSequence: 1, status: agyStatus}),
+                readAntigravityWakeTarget     : async () => ({threadId: agyThread, projectId: 'proj-1', status: agyStatus}),
+                verifyAntigravityWakeAdmission: async () => ({verified: true}),
+                captureAntigravityWakeCursor  : () => ({dev: 1, ino: 1, offset: 0, tailHash: 'a'.repeat(64)}),
+                sendAntigravitySessionWake    : async req => {
+                    agySends.push(req);
+                    const nonce = req.message.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                    lastNonce = nonce;
+                    if (mode === 'consume') {
+                        const claim = await consumeNativeWakePrompt({
+                            manifestPath,
+                            stateDir,
+                            agentId             : agyAgent,
+                            family              : 'antigravity',
+                            threadId            : agyThread,
+                            nonce,
+                            inspectResident     : agyResident,
+                            antigravityTransport: agyTransport,
+                            appDataDir          : agyDataDir
+                        });
+                        if (claim.admitted) {
+                            agyConsumed.push(claim.digest);
+                            agyOutcomes.set(nonce, {outcome: 'observed', reason: 'private-model-ack'});
+                        }
+                    }
+                    return {outcome: 'unknown', reason: 'agentapi-dispatch-exited-zero'}
+                },
+                readAntigravityWakeReceipt    : ({text}) => {
+                    const nonce = text.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                    return agyOutcomes.get(nonce) || {outcome: 'unknown'}
+                }
+            };
+
+            let now = Date.now();
+            receiver = createWakeReceiver({manifest, state, manifestPath, contextProbe, clock: () => now++, logger: {log(){}, warn(){}, error(){}}});
+            server   = receiver.server;
+            await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+            url = `http://127.0.0.1:${server.address().port}/wake`;
+
+            const postAgy = (index, sourceEventIds = [`MESSAGE:agy-${index}`], decorate = () => {}) => post(index, sourceEventIds, envelope => {
+                envelope.subscriptionId = agySub;
+                envelope.agentIdentity  = agySeat;
+                decorate(envelope);
+            });
+            const pumpAgy = () => drainFleetPrimaryWakeRecord({
+                state,
+                stateDir,
+                manifestPath,
+                subscriptionId: agySub,
+                route         : manifest.routes[agySub],
+                sidecar       : agySidecar,
+                dispatch      : (record, options) => dispatchFleetPrimarySessionWake(record, {
+                    ...options,
+                    inspectResident     : agyResident,
+                    antigravityTransport: agyTransport,
+                    appDataDir          : agyDataDir
+                })
+            });
+
+            return {postAgy, pumpAgy, agyResident}
+        }
+
+        test('batches queued ordinary wakes while CASCADE_RUN_STATUS_RUNNING into one PreInvocation digest at CASCADE_RUN_STATUS_IDLE', async () => {
+            const {postAgy, pumpAgy} = await setupAntigravityRoute();
+            agyStatus = 'CASCADE_RUN_STATUS_RUNNING';
+
+            const batches   = [['MESSAGE:nov15-1'], ['MESSAGE:nov15-2', 'MESSAGE:nov15-3'], ['MESSAGE:nov16-1'], ['MESSAGE:nov16-2'], ['MESSAGE:fresh-1', 'MESSAGE:fresh-2']],
+                  sourceIds = batches.flat();
+
+            for (const [index, ids] of batches.entries()) {
+                expect((await postAgy(index, ids)).status).toBe(202);
+            }
+            await receiver.drain();
+            await pumpAgy();
+            await receiver.drain();
+
+            expect(agySends, 'no sidecar dispatch while Antigravity root is running').toBeTruthy();
+            expect(agySends).toHaveLength(0);
+            expect(await state.list('pending')).toHaveLength(batches.length);
+
+            agyStatus = 'CASCADE_RUN_STATUS_IDLE';
+            await pumpAgy();
+            await receiver.drain();
+
+            for (let index = 1; index < batches.length && (await state.list('pending')).length > 0; index++) {
+                await pumpAgy();
+                await receiver.drain();
+            }
+
+            expect(agySends, 'all queued Antigravity batches coalesce into one sidecar handoff').toHaveLength(1);
+            expect(agyConsumed).toHaveLength(1);
+            expect(agyConsumed[0]).toContain('7 events for @neo-gemini-julia');
+            expect(agyConsumed[0]).toMatch(/\[NEO_WAKE_RECEIVED:[0-9a-f-]{36}\]/);
+
+            const records = await state.list('delivered');
+            expect(records).toHaveLength(batches.length);
+            expect(projectMessageDelivery(records, sourceIds)).toEqual(
+                Object.fromEntries(sourceIds.map(id => [id, expect.objectContaining({state: 'delivered'})]))
+            );
+        });
+
+        test('enforces 48-event overflow, urgent preemption, frozen-member restart recovery, and turn-unacknowledged propagation on Antigravity', async () => {
+            const {postAgy, pumpAgy, agyResident} = await setupAntigravityRoute();
+            const chunk = prefix => Array.from({length: 24}, (_, i) => `MESSAGE:${prefix}-${i}`);
+
+            expect((await postAgy(1, chunk('a'))).status).toBe(202);
+            expect((await postAgy(2, chunk('b'))).status).toBe(202);
+            expect((await postAgy(3, ['MESSAGE:overflow-49'])).status).toBe(202);
+            await receiver.drain();
+
+            // Stage an urgent wake before the sidecar dispatches the ordinary batch -> urgent preempts first
+            expect((await postAgy(4, ['MESSAGE:urgent-dm'], envelope => {
+                envelope.payload.urgent = true;
+                envelope.payload.breakdown.sent_to_me.highestPriority = 'high';
+                envelope.payload.breakdown.sent_to_me.latest.priority = 'high';
+            })).status).toBe(202);
+            await receiver.drain();
+            await pumpAgy();
+            await receiver.drain();
+
+            expect(agySends).toHaveLength(1);
+            expect((await state.list('delivered')).map(r => r.sourceEventIds)).toEqual([['MESSAGE:urgent-dm']]);
+            expect(await state.list('pending')).toHaveLength(3);
+
+            // Re-stage the 3 ordinary records, hold redemption across a restart, then settle as turn-unacknowledged
+            mode = 'hold';
+            await receiver.drain();
+            await pumpAgy();
+            expect(agySends).toHaveLength(2);
+            const batchNonce = lastNonce;
+
+            const claim = await consumeNativeWakePrompt({
+                manifestPath,
+                stateDir,
+                agentId             : agyAgent,
+                family              : 'antigravity',
+                threadId            : agyThread,
+                nonce               : batchNonce,
+                inspectResident     : agyResident,
+                antigravityTransport: agyTransport,
+                appDataDir          : agyDataDir
+            });
+            expect(claim).toMatchObject({admitted: true, digest: expect.stringContaining('48 events for @neo-gemini-julia')});
+
+            // Finished idle turn never echoed NEO_WAKE_RECEIVED -> settles with acknowledged: false across frozen members
+            agyOutcomes.set(batchNonce, {outcome: 'turn-unacknowledged'});
+            await pumpAgy();
+            await fs.rm(path.join(stateDir, 'primary-sessions', 'neo-gemini-julia.request.json.result'));
+            await receiver.drain();
+
+            const deliveredAfterUnack = await state.list('delivered');
+            expect(deliveredAfterUnack).toHaveLength(3);
+            expect(deliveredAfterUnack.filter(r => r.acknowledged === false)).toHaveLength(2);
+            expect((await state.list('pending')).map(r => r.sourceEventIds)).toEqual([['MESSAGE:overflow-49']]);
+
+            // Overflow record delivers cleanly on the next idle handoff
+            mode = 'consume';
+            await pumpAgy();
+            await receiver.drain();
+            expect(agySends).toHaveLength(3);
+            expect(await state.list('pending')).toHaveLength(0);
+            expect(await state.list('delivered')).toHaveLength(4);
+        });
+    });
 });

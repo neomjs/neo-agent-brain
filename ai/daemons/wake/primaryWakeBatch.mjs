@@ -8,10 +8,17 @@ import {formatLocalWakeDigest} from './localWakeAdapters.mjs';
 
 /** @summary An admitted batch has at most this many source events. Every member owns at least one. */
 export const MAX_PRIMARY_WAKE_BATCH_EVENTS = 48;
+/** @summary Primary-session harness families that coalesce eligible ordinary wakes at idle boundaries. */
+export const PRIMARY_WAKE_BATCH_FAMILIES   = Object.freeze(new Set(['codex-desktop', 'antigravity']));
 const MAX_DIGEST_BYTES  = 16 * 1024;
 const BUCKETS           = ['sent_to_me', 'task_state_changed', 'permission_granted', 'heartbeat_pulse'];
 const PRIORITIES       = ['low', 'normal', 'high'];
 const RECORD_KEY       = /^[a-f0-9]{64}$/;
+
+/** @summary Returns whether a primary-session family coalesces ordinary wakes at idle boundaries. */
+export function isBatchCapablePrimaryFamily(family) {
+    return PRIMARY_WAKE_BATCH_FAMILIES.has(family)
+}
 
 /** @summary Checks that one original record has a nonempty set of unambiguous source identities. */
 function validSources(sourceEventIds) {
