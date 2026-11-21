@@ -441,6 +441,45 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
     });
 
     /**
+     * Zod v4 emits `properties: {}` next to `additionalProperties` for `.catchall()` /
+     * `.passthrough()` maps; strict MCP clients read it as a closed key allowlist and strip every
+     * map key. Open maps omit it, at any depth; declared and closed objects keep their `properties`.
+     */
+    test('open map schemas omit empty properties, declared and closed objects keep them', async () => {
+        const {z}    = await import('zod');
+        const schema = toOpenApiJsonSchema(z.object({
+            openBag : z.object({}).passthrough(),
+            typedMap: z.object({}).catchall(z.string()),
+            hybrid  : z.object({a: z.string()}).catchall(z.number()),
+            closed  : z.object({}),
+            nested  : z.object({inner: z.object({}).catchall(z.object({}).passthrough())})
+        })),
+              {closed, hybrid, nested, openBag, typedMap} = schema.properties;
+
+        expect(openBag).toEqual({type: 'object', additionalProperties: true});
+        expect(typedMap).toEqual({type: 'object', additionalProperties: {type: 'string'}});
+
+        expect(hybrid.properties).toEqual({a: {type: 'string'}});
+        expect(hybrid.additionalProperties).toEqual({type: 'number'});
+
+        expect(closed.properties).toEqual({});
+        expect(closed.additionalProperties).toBe(false);
+
+        expect(nested.properties.inner).not.toHaveProperty('properties');
+        expect(nested.properties.inner.additionalProperties).toEqual({type: 'object', additionalProperties: true});
+    });
+
+    test('manage_pr_review acknowledgedRequestChanges lists as a keyed map without empty properties', () => {
+        const doc    = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/github-workflow/openapi.yaml'), 'utf8')),
+              op     = getOperationsById(doc).manage_pr_review,
+              zod    = buildZodSchema(doc, op),
+              listed = toOpenApiJsonSchema(zod).properties.acknowledgedRequestChanges;
+
+        expect(listed).not.toHaveProperty('properties');
+        expect(listed.additionalProperties).toEqual({type: 'string'});
+    });
+
+    /**
      * Direct regression for https://github.com/neomjs/neo/issues/10070. Prior to the fix,
      * `type: object` with no declared `properties` emitted strict `z.object({})` which
      * Zod parses by stripping every unknown key — silently nulling the entire payload

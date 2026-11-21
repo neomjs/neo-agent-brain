@@ -20,6 +20,12 @@ function toOpenApiJsonSchema(zodSchema) {
 
 /**
  * @summary Normalize Zod v4 JSON Schema output for Neo's MCP compatibility contract.
+ *
+ * Open map / open-bag objects (`type: 'object'` with `additionalProperties` set to `true` or a
+ * subschema and no declared properties) omit the empty `properties: {}` Zod v4 emits, so strict
+ * MCP clients do not treat it as a closed key allowlist and strip the map's dynamic keys.
+ * Objects with declared properties, or closed with `additionalProperties: false`, keep `properties`.
+ *
  * @param {any} node JSON Schema node.
  * @returns {any} The normalized node.
  */
@@ -44,6 +50,19 @@ function normalizeOpenApiJsonSchema(node) {
         Object.keys(node.additionalProperties).length === 0
     ) {
         node.additionalProperties = true;
+    }
+
+    // `.catchall()` / `.passthrough()` maps: drop the empty `properties: {}` (see JSDoc).
+    if (
+        node.type === 'object' &&
+        node.additionalProperties !== undefined &&
+        node.additionalProperties !== false &&
+        node.properties &&
+        typeof node.properties === 'object' &&
+        !Array.isArray(node.properties) &&
+        Object.keys(node.properties).length === 0
+    ) {
+        delete node.properties;
     }
 
     for (const value of Object.values(node)) {
