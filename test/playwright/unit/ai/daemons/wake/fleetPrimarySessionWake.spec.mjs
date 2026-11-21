@@ -92,6 +92,7 @@ test('native dispatch holds a busy or unguarded root, then waits for exact recip
     expect(redemption.digest).toContain('Only the peer may read this');
     expect(await consumeNativeWakePrompt(request)).toEqual({admitted:false});
     accepted = true;
+    latest.startedAt += 13; // An already-admitted receipt still settles when a fresh selection would be held.
     const receipt = await dispatchFleetPrimarySessionWake(record,{...options,state:restarted});
     expect(receipt.status).toBe('delivered');
     expect(receipt.recipient).toMatchObject({seat,generation,threadId,recordKey:record.recordKey});
@@ -138,7 +139,12 @@ test('a pending marker follows the peer across a new main start and an old root 
     expect(sent).toHaveLength(2)
 });
 
-for (const failure of ['resident-unavailable', 'selection-null', 'selection-throws']) {
+for (const [failure, reason] of Object.entries({
+    'resident-unavailable': 'resident-unavailable',
+    'selection-null'      : 'selection-unavailable',
+    'selection-throws'    : 'selection-unavailable',
+    'root-start-changed'  : 'selection-root-start-changed'
+})) {
     test(`a spent same-root denial recovers exactly once after ${failure}`, async () => {
         const seat      = '@fixture', threadId = randomUUID(), generation = '123:birth', turnId = randomUUID(), sent = [];
         const agentId   = 'fixture', family = 'codex-desktop', sub = 'WAKE_SUB:retry';
@@ -146,8 +152,9 @@ for (const failure of ['resident-unavailable', 'selection-null', 'selection-thro
         const live      = async () => ({generation,workspaceRoot:tempDir});
         const transport = {
             listCodexWakeTargets: async () => {
-                if (selector === 'throws') throw new Error('private driver detail');
-                return selector === 'null' ? [] : [{root:true,threadId,startedAt:1000,receiptOffset:0}]
+                if (selector === 'selection-throws') throw new Error('private driver detail');
+                if (selector === 'selection-null') return [];
+                return [{root:true,threadId,startedAt:selector === 'root-start-changed' ? 1013 : 1000,receiptOffset:0}]
             },
             readCodexWakeActivity   : async () => ({state:'idle'}),
             verifyCodexWakeAdmission: async () => ({verified:true}),
@@ -182,12 +189,11 @@ for (const failure of ['resident-unavailable', 'selection-null', 'selection-thro
         await expect(consumeNativeWakePrompt({...base,inspectResident:async()=>null})).rejects.toThrow();
         await fs.rmdir(claimPath);
         await pump(); expect(sent).toHaveLength(1);
-        selector = failure === 'selection-null' ? 'null' : failure === 'selection-throws' ? 'throws' : 'ready';
+        selector = failure;
         const failedResident = failure === 'resident-unavailable' ? async()=>null : live;
         expect(await consumeNativeWakePrompt({...base,inspectResident:failedResident})).toEqual({admitted:false});
         const claim = JSON.parse(await fs.readFile(claimPath,'utf8'));
-        expect(claim).toMatchObject({nonce:oldNonce,threadId,turnId,generation,admitted:false,
-            reason:failure === 'resident-unavailable' ? 'resident-unavailable' : 'selection-unavailable'});
+        expect(claim).toMatchObject({nonce:oldNonce,threadId,turnId,generation,admitted:false,reason});
         expect(await consumeNativeWakePrompt(base)).toEqual({admitted:false});
         selector = 'ready'; await pump();
         expect((await stagePrimaryWake(record,{state,stateDir})).reason).toBe(`native-recipient:${claim.reason}`);
