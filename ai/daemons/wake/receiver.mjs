@@ -46,6 +46,7 @@ import {
     ACTIVE_TURN_ADAPTER_DEPENDENCY,
     ACTIVE_TURN_UNAVAILABLE_REASON,
     hasPrimaryWakeRecipient,
+    isBatchCapablePrimaryFamily,
     SPOOL_CONTENTION_REASONS,
     isUrgentWakeRecord,
     primaryWakeSpoolPath,
@@ -468,7 +469,7 @@ export function createWakeReceiver({
                   normalBlockerBySeat    = new Map(),
                   stagedCandidatesBySeat = new Map(),
                   isStagedBatchCandidate = async (seat, currentRoute, recordKey) => {
-                      if (currentRoute.adapterConfig?.primarySession?.family !== 'codex-desktop' ||
+                      if (!isBatchCapablePrimaryFamily(currentRoute.adapterConfig?.primarySession?.family) ||
                           !currentRoute.adapterConfig?.contextGate) {
                           return false;
                       }

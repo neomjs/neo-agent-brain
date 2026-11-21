@@ -5,9 +5,10 @@
  */
 import fs                                                        from 'node:fs/promises';
 import path                                                      from 'node:path';
-import {withOutboxLock}                                          from './outboxLock.mjs';
-import {matchesPrimaryWakeMember, MAX_PRIMARY_WAKE_BATCH_EVENTS} from './primaryWakeBatch.mjs';
-import {primaryWakeAttemptRecorded, readPrimarySessionWake}      from './primarySessionWake.mjs';
+import {withOutboxLock}                                                                      from './outboxLock.mjs';
+import {isBatchCapablePrimaryFamily, matchesPrimaryWakeMember, MAX_PRIMARY_WAKE_BATCH_EVENTS} from './primaryWakeBatch.mjs';
+import {primaryWakeAttemptRecorded, readPrimarySessionWake}                                  from './primarySessionWake.mjs';
+export {isBatchCapablePrimaryFamily}                                                         from './primaryWakeBatch.mjs';
 import {readPrivateWakeJson}                                     from './nativeWakeEnrollment.mjs';
 import {writeFileAtomic}                                         from '../../services/shared/atomicFileWrite.mjs';
 import {deriveAgentInstanceHome}                                 from '../../services/fleet/deriveAgentInstanceHome.mjs';
@@ -152,7 +153,7 @@ function batchReceipt(record, sessionState) {
     const {binding, inflight} = sessionState ?? {};
     if (inflight?.status !== 'delivered' || !Array.isArray(inflight.members) ||
         !inflight.members.some(member => matchesPrimaryWakeMember(record, member)) ||
-        binding?.family !== 'codex-desktop' || binding.seat !== record.route?.agentIdentity ||
+        !isBatchCapablePrimaryFamily(binding?.family) || binding.seat !== record.route?.agentIdentity ||
         binding.seat !== record.envelope?.agentIdentity) return null;
 
     const recipient = {seat:binding.seat, generation:binding.generation, threadId:binding.threadId,
@@ -212,7 +213,7 @@ export async function stagePrimaryWake(record, {state, stateDir}) {
         if (await isSpoolPointerActive(currentNormal, state, attempt)) {
             // The receiver adds candidates only after admitting the original record to its native adapter.
             // Once Fleet commits the attempt, the queue can no longer change its membership.
-            if (record.route?.adapterConfig?.primarySession?.family === 'codex-desktop' &&
+            if (isBatchCapablePrimaryFamily(record.route?.adapterConfig?.primarySession?.family) &&
                 attempt?.recordKey !== currentNormal.recordKey && !record.expectedRecipient && !record.nativeInitiatedAt) {
                 const candidates = Array.isArray(currentNormal.candidates) ? currentNormal.candidates : [];
                 if (candidates.length < MAX_PRIMARY_WAKE_BATCH_EVENTS - 1 && !candidates.includes(key)) {
