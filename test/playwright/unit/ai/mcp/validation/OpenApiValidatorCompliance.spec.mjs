@@ -441,12 +441,11 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
     });
 
     /**
-     * Direct regression for #1886. Zod v4 emits `properties: {}` next to `additionalProperties`
-     * for `.catchall()` / `.passthrough()` maps; strict MCP clients read it as a closed key
-     * allowlist and strip every map key. Open maps omit it, at any depth; declared and closed
-     * objects keep their `properties`.
+     * Zod v4 emits `properties: {}` next to `additionalProperties` for `.catchall()` /
+     * `.passthrough()` maps; strict MCP clients read it as a closed key allowlist and strip every
+     * map key. Open maps omit it, at any depth; declared and closed objects keep their `properties`.
      */
-    test('open map schemas omit empty properties, declared and closed objects keep them (#1886)', async () => {
+    test('open map schemas omit empty properties, declared and closed objects keep them', async () => {
         const {z}    = await import('zod');
         const schema = toOpenApiJsonSchema(z.object({
             openBag : z.object({}).passthrough(),
@@ -470,7 +469,7 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
         expect(nested.properties.inner.additionalProperties).toEqual({type: 'object', additionalProperties: true});
     });
 
-    test('manage_pr_review acknowledgedRequestChanges lists as a keyed map without empty properties (#1886)', () => {
+    test('manage_pr_review acknowledgedRequestChanges lists as a keyed map without empty properties', () => {
         const doc    = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/github-workflow/openapi.yaml'), 'utf8')),
               op     = getOperationsById(doc).manage_pr_review,
               zod    = buildZodSchema(doc, op),
