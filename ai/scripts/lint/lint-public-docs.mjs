@@ -85,6 +85,12 @@ export function stripFencedCodeBlocks(markdown) {
     return out.join('\n')
 }
 
+/**
+ * @summary Computes the 1-based line number for a character offset in a string.
+ * @param {String} text
+ * @param {Number} index
+ * @returns {Number}
+ */
 function lineAt(text, index) {
     let line = 1;
     for (let i = 0; i < index && i < text.length; i++) {
@@ -93,10 +99,20 @@ function lineAt(text, index) {
     return line
 }
 
+/**
+ * @summary Escapes RegExp metacharacters in a literal token.
+ * @param {String} value
+ * @returns {String}
+ */
 function escapeRegExp(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/**
+ * @summary Resolves optional forbidden terms from explicit options or `NEO_PUBLIC_DOCS_FORBIDDEN_TERMS`.
+ * @param {String[]|null} [explicitTerms=null]
+ * @returns {String[]}
+ */
 function resolveForbiddenTerms(explicitTerms) {
     if (Array.isArray(explicitTerms)) {
         return explicitTerms.map(t => String(t).trim()).filter(Boolean)
@@ -110,6 +126,11 @@ function resolveForbiddenTerms(explicitTerms) {
     return []
 }
 
+/**
+ * @summary Returns `true` when `repoRelPath` names a gitignored `AiConfig` local overlay rather than a committed template.
+ * @param {String} repoRelPath
+ * @returns {Boolean}
+ */
 function isGitignoredConfigOverlay(repoRelPath) {
     return repoRelPath === 'ai/config.mjs' || /^ai\/mcp\/server\/[^/]+\/config\.mjs$/.test(repoRelPath)
 }
@@ -117,6 +138,11 @@ function isGitignoredConfigOverlay(repoRelPath) {
 /**
  * @summary Validates `docs/public-manifest.json`, `learn/tree.json`, and all admitted Markdown files under `root`.
  * @param {Object} [options={}]
+ * @param {String} [options.root=ROOT_DIR] Repository root directory.
+ * @param {String} [options.manifestRelPath='docs/public-manifest.json'] Manifest path relative to `root`.
+ * @param {String} [options.routePrefix='/learn/'] Required canonical URL prefix for routes in this spoke.
+ * @param {String} [options.expectedSpoke=EXPECTED_SPOKE] Expected `spoke` identifier in the manifest.
+ * @param {String[]|null} [options.forbiddenTerms=null] Optional forbidden tokens checked case-insensitively.
  * @returns {{entryCount: Number, routes: String[]}}
  */
 export function lintPublicDocs({
