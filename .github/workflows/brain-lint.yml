@@ -96,6 +96,8 @@ jobs:
 
       - name: Public Documentation Manifest Lint
         if: ${{ !cancelled() }}
+        env:
+          NEO_PUBLIC_DOCS_FORBIDDEN_TERMS: ${{ secrets.NEO_PUBLIC_DOCS_FORBIDDEN_TERMS }}
         run: npm run ai:lint-public-docs
 
       - name: Install dependencies

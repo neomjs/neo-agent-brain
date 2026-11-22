@@ -1,8 +1,8 @@
-import {test, expect}                          from '@playwright/test';
-import fs                                      from 'node:fs';
-import os                                      from 'node:os';
-import path                                    from 'node:path';
-import {lintPublicDocs, stripFencedCodeBlocks} from '../../../../../../ai/scripts/lint/lint-public-docs.mjs';
+import {test, expect}                                   from '@playwright/test';
+import fs                                               from 'node:fs';
+import os                                               from 'node:os';
+import path                                             from 'node:path';
+import {lintPublicDocs, runLint, stripFencedCodeBlocks} from '../../../../../../ai/scripts/lint/lint-public-docs.mjs';
 
 const createdRoots = [];
 
@@ -159,9 +159,21 @@ test.describe('ai/scripts/lint/lint-public-docs', () => {
             expect(() => lintPublicDocs({root})).toThrow(/forbidden private-repository reference/)
         }
 
-        const termRoot = createFixture({guideBody: '# Leak\n\nBuilt for SyntheticRestrictedClientName internal use.\n'});
-        expect(() => lintPublicDocs({root: termRoot, forbiddenTerms: ['SyntheticRestrictedClientName']}))
-            .toThrow(/forbidden term "SyntheticRestrictedClientName"/);
+        const termRoot    = createFixture({guideBody: '# Leak\n\nBuilt for SyntheticRestrictedClientName internal use.\n'});
+        let   caughtError = null;
+        try {
+            lintPublicDocs({root: termRoot, forbiddenTerms: ['SyntheticRestrictedClientName']})
+        } catch (err) {
+            caughtError = err
+        }
+        expect(caughtError).not.toBeNull();
+        expect(caughtError.message).toMatch(/1 forbidden term\(s\) checked/);
+        expect(caughtError.message).toMatch(/forbidden term #1 of NEO_PUBLIC_DOCS_FORBIDDEN_TERMS/);
+        expect(caughtError.message).not.toContain('SyntheticRestrictedClientName');
+
+        const cleanRun = runLint({root: createFixture()});
+        expect(cleanRun.exitCode).toBe(0);
+        expect(cleanRun.forbiddenTermCount).toBe(0);
 
         const adrRoot = createFixture({includeAdrInTree: true});
         expect(() => lintPublicDocs({root: adrRoot})).toThrow(/excluded internal record/)

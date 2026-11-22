@@ -1,8 +1,16 @@
 {
-    "schema"    : "public-manifest.v1",
-    "spoke"     : "neomjs/neo-agent-brain",
-    "treeFile"  : "learn/tree.json",
-    "treeMounts": [
+    "schema"         : "public-manifest.v1",
+    "spoke"          : "neomjs/neo-agent-brain",
+    "treeFile"       : "learn/tree.json",
+    "excludedDirs"   : [
+        "learn/agentos/decisions",
+        "learn/agentos/measurements",
+        "learn/agentos/incidents"
+    ],
+    "sourceLinkRoots": [
+        "ai/"
+    ],
+    "treeMounts"     : [
         {"parentId": "Benefits",        "id": "benefits/brain",          "name": "The Brain - Agent OS"},
         {"parentId": "AgentInterfaces", "id": "AgentOS",                 "name": "Agent OS"},
         {"parentId": "AgentInterfaces", "id": "AgentOS/Tooling",         "name": "Tooling & Configuration"},

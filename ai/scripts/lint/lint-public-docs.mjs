@@ -310,11 +310,11 @@ export function lintPublicDocs({
             errors.push(`${entry.file}:${line}: forbidden private-repository reference "${match[0]}"`)
         }
 
-        for (const term of activeForbidden) {
+        for (const [termIndex, term] of activeForbidden.entries()) {
             const termRe = new RegExp(`\\b${escapeRegExp(term)}\\b`, 'gi');
             for (const match of rawMarkdown.matchAll(termRe)) {
                 const line = lineAt(rawMarkdown, match.index);
-                errors.push(`${entry.file}:${line}: forbidden term "${match[0]}"`)
+                errors.push(`${entry.file}:${line}: forbidden term #${termIndex + 1} of NEO_PUBLIC_DOCS_FORBIDDEN_TERMS`)
             }
         }
 
@@ -359,24 +359,30 @@ export function lintPublicDocs({
     }
 
     if (errors.length > 0) {
-        throw new Error(`[public-docs] Validation failed (${errors.length} issue(s)):\n  - ${errors.join('\n  - ')}`)
+        throw new Error(
+            `[public-docs] Validation failed (${errors.length} issue(s), ${activeForbidden.length} forbidden term(s) checked):\n  - ${errors.join('\n  - ')}`
+        )
     }
 
     return {
-        entryCount: manifest.entries.length,
-        routes    : [...seenRoutes]
+        entryCount        : manifest.entries.length,
+        forbiddenTermCount: activeForbidden.length,
+        routes            : [...seenRoutes]
     }
 }
 
 /**
- * @summary CLI runner returning `{exitCode, entryCount, routes}`.
+ * @summary CLI runner returning `{exitCode, entryCount, forbiddenTermCount, routes}` and printing the count of checked
+ * forbidden terms on every run so an unset `NEO_PUBLIC_DOCS_FORBIDDEN_TERMS` secret is visible in CI logs.
  * @param {Object} [options={}]
- * @returns {{exitCode: Number, entryCount?: Number, routes?: String[]}}
+ * @returns {{exitCode: Number, entryCount?: Number, forbiddenTermCount?: Number, routes?: String[]}}
  */
 export function runLint(options = {}) {
     try {
         const result = lintPublicDocs(options);
-        console.log(`[public-docs] OK — verified ${result.entryCount} manifest-listed Brain guides against learn/tree.json.`);
+        console.log(
+            `[public-docs] OK — verified ${result.entryCount} manifest-listed Brain guides against learn/tree.json (${result.forbiddenTermCount} forbidden term(s) checked).`
+        );
         return {exitCode: 0, ...result}
     } catch (err) {
         console.error(err.message);

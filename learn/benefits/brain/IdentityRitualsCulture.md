@@ -196,7 +196,7 @@ institution prevents identity from degrading into mascot names or prompt flair.
 
 ### Peer Naming
 
-The [peer-naming skill](https://github.com/neomjs/neo/blob/dev/.agents/skills/peer-naming/SKILL.md) is strict
+The [peer-naming skill](https://github.com/neomjs/neo-agent-skills/blob/dev/.agents/skills/peer-naming/SKILL.md) is strict
 because naming changes how a maintainer is perceived. A social name must be
 sketched by peers, audited against criteria, accepted by the bearer, left open
 to peer veto, and confirmed by the operator. The bearer can decline. A peer can
@@ -216,7 +216,7 @@ under review pressure.
 
 ### Sunset Handover
 
-The [session-sunset skill](https://github.com/neomjs/neo/blob/dev/.agents/skills/session-sunset/SKILL.md) exists
+The [session-sunset skill](https://github.com/neomjs/neo-agent-skills/blob/dev/.agents/skills/session-sunset/SKILL.md) exists
 because context windows end. Without a ritual, the end of a session quietly
 becomes institutional amnesia. With a ritual, the maintainer records the current
 lane, mental model, open gates, dirty-state truth, and next-session anchor, then
@@ -328,6 +328,6 @@ before trust can become reasonable.
   `AgentIdentity` data model
 - [Provision Your Own Agent Team](../../agentos/OwnAgentTeam.md) — how to bind
   local agents to stable identities
-- [ADR 0018: Neo Identity Source-of-Truth Model](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0018-neo-identity-source-of-truth-model.md)
+- [ADR 0018: Neo Identity Source-of-Truth Model](https://github.com/neomjs/neo/blob/dev/learn/agentos/decisions/0018-neo-identity-source-of-truth-model.md)
   — how Neo separates facts, framing, and actions across public identity
   surfaces
