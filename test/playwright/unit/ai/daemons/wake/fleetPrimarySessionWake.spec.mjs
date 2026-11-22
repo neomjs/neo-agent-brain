@@ -569,3 +569,80 @@ test('finished unacknowledged or unechoed Antigravity idle turns settle as ackno
     finished.add(sent[1].message);
     expect(await dispatchFleetPrimarySessionWake(second, options)).toMatchObject({status:'delivered', acknowledged:false});
 });
+
+test('admitted prior-generation or killed-thread Antigravity wakes settle as acknowledged: false when unechoed, preserve consumed when echoed, and keep unredeemed restarts withdrawable (#1901)', async () => {
+    const seat        = '@fixture', family = 'antigravity', sub = 'WAKE_SUB:agy-gen-restart';
+    const home        = path.join(tempDir, 'home'), projectRoot = tempDir, appBundle = path.join(tempDir, 'gen', 'Antigravity.app');
+    const thread1     = randomUUID(), thread2 = randomUUID(), thread3 = randomUUID(), thread4 = randomUUID();
+    let   livePid     = 501, liveStart = 'gen1', currentRoot = thread1, killedThreads = new Set();
+    const sent        = [], echoed = new Set();
+    const makeSidecar = () => ({appPid: livePid, appStart: liveStart, appBundle, instanceHome: home, environment: {ANTIGRAVITY_AGENTAPI_EXE: '/bin/language_server'}});
+    const transport   = {
+        latestAntigravityWakeTarget   : async () => ({root: true, threadId: currentRoot, startSequence: 1, status: 'CASCADE_RUN_STATUS_IDLE'}),
+        readAntigravityWakeTarget     : async ({threadId}) => killedThreads.has(threadId) ? null : {threadId, projectId: 'p', status: 'CASCADE_RUN_STATUS_IDLE'},
+        readAntigravityWakeThreadState: async ({threadId}) => ({status: 'CASCADE_RUN_STATUS_RUNNING', terminated: killedThreads.has(threadId)}),
+        verifyAntigravityWakeAdmission: async () => ({verified: true}),
+        captureAntigravityWakeCursor  : () => ({dev: 1, ino: 1, offset: 0, tailHash: 'a'.repeat(64)}),
+        sendAntigravitySessionWake    : async req => { sent.push(req); return {outcome: 'unknown', reason: 'agentapi-dispatch-exited-zero'} },
+        readAntigravityWakeReceipt    : ({text, ownerTerminated}) => echoed.has(text)
+            ? {outcome: 'observed', reason: 'private-model-ack'}
+            : (ownerTerminated ? {outcome: 'turn-unacknowledged'} : {outcome: 'unknown'})
+    };
+    const config = {agentId: 'fixture', family, instanceHome: home, appBundle, projectId: 'p', projectRoot};
+    const route  = {agentIdentity: seat, harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
+    await enrollNativeWake({manifestPath, stateDir, agentId: config.agentId, family});
+    await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes: {[sub]: route}}));
+    const options = () => ({
+        state, stateDir, manifestPath, sidecar: makeSidecar(), antigravityTransport: transport, appDataDir: path.join(tempDir, 'agy'),
+        inspectResident: async () => ({generation: `${livePid}:${liveStart}`, pid: livePid, startedAt: liveStart, workspaceRoot: projectRoot})
+    });
+    const accept = async eventId => (await state.accept({
+        subscriptionId: sub, eventId, route, metadata: {urgent: false},
+        envelope      : {eventType: 'wake/digest', agentIdentity: seat, subscriptionId: sub, payload: {totalEvents: 1, urgent: false,
+            breakdown: {sent_to_me: {count: 1, highestPriority: 'normal', latest: {priority: 'normal', sentAt: new Date().toISOString(), subject: eventId}}}}}
+    })).record;
+    const nonceOf = req => req.message.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+
+    // 1. Unredeemed wake across App generation restart withdraws and re-sends to new generation root (never swallowed as unacknowledged).
+    const w1 = await accept('unredeemed-restart');
+    expect((await dispatchFleetPrimarySessionWake(w1, options())).status).toBe('unknown');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].threadId).toBe(thread1);
+
+    livePid = 502; liveStart = 'gen2'; currentRoot = thread2;
+    expect((await dispatchFleetPrimarySessionWake(w1, options())).status).toBe('unknown');
+    expect(sent).toHaveLength(2);
+    expect(sent[1].threadId).toBe(thread2);
+
+    // 2. Admitted wake that DID echo before App restart still settles as consumed (no acknowledged: false).
+    const redeem2 = await consumeNativeWakePrompt({...options(), agentId: config.agentId, family, threadId: thread2, nonce: nonceOf(sent[1])});
+    expect(redeem2.admitted).toBe(true);
+    echoed.add(sent[1].message);
+    livePid = 503; liveStart = 'gen3'; currentRoot = thread3;
+    const settled2 = await dispatchFleetPrimarySessionWake(w1, options());
+    expect(settled2).toMatchObject({status: 'delivered'});
+    expect(settled2.acknowledged).toBeUndefined();
+    await state.transition(w1.recordKey, 'pending', 'delivered');
+
+    // 3. Admitted wake on gen3 whose launch dies without echo (even with missing .cursor.json) settles as acknowledged: false on gen4.
+    const w3 = await accept('admitted-unechoed-restart');
+    expect((await dispatchFleetPrimarySessionWake(w3, options())).status).toBe('unknown');
+    expect(sent).toHaveLength(3);
+    expect(sent[2].threadId).toBe(thread3);
+    const redeem3 = await consumeNativeWakePrompt({...options(), agentId: config.agentId, family, threadId: thread3, nonce: nonceOf(sent[2])});
+    expect(redeem3.admitted).toBe(true);
+    await fs.rm(path.join(stateDir, 'primary-sessions', 'fixture.json.cursor.json'));
+    livePid = 504; liveStart = 'gen4'; currentRoot = thread4;
+    expect(await dispatchFleetPrimarySessionWake(w3, options())).toMatchObject({status: 'delivered', acknowledged: false});
+    await state.transition(w3.recordKey, 'pending', 'delivered');
+
+    // 4. Same-generation killed === 1 thread settles its admitted unechoed wake as acknowledged: false.
+    const w4 = await accept('admitted-killed-thread');
+    expect((await dispatchFleetPrimarySessionWake(w4, options())).status).toBe('unknown');
+    expect(sent).toHaveLength(4);
+    expect(sent[3].threadId).toBe(thread4);
+    const redeem4 = await consumeNativeWakePrompt({...options(), agentId: config.agentId, family, threadId: thread4, nonce: nonceOf(sent[3])});
+    expect(redeem4.admitted).toBe(true);
+    killedThreads.add(thread4);
+    expect(await dispatchFleetPrimarySessionWake(w4, options())).toMatchObject({status: 'delivered', acknowledged: false});
+});
