@@ -99,6 +99,19 @@ const REGISTRY = Object.freeze({
             'ai/services/**/*.mjs'
         ]
     },
+    // `package.json` defines the invocation and pins the Engine whose guides it reads; `package-lock.json` resolves
+    // that pin and the Skills bin that lints them.
+    'Engine Guide Script References': {
+        workflow : 'brain-lint.yml',
+        scriptRel: 'package.json',
+        source   : 'declared',
+        surface  : [
+            'ai/mcp/server/*/openapi.yaml',
+            'cloud/package.json',
+            'package-lock.json',
+            'package.json'
+        ]
+    },
 });
 
 /**
