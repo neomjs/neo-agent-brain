@@ -1,11 +1,13 @@
 // Class bootstrap belongs to `daemon.mjs`; this consumed class relies on global Neo.
-import fs              from 'fs-extra';
-import {spawn}         from 'child_process';
-import net             from 'net';
-import path            from 'path';
-import Base            from 'neo.mjs/src/core/Base.mjs';
-import ClassSystemUtil from 'neo.mjs/src/util/ClassSystem.mjs';
-import AiConfig        from '../../config.mjs';
+import fs                                                                        from 'fs-extra';
+import {spawn}                                                                   from 'child_process';
+import net                                                                       from 'net';
+import path                                                                      from 'path';
+import Base                                                                      from 'neo.mjs/src/core/Base.mjs';
+import ClassSystemUtil                                                           from 'neo.mjs/src/util/ClassSystem.mjs';
+import AiConfig                                                                  from '../../config.mjs';
+import {createIdentityPublicationClient}                                         from '../../services/shared/identityPublicationClient.mjs';
+import {normalizeSeatPlaneTarget, normalizeSecureMcpEndpoint, planeMcpResources} from '../../services/fleet/mcpWireParsing.mjs';
 import HealthService, {
     createEmbeddingProbeTimeoutError
 }                      from '../../services/memory-core/HealthService.mjs';
@@ -2013,6 +2015,38 @@ export class Orchestrator extends Base {
     }
 
     /**
+     * @summary Reads family history through explicit remote-plane inputs, never the daemon's local graph or forge token.
+     * The transient client proves the captured forge viewer against its separate MC credential and
+     * independently declared target, then closes before returning. Missing inputs leave the report unavailable.
+     * @param {Object} viewer Original authenticated forge viewer for this acquisition.
+     * @param {Object} dependencies Internal client-construction test seam.
+     * @returns {Promise<Object>} Qualified source observation or named unavailability.
+     */
+    async readFamilySource(viewer, {createClient = createIdentityPublicationClient} = {}) {
+        if (this.isDestroying || this.isDestroyed) return {state: 'unavailable', code: 'family-source-closed'};
+        const endpoint = normalizeSecureMcpEndpoint(AiConfig.seat.planeBase);
+        let   client;
+        try {
+            const target = normalizeSeatPlaneTarget(AiConfig.seat.planeTarget);
+            if (AiConfig.seat.planeBearer === '') {
+                return {state: 'unavailable', code: 'family-source-configuration-unavailable'};
+            }
+            if (!endpoint || !target || !viewer?.login) {
+                return {state: 'unavailable', code: 'family-source-configuration-unavailable'};
+            }
+            client = createClient({baseUrl: planeMcpResources(endpoint)['memory-core'].url, credential: AiConfig.seat.planeBearer,
+                expectedIdentity: '@' + viewer.login, expectedTarget: target});
+            await client.ready();
+            const result = await client.readSnapshot();
+            return this.isDestroying || this.isDestroyed ? {state: 'unavailable', code: 'family-source-closed'} : result;
+        } catch {
+            return {state: 'unavailable', code: 'family-source-unavailable'};
+        } finally {
+            if (client) {try {await client.close();} finally {client.destroy();}}
+        }
+    }
+
+    /**
      * @summary Collects the GitHub-sourced Focus (v1) blocks on the host edge and writes the
      * admitted `focus-v1-projection.v1` JSON artifact for the container plane to consume without
      * holding GitHub credentials.
@@ -2054,8 +2088,14 @@ export class Orchestrator extends Base {
 
         this.focusV1ProjectionFlight = (async () => {
             const projection = await this.focusV1ProjectionCollector({
-                now: new Date(now),
-                outboundLedgerPath
+                now                : new Date(now),
+                outboundLedgerPath,
+                readReviewReadiness: async coordinates => {
+                    const {default: PullRequestService} = await import('../../services/github-workflow/PullRequestService.mjs');
+                    return PullRequestService.observeReviewReadiness(coordinates, {
+                        now: () => new Date(now), readFamilySource: viewer => this.readFamilySource(viewer)
+                    });
+                }
             });
             if (this.authorityLeaseLost) {
                 return null;

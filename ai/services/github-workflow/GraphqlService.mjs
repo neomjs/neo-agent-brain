@@ -91,6 +91,38 @@ class GraphqlService extends Base {
     #authToken = null;
 
     /**
+     * @summary Captures one credential and supported endpoint pair for a decision's reads and mutation.
+     * Source metadata identifies the acquisition namespace, not an authenticated viewer. Tokens stay
+     * private; later service changes affect the next operation. Existing mutation retry semantics remain.
+     * @returns {Promise<Object>} Frozen {source, query, rest}; original responses remain unchanged.
+     */
+    async createOperationClient() {
+        const apiUrl  = this.apiUrl, configuredRest = this.restApiUrl;
+        const unbound = () => Object.assign(new Error('The GitHub operation requires a supported HTTPS GraphQL/REST endpoint pair.'),
+            {code: 'GITHUB_SOURCE_UNBOUND'});
+        let graphql, rest, restApiUrl;
+        try {
+            if (typeof apiUrl !== 'string' || typeof configuredRest !== 'string' ||
+                apiUrl.trim() !== apiUrl || configuredRest.trim() !== configuredRest) throw unbound();
+            restApiUrl = configuredRest.replace(/\/+$/, '');
+            graphql = new URL(apiUrl);
+            rest = new URL(restApiUrl);
+        } catch {throw unbound();}
+        const clean  = url => url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
+        const paired = graphql.origin === rest.origin &&
+            (rest.pathname === '/' && graphql.pathname === '/graphql' ||
+                rest.pathname === '/api/v3' && graphql.pathname === '/api/graphql');
+        if (!clean(graphql) || !clean(rest) || !paired) throw unbound();
+
+        const token = await this.#getAuthToken();
+        return Object.freeze({
+            source: Object.freeze({authProvider: 'github', providerBaseUrl: restApiUrl}),
+            query : (query, variables = {}, options = false) => this.#queryAt(apiUrl, token, query, variables, options, true),
+            rest  : (method, requestPath, body = null) => this.#restAt(restApiUrl, token, method, requestPath, body, true)
+        });
+    }
+
+    /**
      * @summary Resolves the GitHub credential, preferring the ambient environment over the `gh` CLI.
      *
      * Precedence: explicit override → `GH_TOKEN` → `GITHUB_TOKEN` → cached CLI token → `gh auth token`.
@@ -299,6 +331,14 @@ class GraphqlService extends Base {
         const strict          = typeof options === 'object' ? options?.strict !== false : true;
         const token           = await this.#getAuthToken();
 
+        return this.#queryAt(null, token, query, variables, {enableSubIssues, strict});
+    }
+
+    /** @summary Runs shared GraphQL handling; ordinary callers retain their live endpoint lookup on each retry. */
+    async #queryAt(apiUrl, token, query, variables, options, bound = false) {
+        const enableSubIssues = typeof options === 'boolean' ? options : Boolean(options?.enableSubIssues);
+        const strict          = typeof options === 'object' ? options?.strict !== false : true;
+
         const headers = {
             'Content-Type' : 'application/json',
             'Authorization': `bearer ${token}`
@@ -313,9 +353,10 @@ class GraphqlService extends Base {
 
         for (let attempt = 0; attempt <= this.maxRetryAttempts; attempt++) {
             try {
-                response = await fetch(this.apiUrl, {
+                response = await fetch(bound ? apiUrl : this.apiUrl, {
                     method: 'POST',
                     headers,
+                    ...(bound ? {redirect: 'error'} : {}),
                     body  : JSON.stringify({query, variables})
                 });
             } catch (e) {
@@ -388,20 +429,36 @@ class GraphqlService extends Base {
     async rest(method, path, body=null) {
         const token = await this.#getAuthToken();
 
+        return this.#restAt(null, token, method, path, body);
+    }
+
+    /** @summary Runs shared REST handling; ordinary calls capture their base at request construction as before. */
+    async #restAt(restApiUrl, token, method, path, body, bound = false) {
+
         const headers = {
             'Accept'              : 'application/vnd.github+json',
             'Authorization'       : `bearer ${token}`,
             'X-GitHub-Api-Version': '2022-11-28'
         };
 
-        const init = {method, headers};
+        const init = {method, headers, ...(bound ? {redirect: 'error'} : {})};
 
         if (body != null) {
             headers['Content-Type'] = 'application/json';
             init.body               = JSON.stringify(body);
         }
 
-        const url = `${this.restApiUrl}${path}`;
+        const unbound = () => Object.assign(new Error('A bound REST request must stay beneath its captured API base.'),
+            {code: 'GITHUB_SOURCE_UNBOUND'});
+        if (bound && (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//') || path.includes('\\'))) {
+            throw unbound();
+        }
+        const url = `${bound ? restApiUrl : this.restApiUrl}${path}`;
+        if (bound) {
+            const target = new URL(url), base = new URL(restApiUrl);
+            if (target.origin !== base.origin || target.hash ||
+                !target.pathname.startsWith(`${base.pathname.replace(/\/$/, '')}/`)) throw unbound();
+        }
 
         let response;
 

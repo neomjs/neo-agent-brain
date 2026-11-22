@@ -747,6 +747,7 @@ export const GET_PULL_REQUEST_ID = `
     $repo: String!
     $prNumber: Int!
   ) {
+    viewer { __typename login databaseId }
     homeRepository: repository(owner: $homeOwner, name: $homeRepo) {
       activationIssue: issue(number: $activationIssueNumber) {
         id
@@ -781,7 +782,9 @@ export const GET_PULL_REQUEST_ID = `
             url
             databaseId
             author {
+              __typename
               login
+              ... on User { databaseId }
             }
             commit {
               oid

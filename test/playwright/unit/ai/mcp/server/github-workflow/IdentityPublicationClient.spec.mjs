@@ -20,7 +20,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
         assert.notEqual(target.planeId, process.env.NEO_PLANE_ID);
         assert.notEqual(target.dataRoot, process.env.NEO_PLANE_DATA_ROOT);
         let health = 'healthy', permission = 'WRITE', actualIdentity = '@fresh-reader', actualTarget = target, deleteWait = null;
-        globalThis.fixtureConfig = {seat: {planeBase: 'https://plane.example', planeBearer: 'seat-token', planeTarget: JSON.stringify(target)}};
+        globalThis.fixtureConfig = {seat: {planeBase: 'https://plane.example', planeBearer: 'seat-token', planeTarget: [target.planeId, target.dataRoot]}};
         globalThis.fixtureRepository = {viewerLogin: 'stale-viewer', async fetchAndCacheViewerPermission() {
             calls.push('fresh-viewer');
             if (permission) this.viewerLogin = 'fresh-reader';
@@ -53,7 +53,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
             ['../../../services/github-workflow/RepositoryService.mjs', 'export default globalThis.fixtureRepository'],
             ['../../../services/github-workflow/SyncService.mjs', 'export default {async ready(){}}'],
             ['../../../services/github-workflow/HealthService.mjs', 'export default {}'],
-            ['./toolService.mjs', 'export const buildToolCatalog=()=>[], listTools=()=>[], callTool=()=>{}']
+            ['./toolService.mjs', 'export const createGitHubToolService=()=>({buildToolCatalog:()=>[],listTools:()=>[],callTool:()=>{},destroy(){}})']
         ]);
         const hooks = registerHooks({resolve(specifier, context, nextResolve) {
             if (context.parentURL === serverUrl && replacements.has(specifier)) {
@@ -82,6 +82,12 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
             assert.equal(calls.filter(value => value === 'healthcheck').length, 1);
             assert.ok(calls.indexOf('fresh-viewer') < calls.indexOf('list_permissions'));
             assert.ok(calls.includes('ordinary-transport'));
+            const beforeForeign = calls.length;
+            assert.deepEqual(await server.readFamilySourceForViewer({login: 'different-viewer'}),
+                {state: 'unavailable', code: 'family-source-viewer-mismatch'});
+            assert.equal(calls.length, beforeForeign, 'a mismatched operation viewer cannot read through the existing client');
+            assert.deepEqual(await server.readFamilySourceForViewer({login: 'fresh-reader'}),
+                {state: 'unavailable', code: 'membership-unknown'});
             assert.deepEqual(await server.readIdentityPublicationSnapshot(), {state: 'unavailable', code: 'membership-unknown'});
             let releaseDelete, secondClosed = false;
             deleteWait = new Promise(resolve => {releaseDelete = resolve;});
@@ -94,7 +100,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
             deleteWait = null;
             await close(); assert.ok(calls.includes('delete'));
 
-            for (const planeTarget of [null, '{', '{"planeId":"changed"}', {planeId:'mixed', dataRoot:${JSON.stringify(roots.inherited)}}]) {
+            for (const planeTarget of [null, [], ['changed'], '{', '{"planeId":"changed"}', {planeId:'mixed', dataRoot:${JSON.stringify(roots.inherited)}}]) {
                 calls.length = 0;
                 globalThis.fixtureConfig.seat.planeTarget = planeTarget;
                 await create();
@@ -104,7 +110,7 @@ test('GitHub boot owns a real identity-bound client and keeps unavailable family
                 assert.ok(calls.includes('ordinary-transport'));
                 await close();
             }
-            globalThis.fixtureConfig.seat.planeTarget = JSON.stringify(target);
+            globalThis.fixtureConfig.seat.planeTarget = [target.planeId, target.dataRoot];
             permission = null; calls.length = 0;
             await create();
             assert.equal(server.identityPublicationState?.code, 'family-source-viewer-unavailable');
@@ -184,7 +190,7 @@ function heldConnectionScript(root, phase, destroy) {
             })]);} finally {clearTimeout(timer);}
         };
         globalThis.fixtureConfig = {seat: {planeBase: 'https://held-plane.example', planeBearer: 'fixture-reader-token',
-            planeTarget: JSON.stringify(target)}};
+            planeTarget: [target.planeId, target.dataRoot]}};
         globalThis.fixtureRepository = {viewerLogin: 'old-viewer', async fetchAndCacheViewerPermission() {
             calls.push('fresh-viewer'); this.viewerLogin = 'held-reader'; return 'WRITE';
         }};
@@ -215,7 +221,7 @@ function heldConnectionScript(root, phase, destroy) {
             ['../../../services/github-workflow/RepositoryService.mjs', 'export default globalThis.fixtureRepository'],
             ['../../../services/github-workflow/SyncService.mjs', 'export default {async ready(){}}'],
             ['../../../services/github-workflow/HealthService.mjs', 'export default {}'],
-            ['./toolService.mjs', 'export const buildToolCatalog=()=>[], listTools=()=>[], callTool=()=>{}']
+            ['./toolService.mjs', 'export const createGitHubToolService=()=>({buildToolCatalog:()=>[],listTools:()=>[],callTool:()=>{},destroy(){}})']
         ]);
         const hooks = registerHooks({resolve(specifier, context, nextResolve) {
             if (context.parentURL === serverUrl && replacements.has(specifier)) {

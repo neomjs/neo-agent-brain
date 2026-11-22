@@ -387,6 +387,71 @@ test.describe('focusV1Section — Sandman handoff ## Focus (v1) producer contrac
         })).toBe('- neomjs/neo-stage#452 · `approved · readiness unverified: mergeStateStatus absent`');
     });
 
+    test('qualified unavailable projection overrides legacy positive readiness fields', () => {
+        for (const positive of [{ready: true}, {predicate: {strictMergeReady: true}}]) {
+            expect(formatOperatorCandidateLine({
+                number    : 7,
+                projection: {verdict: 'unavailable', reason: 'family-source-fenced', ...positive}
+            })).toBe('- #7 · `approved · readiness unverified: family-source-fenced`');
+        }
+        expect(formatOperatorCandidateLine({number: 7, projection: {
+            verdict: 'unavailable', blockers: [{code: 'publication-restore-fenced', message: 'Source requires reconciliation.'}]
+        }})).toBe('- #7 · `approved · readiness unverified: publication-restore-fenced`');
+    });
+
+    test('qualified candidate evaluation never reconstructs absent family authority from roster logins', () => {
+        const pr = {
+            state            : 'OPEN', mergedAt: null, mergeStateStatus: 'CLEAN', headRefOid: 'head',
+            reviewDecision   : 'APPROVED', reviewRequests: [], comments: [],
+            author           : {login: 'neo-gemini-julia'},
+            reviews          : [{author: {login: 'neo-opus-grace'}, state: 'APPROVED', submittedAt: CAPTURED_AT, commit: {oid: 'head'}}],
+            statusCheckRollup: [{name: 'unit', conclusion: 'SUCCESS'}]
+        };
+
+        expect(evaluateCandidateMergeReadiness(pr)).toEqual({
+            verdict: 'unavailable', missingInput: 'family-verdict-unavailable'
+        });
+        expect(evaluateCandidateMergeReadiness({
+            ...pr,
+            familyVerdict: {sourceState: 'unavailable', code: 'family-source-fenced', crossFamily: true},
+            projection   : {verdict: 'ready', ready: true}
+        })).toEqual({verdict: 'unavailable', missingInput: 'family-source-fenced'});
+        expect(evaluateCandidateMergeReadiness({
+            ...pr, familyVerdict: {sourceState: 'available'}
+        })).toEqual({verdict: 'unavailable', missingInput: 'family-verdict-unavailable'});
+        expect(evaluateCandidateMergeReadiness({
+            ...pr, familyVerdict: {sourceState: 'available', qualified: false, crossFamily: true, code: 'approval-unclassified'}
+        })).toEqual({verdict: 'unavailable', missingInput: 'approval-unclassified'});
+    });
+
+    test('qualified candidate evaluation preserves the supplied family verdict and other readiness gates', () => {
+        const pr = {
+            state            : 'OPEN', mergedAt: null, mergeStateStatus: 'CLEAN', headRefOid: 'head',
+            reviewDecision   : 'APPROVED', reviewRequests: [], comments: [],
+            author           : {login: 'unrostered-opener'},
+            reviews          : [{author: {login: 'unrostered-reviewer'}, state: 'APPROVED', submittedAt: CAPTURED_AT, commit: {oid: 'head'}}],
+            statusCheckRollup: [{name: 'unit', conclusion: 'SUCCESS'}],
+            familyVerdict    : {
+                sourceState      : 'available', crossFamily: true, authorFamily: 'claude', authorFamilies: ['claude'],
+                approvingFamilies: ['gpt'], outside: false, disclosureTruncated: false, approvalsTruncated: false
+            }
+        };
+
+        expect(evaluateCandidateMergeReadiness(pr)).toMatchObject({verdict: 'ready', ready: true});
+        expect(evaluateCandidateMergeReadiness({...pr, reviewRequests: [{login: 'reader'}]})).toMatchObject({verdict: 'not_ready', ready: false});
+        expect(evaluateCandidateMergeReadiness({...pr, statusCheckRollup: [{name: 'unit', conclusion: 'FAILURE'}]})).toMatchObject({verdict: 'not_ready', ready: false});
+        expect(evaluateCandidateMergeReadiness({
+            ...pr,
+            comments: [{author: {login: 'unrostered-reviewer'}, createdAt: '2026-10-28T04:00:00Z', body: '[MERGE_HOLD]'}]
+        })).toMatchObject({verdict: 'not_ready', ready: false});
+        expect(evaluateCandidateMergeReadiness({
+            ...pr, familyVerdict: {...pr.familyVerdict, crossFamily: false, approvingFamilies: ['claude']}
+        })).toMatchObject({verdict: 'not_ready', ready: false});
+        expect(evaluateCandidateMergeReadiness({
+            ...pr, familyVerdict: {...pr.familyVerdict, crossFamily: null, outside: true, authorFamilies: [], disclosureTruncated: true}
+        })).toMatchObject({verdict: 'not_ready', ready: false});
+    });
+
     test('AC-5: host-edge reader supplies GitHub blocks on the host plane and makeRefusingFocusV1Reader degrades to unknown with reason on the cloud plane', async () => {
         const refusing = makeRefusingFocusV1Reader('cloud-plane has no GitHub host-edge');
 
@@ -585,7 +650,12 @@ test.describe('focusV1Section — Sandman handoff ## Focus (v1) producer contrac
                             commit     : {oid: '6c41b1d'}
                         }
                     ],
-                    comments         : [],
+                    comments     : [],
+                    familyVerdict: {
+                        sourceState : 'available', qualified: true, crossFamily: true,
+                        authorFamily: 'gemini', authorFamilies: ['gemini'], approvingFamilies: ['claude'],
+                        outside     : false, disclosureTruncated: false, approvalsTruncated: false
+                    },
                     statusCheckRollup: [{name: 'skills-lint', conclusion: 'SUCCESS'}],
                     updatedAt        : '2026-10-28T03:00:00Z'
                 });
@@ -593,7 +663,12 @@ test.describe('focusV1Section — Sandman handoff ## Focus (v1) producer contrac
             throw new Error(`Unexpected gh invocation: ${key}`);
         };
 
-        const reader  = createFocusV1HostEdgeReader({useDefaultHostReaders: true, execGh});
+        const reader = createFocusV1HostEdgeReader({useDefaultHostReaders: true, execGh,
+            readReviewReadiness: async ({repo, prNumber}) => {
+                expect(repo).toBe('neomjs/neo-agent-skills');
+                expect(prNumber).toBe(228);
+                return evaluateCandidateMergeReadiness(JSON.parse(await execGh(['pr', 'view', String(prNumber)])));
+            }});
         const inputs  = await reader.readFocusV1Inputs({now: new Date(CAPTURED_AT)});
         const section = renderFocusV1Section(inputs);
 

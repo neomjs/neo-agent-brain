@@ -1,5 +1,6 @@
-import {setup}      from '../../../../setup.mjs';
-import {createHash} from 'node:crypto';
+import {setup}                     from '../../../../setup.mjs';
+import {createHash}                from 'node:crypto';
+import {compileFoundingFamilySeed} from '../../../../../../ai/graph/identityFoundingSeed.mjs';
 
 const appName                    = 'PullRequestServiceTest';
 const skipCiGitHubAuth           = !!process.env.NEO_TEST_SKIP_CI;
@@ -15,6 +16,51 @@ setup({
         vnodeInitialising: false
     }
 });
+
+const FIXTURE_GITHUB_SOURCE = Object.freeze({authProvider: 'github', providerBaseUrl: 'https://api.github.com'});
+const FAMILY_ACTORS         = Object.freeze({
+    'neo-gpt-emmy'          : {databaseId: 101, family: 'gpt'},
+    'neo-gpt-euclid'        : {databaseId: 102, family: 'gpt'},
+    'neo-opus-ada'          : {databaseId: 201, family: 'claude'},
+    'neo-opus-grace'        : {databaseId: 202, family: 'claude'},
+    'neo-opus-vega'         : {databaseId: 203, family: 'claude'},
+    'outside-dev'           : {databaseId: 901, family: null},
+    'some-human-contributor': {databaseId: 902, family: null},
+    unknown                 : {databaseId: 903, family: null}
+});
+
+/** @summary Supplies explicit synthetic provider identities while preserving intentionally missing or non-User actors. */
+function fixtureActor(value) {
+    if (value === null || value === undefined) return value;
+    const actor = typeof value === 'string' ? {login: value} : value;
+    return {__typename: 'User', databaseId: FAMILY_ACTORS[actor.login]?.databaseId ?? null, ...actor};
+}
+
+/** @summary One complete qualified source fixture; production family validators still classify its real payload. */
+function fixtureFamilySource() {
+    const actors   = Object.entries(FAMILY_ACTORS).filter(([, actor]) => actor.family);
+    const subject  = databaseId => ({...FIXTURE_GITHUB_SOURCE, providerUserId: String(databaseId)});
+    const founding = compileFoundingFamilySeed({
+        identities: actors.map(([login, actor]) => ({id: '@' + login, type: 'AgentIdentity',
+            properties: {accountType: 'agent', modelFamily: actor.family}})),
+        subjects: actors.map(([login, actor]) => ({identityKey: '@' + login, subject: subject(actor.databaseId)}))
+    });
+    return {state: 'available', snapshot: {version: 1, target: {planeId: 'review-fixture', dataRoot: '/fixture/review'},
+        revision          : 1, baselineSince: 0, founding, foundingRevision: 1,
+        foundingProvenance: {sourceRevision: 'reviewed-fixture', installedAt: 0, issuer: 'fixture',
+            lineageHead: 'identity-family-lineage-head-' + 'a'.repeat(64)},
+        counts  : {subjects: actors.length, admittedSubjects: 0, memberships: 0, declarations: 0, corrections: 0},
+        subjects: actors.map(([, actor]) => ({subject: subject(actor.databaseId), membershipRevision: 0,
+            admissionRevision: 0, bindings: [], source: {baselineSince: 0, revision: 1, memberships: [], declarations: [], corrections: []}}))}};
+}
+
+/** @summary Adds original actor coordinates to the fixture's PR connection without changing review/comment record IDs. */
+function fixturePullRequestActors(pr) {
+    if (!pr || typeof pr !== 'object') return pr;
+    const connection = value => value && Array.isArray(value.nodes)
+        ? {...value, nodes: value.nodes.map(row => ({...row, author: fixtureActor(row.author)}))} : value;
+    return {...pr, author: fixtureActor(pr.author), reviews: connection(pr.reviews), comments: connection(pr.comments)};
+}
 
 test.describe('Neo.ai.services.github-workflow.PullRequestService — list freshness and belief fields (#16165, #16191)', () => {
     let GraphqlService;
@@ -456,7 +502,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         reviewers = [],
         // `null` models a connection GitHub did not return at all — the silence case — which is
         // distinct from an empty node list (fetched, no approvals).
-        // Rostered logins, and DIFFERENT families on purpose: the default fixture models a healthy
+        // Explicit protected fixture families, and DIFFERENT families on purpose: the default fixture models a healthy
         // PR, and after the §6.1 rule a same-family default would block every arm here for a reason
         // none of them is about. `neo-opus-vega` is claude, `neo-gpt-emmy` is gpt.
         authorLogin = 'neo-opus-vega',
@@ -464,8 +510,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         authorAssociation = 'MEMBER',
         commitMessages = ['feat: the change'],
         commitsHasNextPage = false,
-        // Default body carries a self-id matching the opener, so arms about other things are not
-        // silently exercising author drift.
+        // Social prose selects no identity; opener fallback is explicit in the protected fixture.
         body = 'Authored by Vega (Claude Opus 5, Claude Code).',
         reviews = [{state: 'APPROVED', submittedAt: '2026-07-29T07:00:00.000Z', commit: {oid: HEAD}, author: {login: 'neo-gpt-emmy'}}],
         reviewsHasPreviousPage = false,
@@ -477,6 +522,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         state = 'OPEN'
     } = {}) => ({
         number        : 16029,
+        createdAt     : '2026-07-28T00:00:00.000Z',
         state,
         mergedAt,
         baseRefName,
@@ -530,10 +576,13 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         const restPaths = [];
 
         return {
-            now  : () => new Date('2026-07-29T08:00:00.000Z'),
-            query: async () => ({
+            now             : () => new Date('2026-07-29T12:00:00.000Z'),
+            source          : FIXTURE_GITHUB_SOURCE,
+            readFamilySource: async () => fixtureFamilySource(),
+            query           : async () => ({
+                viewer    : fixtureActor(PRINCIPALS.githubLogin),
                 repository: {
-                    pullRequest: snapshots[Math.min(queryCall++, snapshots.length - 1)]
+                    pullRequest: fixturePullRequestActors(snapshots[Math.min(queryCall++, snapshots.length - 1)])
                 }
             }),
             rest: async (method, path) => {
@@ -708,20 +757,18 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         expect(result.predicate.blockers.some(entry => entry.includes('cross-family review mandate'))).toBe(true);
     });
 
-    test('the CANONICAL body author wins over the opener login — drift cannot certify a merge', async () => {
-        // The failure this arm exists for: an MCP `@me` drift stamps a different agent's login on
-        // the PR. Body declares Grace (claude); the opener resolves to Emmy (gpt); the only approver
-        // is Vega (claude). Reading the OPENER gives gpt-vs-claude and certifies. Reading the body
-        // gives claude-vs-claude and blocks, which is the truth about who wrote it.
+    test('a bound literal self-id and the opener both contribute families — drift cannot certify a merge', async () => {
+        // The explicit protected Grace key contributes claude alongside opener Emmy's gpt. Neither
+        // identity replaces the other; Vega's claude approval is not independent of that full union.
         const deps = dependencies({snapshots: [
             pullRequest({
                 authorLogin: 'neo-gpt-emmy',
-                body       : 'Authored by Grace (Claude Opus 5, Claude Code).',
+                body       : 'Authored by @neo-opus-grace (Claude Opus 5, Claude Code).',
                 reviews    : [{state: 'APPROVED', submittedAt: '2026-07-29T07:00:00.000Z', commit: {oid: HEAD}, author: {login: 'neo-opus-vega'}}]
             }),
             pullRequest({
                 authorLogin: 'neo-gpt-emmy',
-                body       : 'Authored by Grace (Claude Opus 5, Claude Code).',
+                body       : 'Authored by @neo-opus-grace (Claude Opus 5, Claude Code).',
                 reviews    : [{state: 'APPROVED', submittedAt: '2026-07-29T07:00:00.000Z', commit: {oid: HEAD}, author: {login: 'neo-opus-vega'}}]
             })
         ]});
@@ -729,6 +776,16 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
 
         expect(result.predicate.strictMergeReady).toBe(false);
         expect(result.predicate.blockers.some(entry => entry.includes('cross-family review mandate unsatisfied'))).toBe(true);
+    });
+
+    test('a social name alone selects no identity and falls back to the protected opener family', async () => {
+        const row = () => pullRequest({authorLogin: 'neo-gpt-emmy', body: 'Authored by Grace (Claude Opus 5, Claude Code).',
+            reviews: [{state: 'APPROVED', submittedAt: '2026-07-29T07:00:00.000Z', commit: {oid: HEAD}, author: {login: 'neo-opus-vega'}}]});
+        const result = await project(dependencies({snapshots: [row(), row()]}));
+        expect(result.predicate.strictMergeReady).toBe(true);
+        const unavailable = dependencies({snapshots: [row(), row()]});
+        unavailable.readFamilySource = async () => ({state: 'unavailable', code: 'publication-restore-fenced'});
+        expect((await project(unavailable)).predicate.strictMergeReady).toBe(false);
     });
 
     test('a truncated approvals window turns a NEGATIVE into unresolved, never a factual unsatisfied', async () => {
@@ -1929,12 +1986,11 @@ async function runAgentPrReviewBodyLintWorkflow({
 test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrReview (#11273)', () => {
     let PullRequestService;
     let GraphqlService;
-    let RepositoryService;
     let originalQuery;
-    let originalViewerLogin;
+    let submittingLogin;
 
     // The submitting reviewer's family is what a round is charged to, so every budget case has to say
-    // who is submitting. Seeded as a rostered gpt identity by default; the cases that care about
+    // who is submitting. Bound to the explicit protected gpt fixture by default; cases about
     // cross-family independence or an unclassifiable submitter override it per test.
     const SUBMITTING_LOGIN           = 'neo-gpt-emmy';
     const PR_NODE_ID                 = 'PR_kwDOABcD9999999999';
@@ -1977,6 +2033,27 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             activationIssue,
             pullRequest: pullRequestNode(pullRequestOverrides)
         }
+    });
+
+    /** @summary Supplies create-side acquisition only; updates keep their ordinary query path without a family source. */
+    const manageReview = (options, overrides = {}) => options.action !== 'create'
+        ? PullRequestService.managePrReview(options, overrides)
+        : PullRequestService.managePrReview(options, {
+        source          : FIXTURE_GITHUB_SOURCE,
+        now             : () => new Date('2026-07-29T12:00:00.000Z'),
+        readFamilySource: async () => fixtureFamilySource(),
+        rest            : async () => {throw new Error('Unexpected REST request in this review fixture');},
+        query           : async (...args) => {
+            const result = await GraphqlService.query(...args);
+            if (!result || typeof result !== 'object') return result;
+            const withActors = repository => repository && Object.hasOwn(repository, 'pullRequest')
+                ? {...repository, pullRequest: fixturePullRequestActors(repository.pullRequest)} : repository;
+            return {...result,
+                viewer: Object.hasOwn(result, 'viewer') ? result.viewer : fixtureActor(submittingLogin),
+                ...(result.repository ? {repository: withActors(result.repository)} : {}),
+                ...(result.targetRepository ? {targetRepository: withActors(result.targetRepository)} : {})};
+        },
+        ...overrides
     });
 
     // Compact review body that passes BOTH layers of the tool-boundary template-anchor validator:
@@ -2221,20 +2298,15 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         const prServiceModule = await import('../../../../../../ai/services/github-workflow/PullRequestService.mjs');
 
         PullRequestService = prServiceModule.default;
-        RepositoryService  =(await import('../../../../../../ai/services/github-workflow/RepositoryService.mjs')).default;
         originalQuery      = GraphqlService.query.bind(GraphqlService);
-        originalViewerLogin = RepositoryService.viewerLogin;
     });
 
     test.afterAll(() => {
-        GraphqlService.query         = originalQuery;
-        // Restored rather than left seeded: `RepositoryService` is a singleton every later spec in this
-        // worker shares, and a leaked viewer identity would silently decide another suite's budget.
-        RepositoryService.viewerLogin = originalViewerLogin;
+        GraphqlService.query = originalQuery;
     });
 
     test.beforeEach(() => {
-        RepositoryService.viewerLogin = SUBMITTING_LOGIN;
+        submittingLogin = SUBMITTING_LOGIN;
 
         // Default mock: resolve PR id then return create-shaped review payload.
         // Tests override per-case via reassigning GraphqlService.query.
@@ -2405,7 +2477,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         };
 
         for (const state of ['APPROVED', 'COMMENT']) {
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 action   : 'create',
                 pr_number: 11273,
                 state,
@@ -2476,7 +2548,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
               '| RA-1 | prior template miss | ADDRESSED | current body keeps canonical headings |',
               `| RA-1 | ${cell} | ADDRESSED | escaped per markdown |`
           ),
-          submitRoundTwo     = body => PullRequestService.managePrReview({
+          submitRoundTwo     = body => manageReview({
               action: 'create', pr_number: 11273, state: 'APPROVED', body
           });
 
@@ -2815,7 +2887,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return pullRequestLookup();
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 14688,
             state    : 'APPROVED',
@@ -2848,7 +2920,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         };
 
         for (const repo of [undefined, 'devindex']) {
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 ...(repo ? {repo} : {}),
                 action   : 'create',
                 pr_number: 73,
@@ -2877,7 +2949,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     test('action:create + state:APPROVED → submits APPROVE event, returns review payload', async () => {
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11273,
             state    : 'APPROVED',
@@ -2934,7 +3006,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 14527,
             state    : 'APPROVED',
@@ -2984,7 +3056,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             acknowledgedRequestChanges: {
                 'neo-gpt-euclid': `addressed-by-${PR_HEAD_OID.slice(0, 12)}`
             },
@@ -3023,7 +3095,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             throw new Error('review mutation must not run');
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             acknowledgedRequestChanges: {
                 'neo-gpt-euclid': 'addressed-by-deadbee'
             },
@@ -3050,7 +3122,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11273,
             state    : 'REQUEST_CHANGES',
@@ -3102,7 +3174,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 return pullRequestLookup()
             };
 
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 action   : 'create',
                 pr_number: 15309,
                 state    : item.state,
@@ -3125,7 +3197,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'COMMENTED'}}}
         };
 
-        const proseResult = await PullRequestService.managePrReview({
+        const proseResult = await manageReview({
             action   : 'create',
             pr_number: 15309,
             state    : 'COMMENT',
@@ -3144,7 +3216,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
         };
 
-        const managedResult = await PullRequestService.managePrReview({
+        const managedResult = await manageReview({
             action   : 'create',
             pr_number: 15309,
             state    : 'REQUEST_CHANGES',
@@ -3191,7 +3263,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 15257,
             state    : 'REQUEST_CHANGES',
@@ -3233,9 +3305,9 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
         };
 
-        RepositoryService.viewerLogin = 'neo-opus-grace';
+        submittingLogin = 'neo-opus-grace';
 
-        const claudeRound = await PullRequestService.managePrReview({
+        const claudeRound = await manageReview({
             action   : 'create',
             pr_number: 17141,
             state    : 'REQUEST_CHANGES',
@@ -3251,9 +3323,9 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         // The mirror, on the identical fixture: the family that already spent its round is refused.
         // Without this half the test above would pass on a guard that admits everyone.
-        RepositoryService.viewerLogin = 'neo-gpt-emmy';
+        submittingLogin = 'neo-gpt-emmy';
 
-        const gptSecondRound = await PullRequestService.managePrReview({
+        const gptSecondRound = await manageReview({
             action   : 'create',
             pr_number: 17141,
             state    : 'REQUEST_CHANGES',
@@ -3277,27 +3349,34 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
         };
 
-        for (const [label, login] of [
-            ['an unrostered human contributor', 'some-human-contributor'],
-            ['a cold viewer cache',             null]
-        ]) {
-            RepositoryService.viewerLogin = login;
-
-            const result = await PullRequestService.managePrReview({
-                action   : 'create',
-                pr_number: 17141,
-                state    : 'REQUEST_CHANGES',
-                body     : VALID_ORDINARY_REQUEST_CHANGES_BODY
-            });
-
-            expect(result.code, label).toBe('PR_REVIEW_BUDGET_VALIDATION_FAILED');
-            expect(result.message, label).toContain('not a classifiable maintainer family');
-        }
+        submittingLogin = 'some-human-contributor';
+        const result = await manageReview({
+            action   : 'create',
+            pr_number: 17141,
+            state    : 'REQUEST_CHANGES',
+            body     : VALID_ORDINARY_REQUEST_CHANGES_BODY
+        });
+        expect(result.code).toBe('PR_REVIEW_BUDGET_VALIDATION_FAILED');
+        expect(result.message).toContain('not a classifiable maintainer family');
 
         // Note the shape: a PR with ZERO prior reviews. Under the old global count this was the freest
         // possible case, so the refusal cannot be inherited from an exhausted budget — it comes only
         // from the submitter being unplaceable.
-        expect(mutationCallCount, 'neither unclassified submitter reached a mutation').toBe(0);
+        expect(mutationCallCount, 'the unclassified submitter reached no mutation').toBe(0);
+    });
+
+    test('a missing original provider viewer refuses before any review mutation', async () => {
+        submittingLogin = null;
+        let mutationCalls = 0;
+        GraphqlService.query = async query => {
+            if (query.includes('GetPullRequestId')) return pullRequestLookup();
+            mutationCalls++;
+            throw new Error('Missing viewer must not reach the mutation');
+        };
+        const result = await manageReview({action: 'create', pr_number: 17141, state: 'REQUEST_CHANGES',
+            body: VALID_ORDINARY_REQUEST_CHANGES_BODY});
+        expect(result.code).toBe('GITHUB_VIEWER_UNBOUND');
+        expect(mutationCalls).toBe(0);
     });
 
     test('#17141: a repair-minted re-entry is refused unless every clause checks out', async () => {
@@ -3336,7 +3415,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
         };
 
-        const submit = reviewBudgetOverrideReason => PullRequestService.managePrReview({
+        const submit = reviewBudgetOverrideReason => manageReview({
             action   : 'create',
             pr_number: 17141,
             state    : 'REQUEST_CHANGES',
@@ -3402,7 +3481,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             }
         };
 
-        const submit = reason => PullRequestService.managePrReview({
+        const submit = reason => manageReview({
             action                    : 'create',
             pr_number                 : 17141,
             state                     : 'REQUEST_CHANGES',
@@ -3475,7 +3554,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action                    : 'create',
             pr_number                 : 17141,
             state                     : 'REQUEST_CHANGES',
@@ -3507,7 +3586,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}};
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 15257,
             state    : 'REQUEST_CHANGES',
@@ -3562,7 +3641,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 15320,
             state    : 'REQUEST_CHANGES',
@@ -3609,7 +3688,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 throw new Error(`${item.name}: mutation must not run`)
             };
 
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 action   : 'create',
                 pr_number: 15320,
                 state    : 'REQUEST_CHANGES',
@@ -3645,13 +3724,13 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             body     : VALID_ORDINARY_REQUEST_CHANGES_BODY
         };
 
-        const grandfathered = await PullRequestService.managePrReview(input);
+        const grandfathered = await manageReview(input);
 
         expect(grandfathered.error).toBeUndefined();
         expect(grandfathered.reviewBudget.outcome).toBe('grandfathered');
 
         createdAt = '2026-07-16T13:57:03.001Z';
-        const gated = await PullRequestService.managePrReview(input);
+        const gated = await manageReview(input);
 
         expect(gated.code).toBe('PR_REVIEW_BUDGET_VALIDATION_FAILED');
         expect(mutationCallCount).toBe(1);
@@ -3681,7 +3760,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
             };
 
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 action   : 'create',
                 pr_number: 15257,
                 state    : 'REQUEST_CHANGES',
@@ -3710,7 +3789,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}};
         };
 
-        const first = await PullRequestService.managePrReview({
+        const first = await manageReview({
             action   : 'create',
             pr_number: 15257,
             state    : 'REQUEST_CHANGES',
@@ -3728,7 +3807,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             id  : 'PRR_terminal'
         })];
 
-        const second = await PullRequestService.managePrReview({
+        const second = await manageReview({
             action   : 'create',
             pr_number: 15257,
             state    : 'REQUEST_CHANGES',
@@ -3743,7 +3822,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         let graphqlCallCount = 0;
         GraphqlService.query = async () => { graphqlCallCount++ };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 15257,
             state    : 'REQUEST_CHANGES',
@@ -3767,7 +3846,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             let graphqlCallCount = 0;
             GraphqlService.query = async () => { graphqlCallCount++ };
 
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 action   : 'create',
                 pr_number: 15257,
                 state    : 'REQUEST_CHANGES',
@@ -3798,7 +3877,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}};
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 15257,
             state    : 'REQUEST_CHANGES',
@@ -3853,7 +3932,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 throw new Error(`${item.name}: mutation must not run`);
             };
 
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 action                    : 'create',
                 pr_number                 : 15257,
                 state                     : 'REQUEST_CHANGES',
@@ -3877,7 +3956,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11273,
             state    : 'COMMENT',
@@ -3902,7 +3981,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {updatePullRequestReview: {pullRequestReview: {...REVIEW_NODE, submittedAt: '2026-05-13T01:00:00Z'}}};
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'update',
             review_id: 'PRR_kwDOABcD1111111111',
             body     : `Updated review body.\n\n${VALID_REVIEW_BODY}`
@@ -3933,7 +4012,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         GraphqlService.query = round2UpdateStub({reviews: [{...REVIEW_NODE, body: VALID_REVIEW_BODY}]}, mutations);
 
-        const result = await PullRequestService.managePrReview({action: 'update', review_id: REVIEW_NODE.id, body: VALID_ROUND_2_REVIEW_BODY});
+        const result = await manageReview({action: 'update', review_id: REVIEW_NODE.id, body: VALID_ROUND_2_REVIEW_BODY});
 
         expect(result).toEqual(getRound2DispositionRelationFailure({body: VALID_ROUND_2_REVIEW_BODY, reviews: [], state: 'APPROVED'}));
         expect(result.message).toContain('no submitted');
@@ -3945,7 +4024,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         GraphqlService.query = round2UpdateStub({reviews: [priorRequestChanges(), {...REVIEW_NODE, body: VALID_REVIEW_BODY}]}, mutations);
 
-        const admitted = await PullRequestService.managePrReview({action: 'update', review_id: REVIEW_NODE.id, body: VALID_ROUND_2_REVIEW_BODY});
+        const admitted = await manageReview({action: 'update', review_id: REVIEW_NODE.id, body: VALID_ROUND_2_REVIEW_BODY});
 
         expect(admitted.error, 'the cited CHANGES_REQUESTED review is another node').toBeUndefined();
         expect(mutations).toHaveLength(1);
@@ -3953,7 +4032,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         // Written into the cited review itself, the relation finds no round to cite — not the state matrix's complaint
         GraphqlService.query = round2UpdateStub({reviewId: 'PRR_123', reviews: [priorRequestChanges()], state: 'CHANGES_REQUESTED'}, mutations);
 
-        const self = await PullRequestService.managePrReview({action: 'update', review_id: 'PRR_123', body: VALID_ROUND_2_REVIEW_BODY});
+        const self = await manageReview({action: 'update', review_id: 'PRR_123', body: VALID_ROUND_2_REVIEW_BODY});
 
         expect(self.message).toContain('no submitted');
         expect(mutations).toHaveLength(1)
@@ -3965,11 +4044,11 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         GraphqlService.query = round2UpdateStub({reviews: [priorRequestChanges()], state: 'COMMENTED'}, mutations);
 
-        expect((await PullRequestService.managePrReview({action: 'update', review_id: REVIEW_NODE.id, body})).error).toBeUndefined();
+        expect((await manageReview({action: 'update', review_id: REVIEW_NODE.id, body})).error).toBeUndefined();
 
         GraphqlService.query = round2UpdateStub({reviews: [priorRequestChanges()], state: 'APPROVED'}, mutations);
 
-        expect((await PullRequestService.managePrReview({action: 'update', review_id: REVIEW_NODE.id, body})).message,
+        expect((await manageReview({action: 'update', review_id: REVIEW_NODE.id, body})).message,
             'an approval cannot carry a STILL_OPEN round').toContain('STILL_OPEN');
         expect(mutations).toHaveLength(1)
     });
@@ -3992,7 +4071,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 return null
             };
 
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 action   : 'update',
                 review_id: REVIEW_NODE.id,
                 body     : item.incoming
@@ -4027,7 +4106,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         // Exactly what an author who edited their own copy sends: the prose, without a tail they
         // never wrote and cannot know about.
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'update',
             review_id: REVIEW_NODE.id,
             body     : VALID_ORDINARY_REQUEST_CHANGES_BODY
@@ -4059,9 +4138,9 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
         };
 
-        RepositoryService.viewerLogin = 'neo-opus-grace';
+        submittingLogin = 'neo-opus-grace';
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 17354,
             state    : 'REQUEST_CHANGES',
@@ -4099,7 +4178,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 return null
             };
 
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 action   : 'update',
                 review_id: REVIEW_NODE.id,
                 body     : item.incoming
@@ -4111,7 +4190,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     test('rejects invalid action', async () => {
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action: 'submit',
             body  : 'irrelevant'
         });
@@ -4122,7 +4201,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     test('rejects missing body', async () => {
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11273,
             state    : 'APPROVED'
@@ -4134,7 +4213,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     test('create: rejects missing pr_number', async () => {
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action: 'create',
             state : 'APPROVED',
             body  : VALID_REVIEW_BODY
@@ -4146,7 +4225,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     test('create: rejects invalid state', async () => {
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11273,
             state    : 'INVALID_STATE',
@@ -4159,7 +4238,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     test('update: rejects missing review_id', async () => {
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action: 'update',
             body  : VALID_REVIEW_BODY
         });
@@ -4176,7 +4255,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 99999,
             state    : 'APPROVED',
@@ -4194,7 +4273,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             throw new Error('Network failure');
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11273,
             state    : 'APPROVED',
@@ -4225,7 +4304,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return pullRequestLookup();
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11491,
             state    : 'APPROVED',
@@ -4286,7 +4365,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return pullRequestLookup();
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11491,
             state    : 'APPROVED',
@@ -4351,7 +4430,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return pullRequestLookup();
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 13547,
             state    : 'APPROVED',
@@ -4374,7 +4453,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 13547,
             state    : 'APPROVED',
@@ -4395,7 +4474,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 13910,
             state    : 'COMMENT',
@@ -4449,7 +4528,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 const body = invalid.value === null
                     ? format.body.replace(`${format.field}\n`, '')
                     : format.body.replace(REVIEW_ORIGIN_SESSION_ID, invalid.value);
-                const result = await PullRequestService.managePrReview({
+                const result = await manageReview({
                     action   : 'create',
                     body,
                     pr_number: 16148,
@@ -4476,7 +4555,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return pullRequestLookup();
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 13910,
             state    : 'REQUEST_CHANGES',
@@ -4501,7 +4580,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return pullRequestLookup();
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 13910,
             state    : 'REQUEST_CHANGES',
@@ -4784,7 +4863,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 14263,
             state    : 'APPROVED',
@@ -4805,7 +4884,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         let graphqlCallCount = 0;
         GraphqlService.query = async () => { graphqlCallCount++; return pullRequestLookup(); };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 14263,
             state    : 'APPROVED',
@@ -4853,7 +4932,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return pullRequestLookup();
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 13547,
             state    : 'APPROVED',
@@ -4883,7 +4962,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             // Missing: [IMPACT], [COMPLEXITY], [EFFORT_PROFILE]
         ].join('\n');
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11491,
             state    : 'APPROVED',
@@ -4912,7 +4991,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return null;
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11491,
             state    : 'APPROVED',
@@ -4945,7 +5024,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             VALID_REVIEW_BODY
         ].join('\n');
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 12448,
             state    : 'APPROVED',
@@ -5001,7 +5080,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             '[EFFORT_PROFILE]: Quick Win'
         ].join('\n');
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 12448,
             state    : 'APPROVED',
@@ -5032,7 +5111,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             VALID_REVIEW_BODY
         ].join('\n');
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 12448,
             state    : 'APPROVED',
@@ -5059,7 +5138,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             '[EFFORT_PROFILE]: Quick Win'
         ].join('\n');
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11491,
             state    : 'APPROVED',
@@ -5080,7 +5159,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         // Existing test on line ~488 covers the action-check; this one explicitly pins the
         // precedence ordering: action-validation must fire BEFORE body-validation so callers
         // get the more specific error first.
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action: 'submit', // invalid
             body  : 'no anchors here'
         });
@@ -5093,7 +5172,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         // Body-presence check must fire BEFORE body-shape validation so the error names the
         // more fundamental gap (`body is required`) rather than emitting a 7-anchor missing
         // list against an empty body.
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 11491,
             state    : 'APPROVED'
@@ -5125,7 +5204,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'COMMENTED'}}}
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 17214,
             state    : 'COMMENT',
@@ -5149,7 +5228,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {updatePullRequestReview: {pullRequestReview: {...REVIEW_NODE, state}}}
         };
 
-        const result = await PullRequestService.managePrReview({action: 'update', review_id: REVIEW_NODE.id, body});
+        const result = await manageReview({action: 'update', review_id: REVIEW_NODE.id, body});
 
         return {mutationCallCount, result}
     };
@@ -5284,7 +5363,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         // ...and a different family gets no separate allowance either: the bound is the demand, so
         // there is no per-family COMMENT quota to spend in the first place.
-        RepositoryService.viewerLogin = 'neo-opus-grace';
+        submittingLogin = 'neo-opus-grace';
 
         const otherFamily = await submitComment(postBudgetCommentLookup());
 
@@ -5304,7 +5383,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 : {addPullRequestReview: {pullRequestReview: REVIEW_NODE}}
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 17214,
             state    : 'APPROVED',
@@ -5342,7 +5421,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 return {addPullRequestReview: {pullRequestReview: REVIEW_NODE}}
             };
 
-            const result = await PullRequestService.managePrReview({
+            const result = await manageReview({
                 action   : 'create',
                 pr_number: 17214,
                 state    : 'APPROVED',
@@ -5400,7 +5479,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: REVIEW_NODE}}
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 17214,
             state    : 'APPROVED',
@@ -5450,7 +5529,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: REVIEW_NODE}}
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 17214,
             state    : 'APPROVED',
@@ -5472,7 +5551,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: REVIEW_NODE}}
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 17214,
             state    : 'APPROVED',
@@ -5501,7 +5580,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 : {addPullRequestReview: {pullRequestReview: REVIEW_NODE}}
         };
 
-        const result = await PullRequestService.managePrReview({
+        const result = await manageReview({
             action   : 'create',
             pr_number: 17214,
             state    : 'APPROVED',

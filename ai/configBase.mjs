@@ -5,6 +5,7 @@ import ConfigProvider, {leaf}                                      from './Confi
 import {parseEmbeddingProviderEnv}                                 from './embeddingProviders.mjs';
 import {EMBEDDING_SAFE_PROCESSING_LIMIT_TOKENS}                    from './embeddingSafeBand.mjs';
 import {CANONICAL_PLANE_ID, parsePlaneIdEnv, resolvePlaneDataRoot} from './planeConfig.mjs';
+import {normalizeExpectedPlaneTarget}                              from './services/fleet/mcpWireParsing.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -61,6 +62,24 @@ function parseSupervisedTaskHeapMb(envVarName, {env = process.env} = {}) {
     }
 
     return parsed;
+}
+
+/**
+ * @summary Decodes one optional target into an atomic tuple; malformed input clears the prior resolved target.
+ * A plain object would be merged by Provider. Empty tuples explicitly mean invalid input; only
+ * an absent env returns undefined. Consumers still validate resolved defaults and overlays.
+ * @param {String} envVarName Environment variable name, not its value.
+ * @param {Object} [options] Injectable env source.
+ * @returns {String[]|undefined} Frozen [planeId, dataRoot], invalid [], or unset undefined.
+ */
+function parseSeatPlaneTargetEnv(envVarName, {env = process.env} = {}) {
+    const raw = env[envVarName];
+    if (raw === undefined) return;
+    try {
+        const target = typeof raw === 'string' ? normalizeExpectedPlaneTarget(JSON.parse(raw)) : null;
+        if (target) return Object.freeze([target.planeId, target.dataRoot]);
+    } catch {}
+    return Object.freeze([]);
 }
 
 /**
@@ -262,11 +281,11 @@ class ConfigBase extends ConfigProvider {
                  */
                 planeBearer: leaf('', 'NEO_MCP_REMOTE_TOKEN', 'string'),
                 /**
-                 * Atomic JSON target bound by authenticated bootstrap; partial overlays cannot inherit authority fields.
-                 * The consuming server validates it; this process's local plane is never its default.
-                 * @type {String|null}
+                 * Atomic [planeId, dataRoot] target decoded from bootstrap JSON; [] is explicitly invalid.
+                 * Consumers validate the complete tuple; this process's local plane is never its default.
+                 * @type {String[]|null}
                  */
-                planeTarget: leaf(null, 'NEO_SEAT_PLANE_TARGET', 'string'),
+                planeTarget: leaf(null, 'NEO_SEAT_PLANE_TARGET', 'array', {parse: parseSeatPlaneTargetEnv}),
                 /**
                  * The Fleet's host record of the operator's presence (`{mode, since, until, writtenAt}`), which
                  * the Stop hook reads with one local file read instead of a plane call. Empty: no record, and

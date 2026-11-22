@@ -249,13 +249,13 @@ async function resolveGitHubViewerLogin() {
  * @summary Runs the shared GitHub identity assertion from this server's request context.
  * @returns {Promise<Object>}
  */
-async function defaultGitHubIdentityAssertion() {
+async function defaultGitHubIdentityAssertion({githubLogin: capturedLogin} = {}) {
     const expectedIdentity = process.env.NEO_AGENT_IDENTITY ||
         RequestContextService.getAgentIdentityNodeId() ||
         RequestContextService.getUserId();
     const memoryCoreIdentity = RequestContextService.getAgentIdentityNodeId() ||
         RequestContextService.getUserId();
-    const githubLogin = await resolveGitHubViewerLogin();
+    const githubLogin = capturedLogin === undefined ? await resolveGitHubViewerLogin() : capturedLogin;
     const assertion   = assertExpectedGitHubIdentity({
         expected   : expectedIdentity,
         actualLogin: githubLogin,
@@ -415,7 +415,7 @@ function guardRepositoryTargetTools(mapping) {
  * @param {Object} [identityOptions] Injectable identity resolver options for tests.
  * @returns {Promise<Object>} Conversation data or a structured error.
  */
-async function getConversationRouter(options, identityOptions = {}) {
+async function getConversationRouter(options, identityOptions = {}, dependencies = {}) {
     // Backward-compatible positional number form is always a pull request.
     if (typeof options === 'number') {
         return PullRequestService.getConversation(options);
@@ -451,7 +451,7 @@ async function getConversationRouter(options, identityOptions = {}) {
                 return PullRequestService.getConversation({
                     ...options,
                     identityAssertion
-                });
+                }, dependencies);
             } catch (error) {
                 return {
                     schemaVersion: 'neo.merge-readiness/v1',
@@ -520,11 +520,6 @@ const serviceMapping = {
 
 assertCompleteGitHubToolAccessPolicy(serviceMapping);
 
-// Ordering is load-bearing: malformed target refusal must happen before the write guard's GitHub
-// viewer probe. Wrap identity first, then repository validation around the resulting handlers.
-const identityGuardedServiceMapping = guardGitHubWriteTools(serviceMapping);
-const guardedServiceMapping         = guardRepositoryTargetTools(identityGuardedServiceMapping);
-
 // Exported for unit-test access. `buildDevBranchGuard` accepts injected
 // `delegate` + `getBranch` for fixture-driven testing without spawning real `git`.
 export {
@@ -542,16 +537,37 @@ export {
     resolveGitHubIdentityAssertion
 };
 
-const toolService = Neo.create(ToolService, {
-    compactToolDescriptions     : true,
-    compactToolSchemas          : true,
-    openApiFilePath,
-    serviceMapping              : guardedServiceMapping,
-    toolListDescriptionMaxLength: 120
-});
+/**
+ * @summary Builds a Server-owned dispatch table with its qualified family reader, never a process-global reader swap.
+ * @param {Object} dependencies Internal dependencies, not MCP arguments.
+ * @param {Function} [dependencies.readFamilySource] Reads this Server's bound source for the captured forge viewer.
+ * @returns {Neo.ai.mcp.ToolService} Passive tool registry; the creating Server owns destruction.
+ */
+function createGitHubToolService({readFamilySource} = {}) {
+    const mapping = {
+        ...serviceMapping,
+        get_conversation: options => getConversationRouter(options, {}, {readFamilySource}),
+        manage_pr_review: options => PullRequestService.managePrReview(options, {
+            readFamilySource,
+            assertViewer: viewer => resolveGitHubIdentityAssertion({
+                assertExpectedIdentity: () => defaultGitHubIdentityAssertion({githubLogin: viewer.login})
+            })
+        })
+    };
+    return Neo.create(ToolService, {
+        compactToolDescriptions: true,
+        compactToolSchemas     : true,
+        openApiFilePath,
+        // Target validation precedes the public-write identity probe.
+        serviceMapping              : guardRepositoryTargetTools(guardGitHubWriteTools(mapping)),
+        toolListDescriptionMaxLength: 120
+    });
+}
+
+const toolService = createGitHubToolService();
 
 const buildToolCatalog = toolService.buildToolCatalog.bind(toolService);
 const callTool         = toolService.callTool        .bind(toolService);
 const listTools        = toolService.listTools       .bind(toolService);
 
-export {buildToolCatalog, callTool, listTools};
+export {buildToolCatalog, callTool, createGitHubToolService, listTools};
