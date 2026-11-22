@@ -26,7 +26,10 @@
  * A partial read decides only on positive evidence. A native author's red head stays theirs; an eligible
  * outside red head reaches maintainer investigation unless a current content decision or native on-head
  * change request preserves the author's action. With complete coverage, a confirmed conflict on an
- * independently approved head takes precedence over red CI. Review and merge also require complete coverage.
+ * independently approved head takes precedence over red CI. For a non-draft, unapproved green head with an
+ * already-requested reviewer (`row.mergeable`), `CONFLICTING` routes integration to `rotation` or `author`
+ * while preserving `reviewRequests`, and `UNKNOWN`/missing withholds the action as `unknown` until resolved.
+ * Review and merge also require complete coverage.
  *
  * A head that reports no CI (`ci: null`) never turns green, so its merge chip reads GitHub's `CLEAN`
  * instead, still beside the approval on the head: a repository that requires no review is CLEAN without one.
@@ -282,6 +285,18 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
 
     if (incomplete) {
         return {role: 'unknown', kind: null, ids: []}
+    }
+
+    if (!draft && !approved && ci === 'green' && requested.length) {
+        if (mergeable === 'CONFLICTING') {
+            return eligible
+                ? {role: 'rotation', kind: 'rebase', ids: []}
+                : {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
+        }
+
+        if (mergeable !== 'MERGEABLE') {
+            return {role: 'unknown', kind: null, ids: []}
+        }
     }
 
     // A green outside head pushed past a seat's review is that seat's Round 2; a seat's standing change request joins

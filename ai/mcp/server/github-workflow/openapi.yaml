@@ -1129,9 +1129,9 @@ paths:
       x-annotations:
         readOnlyHint: false
       description: |
-        Create or update one formal PR review. Read `.agents/skills/pr-review/SKILL.md` and use its exact cycle template. Create requires `pr_number`, `state`, and `body`; update requires `review_id` and `body`.
+        Create or update one formal PR review using `.agents/skills/pr-review/SKILL.md` templates (`create`: `pr_number`, `state`, `body`; `update`: `review_id`, `body`).
 
-        APPROVED requires reviewer-keyed `acknowledgedRequestChanges` for outstanding current-head RCs. REQUEST_CHANGES is budgeted on post-cutover PRs: two submitted RCs, then COMMENT/APPROVED or one complete terminal Drop+Supersede. Incomplete history fails closed. `reviewBudgetOverrideReason` is a disclosed exceptional bypass persisted in the review body. CREATE bodies must not supply service-owned `[review-budget-managed]` / `[review-budget-override]` marker lines or their reserved audit-field list entries; the service rejects them before GitHub access and appends the canonical receipt itself when applicable. Direct gh/UI submission is outside this pre-submit gate and only receives workflow telemetry.
+        APPROVED requires reviewer-keyed `acknowledgedRequestChanges` for live current-head RCs and polls live REST mergeability for the reviewed head before submitting (`PR_MERGE_CONFLICT` on conflict, `PR_MERGEABILITY_UNAVAILABLE` on null/mismatch; zero mutations). REQUEST_CHANGES is budgeted on post-cutover PRs: two submitted RCs, then COMMENT/APPROVED or one terminal Drop+Supersede; incomplete history fails closed, and `reviewBudgetOverrideReason` records an exceptional bypass. CREATE bodies must not supply service-owned `[review-budget-managed]` / `[review-budget-override]` markers or reserved audit fields; the service appends the receipt itself. Direct gh/UI submission bypasses this pre-submit gate.
       tags: [Pull Requests]
       parameters:
         - name: pr_number
@@ -1250,6 +1250,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Live mergeability preflight refused an `APPROVED` create before review submission (`PR_MERGE_CONFLICT` when the reviewed head conflicts with the current base; `PR_MERGEABILITY_UNAVAILABLE` when GitHub produced no usable verdict after bounded reads or observed a different head). Separate pre-submit source read; neither submits a review nor alters reviewer requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagePrReviewApprovalErrorResponse'
         '500':
           description: GraphQL API request failed.
           content:
@@ -2523,6 +2529,36 @@ components:
           type: string
           description: "`git rev-parse HEAD` read back from `repoPath` after checkout."
           example: "0123456789abcdef0123456789abcdef01234567"
+
+    ManagePrReviewApprovalErrorResponse:
+      type: object
+      description: Structured refusal when `manage_pr_review` (`action=create`, `state=APPROVED`) observes a live head/base conflict (`PR_MERGE_CONFLICT`) or unavailable/head-mismatched mergeability (`PR_MERGEABILITY_UNAVAILABLE`) before `addPullRequestReview`.
+      required: [error, message, code, pr_number, mergeabilityAttempts]
+      properties:
+        error:
+          type: string
+          example: "Pull request has merge conflicts"
+        message:
+          type: string
+          example: "Cannot submit APPROVED review on PR #123: live GitHub pull-request read observed head 0123456 conflicting with current base fedcba9 (separate pre-submit source read; reviewer requests and public check history are unchanged)."
+        code:
+          type: string
+          enum: [PR_MERGE_CONFLICT, PR_MERGEABILITY_UNAVAILABLE]
+          description: "`PR_MERGE_CONFLICT` — live head conflicts with current base. `PR_MERGEABILITY_UNAVAILABLE` — no usable positive observation for the reviewed head after bounded reads."
+        pr_number:
+          type: integer
+          example: 123
+        headSha:
+          type: string
+          description: Live head SHA observed by the REST pull-request read when available.
+        baseSha:
+          type: string
+          description: Live base SHA observed by the REST pull-request read when available.
+        mergeabilityAttempts:
+          type: integer
+          minimum: 1
+          description: Number of bounded live pull-request reads performed before returning the refusal.
+          example: 1
 
     ManagePrReviewersResponse:
       type: object

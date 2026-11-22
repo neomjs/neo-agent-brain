@@ -1930,6 +1930,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     let PullRequestService;
     let GraphqlService;
     let RepositoryService;
+    let originalExecShell;
     let originalQuery;
     let originalViewerLogin;
 
@@ -2220,14 +2221,16 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
         const prServiceModule = await import('../../../../../../ai/services/github-workflow/PullRequestService.mjs');
 
-        PullRequestService = prServiceModule.default;
-        RepositoryService  =(await import('../../../../../../ai/services/github-workflow/RepositoryService.mjs')).default;
-        originalQuery      = GraphqlService.query.bind(GraphqlService);
+        PullRequestService  = prServiceModule.default;
+        RepositoryService   = (await import('../../../../../../ai/services/github-workflow/RepositoryService.mjs')).default;
+        originalExecShell   = PullRequestService.execShell.bind(PullRequestService);
+        originalQuery       = GraphqlService.query.bind(GraphqlService);
         originalViewerLogin = RepositoryService.viewerLogin;
     });
 
     test.afterAll(() => {
-        GraphqlService.query         = originalQuery;
+        PullRequestService.execShell  = originalExecShell;
+        GraphqlService.query          = originalQuery;
         // Restored rather than left seeded: `RepositoryService` is a singleton every later spec in this
         // worker shares, and a leaked viewer identity would silently decide another suite's budget.
         RepositoryService.viewerLogin = originalViewerLogin;
@@ -2235,6 +2238,14 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
     test.beforeEach(() => {
         RepositoryService.viewerLogin = SUBMITTING_LOGIN;
+        PullRequestService.execShell  = async () => ({
+            stdout: JSON.stringify({
+                mergeable      : true,
+                mergeable_state: 'clean',
+                head           : {sha: PR_HEAD_OID},
+                base           : {sha: 'base1234567890abcdef1234567890abcdef1234'}
+            })
+        });
 
         // Default mock: resolve PR id then return create-shaped review payload.
         // Tests override per-case via reassigning GraphqlService.query.
