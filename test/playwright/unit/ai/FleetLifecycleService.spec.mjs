@@ -22,6 +22,7 @@ import {once}                                                                   
 import {createHash, generateKeyPairSync, sign as cryptoSign}                                         from 'node:crypto';
 import {verifyBridgeToken}                                                                           from '../../../../ai/mcp/server/neural-link/verifyBridgeToken.mjs';
 import {generateAntigravityMcpFiles}                                                                 from '../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
+import {AntigravityProjectBindingRefusal}                                                            from '../../../../ai/services/fleet/antigravityProjectBinding.mjs';
 import {createBridgeVerifierPayload}                                                                 from '../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
 import {holdRuntimeGenerationReferences}                                                             from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
 import {LISTENER_STATE_RELATIVE}                                                                     from '../../../../ai/scripts/lifecycle/hooks/claude/wakeListenerHook.mjs';
@@ -2341,6 +2342,64 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             await expect(FleetLifecycleService.assertRemoteMcpCapability(agent, {antigravityStartContext: {...context, capability: unpinned}}))
                 .rejects.toThrow('the Antigravity runtime proof does not match its selected binary and profile context')
         } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
+    test('a binding retry pins only the newest proven generation it was granted, and only its context validates a build other than the selected one', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-retry-')), origWarn = console.warn;
+        install({agents: {seat: agentDef('seat', {harnessType: 'antigravity', metadata: {}})}});
+        console.warn = () => {};
+        try {
+            const
+                ids        = {newer: 'b'.repeat(64), proven: 'a'.repeat(64), older: 'c'.repeat(64)},
+                generation = (id, version, provenAt) => {
+                    const appBundle = path.join(root, 'antigravity', id, 'Antigravity.app'), binaryPath = path.join(appBundle, 'Contents', 'MacOS', 'Electron');
+
+                    fs.mkdirSync(path.dirname(binaryPath), {recursive: true});
+                    fs.symlinkSync(process.execPath, binaryPath);
+                    return {id, appBundle, binaryPath, shortVersion: version, buildVersion: version, ...(provenAt ? {provenAt} : {})}
+                },
+                generations = [generation(ids.newer, '2.33.0'), generation(ids.proven, '2.32.2', '2026-11-22T07:00:00.000Z'),
+                    generation(ids.older, '2.31.0', '2026-11-10T07:00:00.000Z')],
+                recorded    = [];
+
+            FleetLifecycleService.harnessBinaryPaths        = {antigravity: process.execPath};
+            FleetLifecycleService.harnessGenerationOptIns   = {antigravity: true};
+            FleetLifecycleService.harnessGenerationRoot     = root;
+            FleetLifecycleService.harnessGenerationStore    = {
+                list                : () => generations,
+                readLedger          : () => ({version: 1, admitted: [], rejected: []}),
+                recordBindingRefusal: async options => { recorded.push(options); return {rejected: true} }
+            };
+            FleetLifecycleService.antigravityRuntimeProbeFn = async () => ({available: true, reason: null, fingerprints: {}});
+
+            const
+                agent   = FleetLifecycleService.getRegistry().getDefinition('seat'),
+                refusal = (generationId, code) => Object.assign(new Error('binding failed'), {code: 'ANTIGRAVITY_BINDING_FAILED',
+                    harnessBindingRefusal: {family: 'antigravity', generationId, code}}),
+                retry   = FleetLifecycleService.harnessBindingRetry(refusal(ids.newer, 'route-mismatch'));
+
+            expect(retry).toEqual({family: 'antigravity', refusedGenerationId: ids.newer, code: 'route-mismatch', weight: 'late', generationId: ids.proven});
+            expect(FleetLifecycleService.harnessBindingRetry(refusal(ids.newer, 'listener-unproven')).weight).toBe('early');
+            expect(FleetLifecycleService.harnessBindingRetry(refusal(ids.newer, 'canceled')), 'a Stop counts against no build').toBeNull();
+            expect(FleetLifecycleService.harnessBindingRetry(refusal(ids.proven, 'route-mismatch')), 'a proven build\'s refusal is not the build\'s').toBeNull();
+            expect(FleetLifecycleService.harnessBindingRetry(Object.assign(new Error('x'), {code: 'ANTIGRAVITY_BINDING_FAILED'})), 'no refusal, no retry').toBeNull();
+
+            const context = await FleetLifecycleService.resolveAntigravityStartContext(agent, retry);
+
+            expect(context.capability.harnessGeneration.generationId).toBe(ids.proven);
+            await expect(FleetLifecycleService.assertRemoteMcpCapability(agent, {antigravityStartContext: context})).resolves.toBe(context.capability);
+            await expect(FleetLifecycleService.assertRemoteMcpCapability(agent, {antigravityStartContext: {...context}}), 'the same pin outside the retry is not the selected build')
+                .rejects.toThrow('the Antigravity runtime proof does not match its selected binary and profile context');
+            await expect(FleetLifecycleService.resolveAntigravityStartContext(agent, {...retry}), 'a retry this service did not grant pins nothing')
+                .rejects.toThrow('a binding retry pins only the newest proven generation it was granted');
+
+            expect(await FleetLifecycleService.recordHarnessBindingRefusal({...retry})).toBeNull();
+            expect(await FleetLifecycleService.recordHarnessBindingRefusal(retry)).toEqual({rejected: true});
+            expect(recorded).toEqual([{root, family: 'antigravity', id: ids.newer, code: 'route-mismatch', weight: 'late'}])
+        } finally {
+            console.warn = origWarn;
             fs.rmSync(root, {recursive: true, force: true})
         }
     });
@@ -5668,6 +5727,47 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
                 await FleetLifecycleService.stop('seat');
                 fs.rmSync(fixture2.root, {recursive:true, force:true})
             }
+        } finally {
+            console.warn = origWarn
+        }
+    });
+
+    test('a bound Start proves its generation; only the binding\'s own refusal carries what a retry needs', async () => {
+        const
+            pinned     = {family:'antigravity', generationId:'b'.repeat(64), shortVersion:'2.33.0', buildVersion:'2.33.0'},
+            capability = {harnessType:'antigravity', binaryPath:process.execPath, launchBinaryPath:process.execPath, harnessGeneration:pinned},
+            proofs     = [],
+            origWarn   = console.warn;
+
+        console.warn = () => {};
+
+        const run = async bindAntigravityProject => {
+            const fixture = installAntigravitySeat(), signal = FleetLifecycleService.beginStart('seat');
+
+            FleetLifecycleService.harnessGenerationStore = {markProven: async options => { proofs.push(options); return {proven: true} }};
+
+            try {
+                return await FleetLifecycleService.start('seat', {startSignal:signal, launchAdmission:ADMISSION, remoteMcpCapability:capability, bindAntigravityProject})
+                    .catch(error => error)
+            } finally {
+                FleetLifecycleService.finishStart('seat', signal);
+                await FleetLifecycleService.stop('seat');
+                fs.rmSync(fixture.root, {recursive:true, force:true})
+            }
+        };
+
+        try {
+            const
+                refused  = await run(async () => { throw new AntigravityProjectBindingRefusal('route-mismatch') }),
+                imitated = await run(async () => { throw Object.assign(new Error('a mismatched descriptor'), {code:'route-mismatch'}) });
+
+            expect(refused).toMatchObject({code:'ANTIGRAVITY_BINDING_FAILED', harnessBindingRefusal:{family:'antigravity', generationId:'b'.repeat(64), code:'route-mismatch'}});
+            expect(imitated.code).toBe('ANTIGRAVITY_BINDING_FAILED');
+            expect(imitated.harnessBindingRefusal, 'a failure that is not the binder\'s refusal counts against no build').toBeUndefined();
+            expect(proofs, 'a refused Start proves nothing').toEqual([]);
+
+            expect(await run(async () => {})).toMatchObject({id:'seat', state:'running'});
+            expect(proofs).toEqual([{root:FleetLifecycleService.getHarnessGenerationRoot(), family:'antigravity', id:'b'.repeat(64)}])
         } finally {
             console.warn = origWarn
         }

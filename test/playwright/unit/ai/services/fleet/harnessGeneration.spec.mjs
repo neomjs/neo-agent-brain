@@ -4,9 +4,12 @@ import os             from 'node:os';
 import path           from 'node:path';
 import {
     harnessGenerationId,
+    isBindingRejection,
     listHarnessGenerations,
+    markHarnessGenerationProven,
     materializeHarnessGeneration,
     readHarnessHostGate,
+    recordHarnessGenerationBindingRefusal,
     retireHarnessGenerations,
     selectHarnessGeneration
 } from '../../../../../../ai/services/fleet/harnessGeneration.mjs';
@@ -276,6 +279,76 @@ test.describe('harnessGeneration', () => {
         expect(again).toMatchObject({admitted: true, id: g0.id});
         expect(ledger().admitted[0].retiredAt).toBeUndefined();
         expect(selectHarnessGeneration({root, family: 'codex-desktop'}).id).toBe(g2.id)
+    });
+
+    test('the first bound Start proves a generation once, and the list carries its provenAt', async () => {
+        const [g0, g1] = await admitBuilds(2), at = new Date('2026-11-22T06:00:00Z'), family = 'codex-desktop';
+
+        expect(await markHarnessGenerationProven({root, family, id: g0.id, now: () => at})).toEqual({proven: true});
+        expect(await markHarnessGenerationProven({root, family, id: g0.id}), 'a second bound Start records nothing').toEqual({proven: false});
+        expect(await markHarnessGenerationProven({root, family, id: 'f'.repeat(64)})).toEqual({proven: false});
+
+        expect(listHarnessGenerations({root, family}).map(({id, provenAt}) => [id, provenAt]))
+            .toEqual([[g1.id, undefined], [g0.id, at.toISOString()]]);
+        expect(selectHarnessGeneration({root, family}).id, 'a proof never moves the selection').toBe(g1.id)
+    });
+
+    test('a late refusal rejects at once: the generation leaves admitted for rejected, the selection falls back, and the next retirement removes its copy', async () => {
+        const [g0, g1] = await admitBuilds(2), family = 'codex-desktop';
+
+        expect(await recordHarnessGenerationBindingRefusal({root, family, id: g1.id, code: 'route-mismatch', weight: 'late'})).toEqual({rejected: true});
+
+        expect(ledger().admitted.map(entry => entry.id)).toEqual([g0.id]);
+        expect(ledger().rejected.at(-1)).toMatchObject({id: g1.id, shortVersion: '26.111.0', reason: 'binding-refused:route-mismatch'});
+        expect(isBindingRejection(ledger().rejected.at(-1))).toBe(true);
+        expect(selectHarnessGeneration({root, family}).id).toBe(g0.id);
+        expect(fs.existsSync(path.join(familyDir(), g1.id)), 'the rejection itself removes nothing').toBe(true);
+
+        expect(await retireHarnessGenerations({root, family, held: () => []})).toEqual({retired: [g1.id], kept: [g0.id]});
+        expect(fs.existsSync(path.join(familyDir(), g1.id))).toBe(false)
+    });
+
+    test('an early refusal is inconclusive once, rejects on the same code again, and a different early code replaces it', async () => {
+        const [, g1] = await admitBuilds(2), family = 'codex-desktop', at = new Date('2026-11-22T06:00:00Z');
+        const refuse = code => recordHarnessGenerationBindingRefusal({root, family, id: g1.id, code, weight: 'early', now: () => at});
+
+        expect(await refuse('listener-unproven')).toEqual({rejected: false});
+        expect(ledger().admitted[1].bindingRefusal).toEqual({code: 'listener-unproven', at: at.toISOString()});
+
+        expect(await refuse('renderer-unproven'), 'another step is a first refusal at that step').toEqual({rejected: false});
+        expect(ledger().admitted[1].bindingRefusal.code).toBe('renderer-unproven');
+
+        expect(await refuse('renderer-unproven')).toEqual({rejected: true});
+        expect(ledger().rejected.at(-1)).toMatchObject({id: g1.id, reason: 'binding-refused:renderer-unproven'})
+    });
+
+    test('a proven or unknown generation records nothing, and a proof clears an early refusal', async () => {
+        const [g0, g1] = await admitBuilds(2), family = 'codex-desktop';
+
+        await markHarnessGenerationProven({root, family, id: g0.id});
+        expect(await recordHarnessGenerationBindingRefusal({root, family, id: g0.id, code: 'route-mismatch', weight: 'late'})).toEqual({rejected: false});
+        expect(await recordHarnessGenerationBindingRefusal({root, family, id: 'f'.repeat(64), code: 'route-mismatch', weight: 'late'})).toEqual({rejected: false});
+
+        await recordHarnessGenerationBindingRefusal({root, family, id: g1.id, code: 'listener-unproven', weight: 'early'});
+        await markHarnessGenerationProven({root, family, id: g1.id});
+        expect(ledger().admitted[1].bindingRefusal).toBeUndefined();
+        expect(ledger().admitted.map(entry => entry.id)).toEqual([g0.id, g1.id])
+    });
+
+    test('a rejected copy something holds, or whose hold cannot be read, survives the retirement; only a binding rejection reads as one', async () => {
+        const [g0, g1] = await admitBuilds(2), family = 'codex-desktop';
+
+        await recordHarnessGenerationBindingRefusal({root, family, id: g1.id, code: 'route-mismatch', weight: 'late'});
+
+        expect(await retireHarnessGenerations({root, family, held: () => [g1.id]})).toEqual({retired: [], kept: [g0.id]});
+        expect(await retireHarnessGenerations({root, family, held: () => { throw new Error('a pin cannot be read') }}))
+            .toEqual({retired: [], kept: [g0.id], reason: 'a pin cannot be read'});
+        expect(fs.existsSync(path.join(familyDir(), g1.id))).toBe(true);
+        expect(listHarnessGenerations({root, family}).map(({id}) => id), 'and it is never listed again').toEqual([g0.id]);
+
+        expect(isBindingRejection({reason: 'probe-refused:error'})).toBe(false);
+        expect(isBindingRejection({reason: 'gatekeeper-rejected'})).toBe(false);
+        expect(isBindingRejection(undefined)).toBe(false)
     });
 
     test('a published copy whose seal no longer verifies is reported, never replaced', async () => {

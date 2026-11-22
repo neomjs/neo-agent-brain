@@ -237,6 +237,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   it never replaces a newer launch's record.
  *   Claude preparation may also return `repoTrust`: per-assignment file-projection observations
  *   (`projected`, `trusted`, `distrusted`, or `unverified`), not native-session acceptance receipts.
+ *   An Antigravity Start whose project binding a new, unproven build refused runs once more on the family's
+ *   newest proven build (`lifecycleService.harnessBindingRetry`), and answers with that retry.
  * @throws {Error} when `lifecycleService` / `agentId` is missing, the agent is unknown or has no GitHub
  *   PAT stored (refused before any checkout), the seat cannot reach the Memory Core it must use (see
  *   above; refused before any checkout), `managedRoot`
@@ -259,7 +261,7 @@ export async function startAgentProvisioned(options = {}) {
 
     try {
         startSignal.throwIfAborted();
-        const status = await provisionAgent({...options, startSignal});
+        const status = await provisionWithBindingRetry({...options, startSignal});
         return startSignal.aborted ? lifecycleService.canceledStart(agentId) : status
     } catch (error) {
         if (startSignal.aborted) return lifecycleService.canceledStart(agentId);
@@ -270,8 +272,36 @@ export async function startAgentProvisioned(options = {}) {
 }
 
 /**
+ * @summary {@link provisionAgent}, once more when the lifecycle grants a refused Antigravity binding a retry on the
+ * newest proven build. The refusal counts against the refused build only when that retry binds; a refused retry
+ * is final, counts nothing, and its error is the Start's answer.
+ * @param {Object} options The public composer's options plus its registered `startSignal`.
+ * @returns {Promise<Object>} The prepared seat's status.
+ * @private
+ */
+async function provisionWithBindingRetry(options) {
+    const {lifecycleService, startSignal} = options;
+
+    try {
+        return await provisionAgent(options)
+    } catch (error) {
+        const retry = !startSignal.aborted && typeof lifecycleService.harnessBindingRetry === 'function'
+            ? lifecycleService.harnessBindingRetry(error)
+            : null;
+
+        if (!retry) throw error;
+
+        const status = await provisionAgent(options, retry);
+        await lifecycleService.recordHarnessBindingRefusal(retry);
+        return status
+    }
+}
+
+/**
  * @summary Prepare and launch under the caller's lifecycle-owned pending attempt.
  * @param {Object} options The public composer's options plus its registered `startSignal`.
+ * @param {Object|null} [retry=null] A binding retry the lifecycle granted, pinning the newest proven Antigravity
+ *     build; a second argument, so no caller's options can set it.
  * @returns {Promise<Object>} The prepared seat's status.
  * @private
  */
@@ -303,7 +333,7 @@ async function provisionAgent({
     instanceRoot,
     agentosRuntimeRoot,
     nodePath
-} = {}) {
+} = {}, retry = null) {
     if (!lifecycleService) throw new Error("startAgentProvisioned: 'lifecycleService' is required.");
     if (!agentId)          throw new Error("startAgentProvisioned: 'agentId' is required.");
 
@@ -406,7 +436,7 @@ async function provisionAgent({
         }
 
         antigravityStartContext = validAntigravityStartContext(
-            await lifecycleService.resolveAntigravityStartContext(agent)
+            await lifecycleService.resolveAntigravityStartContext(agent, retry)
         );
         startSignal.throwIfAborted()
     }

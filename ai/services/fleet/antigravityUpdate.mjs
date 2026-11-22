@@ -8,6 +8,7 @@ import {pipeline}                                from 'node:stream/promises';
 import {fileURLToPath}                           from 'node:url';
 import {
     HARNESS_GENERATION_FAMILIES,
+    isBindingRejection,
     materializeHarnessGeneration,
     readHarnessGenerationLedger,
     selectHarnessGeneration
@@ -493,8 +494,9 @@ export function compareDottedVersions(left, right) {
  * @param {String} [options.architecture=process.arch]
  * @param {Function} [options.readPlistKey]
  * @param {Function} [options.readLedger] Injectable ledger reader (`readHarnessGenerationLedger`).
- * @returns {Promise<{updateAvailable: Boolean, alreadyAdmitted: Boolean, currentVersion: String,
- *                    selectedGenerationId: String|null, candidate: Object, feedUrl: String}>}
+ * @returns {Promise<{updateAvailable: Boolean, alreadyAdmitted: Boolean, alreadyRejected: Boolean, currentVersion: String,
+ *                    selectedGenerationId: String|null, candidate: Object, feedUrl: String}>} `alreadyRejected` names a
+ *     version whose project binding was refused while a proven build bound; like an admitted one, it is never an update.
  */
 export async function checkAntigravityUpdate({
     root = null,
@@ -527,16 +529,18 @@ export async function checkAntigravityUpdate({
     const
         yamlText        = await response.text(),
         candidate       = parseAntigravityUpdateManifest(yamlText, {manifestUrl: config.manifestUrl}),
-        alreadyAdmitted = storeRoot !== null &&
-            readLedger({root: storeRoot, family: ANTIGRAVITY_FAMILY}).admitted.some(gen => gen.shortVersion === candidate.version);
+        ledger          = storeRoot === null ? null : readLedger({root: storeRoot, family: ANTIGRAVITY_FAMILY}),
+        alreadyAdmitted = ledger !== null && ledger.admitted.some(gen => gen.shortVersion === candidate.version),
+        alreadyRejected = ledger !== null && ledger.rejected.some(gen => gen.shortVersion === candidate.version && isBindingRejection(gen));
 
     const
         currentVersion     = selectedGeneration?.shortVersion ?? config.shortVersion,
         isNewerThanCurrent = compareDottedVersions(candidate.version, currentVersion) > 0;
 
     return {
-        updateAvailable     : !alreadyAdmitted && isNewerThanCurrent,
+        updateAvailable     : !alreadyAdmitted && !alreadyRejected && isNewerThanCurrent,
         alreadyAdmitted,
+        alreadyRejected,
         currentVersion,
         selectedGenerationId: selectedGeneration?.id ?? null,
         candidate,
@@ -567,7 +571,8 @@ function findExtractedAppBundle(directory, fsImpl) {
  *
  * Security & operational invariants:
  * 1. If the feed's candidate version is already admitted (or not newer than `currentVersion` unless `force: true`),
- *    returns `{status: 'up-to-date'}` without downloading the archive.
+ *    returns `{status: 'up-to-date'}` without downloading the archive. A version whose project binding was refused
+ *    while a proven build bound returns `{status: 'already-rejected', reason: 'binding-refused'}` instead, for good.
  * 2. If the candidate version was already rejected by the current `admitterId` in this process (unless `retryRejected: true`),
  *    returns `{status: 'already-rejected'}` without re-downloading, while automatically expiring when the admitting code changes.
  * 3. The archive bytes are verified against both `candidate.size` and `candidate.sha512` BEFORE writing or extracting.
@@ -630,6 +635,10 @@ async function runAcquireAntigravityUpdate({
         readPlistKey,
         readLedger
     });
+
+    if (!force && check.alreadyRejected) {
+        return {status: 'already-rejected', check, generation: null, reason: 'binding-refused'}
+    }
 
     if (!force && (!check.updateAvailable || check.alreadyAdmitted)) {
         return {status: 'up-to-date', check, generation: null}

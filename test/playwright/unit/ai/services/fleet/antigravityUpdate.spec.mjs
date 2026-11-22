@@ -13,6 +13,7 @@ import {
 import {
     materializeHarnessGeneration,
     readHarnessGenerationLedger,
+    recordHarnessGenerationBindingRefusal,
     selectHarnessGeneration
 } from '../../../../../../ai/services/fleet/harnessGeneration.mjs';
 
@@ -241,6 +242,41 @@ test.describe('antigravityUpdate', () => {
                 'Accept': 'text/yaml, text/plain, */*'
             }
         }])
+    });
+
+    test('a version whose binding was refused while a proven build bound is never fetched again', async () => {
+        const
+            storeRoot = path.join(root, 'generations'),
+            installed = makeAntigravityBundle(path.join(root, 'installed')),
+            newer     = makeAntigravityBundle(path.join(root, 'newer'), {shortVersion: '2.30.0', buildVersion: '2.30.0'}),
+            payload   = Buffer.from('antigravity-2.30.0-archive'),
+            yaml      = buildManifestYaml({version: '2.30.0', sha512: createHash('sha512').update(payload).digest('base64'), size: payload.length}),
+            urls      = [],
+            seams     = (shortVersion, cdhash) => ({
+                copyBundle      : (source, target) => fs.cpSync(source, target, {recursive: true}),
+                readBundleInfo  : () => ({bundleId: 'com.google.antigravity', shortVersion, buildVersion: shortVersion, executable: 'Antigravity'}),
+                inspectSignature: () => ({verified: true, teamId: 'EQHXZ8M8AV', cdhash}),
+                assessGatekeeper: () => true,
+                probe           : async () => ({available: true, reason: null})
+            });
+
+        await materializeHarnessGeneration({root: storeRoot, family: 'antigravity', sourceBundle: installed, seams: seams('2.29.1', 'a'.repeat(64))});
+        const refused = await materializeHarnessGeneration({root: storeRoot, family: 'antigravity', sourceBundle: newer, seams: seams('2.30.0', 'b'.repeat(64))});
+
+        expect(await recordHarnessGenerationBindingRefusal({root: storeRoot, family: 'antigravity', id: refused.id, code: 'route-mismatch', weight: 'late'}))
+            .toEqual({rejected: true});
+
+        const result = await acquireAntigravityUpdate({
+            root        : storeRoot,
+            appBundle   : installed,
+            fetchImpl   : async url => { urls.push(url); return {ok: true, status: 200, text: async () => yaml} },
+            architecture: 'arm64',
+            readPlistKey: readFakePlistKey
+        });
+
+        expect(result).toMatchObject({status: 'already-rejected', reason: 'binding-refused', generation: null});
+        expect(result.check).toMatchObject({currentVersion: '2.29.1', alreadyAdmitted: false, alreadyRejected: true, updateAvailable: false});
+        expect(urls, 'the manifest only, never the archive').toEqual([MANIFEST_URL])
     });
 
     test('the selected generation names the feed, not a stale installed bundle', async () => {

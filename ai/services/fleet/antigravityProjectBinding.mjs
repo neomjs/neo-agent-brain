@@ -32,6 +32,24 @@ export class AntigravityProjectBindingRefusal extends Error {
     }
 }
 
+const
+    EARLY_REFUSALS     = new Set(['stale-endpoint', 'endpoint-missing', 'listener-unproven', 'browser-unavailable',
+        'renderer-unproven', 'native-capability-unproven', 'route-timeout']),
+    UNCOUNTED_REFUSALS = new Set(['canceled', 'runtime-changed-during-start']);
+
+/**
+ * @summary How a refused binding weighs against the harness build that ran it. `early` names the startup
+ * and wait steps that a new build's slow first launch (Gatekeeper, cold caches) can time out on, so one
+ * such refusal is inconclusive. `uncounted` means the build is not the cause: a Stop, or a runtime that
+ * changed during the Start. Every other code, including one added later, is `late`: deterministic for the build.
+ * @param {String} code A refusal code of {@link AntigravityProjectBindingRefusal}.
+ * @returns {'early'|'late'|'uncounted'}
+ */
+export function classifyBindingRefusal(code) {
+    if (UNCOUNTED_REFUSALS.has(code)) return 'uncounted';
+    return EARLY_REFUSALS.has(code) ? 'early' : 'late'
+}
+
 /**
  * @summary Select one registered project in the running seat's Antigravity renderer.
  * A Start-owned listener proof, native capability proof, registry proof, exact section route and
@@ -102,8 +120,8 @@ export async function bindAntigravityProject({
     });
 
     return withOwnedAntigravityCdp({
-        profileDirectory     : profile,
-        expectedProcess      : owner,
+        profileDirectory: profile,
+        expectedProcess : owner,
         verifyProfileListener,
         fileSystem,
         WebSocketCtor,
@@ -312,12 +330,14 @@ function parseActivePort(value) {
 
 /**
  * @summary Wait only on the supplied profile until its endpoint is owned by the original Start.
- * Reaching the deadline during an in-flight poll step or the inter-poll sleep reports `lastRefusal`;
- * caller cancellation still refuses with `canceled`.
+ * A port file never seen refuses `endpoint-missing`, a build that never wrote one; after the first
+ * sighting the refusal is the last stale or unproven reading. Reaching the deadline during an in-flight
+ * poll step or the inter-poll sleep reports that refusal; caller cancellation still refuses with `canceled`.
  * @private
  */
 async function waitForOwnedProfileEndpoint({profile, activePortPath, fileSystem, verifyProfileListener, owner, deadline, signal, now = Date.now}) {
-    let lastRefusal = 'stale-endpoint';
+    let lastRefusal = 'stale-endpoint',
+        seen        = false;
 
     while (remaining(deadline, now) > 0) {
         checkAbort(signal);
@@ -326,6 +346,8 @@ async function waitForOwnedProfileEndpoint({profile, activePortPath, fileSystem,
             const
                 profileStat = await within(Promise.resolve().then(() => fileSystem.lstat(profile)), deadline, signal, now),
                 portStat    = await within(Promise.resolve().then(() => fileSystem.lstat(activePortPath)), deadline, signal, now);
+
+            seen = true;
 
             if (!profileStat.isDirectory() || profileStat.isSymbolicLink() ||
                 !portStat.isFile() || portStat.isSymbolicLink()) {
@@ -365,7 +387,7 @@ async function waitForOwnedProfileEndpoint({profile, activePortPath, fileSystem,
     }
 
     checkAbort(signal);
-    throw refuse(lastRefusal)
+    throw refuse(seen ? lastRefusal : 'endpoint-missing')
 }
 
 /** @summary Sleep until the next poll without racing a deadline timeout against `lastRefusal`. @private */
