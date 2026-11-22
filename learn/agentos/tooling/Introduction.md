@@ -74,7 +74,7 @@ The Agent OS exposes five package-backed MCP servers that work together to give 
 
 ## Shared Architectural Patterns
 
-All servers share a common architectural DNA, leveraging the Neo.mjs core itself for backend development. For detailed implementation guidelines, see the [MCPServerBaseClass documentation](./MCPServerBaseClass.md):
+All servers share a common architectural DNA, leveraging the Neo.mjs core itself for backend development. For detailed implementation guidelines, see the [MCPServerBaseClass documentation](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/tooling/MCPServerBaseClass.md):
 
 ### 1. OpenAPI-Driven Design
 

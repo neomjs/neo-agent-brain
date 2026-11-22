@@ -201,7 +201,7 @@ cloud deployment to agents. For llama.cpp, run the dedicated
 Agent OS-ready.
 
 For the production profile, the same readiness idea is encoded in
-[`deploy/cloud/docker-compose.yml`](../../../deploy/cloud/docker-compose.yml): Chroma
+[`deploy/cloud/docker-compose.yml`](https://github.com/neomjs/neo-agent-brain/blob/dev/deploy/cloud/docker-compose.yml): Chroma
 must be healthy before KB and MC start. The day-0 proof above is the operator
 check that the remote KB and MC MCP endpoints themselves answer before the
 deployment is handed to agents.
@@ -342,7 +342,7 @@ docker compose \
 For a production compose stack, use the same one-shot form against the deployed
 `kb-server`. This is an operator-triggered seed/import, not the periodic cloud
 orchestrator `kbSync` lane; `NEO_ORCHESTRATOR_KB_SYNC_ENABLED` remains `false`
-per [ADR 0014](../decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md).
+per [ADR 0014](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md).
 
 Then query Neo-shared content:
 

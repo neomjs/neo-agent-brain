@@ -320,7 +320,7 @@ and "durable but passive"; it gets durable first, then active where safe.
   Knowledge Base, Git history, and Memory Core recall in evidence loops.
 - [Wake Substrate Incident Protocol](./tooling/WakeSubstrateIncidentProtocol.md)
   is the operational reference for wake failures and durable-mailbox fallback.
-- [ADR-0002: Wake-Substrate Standards Alignment](./decisions/0002-phase3-wake-substrate-standards-alignment.md)
+- [ADR-0002: Wake-Substrate Standards Alignment](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0002-phase3-wake-substrate-standards-alignment.md)
   is the source of authority for `silent`, `next_turn`, and `immediate` delivery.
 - [Memory Core MCP API](./tooling/MemoryCoreMcpApi.md) is the reference surface
   for `add_message`, `list_messages`, and related mailbox operations.

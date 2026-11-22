@@ -239,10 +239,10 @@ containment, and honest loss.
 
 The guide-level story lives above four decision records and the current implementation:
 
-- [ADR-0025: Orchestrator Container-Health Diagnostics Daemon](./decisions/0025-orchestrator-container-health-self-healing.md)
-- [ADR-0026: Orchestrator Recovery Actuator](./decisions/0026-recovery-actuator.md)
-- [ADR-0027: Autonomous Memory Core Data-Recovery Actuator](./decisions/0027-autonomous-data-recovery-actuator.md)
-- [ADR-0014: Cloud Deployment Topology + Scheduler Task Taxonomy](./decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md)
+- [ADR-0025: Orchestrator Container-Health Diagnostics Daemon](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0025-orchestrator-container-health-self-healing.md)
+- [ADR-0026: Orchestrator Recovery Actuator](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0026-recovery-actuator.md)
+- [ADR-0027: Autonomous Memory Core Data-Recovery Actuator](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0027-autonomous-data-recovery-actuator.md)
+- [ADR-0014: Cloud Deployment Topology + Scheduler Task Taxonomy](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md)
 
 Related guides:
 

@@ -8,11 +8,11 @@ This is not the day-0 tutorial. The executable first-run path lives in
 [Day-0 Cloud Deployment Tutorial](cloud-deployment/Day0Tutorial.md). For the
 older shared-KB/MC background and threat model, see
 [Shared Deployment MVP](SharedDeployment.md). For the cloud topology decision
-record, see [ADR 0014](decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md).
+record, see [ADR 0014](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md).
 
 ## Section 1: Current Baseline vs Target Topology
 
-The current reference compose file in [`deploy/cloud/`](../../deploy/cloud/) is a
+The current reference compose file in [`deploy/cloud/`](https://github.com/neomjs/neo-agent-brain/tree/dev/deploy/cloud) is a
 profile-structured Agent OS stack. The default profile starts the MCP baseline:
 `chroma`, `kb-server`, and `mc-server`. The `cloud` profile adds the
 cloud-safe `orchestrator`; the `ingress` profile adds the Caddy reverse proxy;
@@ -510,7 +510,7 @@ Post-MVP residual work is tracked separately under:
   insufficient.
 - [#11732](https://github.com/neomjs/neo/issues/11732) - graph-store evolution
   beyond the SQLite + mounted-volume MVP baseline. Resolved by
-  [ADR 0015](decisions/0015-graph-store-backend-posture.md): keep SQLite + WAL
+  [ADR 0015](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0015-graph-store-backend-posture.md): keep SQLite + WAL
   for now; reopen networked SQL only on graph-specific multi-writer, scale, HA,
   or storage-platform evidence.
 - [#11733](https://github.com/neomjs/neo/issues/11733) - downstream external

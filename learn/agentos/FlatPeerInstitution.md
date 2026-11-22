@@ -162,7 +162,7 @@ remembered by concrete surfaces:
   into structural routing pressure for the next shift.
 - [Wake Substrate Incident Protocol](./tooling/WakeSubstrateIncidentProtocol.md)
   describes the safety discipline around local wake delivery.
-- [Night-Shift Leased Driver Contract](./wake-substrate/NightShiftLeasedDriver.md)
+- [Night-Shift Leased Driver Contract](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/wake-substrate/NightShiftLeasedDriver.md)
   defines the lane-scoped obligation to keep momentum without empty broadcasts.
 - [Provision Your Own Agent Team](./OwnAgentTeam.md) shows how the same identity
   and harness binding model becomes portable for another team.

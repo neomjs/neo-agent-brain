@@ -350,8 +350,8 @@ config root:
 | App profile (login, sessions, MCP config) | the instance's `--user-data-dir` | No — sign in once; Fleet writes the MCP config |
 
 `<project>` is derived from the repository path — every character outside `A–Z`, `a–z` and
-`0–9` becomes `-`, a space included: `/Users/me/agents/ada/neomjs/neo` becomes
-`-Users-me-agents-ada-neomjs-neo` — and every worktree and subdirectory of one repository
+`0–9` becomes `-`, a space included: `/Users/you/agents/ada/neomjs/neo` becomes
+`-Users-you-agents-ada-neomjs-neo` — and every worktree and subdirectory of one repository
 shares it (Claude Code's [memory storage rule](https://code.claude.com/docs/en/memory#storage-location)).
 A Fleet seat does not use that derivation. Fleet writes `autoMemoryDirectory: <seat>/memory`
 into the clone's `.claude/settings.local.json` at every Start, for both Claude families, so a
