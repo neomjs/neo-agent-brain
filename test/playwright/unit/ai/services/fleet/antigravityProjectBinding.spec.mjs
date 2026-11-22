@@ -5,6 +5,7 @@ import {expect, test}             from '@playwright/test';
 import {
     AntigravityProjectBindingRefusal,
     bindAntigravityProject,
+    classifyBindingRefusal,
     proveRegisteredAntigravityProject,
     readAntigravityProjectRecord
 } from '../../../../../../ai/services/fleet/antigravityProjectBinding.mjs';
@@ -254,11 +255,19 @@ test.describe('bindAntigravityProject', () => {
         expect(fixture.behavior.targetReadCount).toBe(4)
     });
 
-    test('keeps a missing profile endpoint within the bounded Start timeout', async () => {
+    test('keeps a missing profile endpoint within the bounded Start timeout and names it endpoint-missing', async () => {
         const fixture = harness({portFileMissingReads:100});
 
-        await expect(fixture.run({timeoutMs:180})).rejects.toMatchObject({code:'stale-endpoint'});
+        await expect(fixture.run({timeoutMs:180})).rejects.toMatchObject({code:'endpoint-missing'});
         expect(fixture.observed.listenerChecks).toBe(0);
+        expect(fixture.behavior.sockets).toHaveLength(0)
+    });
+
+    test('a port file that appears late and stays stale refuses stale-endpoint, not endpoint-missing', async () => {
+        const fixture = harness({portFileMissingReads:2, activePortText:'not-a-port\n/devtools/page/not-a-browser\n'});
+
+        await expect(fixture.run({timeoutMs:400})).rejects.toMatchObject({code:'stale-endpoint'});
+        expect(fixture.observed.portStatReads).toBeGreaterThan(2);
         expect(fixture.behavior.sockets).toHaveLength(0)
     });
 
@@ -283,7 +292,7 @@ test.describe('bindAntigravityProject', () => {
         await expect(missingPort.run({
             timeoutMs: 180,
             now      : makeFinalSleepClock(() => missingPort.observed.portStatReads >= 2)
-        })).rejects.toMatchObject({code: 'stale-endpoint'});
+        })).rejects.toMatchObject({code: 'endpoint-missing'});
         expect(missingPort.observed.portStatReads).toBe(2);
 
         const unreadyListener = harness({listenerUnreadyReads: 10});
@@ -645,5 +654,22 @@ test.describe('proveRegisteredAntigravityProject', () => {
 
         expect(stats).toBe(0);
         expect(closes).toBe(1)
+    });
+});
+
+test.describe('classifyBindingRefusal', () => {
+    test('weighs the startup and wait steps early, a Stop or changed runtime not at all, and every other code late', () => {
+        for (const code of ['stale-endpoint', 'endpoint-missing', 'listener-unproven', 'browser-unavailable',
+            'renderer-unproven', 'native-capability-unproven', 'route-timeout']) {
+            expect(classifyBindingRefusal(code)).toBe('early')
+        }
+
+        expect(classifyBindingRefusal('canceled')).toBe('uncounted');
+        expect(classifyBindingRefusal('runtime-changed-during-start')).toBe('uncounted');
+
+        for (const code of ['project-registry-unproven', 'route-refused', 'route-mismatch', 'marker-mismatch',
+            'renderer-ambiguous', 'devtools-command-failed', 'a-code-added-later']) {
+            expect(classifyBindingRefusal(code)).toBe('late')
+        }
     });
 });

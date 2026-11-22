@@ -1413,6 +1413,83 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(probeCalls).toEqual([{selectedBinaryPath: binaryPath}])
     });
 
+    /**
+     * @summary An Antigravity seat Start whose lifecycle answers each attempt from `answers` (an Error refuses it) and
+     * grants the binding retries `retryFor` returns.
+     */
+    async function startWithBindingAnswers({answers, retryFor}) {
+        const
+            agents         = repoAgent('seat'),
+            targetRepoRoot = '/managed/seat/neomjs-neo',
+            project        = {id: '154e7ad7-ab8c-4445-bd6b-9ac6bdddcd0f', name: 'seat', root: targetRepoRoot},
+            resolved       = [], granted = [], recorded = [],
+            lifecycle      = makeLifecycle({agents, startHandler: async (id, opts) => {
+                const answer = answers[lifecycle.calls.start.length - 1];
+
+                if (answer instanceof Error) throw answer;
+                return {id, running: true, state: 'running', cwd: opts.cwd, pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}
+            }}),
+            resolve        = lifecycle.resolveAntigravityStartContext;
+
+        agents.seat.harnessType = 'antigravity';
+        lifecycle.resolveAntigravityStartContext = async (agent, retry) => { resolved.push(retry); return resolve(agent) };
+        lifecycle.harnessBindingRetry            = error => { granted.push(error); return retryFor(error) };
+        lifecycle.recordHarnessBindingRefusal    = async retry => { recorded.push(retry); return {rejected: true} };
+
+        const result = await startAgentProvisioned({
+            lifecycleService     : lifecycle,
+            agentId              : 'seat',
+            managedRoot          : '/managed',
+            ensureRepo           : makeEnsureRepo(targetRepoRoot),
+            prepareWorkspace     : makePrepareWorkspace(undefined, {antigravityProject: project}),
+            agentosRuntimeRoot   : '/installed/neo',
+            excludeWorkspaceFiles: () => ({repoRoot: targetRepoRoot, paths: [], verified: true})
+        }).catch(error => error);
+
+        return {result, lifecycle, resolved, granted, recorded}
+    }
+
+    const
+        bindingFailure = (generationId, code) => Object.assign(new Error(`binding refused (${code})`), {
+            code: 'ANTIGRAVITY_BINDING_FAILED', harnessBindingRefusal: {family: 'antigravity', generationId, code}
+        }),
+        RETRY          = Object.freeze({family: 'antigravity', refusedGenerationId: 'new', code: 'route-mismatch', weight: 'late', generationId: 'proven'});
+
+    test('a binding a new build refused runs the Start once more on the proven build, which counts the refusal when it binds', async () => {
+        const
+            refusal                                          = bindingFailure('new', 'route-mismatch'),
+            {result, lifecycle, resolved, granted, recorded} = await startWithBindingAnswers({answers: [refusal, 'bound'], retryFor: () => RETRY});
+
+        expect(result).toMatchObject({id: 'seat', state: 'running'});
+        expect(lifecycle.calls.start).toHaveLength(2);
+        expect(lifecycle.calls.reserve, 'each attempt reserves its own launch').toHaveLength(2);
+        expect(resolved).toEqual([null, RETRY]);
+        expect(granted).toEqual([refusal]);
+        expect(recorded).toEqual([RETRY])
+    });
+
+    test('a refused retry is final: its error answers the Start, and nothing counts against either build', async () => {
+        const
+            second                                 = bindingFailure('proven', 'route-mismatch'),
+            {result, lifecycle, granted, recorded} = await startWithBindingAnswers({answers: [bindingFailure('new', 'route-mismatch'), second], retryFor: () => RETRY});
+
+        expect(result).toBe(second);
+        expect(lifecycle.calls.start).toHaveLength(2);
+        expect(granted, 'the retry\'s own refusal is never offered another').toHaveLength(1);
+        expect(recorded).toEqual([])
+    });
+
+    test('a refusal the lifecycle grants no retry answers the Start unchanged', async () => {
+        const
+            refusal                                 = bindingFailure('new', 'canceled'),
+            {result, lifecycle, resolved, recorded} = await startWithBindingAnswers({answers: [refusal], retryFor: () => null});
+
+        expect(result).toBe(refusal);
+        expect(lifecycle.calls.start).toHaveLength(1);
+        expect(resolved).toEqual([null]);
+        expect(recorded).toEqual([])
+    });
+
     test('Antigravity refuses project binding when the selected runtime fingerprint changes during the same Start', async () => {
         const
             agents     = repoAgent('seat'), targetRepoRoot = '/managed/seat/neomjs-neo',

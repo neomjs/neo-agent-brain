@@ -14,6 +14,8 @@ import {probeClaudeDesktopRuntime}     from './probeClaudeDesktopRuntime.mjs';
  * @summary Immutable, admitted copies of vendor GUI harness builds — the vendor-bundle sibling of
  * `runtimeGeneration.mjs`. A seat that launches a generation never shares a mutable
  * bundle with an updater, and a build that fails admission never replaces the selected one.
+ * Admission cannot prove a seat's project binding, so a generation's first bound Start proves it,
+ * and a build whose binding is refused while a proven one binds is rejected.
  * The Fleet service is the store's only writer; runs for one family are serialized in-process.
  */
 
@@ -28,6 +30,8 @@ const
     PLIST_BUDDY    = '/usr/libexec/PlistBuddy',
     // the selected generation and its rollback survive every retirement
     KEPT_NEWEST    = 2,
+    // a rejection a refused project binding caused, as opposed to one admission caused
+    BINDING_REASON = 'binding-refused:',
     chains         = new Map();
 
 /**
@@ -172,6 +176,21 @@ function readLedger(directory) {
     return ledger
 }
 
+/** @summary Publishes a family's ledger in one atomic write. */
+function writeLedger(directory, ledger) {
+    writeFileAtomicSync(path.join(directory, LEDGER), JSON.stringify(ledger, null, 4))
+}
+
+/** @summary Queues `run(directory)` on the family's chain, so the store's writers never interleave. */
+function onChain(directory, run) {
+    const
+        key  = `${directory}\0`,
+        next = (chains.get(key) ?? Promise.resolve()).then(() => run(directory));
+
+    chains.set(key, next.catch(() => {}));
+    return next
+}
+
 /**
  * @summary Reads one family's generation ledger (`{version, admitted, rejected}`), returning
  * an empty ledger when absent and throwing `ledger-invalid` when malformed.
@@ -194,11 +213,11 @@ export function readHarnessGenerationLedger({root, family} = {}) {
 /**
  * @summary The family's admitted generations whose copy is present, newest admission first, each with
  * the paths derived from the store root and its ledger entry. A seat that runs any of them is a seat
- * of this family, whichever one is selected now.
+ * of this family, whichever one is selected now. A generation a bound Start proved carries `provenAt`.
  * @param {Object} options
  * @param {String} options.root Absolute store root.
  * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.
- * @returns {Array<{id: String, appBundle: String, binaryPath: String, shortVersion: String, buildVersion: String}>}
+ * @returns {Array<{id: String, appBundle: String, binaryPath: String, shortVersion: String, buildVersion: String, provenAt?: String}>}
  */
 export function listHarnessGenerations({root, family} = {}) {
     const directory = familyDirectory(root, family);
@@ -207,7 +226,7 @@ export function listHarnessGenerations({root, family} = {}) {
         const appBundle = path.join(directory, entry.id, entry.appName);
 
         return {id: entry.id, appBundle, binaryPath: path.join(appBundle, 'Contents', 'MacOS', entry.executable),
-            shortVersion: entry.shortVersion, buildVersion: entry.buildVersion}
+            shortVersion: entry.shortVersion, buildVersion: entry.buildVersion, ...(entry.provenAt ? {provenAt: entry.provenAt} : {})}
     }).filter(generation => fs.existsSync(generation.binaryPath))
 }
 
@@ -287,13 +306,8 @@ export function materializeHarnessGeneration({
         throw refusal('source-must-be-an-app-bundle', String(sourceBundle))
     }
 
-    const
-        key  = `${directory}\0`,
-        next = (chains.get(key) ?? Promise.resolve()).then(() =>
-            materialize({directory, family, sourceBundle, source, expectedShortVersion, host: {...HOST_SEAMS, probe: FAMILY_PROBES[family], ...seams}, now}));
-
-    chains.set(key, next.catch(() => {}));
-    return next
+    return onChain(directory, () =>
+        materialize({directory, family, sourceBundle, source, expectedShortVersion, host: {...HOST_SEAMS, probe: FAMILY_PROBES[family], ...seams}, now}))
 }
 
 /** @summary One serialized admission run; see {@link materializeHarnessGeneration}. */
@@ -316,7 +330,7 @@ async function materialize({directory, family, sourceBundle, source, expectedSho
     const reject = reason => {
         fs.rmSync(staging, {recursive: true, force: true});
         ledger.rejected = [...ledger.rejected, {...verdict, source, at: now().toISOString(), reason}].slice(-MAX_REJECTIONS);
-        writeFileAtomicSync(path.join(directory, LEDGER), JSON.stringify(ledger, null, 4));
+        writeLedger(directory, ledger);
         return {admitted: false, id: verdict.id, appBundle: null, binaryPath: null, reason}
     };
 
@@ -374,7 +388,7 @@ async function materialize({directory, family, sourceBundle, source, expectedSho
     if (known?.retiredAt) {
         // a retired build admitted again has its copy back, so it is no longer retired
         delete known.retiredAt;
-        writeFileAtomicSync(path.join(directory, LEDGER), JSON.stringify(ledger, null, 4))
+        writeLedger(directory, ledger)
     } else if (!known) {
         ledger.admitted.push({
             id          : verdict.id,
@@ -388,7 +402,7 @@ async function materialize({directory, family, sourceBundle, source, expectedSho
             source,
             at          : now().toISOString()
         });
-        writeFileAtomicSync(path.join(directory, LEDGER), JSON.stringify(ledger, null, 4))
+        writeLedger(directory, ledger)
     }
 
     const appBundle = path.join(target, appName);
@@ -399,25 +413,20 @@ async function materialize({directory, family, sourceBundle, source, expectedSho
  * @summary Removes the copies of a family's admitted generations that nothing holds: every present
  * generation except the newest two (the selected one and its rollback) and the ones `held` names. A
  * removed copy's ledger entry stays, stamped `retiredAt`, so the build is never selected or acquired
- * again. Runs on the family's admission chain and calls `held` there, in the same synchronous step as
- * the removals, so neither an admission nor a new reference lands between the check and a removal.
+ * again. The copy a build rejected at binding left behind goes too, unless `held` names it. Runs on the
+ * family's admission chain and calls `held` there, in the same synchronous step as the removals, so
+ * neither an admission nor a new reference lands between the check and a removal.
  * A `held` that throws keeps every copy, and the result carries its message.
  * @param {Object} options
  * @param {String} options.root Absolute store root.
  * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.
  * @param {Function} options.held `() => Iterable<String>`: the generation ids something holds now.
  * @param {Function} [options.now] Clock seam.
- * @returns {Promise<{retired: String[], kept: String[], reason?: String}>} Ids, newest first.
+ * @returns {Promise<{retired: String[], kept: String[], reason?: String}>} Ids, newest first, rejected copies last.
  * @throws {Error} `root-must-be-absolute`, `unknown-family` or `ledger-invalid`.
  */
 export function retireHarnessGenerations({root, family, held, now = () => new Date()} = {}) {
-    const
-        directory = familyDirectory(root, family),
-        key       = `${directory}\0`,
-        next      = (chains.get(key) ?? Promise.resolve()).then(() => retire({directory, held, now}));
-
-    chains.set(key, next.catch(() => {}));
-    return next
+    return onChain(familyDirectory(root, family), directory => retire({directory, held, now}))
 }
 
 /** @summary One serialized retirement run; see {@link retireHarnessGenerations}. */
@@ -426,7 +435,10 @@ function retire({directory, held, now}) {
         ledger  = readLedger(directory),
         present = [...ledger.admitted].reverse()
             .filter(entry => fs.existsSync(path.join(directory, entry.id, entry.appName, 'Contents', 'MacOS', entry.executable))),
-        retired = [];
+        // a build rejected at binding left `admitted` with its copy in place
+        rejected = ledger.rejected.filter(entry => isBindingRejection(entry) && isHarnessGenerationId(entry.id) &&
+            !ledger.admitted.some(admitted => admitted.id === entry.id) && fs.existsSync(path.join(directory, entry.id))),
+        retired  = [];
 
     let keep;
 
@@ -444,7 +456,93 @@ function retire({directory, held, now}) {
         retired.push(entry.id)
     }
 
-    if (retired.length > 0) writeFileAtomicSync(path.join(directory, LEDGER), JSON.stringify(ledger, null, 4));
+    if (retired.length > 0) writeLedger(directory, ledger);
+
+    for (const entry of rejected) {
+        if (keep.has(entry.id)) continue;
+
+        fs.rmSync(path.join(directory, entry.id), {recursive: true, force: true});
+        retired.push(entry.id)
+    }
 
     return {retired, kept: present.filter(entry => keep.has(entry.id)).map(entry => entry.id)}
+}
+
+/**
+ * @summary Records that a Start's project binding succeeded on an admitted generation. Its first bound
+ * Start proves it: from then on it is a fallback that a refused binding on a newer build retries on,
+ * and a refusal on it never counts against it. Runs on the family's chain.
+ * @param {Object} options
+ * @param {String} options.root Absolute store root.
+ * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.
+ * @param {String} options.id The generation the bound Start ran.
+ * @param {Function} [options.now] Clock seam.
+ * @returns {Promise<{proven: Boolean}>} `true` only for the Start that proved it; an already proven or
+ * unknown generation records nothing.
+ * @throws {Error} `root-must-be-absolute`, `unknown-family` or `ledger-invalid`.
+ */
+export function markHarnessGenerationProven({root, family, id, now = () => new Date()} = {}) {
+    return onChain(familyDirectory(root, family), directory => {
+        const
+            ledger = readLedger(directory),
+            entry  = ledger.admitted.find(admitted => admitted.id === id);
+
+        if (!entry || entry.provenAt) return {proven: false};
+
+        entry.provenAt = now().toISOString();
+        // an early refusal a proven build once had no longer counts toward its rejection
+        delete entry.bindingRefusal;
+        writeLedger(directory, ledger);
+        return {proven: true}
+    })
+}
+
+/**
+ * @summary Weighs a refused project binding against the unproven generation that ran it, after a retry on a
+ * proven generation bound: that retry is what makes the refusal the build's. A `late` refusal rejects the
+ * generation. An `early` one is inconclusive the first time and is kept as `bindingRefusal`; the same early
+ * code again rejects. A rejected generation leaves `admitted` for `rejected`, with `binding-refused:<code>`
+ * as its reason, so it is never selected again ({@link isBindingRejection}); the next retirement removes its
+ * copy. A proven or unknown generation records nothing. Runs on the family's chain.
+ * @param {Object} options
+ * @param {String} options.root Absolute store root.
+ * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.
+ * @param {String} options.id The generation whose Start was refused.
+ * @param {String} options.code The refusal code.
+ * @param {'early'|'late'} options.weight The code's weight for the build.
+ * @param {Function} [options.now] Clock seam.
+ * @returns {Promise<{rejected: Boolean}>}
+ * @throws {Error} `root-must-be-absolute`, `unknown-family` or `ledger-invalid`.
+ */
+export function recordHarnessGenerationBindingRefusal({root, family, id, code, weight, now = () => new Date()} = {}) {
+    return onChain(familyDirectory(root, family), directory => {
+        const
+            ledger = readLedger(directory),
+            index  = ledger.admitted.findIndex(admitted => admitted.id === id),
+            entry  = ledger.admitted[index];
+
+        if (!entry || entry.provenAt) return {rejected: false};
+
+        if (weight === 'early' && entry.bindingRefusal?.code !== code) {
+            entry.bindingRefusal = {code, at: now().toISOString()};
+            writeLedger(directory, ledger);
+            return {rejected: false}
+        }
+
+        ledger.admitted.splice(index, 1);
+        ledger.rejected = [...ledger.rejected, {id, shortVersion: entry.shortVersion, buildVersion: entry.buildVersion,
+            source: entry.source, at: now().toISOString(), reason: `${BINDING_REASON}${code}`}].slice(-MAX_REJECTIONS);
+        writeLedger(directory, ledger);
+        return {rejected: true}
+    })
+}
+
+/**
+ * @summary Whether a `rejected` ledger entry is a build whose project binding was refused while a proven one
+ * bound, as {@link recordHarnessGenerationBindingRefusal} writes it: known for good, so never fetched again.
+ * @param {Object} entry One entry of a ledger's `rejected`.
+ * @returns {Boolean}
+ */
+export function isBindingRejection(entry) {
+    return typeof entry?.reason === 'string' && entry.reason.startsWith(BINDING_REASON)
 }

@@ -31,9 +31,10 @@ import McpLaunchAdmissionService                                                
 import {LAUNCH_ADMISSION_REASONS}                                                         from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isOnInstance}                                                                     from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}                       from './manageCodexDesktopRuntime.mjs';
-import {HARNESS_GENERATION_FAMILIES, isHarnessGenerationId, listHarnessGenerations, materializeHarnessGeneration,
-        readHarnessBundleInfo, readHarnessGenerationLedger, readHarnessHostGate,
-        retireHarnessGenerations}                                                          from './harnessGeneration.mjs';
+import {HARNESS_GENERATION_FAMILIES, isHarnessGenerationId, listHarnessGenerations, markHarnessGenerationProven,
+        materializeHarnessGeneration, readHarnessBundleInfo, readHarnessGenerationLedger, readHarnessHostGate,
+        recordHarnessGenerationBindingRefusal, retireHarnessGenerations}                  from './harnessGeneration.mjs';
+import {AntigravityProjectBindingRefusal, classifyBindingRefusal}                 from './antigravityProjectBinding.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                                         from './seatGitIdentity.mjs';
 import {runtimeGenerationPin, readRuntimeGeneration, readRuntimeGenerationRecord} from './runtimeGeneration.mjs';
 import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}    from './runtimeGenerationLease.mjs';
@@ -161,11 +162,13 @@ const HARNESS_BINARY_LEAF_KEYS = {
 
 // The harness-generation store calls the lifecycle makes; `harnessGenerationStore` replaces them in specs.
 const HARNESS_GENERATION_STORE = Object.freeze({
-    list          : listHarnessGenerations,
-    materialize   : materializeHarnessGeneration,
-    readBundleInfo: readHarnessBundleInfo,
-    readLedger    : readHarnessGenerationLedger,
-    retire        : retireHarnessGenerations
+    list                : listHarnessGenerations,
+    markProven          : markHarnessGenerationProven,
+    materialize         : materializeHarnessGeneration,
+    readBundleInfo      : readHarnessBundleInfo,
+    readLedger          : readHarnessGenerationLedger,
+    recordBindingRefusal: recordHarnessGenerationBindingRefusal,
+    retire              : retireHarnessGenerations
 });
 
 /**
@@ -535,9 +538,9 @@ class FleetLifecycleService extends Base {
     harnessGenerationRoot = null
 
     /**
-     * The store calls an opted-in Start and a retirement make, `{list, materialize, readBundleInfo,
-     * readLedger, retire}` with `harnessGeneration.mjs`'s signatures. Defaults to that module; injectable so
-     * unit specs never copy, sign-check, probe or delete a vendor bundle.
+     * The store calls an opted-in Start and a retirement make, `{list, markProven, materialize, readBundleInfo,
+     * readLedger, recordBindingRefusal, retire}` with `harnessGeneration.mjs`'s signatures. Defaults to that
+     * module; injectable so unit specs never copy, sign-check, probe or delete a vendor bundle.
      * @member {Object|null} harnessGenerationStore=null
      */
     harnessGenerationStore = null
@@ -560,6 +563,22 @@ class FleetLifecycleService extends Base {
      * @private
      */
     harnessGenerationAttempts = new Map()
+
+    /**
+     * The binding retries {@link harnessBindingRetry} granted. A retry pins a Start only through a token in
+     * this set, so no Start request or tool input can name a generation other than the selected one.
+     * @member {WeakSet<Object>} harnessBindingRetries
+     * @private
+     */
+    harnessBindingRetries = new WeakSet()
+
+    /**
+     * The Antigravity Start contexts {@link resolveAntigravityStartContext} resolved for a binding retry: the only
+     * contexts {@link validateAntigravityStartContext} lets run a generation other than the selected one.
+     * @member {WeakSet<Object>} harnessBindingRetryContexts
+     * @private
+     */
+    harnessBindingRetryContexts = new WeakSet()
 
     /**
      * Grace period after `SIGTERM` before `stop` escalates to `SIGKILL`.
@@ -1488,8 +1507,9 @@ class FleetLifecycleService extends Base {
      * @summary Finish a curated Antigravity Start only after its trusted project binding succeeds.
      * The reservation remains reserved across the await. Failure or Stop revokes that exact generation
      * before ordinary process cleanup; successful activation requires the same tracked live PID/birth.
-     * A refused binding, never a Stop, leaves one Fleet log line naming the seat, the refusal code and the
-     * harness generation it ran.
+     * A bound Start proves the harness generation it ran. A refused binding, never a Stop, leaves one Fleet
+     * log line naming the seat, the refusal code and the harness generation it ran, and its error carries
+     * `harnessBindingRefusal` for {@link harnessBindingRetry}.
      * @param {Object} options
      * @returns {Promise<Object>} Running status after binding, or a finite canceled Start result.
      * @private
@@ -1539,6 +1559,7 @@ class FleetLifecycleService extends Base {
                             failureReason = LAUNCH_ADMISSION_REASONS.PLAN_CHANGED
                         } else {
                             this.activateLaunchAdmission({id, agent, record, env, launchAdmission});
+                            await this.markHarnessGenerationProven(opts.remoteMcpCapability?.harnessGeneration);
                             return this.status(id)
                         }
                     }
@@ -1626,9 +1647,18 @@ class FleetLifecycleService extends Base {
 
         if (signal.aborted) return this.canceledStart(id);
 
-        const error = new Error('FleetLifecycleService.start: Antigravity project binding failed; the seat was stopped before admission activation.',
-            failureCause ? {cause: failureCause} : undefined);
+        const
+            error             = new Error('FleetLifecycleService.start: Antigravity project binding failed; the seat was stopped before admission activation.',
+                failureCause ? {cause: failureCause} : undefined),
+            harnessGeneration = opts.remoteMcpCapability?.harnessGeneration;
+
         error.code = 'ANTIGRAVITY_BINDING_FAILED';
+
+        // only the binding's own refusal can count against the build; a later step's failure says nothing about it
+        if (failureCause instanceof AntigravityProjectBindingRefusal && harnessGeneration) {
+            error.harnessBindingRefusal = {family: harnessGeneration.family, generationId: harnessGeneration.generationId, code: failureCause.code}
+        }
+
         throw error
     }
 
@@ -3784,6 +3814,88 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary The family's newest admitted generation whose copy is present and that a bound Start proved: the
+     * build a refused binding retries on.
+     * @param {String} harnessType
+     * @returns {Object|null} One of {@link harnessGenerationsOf}.
+     */
+    newestProvenHarnessGeneration(harnessType) {
+        return this.harnessGenerationsOf(harnessType).find(generation => generation.provenAt) ?? null
+    }
+
+    /**
+     * @summary Records, best-effort, that a Start bound on `generation`: its first bound Start proves it. A
+     * store that cannot record it costs the Start nothing, and the next bound Start records it.
+     * @param {Object|undefined} generation A capability's `harnessGeneration` pin, `{family, generationId}`.
+     * @returns {Promise<void>}
+     * @private
+     */
+    async markHarnessGenerationProven(generation) {
+        if (!generation) return;
+
+        try {
+            await this.getHarnessGenerationStore().markProven({root: this.getHarnessGenerationRoot(), family: generation.family, id: generation.generationId})
+        } catch (error) {
+            console.warn(`[FleetLifecycleService] the bound Start on ${generation.family} generation ${String(generation.generationId).slice(0, 12)} ` +
+                `could not be recorded as its proof: ${error.message}`)
+        }
+    }
+
+    /**
+     * @summary Whether a refused Antigravity binding earns one retry, and on which build. It does when the code
+     * counts against a build (`classifyBindingRefusal`), the refused generation is unproven, and the family holds
+     * a proven one: the same seat on the newest proven generation is what makes the refusal the build's. A retry
+     * runs a proven generation, so its own refusal never earns another.
+     * @param {Error} error A Start's error; only `ANTIGRAVITY_BINDING_FAILED` carrying `harnessBindingRefusal` qualifies.
+     * @returns {Object|null} `{family, refusedGenerationId, code, weight, generationId}`, for
+     *     {@link resolveAntigravityStartContext} and then {@link recordHarnessBindingRefusal}.
+     */
+    harnessBindingRetry(error) {
+        const refusal = error?.code === 'ANTIGRAVITY_BINDING_FAILED' ? error.harnessBindingRefusal : null;
+
+        if (refusal?.family !== 'antigravity') return null;
+
+        const weight = classifyBindingRefusal(refusal.code);
+
+        if (weight === 'uncounted') return null;
+
+        const
+            refused = this.harnessGenerationsOf(refusal.family).find(({id}) => id === refusal.generationId),
+            proven  = this.newestProvenHarnessGeneration(refusal.family);
+
+        if (!refused || refused.provenAt || !proven) return null;
+
+        const retry = Object.freeze({family: refusal.family, refusedGenerationId: refused.id, code: refusal.code, weight, generationId: proven.id});
+
+        this.harnessBindingRetries.add(retry);
+        return retry
+    }
+
+    /**
+     * @summary Counts a refused binding against its build once the retry on the proven generation bound
+     * (`recordHarnessGenerationBindingRefusal`), and logs the outcome. Best-effort: the seat already runs.
+     * @param {Object} retry A retry {@link harnessBindingRetry} granted.
+     * @returns {Promise<{rejected: Boolean}|null>} `null` for a retry this service did not grant, or a store failure.
+     */
+    async recordHarnessBindingRefusal(retry) {
+        if (!this.harnessBindingRetries.has(retry)) return null;
+
+        const refused = String(retry.refusedGenerationId).slice(0, 12);
+
+        try {
+            const result = await this.getHarnessGenerationStore().recordBindingRefusal({root: this.getHarnessGenerationRoot(),
+                family: retry.family, id: retry.refusedGenerationId, code: retry.code, weight: retry.weight});
+
+            console.warn(`[FleetLifecycleService] ${retry.family} generation ${refused} refused binding (${retry.code}) where proven ` +
+                `${String(retry.generationId).slice(0, 12)} bound; it is ${result.rejected ? 'rejected' : 'kept'}.`);
+            return result
+        } catch (error) {
+            console.warn(`[FleetLifecycleService] the binding refusal of ${retry.family} generation ${refused} could not be recorded: ${error.message}`);
+            return null
+        }
+    }
+
+    /**
      * @summary The binaries a seat launched from a generation runs, in the shape of a capability proof: the
      * generation's main binary, the bundled Codex CLI from the same copy for Codex Desktop (the main binary
      * for every other family), and the pin its lifecycle record carries.
@@ -3902,15 +4014,20 @@ class FleetLifecycleService extends Base {
      * @summary Resolve one curated Antigravity Start against a copied benign environment and the
      * installed-runtime fingerprint that has native workspace-MCP evidence. No path, profile, or
      * global config is written here; unsupported or unidentifiable builds refuse before Start. When
-     * Antigravity opted in to harness generations, the build is its selected generation and the
-     * capability carries the pin as `harnessGeneration`.
+     * Antigravity opted in to harness generations, the build is its selected generation, or for a binding
+     * retry the newest proven one, and the capability carries the pin as `harnessGeneration`.
      * @param {Object} agent Raw registry definition.
+     * @param {Object|null} [retry=null] A retry {@link harnessBindingRetry} granted; nothing else pins a build.
      * @returns {Promise<Object>} `{capability, processEnvironment, registryDirectory}` with no credentials.
      */
-    async resolveAntigravityStartContext(agent) {
+    async resolveAntigravityStartContext(agent, retry = null) {
         if (agent?.harnessType !== 'antigravity' || agent.metadata?.launch ||
             !SURVIVING_HARNESS_TYPES.has(agent.harnessType)) {
             throw new Error(`FleetLifecycleService.resolveAntigravityStartContext: agent '${agent?.id || 'unknown'}' is not a curated Antigravity seat.`)
+        }
+
+        if (retry !== null && (!this.harnessBindingRetries.has(retry) || this.newestProvenHarnessGeneration('antigravity')?.id !== retry.generationId)) {
+            throw new Error('FleetLifecycleService.resolveAntigravityStartContext: a binding retry pins only the newest proven generation it was granted.')
         }
 
         const processEnvironment = this.snapshotAmbientProcessEnvironment();
@@ -3920,7 +4037,7 @@ class FleetLifecycleService extends Base {
         }
 
         const
-            generation       = await this.resolveHarnessGeneration('antigravity'),
+            generation       = retry ? this.newestProvenHarnessGeneration('antigravity') : await this.resolveHarnessGeneration('antigravity'),
             pinned           = generation && this.harnessGenerationLaunch('antigravity', generation),
             configuredBinary = pinned ? pinned.launchBinaryPath : this.getHarnessBinaryPath('antigravity'),
             launchBinaryPath = configuredBinary && this.resolveExecutable(configuredBinary, processEnvironment.PATH);
@@ -3943,16 +4060,21 @@ class FleetLifecycleService extends Base {
             ...(pinned && {harnessGeneration: pinned.harnessGeneration})
         };
 
-        return {
+        const context = {
             capability,
             processEnvironment,
             registryDirectory: path.join(processEnvironment.HOME, '.gemini', 'config', 'projects')
-        }
+        };
+
+        if (retry) this.harnessBindingRetryContexts.add(context);
+
+        return context
     }
 
     /**
      * @summary Validate that a reused Antigravity start context names the currently selected binary,
-     * a supported runtime probe, and the matching per-home project registry. This accepts the exact
+     * a supported runtime probe, and the matching per-home project registry. A context resolved for a
+     * binding retry names the newest proven generation instead, and no other. This accepts the exact
      * proof from {@link resolveAntigravityStartContext} without repeating its file hashing.
      * @param {Object} agent Raw registry definition.
      * @param {Object} context Context returned by {@link resolveAntigravityStartContext}.
@@ -3968,7 +4090,9 @@ class FleetLifecycleService extends Base {
         }
 
         const
-            generation       = this.selectedHarnessGeneration('antigravity'),
+            generation       = this.harnessBindingRetryContexts.has(context)
+                ? this.newestProvenHarnessGeneration('antigravity')
+                : this.selectedHarnessGeneration('antigravity'),
             configuredBinary = generation ? generation.binaryPath : this.getHarnessBinaryPath('antigravity'),
             selectedBinary   = configuredBinary && this.resolveExecutable(configuredBinary, environment.PATH),
             capability       = context.capability;
