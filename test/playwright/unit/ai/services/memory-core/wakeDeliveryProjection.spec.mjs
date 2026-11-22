@@ -166,6 +166,47 @@ test.describe('projectWakeDelivery — per-subscription delivery outcome', () =>
             .toMatchObject({state: 'unreachable', consecutiveFailures: 1, consecutiveSkips: 3})
     });
 
+    test('source-events-already-handled skips preserve reachable after a delivery while context-gate skips still trip STALE_SKIP_RUN', () => {
+        const stamp      = n => `2026-09-25T00:${String(n).padStart(2, '0')}:01.000Z`,
+              settledRun = [
+                  at('delivered', {acceptedAt: stamp(0), dispatchFinishedAt: stamp(0)}),
+                  ...Array.from({length: 10}, (_, index) => at('skipped', {
+                      acceptedAt        : stamp(index + 1),
+                      dispatchFinishedAt: stamp(index + 1),
+                      outcomeReason     : 'source-events-already-handled'
+                  }))
+              ],
+              gateRun = [
+                  at('delivered', {acceptedAt: stamp(0), dispatchFinishedAt: stamp(0)}),
+                  ...Array.from({length: 3}, (_, index) => at('skipped', {
+                      acceptedAt        : stamp(index + 1),
+                      dispatchFinishedAt: stamp(index + 1),
+                      outcomeReason     : 'context-gate:active'
+                  }))
+              ];
+
+        expect(projectWakeDelivery(settledRun)['WAKE_SUB:sub-a']).toMatchObject({
+            state              : 'reachable',
+            consecutiveFailures: 0,
+            consecutiveSkips   : 0,
+            lastDeliveredAt    : stamp(0),
+            lastAttemptedAt    : stamp(10)
+        });
+        expect(projectWakeDelivery(gateRun)['WAKE_SUB:sub-a']).toMatchObject({
+            state           : 'unknown',
+            consecutiveSkips: 3
+        });
+        expect(projectWakeDelivery([
+            at('failed', {acceptedAt: stamp(0), dispatchFinishedAt: stamp(0), outcomeReason: 'socket-hangup'}),
+            ...settledRun.slice(1, 5)
+        ])['WAKE_SUB:sub-a']).toMatchObject({
+            state              : 'unreachable',
+            consecutiveFailures: 1,
+            consecutiveSkips   : 0,
+            lastOutcomeReason  : 'socket-hangup'
+        });
+    });
+
     test('a delivery is an attempt, so `lastAttemptedAt` never predates `lastDeliveredAt`', () => {
         const projected = projectWakeDelivery([
             at('failed', {outcomeReason: 'connection-refused'}),

@@ -1783,4 +1783,212 @@ test.describe('ai/daemons/wake/receiver — pending native spool & drain cost (#
         releasePointerRead();
         await Promise.all([activePass, queuedPass]);
     });
+
+    test('POST /wake/settle enforces exact-byte HMAC and route contracts, settles complete message/task digests, and protects pulses/permissions/active primary-session grants', async () => {
+        const settleSub    = 'WAKE_SUB:settle-test',
+              rotateSub    = 'WAKE_SUB:rotate-test',
+              seat         = '@neo-gemini-maryam',
+              instanceHome = path.join(stateDir, 'agents', 'neo-gemini-maryam', 'harness', 'antigravity'),
+              optIn        = {agentId: 'neo-gemini-maryam', family: 'antigravity', stateDir},
+              routeDef     = {
+                  signingKey,
+                  agentIdentity        : seat,
+                  admits               : 'wake/digest',
+                  harnessTargetMetadata: {
+                      adapter        : 'primary-session',
+                      addressType    : 'userDataDir',
+                      instanceAddress: path.join(instanceHome, 'antigravity')
+                  },
+                  adapterConfig: {
+                      attemptTimeoutMs: 100,
+                      contextGate     : {warnContextTokens: 300_000, maxContextTokens: 450_000},
+                      primarySession  : {
+                          instanceHome,
+                          appBundle  : '/Applications/Antigravity.app',
+                          agentId    : 'neo-gemini-maryam',
+                          family     : 'antigravity',
+                          projectRoot: path.join(stateDir, 'workspace')
+                      }
+                  }
+              },
+              manifest = {
+                  schemaVersion: 1,
+                  routes       : {
+                      [settleSub]: routeDef,
+                      [rotateSub]: {
+                          signingKey,
+                          agentIdentity        : seat,
+                          admits               : 'session/rotate',
+                          harnessTargetMetadata: {adapter: 'osascript', appName: 'Antigravity', addressType: 'userDataDir', instanceAddress: instanceHome},
+                          adapterConfig        : {attemptTimeoutMs: 100}
+                      }
+                  }
+              },
+              receiver = createWakeReceiver({
+                  manifest,
+                  state,
+                  manifestPath   : path.join(stateDir, 'routes.json'),
+                  readNativeOptIn: async () => optIn,
+                  contextProbe   : async () => ({totalTokens: 50_000}),
+                  logger         : {log() {}, warn() {}, error() {}}
+              });
+
+        server = receiver.server;
+        await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(0, '127.0.0.1', resolve);
+        });
+        const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+        const publicRoute = {
+            agentIdentity        : routeDef.agentIdentity,
+            harnessTargetMetadata: routeDef.harnessTargetMetadata,
+            adapterConfig        : routeDef.adapterConfig
+        };
+        const acceptDigest = async (suffix, sourceEventIds, breakdown = {sent_to_me: {count: sourceEventIds.length}}) => {
+            const eventId = `wake-digest:${suffix}`;
+            return (await state.accept({
+                subscriptionId: settleSub,
+                eventId,
+                sourceEventIds,
+                acceptedAt    : new Date(Date.parse('2026-11-22T03:00:00.000Z') + suffix * 100).toISOString(),
+                metadata      : {urgent: false, priority: 'normal'},
+                route         : publicRoute,
+                envelope      : {
+                    schemaVersion : '1.0',
+                    eventType     : 'wake/digest',
+                    eventId,
+                    subscriptionId: settleSub,
+                    agentIdentity : seat,
+                    payload       : {totalEvents: sourceEventIds.length, sourceEventIds, breakdown}
+                }
+            })).record;
+        };
+
+        const recPartial    = await acceptDigest(1, ['MESSAGE:a', 'MESSAGE:b']);
+        const recTask       = await acceptDigest(2, ['TASK:t-1']);
+        const recPulseId    = await acceptDigest(3, ['HEARTBEAT_PULSE:@neo-gemini-maryam:1'], {heartbeat_pulse: {count: 1}});
+        const recBarePulse  = await acceptDigest(4, ['MESSAGE:a'], {sent_to_me: {count: 1}, heartbeat_pulse: {count: 1}});
+        const recPerm       = await acceptDigest(5, ['PERMISSION:1'], {permission_granted: {count: 1}});
+        const recInflight   = await acceptDigest(6, ['MESSAGE:inflight-anchor']);
+        const recMember     = await acceptDigest(7, ['MESSAGE:inflight-member']);
+        const recUrgent     = await acceptDigest(8, ['MESSAGE:urgent-inflight']);
+        const recStagedIdle = await acceptDigest(9, ['MESSAGE:staged-uncommitted']);
+
+        // Stage recStagedIdle as normalPointer while inflight holds recInflight + recMember and urgentInflight holds recUrgent.
+        const normalPointer = primaryWakeSpoolPath(stateDir, seat);
+        await fs.mkdir(path.dirname(normalPointer), {recursive: true, mode: 0o700});
+        await fs.writeFile(normalPointer, JSON.stringify({recordKey: recStagedIdle.recordKey}), {mode: 0o600});
+        await fs.writeFile(
+            path.join(stateDir, 'primary-sessions', 'neo-gemini-maryam.json'),
+            JSON.stringify({
+                version : 1,
+                binding : {seat, generation: '100:boot', family: 'antigravity', threadId: '11111111-1111-4111-8111-111111111111'},
+                inflight: {
+                    status   : 'unknown',
+                    recordKey: recInflight.recordKey,
+                    nonce    : '22222222-2222-4222-8222-222222222222',
+                    members  : [
+                        {recordKey: recInflight.recordKey, sourceEventIds: ['MESSAGE:inflight-anchor']},
+                        {recordKey: recMember.recordKey, sourceEventIds: ['MESSAGE:inflight-member']}
+                    ]
+                },
+                urgentInflight: {
+                    status   : 'unknown',
+                    recordKey: recUrgent.recordKey,
+                    nonce    : '33333333-3333-4333-8333-333333333333'
+                }
+            }),
+            {mode: 0o600}
+        );
+
+        const postSettle = async ({sub = settleSub, identity = seat, eventType = 'wake/settle', settledSourceEventIds = [], sig} = {}) => {
+            const envelope = {
+                schemaVersion : '1.0',
+                eventType,
+                eventId       : `wake-settle:${crypto.randomUUID()}`,
+                subscriptionId: sub,
+                agentIdentity : identity,
+                payload       : {settledSourceEventIds}
+            };
+            const body = JSON.stringify(envelope);
+            const hmac = sig ?? crypto.createHmac('sha256', signingKey).update(body).digest('hex');
+
+            return fetch(`${baseUrl}/wake/settle`, {
+                method : 'POST',
+                headers: {
+                    'content-type'              : 'application/json',
+                    'x-neo-wake-event-id'       : envelope.eventId,
+                    'x-neo-wake-subscription-id': sub,
+                    'x-neo-wake-schema-version' : '1.0',
+                    'x-neo-wake-signature'      : hmac
+                },
+                body
+            });
+        };
+
+        // Auth & route guards
+        expect((await postSettle({sig: '0'.repeat(64), settledSourceEventIds: ['MESSAGE:a']})).status).toBe(401);
+        expect((await postSettle({sub: 'WAKE_SUB:missing', settledSourceEventIds: ['MESSAGE:a']})).status).toBe(404);
+        expect((await postSettle({sub: rotateSub, settledSourceEventIds: ['MESSAGE:a']})).status).toBe(409);
+        expect((await postSettle({eventType: 'wake/digest', settledSourceEventIds: ['MESSAGE:a']})).status).toBe(409);
+
+        // Partial settlement + inflight/pulse/permission protection
+        const firstRes = await postSettle({
+            settledSourceEventIds: [
+                'MESSAGE:a',
+                'TASK:t-1',
+                'HEARTBEAT_PULSE:@neo-gemini-maryam:1',
+                'PERMISSION:1',
+                'MESSAGE:inflight-anchor',
+                'MESSAGE:inflight-member',
+                'MESSAGE:urgent-inflight',
+                'MESSAGE:staged-uncommitted'
+            ]
+        });
+        expect(firstRes.status).toBe(200);
+        expect(await firstRes.json()).toEqual({status: 'settled', skippedCount: 2});
+        await receiver.drain();
+
+        expect((await state.read(recTask.recordKey)).state).toBe('skipped');
+        expect((await state.read(recTask.recordKey)).outcomeReason).toBe('source-events-already-handled');
+        expect((await state.read(recStagedIdle.recordKey)).state).toBe('skipped');
+        expect((await state.read(recPartial.recordKey)).state).toBe('pending');
+        expect((await state.read(recPulseId.recordKey)).state).toBe('pending');
+        expect((await state.read(recBarePulse.recordKey)).state).toBe('pending');
+        expect((await state.read(recPerm.recordKey)).state).toBe('pending');
+        expect((await state.read(recInflight.recordKey)).state).toBe('pending');
+        expect((await state.read(recMember.recordKey)).state).toBe('pending');
+        expect((await state.read(recUrgent.recordKey)).state).toBe('pending');
+        // Settling recStagedIdle released normalPointer so drain reclaimed it for active recInflight
+        expect(JSON.parse(await fs.readFile(normalPointer, 'utf8')).recordKey).toBe(recInflight.recordKey);
+
+        // Completing the second message of recPartial transitions it to skipped
+        const secondRes = await postSettle({settledSourceEventIds: ['MESSAGE:a', 'MESSAGE:b']});
+        expect(await secondRes.json()).toEqual({status: 'settled', skippedCount: 1});
+        await receiver.drain();
+        expect((await state.read(recPartial.recordKey)).state).toBe('skipped');
+
+        // Once active inflight slots clear, previously-protected records settle and release both normal & urgent pointers to recPulseId
+        await fs.writeFile(
+            path.join(stateDir, 'primary-sessions', 'neo-gemini-maryam.json'),
+            JSON.stringify({
+                version       : 2,
+                binding       : {seat, generation: '100:boot', family: 'antigravity', threadId: '11111111-1111-4111-8111-111111111111'},
+                inflight      : null,
+                urgentInflight: null
+            }),
+            {mode: 0o600}
+        );
+        const thirdRes = await postSettle({
+            settledSourceEventIds: ['MESSAGE:inflight-anchor', 'MESSAGE:inflight-member', 'MESSAGE:urgent-inflight']
+        });
+        expect(await thirdRes.json()).toEqual({status: 'settled', skippedCount: 3});
+        await receiver.drain();
+        expect((await state.read(recInflight.recordKey)).state).toBe('skipped');
+        expect((await state.read(recMember.recordKey)).state).toBe('skipped');
+        expect((await state.read(recUrgent.recordKey)).state).toBe('skipped');
+        // Both settled normalPointer (recInflight) and settled urgentPointer (recUrgent) read inactive, staging recPulseId
+        expect(JSON.parse(await fs.readFile(normalPointer, 'utf8')).recordKey).toBe(recPulseId.recordKey);
+    });
 });

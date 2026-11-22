@@ -4637,8 +4637,8 @@ class MailboxService extends Base {
         }
 
         const
-            me                      = normalizeMailboxIdentityForComparison(boundIdentity),
-            rawTarget               = normalizeMailboxIdentityForComparison(to || me),
+            me        = normalizeMailboxIdentityForComparison(boundIdentity),
+            rawTarget = normalizeMailboxIdentityForComparison(to || me),
             // a former login names its renamed identity only until the cutover activates selection by subject
             formerLogins            = Boolean(to || fromIdentity) && !isSubjectSelectionActive(GraphService.db?.storage?.db),
             toAlias                 = to && formerLogins ? resolveAgentIdentityAlias(rawTarget) : null,
@@ -4752,10 +4752,20 @@ class MailboxService extends Base {
                     WHERE json_extract(n.data, '$.label') = 'MESSAGE'
                     ORDER BY ${orderBy}`).all(viewParams);
 
-            return {
+            const countsResult = {
                 ...this._buildCountsProjection({matchedRows, resolvedIdentityAliases}),
                 ...(expiredSince ? {expiredSince} : {})
             };
+
+            if (box === 'inbox' && status === 'unread' && sameMailboxIdentity(target, me) &&
+                !fromIdentity && !threadId && !requestedTaggedConceptGroups.length && !taskView &&
+                countsResult.unreadCount === 0) {
+                await WakeSubscriptionService.reconcileHistoricalPendingWakes(me, {
+                    isSourceHandled: (sourceId, owner) => this._isWakeSourceHandled(sourceId, owner)
+                }).catch(error => logger.warn?.(`[MailboxService] historical wake settle skipped: ${error.message}`));
+            }
+
+            return countsResult;
         }
 
         const
@@ -5509,7 +5519,7 @@ class MailboxService extends Base {
      *   `{durable: false, warning}` when storage is absent); array form: `{results: [...]}`;
      *   all form: compact aggregate counts plus exceptional rows.
      */
-    async markRead({messageId, all = false, includeUnseen = false} = {}) {
+    async markRead({messageId, all = false, includeUnseen = false} = {}, {_skipSettle = false} = {}) {
         // Validated with the same boolean strictness `all` already uses, and BEFORE the `all` branch,
         // so a caller who fat-fingers the widening flag is told rather than silently handed the
         // narrow drain they were trying to opt out of.
@@ -5537,9 +5547,22 @@ class MailboxService extends Base {
 
             for (const id of messageId) {
                 try {
-                    results.push(await this.markRead({messageId: id}));
+                    results.push(await this.markRead({messageId: id}, {_skipSettle: true}));
                 } catch (error) {
                     results.push({messageId: id, status: 'error', error: error.message});
+                }
+            }
+
+            if (!_skipSettle) {
+                const boundIdentity = RequestContextService.getAgentIdentityNodeId();
+                const settledIds    = results
+                    .filter(result => result.status === 'read' && result.durable !== false)
+                    .map(result => result.messageId);
+
+                if (boundIdentity && settledIds.length > 0) {
+                    const me = normalizeMailboxIdentityForComparison(boundIdentity);
+                    await WakeSubscriptionService.settleHandledSources(me, settledIds)
+                        .catch(error => logger.warn?.(`[MailboxService] wake settle skipped: ${error.message}`));
                 }
             }
 
@@ -5593,14 +5616,24 @@ class MailboxService extends Base {
             }
         }
 
+        const finishMarkRead = async (readAt, durable) => {
+            const receipt = receiptWithDurability({ messageId, readAt, status: 'read' }, durable, 'mark_read');
+
+            if (!_skipSettle && receipt.durable !== false) {
+                await WakeSubscriptionService.settleHandledSources(me, [messageId])
+                    .catch(error => logger.warn?.(`[MailboxService] wake settle skipped: ${error.message}`));
+            }
+
+            return receipt;
+        };
+
         const deliveryEdge = getBroadcastDeliveryEdge(messageId, me, sourceEdges);
 
         if (deliveryEdge) {
-            const readAt = new Date().toISOString();
-
+            const readAt  = new Date().toISOString();
             const durable = await setDeliveryEdgeReadAt(deliveryEdge, readAt);
 
-            return receiptWithDurability({ messageId, readAt, status: 'read' }, durable, 'mark_read');
+            return finishMarkRead(readAt, durable);
         }
 
         // A broadcast recipient with no visible delivery edge is the one state where the projection is
@@ -5622,11 +5655,10 @@ class MailboxService extends Base {
             const repairedEdge = getBroadcastDeliveryEdge(messageId, me, sourceEdges);
 
             if (repairedEdge) {
-                const readAt = new Date().toISOString();
-
+                const readAt  = new Date().toISOString();
                 const durable = await setDeliveryEdgeReadAt(repairedEdge, readAt);
 
-                return receiptWithDurability({ messageId, readAt, status: 'read' }, durable, 'mark_read');
+                return finishMarkRead(readAt, durable);
             }
         }
 
@@ -5638,11 +5670,47 @@ class MailboxService extends Base {
             throw new Error(`Unauthorized: you are not the recipient of message ${messageId}`);
         }
 
-        const readAt = new Date().toISOString();
-
+        const readAt  = new Date().toISOString();
         const durable = await setMessageNodeReadAt(messageNode, readAt);
 
-        return receiptWithDurability({ messageId, readAt, status: 'read' }, durable, 'mark_read');
+        return finishMarkRead(readAt, durable);
+    }
+
+    /**
+     * @summary Checks whether a wake `sourceEventId` (`MESSAGE:*` or `TASK:*`) is durably handled in storage.
+     * @param {String} sourceId
+     * @param {String} owner Normalized recipient AgentIdentity node id.
+     * @returns {Boolean}
+     * @private
+     */
+    _isWakeSourceHandled(sourceId, owner) {
+        if (typeof sourceId !== 'string' || typeof owner !== 'string' || !owner) {
+            return false;
+        }
+
+        if (sourceId.startsWith('MESSAGE:')) {
+            return Boolean(readBackgroundDeliveryState(sourceId, owner)?.readAt);
+        }
+
+        if (sourceId.startsWith('TASK:')) {
+            const sqlite = GraphService.db?.storage?.db;
+            if (!sqlite) return false;
+
+            const rawTaskKey  = sourceId.slice('TASK:'.length);
+            const terminalSet = new Set(['Completed', 'Canceled', 'Failed', 'Rejected', 'Expired']);
+            const matchedRow  = sqlite.prepare(`
+                SELECT id, json_extract(data, '$.properties.task.state') AS taskState
+                FROM Nodes
+                WHERE json_extract(data, '$.label') = 'MESSAGE'
+                  AND (json_extract(data, '$.properties.task.id') = ? OR json_extract(data, '$.properties.task.id') = ?)
+                LIMIT 1
+            `).get(sourceId, rawTaskKey);
+
+            return Boolean(matchedRow && terminalSet.has(matchedRow.taskState) &&
+                readBackgroundDeliveryState(matchedRow.id, owner)?.readAt);
+        }
+
+        return false;
     }
 
     /**
@@ -5785,6 +5853,13 @@ class MailboxService extends Base {
             )
             SELECT COUNT(DISTINCT messageId) AS count FROM unseen_unread
         `).get(...targetStorageVariants, ...targetStorageVariants)?.count ?? 0;
+
+        if ((status === 'read' || status === 'noop') && withheldUnseenCount === 0 &&
+            failures.length === 0 && nonDurable.length === 0 && notApplied.length === 0) {
+            await WakeSubscriptionService.reconcileHistoricalPendingWakes(me, {
+                isSourceHandled: (sourceId, owner) => this._isWakeSourceHandled(sourceId, owner)
+            }).catch(error => logger.warn?.(`[MailboxService] historical wake settle skipped: ${error.message}`));
+        }
 
         return {
             status,
@@ -6905,6 +6980,24 @@ class MailboxService extends Base {
 
         const fresh = getStorageTaskMutableState(taskId);
         applyStorageTaskMutableState(messageNode, fresh);
+
+        if (['Completed', 'Canceled', 'Failed', 'Rejected', 'Expired'].includes(newState)) {
+            const settleTargets = [...new Set([me, ...(nextAssignee ? [nextAssignee] : [])].filter(Boolean))];
+            const rawTaskId     = typeof fresh.task?.id === 'string' && fresh.task.id.trim()
+                ? (fresh.task.id.startsWith('TASK:') ? fresh.task.id : `TASK:${fresh.task.id}`)
+                : null;
+
+            for (const recipient of settleTargets) {
+                const settledIds = [
+                    ...(rawTaskId ? [rawTaskId] : []),
+                    ...(readBackgroundDeliveryState(taskId, recipient)?.readAt ? [taskId] : [])
+                ];
+                if (settledIds.length > 0) {
+                    await WakeSubscriptionService.settleHandledSources(recipient, settledIds)
+                        .catch(error => logger.warn?.(`[MailboxService] task wake settle skipped: ${error.message}`));
+                }
+            }
+        }
 
         WakeSubscriptionService.pump().catch(e => logger.error('[wake-pump]', e));
 

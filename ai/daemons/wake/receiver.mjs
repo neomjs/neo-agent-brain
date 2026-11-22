@@ -55,12 +55,93 @@ import {
     stagePrimaryWake
 } from './primaryWakeSpool.mjs';
 import {readNativeWakeOptIn, readPrivateWakeJson} from './nativeWakeEnrollment.mjs';
+import {withOutboxLock}                           from './outboxLock.mjs';
+import {readPrimarySessionWake}                   from './primarySessionWake.mjs';
 import {isUrgentWakeEnvelope}                     from '../../services/memory-core/wakeCoalescePolicy.mjs';
 
-const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+export const WAKE_SETTLE_EVENT_TYPE      = 'wake/settle';
+export const SOURCE_EVENTS_HANDLED_REASON = 'source-events-already-handled';
+
+const DEFAULT_MAX_BODY_BYTES     = 256 * 1024;
+const SETTLEABLE_SOURCE_ID_REGEX = /^(?:MESSAGE|TASK):(?!\s*$)\S+$/;
 
 function isSeatId(value) {
     return typeof value === 'string' && /^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/.test(value)
+}
+
+/**
+ * @summary Returns whether a wake source identifier represents a settleable mailbox message or task.
+ * Heartbeat pulses, permission grants, bare UUIDs, and fallback event IDs are never settleable.
+ * @param {*} value
+ * @returns {Boolean}
+ */
+function isSettleableSourceEventId(value) {
+    return typeof value === 'string' && SETTLEABLE_SOURCE_ID_REGEX.test(value)
+}
+
+/**
+ * @summary Checks that a pending receiver record carries only settleable message/task wake sources
+ * and zero non-settleable digest buckets (`heartbeat_pulse`, `permission_granted`, `task_state_changed`).
+ * @param {Object|null} record
+ * @returns {Boolean}
+ */
+function isSettleableWakeRecord(record) {
+    if (record?.state !== 'pending' || record.envelope?.eventType !== WAKE_DIGEST_EVENT_TYPE) {
+        return false
+    }
+
+    const ids = record.sourceEventIds;
+    if (!Array.isArray(ids) || ids.length === 0 || !ids.every(isSettleableSourceEventId)) {
+        return false
+    }
+
+    const breakdown = record.envelope?.payload?.breakdown;
+    if (breakdown && typeof breakdown === 'object') {
+        if ((breakdown.heartbeat_pulse?.count || 0) > 0 ||
+            (breakdown.permission_granted?.count || 0) > 0 ||
+            (breakdown.task_state_changed?.count || 0) > 0
+        ) {
+            return false
+        }
+    }
+
+    return true
+}
+
+/**
+ * @summary Collects receiver record keys currently bound in a seat's ordinary or urgent primary-session slots.
+ * Returns `null` when the slot file is unreadable so settlement fails closed rather than racing redemption.
+ * @param {String} statePath
+ * @returns {Promise<Set<String>|null>}
+ */
+async function readProtectedPrimaryRecordKeys(statePath) {
+    let sessionState;
+
+    try {
+        sessionState = await readPrimarySessionWake({statePath})
+    } catch {
+        return null
+    }
+
+    const protectedKeys = new Set();
+
+    for (const slot of [sessionState?.inflight, sessionState?.urgentInflight]) {
+        if (!slot || typeof slot !== 'object') continue;
+
+        if (typeof slot.recordKey === 'string' && slot.recordKey.length > 0) {
+            protectedKeys.add(slot.recordKey)
+        }
+
+        if (Array.isArray(slot.members)) {
+            for (const member of slot.members) {
+                if (typeof member?.recordKey === 'string' && member.recordKey.length > 0) {
+                    protectedKeys.add(member.recordKey)
+                }
+            }
+        }
+    }
+
+    return protectedKeys
 }
 
 /**
@@ -373,9 +454,16 @@ export function createWakeReceiver({
     // degrades immediately with no retry — so a correctly-published route went permanently deaf on its
     // first wake, and the only remedy was the restart an incident is most likely to forbid.
     let activeManifest = manifest;
+    let stateMutex     = Promise.resolve();
     let runningDrain   = null;
     let queuedDrain    = null;
     let rotationRetry  = null;
+
+    const withStateMutex = task => {
+        const next = stateMutex.then(task, task);
+        stateMutex = next.catch(() => {});
+        return next
+    };
 
     const inFlight = new Set();
 
@@ -919,7 +1007,7 @@ export function createWakeReceiver({
     // to at most one trailing pass behind the pass currently running.
     const drain = () => {
         if (!runningDrain) {
-            const current = runDrainPass()
+            const current = withStateMutex(() => runDrainPass())
                 .catch(error => {
                     logger.error?.(`[Wake Receiver] drain failed: ${error.message}`);
                 })
@@ -940,9 +1028,71 @@ export function createWakeReceiver({
         return queuedDrain;
     };
 
+    /**
+     * @summary Transitions eligible pending `wake/digest` records whose source events are all durably
+     * handled in Memory Core to `skipped`, serialized behind receiver drain passes and protecting any
+     * active `primary-session` in-flight grant.
+     * @param {Object} options
+     * @param {String} options.subscriptionId
+     * @param {Object} options.route
+     * @param {Set<String>} options.settledSet
+     * @returns {Promise<Number>} Count of records transitioned from `pending` to `skipped`.
+     */
+    const settleSubscriptionRecords = ({subscriptionId, route, settledSet}) => withStateMutex(async () => {
+        if (settledSet.size === 0) return 0;
+
+        const candidates = (await watched.list('pending')).filter(record =>
+            record.subscriptionId === subscriptionId &&
+            record.envelope?.subscriptionId === subscriptionId &&
+            record.envelope?.agentIdentity === route.agentIdentity &&
+            isSettleableWakeRecord(record) &&
+            record.sourceEventIds.every(id => settledSet.has(id))
+        );
+
+        if (candidates.length === 0) return 0;
+
+        const needsPrimaryFence = route.harnessTargetMetadata?.adapter === 'primary-session' ||
+            candidates.some(record => record.route?.harnessTargetMetadata?.adapter === 'primary-session');
+
+        const applyTransitions = async protectedKeys => {
+            let skippedCount = 0;
+
+            for (const candidate of candidates) {
+                if (protectedKeys?.has(candidate.recordKey)) continue;
+
+                const finishedIso = new Date(clock()).toISOString();
+                const updated     = await watched.transition(candidate.recordKey, 'pending', 'skipped', {
+                    outcomeReason     : SOURCE_EVENTS_HANDLED_REASON,
+                    dispatchFinishedAt: finishedIso
+                });
+
+                if (updated) skippedCount++
+            }
+
+            return skippedCount
+        };
+
+        if (!needsPrimaryFence) {
+            return applyTransitions(null)
+        }
+
+        const seat = route.agentIdentity;
+        if (!/^@[a-z0-9][a-z0-9-]*$/.test(seat || '')) return 0;
+
+        const statePath = path.join(state.stateDir, 'primary-sessions', `${seat.slice(1)}.json`);
+        await fs.mkdir(path.dirname(statePath), {recursive: true, mode: 0o700});
+
+        return withOutboxLock(statePath, async () => {
+            const protectedKeys = await readProtectedPrimaryRecordKeys(statePath);
+            if (protectedKeys === null) return 0;
+
+            return applyTransitions(protectedKeys)
+        })
+    });
+
     const server = http.createServer(async (request, response) => {
         try {
-            if (request.method !== 'POST' || request.url !== '/wake') {
+            if (request.method !== 'POST' || (request.url !== '/wake' && request.url !== '/wake/settle')) {
                 return writeJson(response, 404, {error: 'not-found'});
             }
 
@@ -964,6 +1114,27 @@ export function createWakeReceiver({
                 envelope = JSON.parse(rawBody.toString('utf8'));
             } catch {
                 return writeJson(response, 400, {error: 'invalid-json'});
+            }
+
+            if (request.url === '/wake/settle') {
+                if (envelope?.eventId !== eventId ||
+                    envelope?.subscriptionId !== subscriptionId ||
+                    envelope?.agentIdentity !== route.agentIdentity ||
+                    envelope?.eventType !== WAKE_SETTLE_EVENT_TYPE ||
+                    routeAdmits(route) !== WAKE_DIGEST_EVENT_TYPE ||
+                    envelope?.schemaVersion !== '1.0' ||
+                    schemaVersion !== envelope.schemaVersion ||
+                    !Array.isArray(envelope?.payload?.settledSourceEventIds)
+                ) {
+                    return writeJson(response, 409, {error: 'signed-route-mismatch'});
+                }
+
+                const settledSet   = new Set(envelope.payload.settledSourceEventIds.filter(isSettleableSourceEventId));
+                const skippedCount = await settleSubscriptionRecords({subscriptionId, route, settledSet});
+
+                writeJson(response, 200, {status: 'settled', skippedCount});
+                if (skippedCount > 0) void drain();
+                return;
             }
 
             if (envelope?.eventId !== eventId ||

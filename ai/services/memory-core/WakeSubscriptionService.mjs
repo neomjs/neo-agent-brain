@@ -2786,6 +2786,155 @@ class WakeSubscriptionService extends Base {
     }
 
     /**
+     * @summary Returns all active Shape-B (`a2a-webhook`) wake-digest subscriptions for an agent identity.
+     * Excludes `SESSION_ROTATE` routes so settlement envelopes target `wake/digest` routes only.
+     * @param {String} owner AgentIdentity node id.
+     * @returns {Object[]}
+     * @protected
+     */
+    _getActiveWebhookWakeSubscriptions(owner) {
+        if (typeof owner !== 'string' || !owner) return [];
+
+        const sqlite = GraphService.db?.storage?.db;
+        if (sqlite) {
+            const rows = sqlite.prepare(`
+                SELECT id, data FROM Nodes
+                WHERE json_extract(data, '$.label') = 'WAKE_SUBSCRIPTION'
+                  AND json_extract(data, '$.properties.agentIdentity') = ?
+                  AND json_extract(data, '$.properties.harnessTarget') = 'a2a-webhook'
+                  AND COALESCE(json_extract(data, '$.properties.trigger'), '') != ?
+                  AND ${activeWakeSubscriptionStatusSql()}
+                ORDER BY COALESCE(
+                    json_extract(data, '$.properties.updatedAt'),
+                    json_extract(data, '$.properties.createdAt'),
+                    ''
+                ) DESC
+            `).all(owner, SESSION_ROTATE_TRIGGER);
+
+            return rows
+                .map(row => this._parseDurableSubscriptionRow(row))
+                .filter(Boolean)
+                .map(({id, node}) => this._hydrateSubscriptionFromDurableNode(id, node));
+        }
+
+        return this._getCandidateSubscriptionsFromMemory(
+            owner,
+            sub => isActiveWakeSubscriptionStatus(sub.status) &&
+                sub.harnessTarget === 'a2a-webhook' &&
+                sub.trigger !== SESSION_ROTATE_TRIGGER
+        );
+    }
+
+    /**
+     * @summary Publishes signed `wake/settle` envelopes for handled message/task source IDs across
+     * the recipient's active `a2a-webhook` wake subscriptions.
+     * @param {String} owner AgentIdentity node id.
+     * @param {String[]} [settledSourceEventIds=[]]
+     * @returns {Promise<{settledRoutes: Number}>}
+     */
+    async settleHandledSources(owner, settledSourceEventIds = []) {
+        const validIds = [...new Set(
+            (Array.isArray(settledSourceEventIds) ? settledSourceEventIds : [])
+                .filter(id => typeof id === 'string' && /^(?:MESSAGE|TASK):(?!\s*$)\S+$/.test(id))
+        )];
+
+        if (validIds.length === 0) return {settledRoutes: 0};
+
+        const subscriptions = this._getActiveWebhookWakeSubscriptions(owner);
+        if (subscriptions.length === 0) return {settledRoutes: 0};
+
+        const chunkSize     = 500;
+        let   settledRoutes = 0;
+
+        for (const subscription of subscriptions) {
+            const deliveryTarget = {
+                id        : subscription.id,
+                properties: {
+                    status               : subscription.status,
+                    harnessTargetMetadata: subscription.harnessTargetMetadata || {}
+                }
+            };
+            let routeSettled = false;
+
+            for (let offset = 0; offset < validIds.length; offset += chunkSize) {
+                const chunk    = validIds.slice(offset, offset + chunkSize);
+                const envelope = {
+                    schemaVersion : '1.0',
+                    eventType     : 'wake/settle',
+                    eventId       : `wake-settle:${crypto.randomUUID()}`,
+                    agentIdentity : subscription.agentIdentity,
+                    subscriptionId: subscription.id,
+                    payload       : {settledSourceEventIds: chunk},
+                    emittedAt     : new Date().toISOString()
+                };
+                const outcome = await WebhookDeliveryService.deliverSettle(deliveryTarget, envelope);
+                if (outcome === 'delivered') routeSettled = true;
+            }
+
+            if (routeSettled) settledRoutes++;
+        }
+
+        return {settledRoutes};
+    }
+
+    /**
+     * @summary Scans readable host-receiver `pending` records for an agent identity and emits one
+     * bounded `wake/settle` batch for source IDs already durably handled in Memory Core.
+     * @param {String} owner AgentIdentity node id.
+     * @param {Object} [options={}]
+     * @param {Function} options.isSourceHandled `(sourceId, owner) => Boolean` durable-truth predicate.
+     * @returns {Promise<{settledCount: Number, settledRoutes: Number}>}
+     */
+    async reconcileHistoricalPendingWakes(owner, {isSourceHandled} = {}) {
+        if (typeof owner !== 'string' || !owner || typeof isSourceHandled !== 'function') {
+            return {settledCount: 0, settledRoutes: 0};
+        }
+
+        const subscriptions = this._getActiveWebhookWakeSubscriptions(owner);
+        if (subscriptions.length === 0) {
+            return {settledCount: 0, settledRoutes: 0};
+        }
+
+        const delivery = await (this.wakeDeliveryReadFn || readWakeDelivery)({includePendingRecords: true});
+        if (!delivery?.deliveryReadable || !Array.isArray(delivery.pendingRecords) || delivery.pendingRecords.length === 0) {
+            return {settledCount: 0, settledRoutes: 0};
+        }
+
+        const subscriptionIds = new Set(subscriptions.map(sub => sub.id));
+        const candidateIds    = new Set();
+
+        for (const record of delivery.pendingRecords) {
+            if (!subscriptionIds.has(record?.subscriptionId) || record.envelope?.eventType !== 'wake/digest') {
+                continue;
+            }
+
+            for (const id of Array.isArray(record.sourceEventIds) ? record.sourceEventIds : []) {
+                if (typeof id === 'string' && /^(?:MESSAGE|TASK):(?!\s*$)\S+$/.test(id)) {
+                    candidateIds.add(id);
+                }
+            }
+        }
+
+        if (candidateIds.size === 0) {
+            return {settledCount: 0, settledRoutes: 0};
+        }
+
+        const handledIds = [];
+        for (const sourceId of candidateIds) {
+            if (isSourceHandled(sourceId, owner) === true) {
+                handledIds.push(sourceId);
+            }
+        }
+
+        if (handledIds.length === 0) {
+            return {settledCount: 0, settledRoutes: 0};
+        }
+
+        const {settledRoutes} = await this.settleHandledSources(owner, handledIds);
+        return {settledCount: handledIds.length, settledRoutes};
+    }
+
+    /**
      * @summary Returns true if the identity has at least one active Shape B/C interrupt
      * subscription, regardless of trigger type.
      *

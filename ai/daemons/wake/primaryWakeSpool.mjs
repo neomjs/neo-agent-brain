@@ -3,16 +3,17 @@
  * @summary Exchanges record keys and receipted outcomes across the receiver/Fleet boundary.
  * The graphless receiver persists the signed envelope. Fleet alone inspects harness databases.
  */
-import fs                                                        from 'node:fs/promises';
-import path                                                      from 'node:path';
-import {withOutboxLock}                                                                      from './outboxLock.mjs';
+import fs                                                                                     from 'node:fs/promises';
+import path                                                                                   from 'node:path';
+import {withOutboxLock}                                                                       from './outboxLock.mjs';
 import {isBatchCapablePrimaryFamily, matchesPrimaryWakeMember, MAX_PRIMARY_WAKE_BATCH_EVENTS} from './primaryWakeBatch.mjs';
-import {primaryWakeAttemptRecorded, readPrimarySessionWake}                                  from './primarySessionWake.mjs';
+import {primaryWakeAttemptRecorded, readPrimarySessionWake}                                   from './primarySessionWake.mjs';
+import {TERMINAL_STATES}                                                                      from './receiverState.mjs';
 export {isBatchCapablePrimaryFamily}                                                         from './primaryWakeBatch.mjs';
-import {readPrivateWakeJson}                                     from './nativeWakeEnrollment.mjs';
-import {writeFileAtomic}                                         from '../../services/shared/atomicFileWrite.mjs';
-import {deriveAgentInstanceHome}                                 from '../../services/fleet/deriveAgentInstanceHome.mjs';
-import {deriveHarnessWakeAddress}                                from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
+import {readPrivateWakeJson}      from './nativeWakeEnrollment.mjs';
+import {writeFileAtomic}          from '../../services/shared/atomicFileWrite.mjs';
+import {deriveAgentInstanceHome}  from '../../services/fleet/deriveAgentInstanceHome.mjs';
+import {deriveHarnessWakeAddress} from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
 
 const keyPattern = /^[a-f0-9]{64}$/;
 const uuid       = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -87,7 +88,8 @@ export function isUrgentWakeRecord(record) {
 }
 
 /**
- * @summary Keeps a staged pointer occupied until its persisted receipt covers every linked record.
+ * @summary Keeps a staged pointer occupied until its persisted receipt covers every linked record,
+ * or until a staged-but-uncommitted record is superseded into a terminal receiver state.
  * @param {Object|null} entry The selected spool pointer.
  * @param {Object} state The receiver's record store.
  * @param {Object|null} [attempt] The corresponding native attempt, when present.
@@ -97,12 +99,16 @@ export async function isSpoolPointerActive(entry, state, attempt) {
     if (!entry) return false;
     if (!keyPattern.test(entry.recordKey)) return true;
     try {
-        if (attempt?.recordKey === entry.recordKey && attempt.members) {
-            return attempt.status !== 'delivered' ||
-                !await primaryWakeAttemptRecorded(attempt, async key => (await state.read(key)).state === 'delivered')
+        if (attempt?.recordKey === entry.recordKey) {
+            if (attempt.members) {
+                return attempt.status !== 'delivered' ||
+                    !await primaryWakeAttemptRecorded(attempt, async key => (await state.read(key)).state === 'delivered')
+            }
+
+            return attempt.status !== 'delivered' || (await state.read(entry.recordKey)).state !== 'delivered'
         }
 
-        return (await state.read(entry.recordKey)).state !== 'delivered'
+        return !TERMINAL_STATES.has((await state.read(entry.recordKey)).state)
     } catch {
         return true
     }

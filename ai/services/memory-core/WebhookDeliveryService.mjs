@@ -212,6 +212,82 @@ class WebhookDeliveryService extends Base {
     }
 
     /**
+     * @summary Derives the companion `/wake/settle` endpoint from a subscription's webhook URL.
+     * @param {String} url
+     * @returns {String|null}
+     * @protected
+     */
+    _deriveSettleUrl(url) {
+        try {
+            const parsed  = new URL(url);
+            const trimmed = parsed.pathname.replace(/\/+$/, '');
+            parsed.pathname = trimmed.endsWith('/wake') ? `${trimmed}/settle` : `${trimmed || ''}/wake/settle`;
+            return parsed.toString();
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * @summary Best-effort signed settlement notification for handled wake source IDs (`POST /wake/settle`).
+     *
+     * Never mutates `consecutiveFailures` or marks a subscription `degraded`: un-upgraded receivers,
+     * `fleetWakeReceiver`, or transient network faults return `404`/`409`/timeout safely without
+     * taking down active Shape-B delivery routes.
+     *
+     * @param {Object} subscription The `WAKE_SUBSCRIPTION` object (`{id, properties}`).
+     * @param {Object} settleEnvelope Signed `wake/settle` envelope (`{schemaVersion, eventType, eventId, subscriptionId, agentIdentity, payload, emittedAt}`).
+     * @returns {Promise<'delivered'|'skipped'|'failed'>}
+     */
+    async deliverSettle(subscription, settleEnvelope) {
+        const properties = subscription?.properties || {};
+        const url        = properties.harnessTargetMetadata?.url;
+        const signingKey = properties.harnessTargetMetadata?.signingKey;
+
+        if (!subscription?.id || properties.status === 'degraded' || this.degradedSubscriptions.has(subscription.id)) {
+            return 'skipped';
+        }
+
+        const settleUrl = url ? this._deriveSettleUrl(url) : null;
+        if (!settleUrl || !signingKey) {
+            return 'skipped';
+        }
+
+        const timeoutMs  = Number.isFinite(this.attemptTimeoutMs) ? this.attemptTimeoutMs : 5000;
+        const bodyString = JSON.stringify(settleEnvelope);
+        const headers    = {
+            'Content-Type'              : 'application/json',
+            'X-Neo-Wake-Event-Id'       : settleEnvelope.eventId,
+            'X-Neo-Wake-Subscription-Id': subscription.id,
+            'X-Neo-Wake-Schema-Version' : settleEnvelope.schemaVersion || '1.0',
+            'X-Neo-Wake-Signature'      : this._generateSignature(bodyString, signingKey)
+        };
+
+        try {
+            const response = await fetch(settleUrl, {
+                method: 'POST',
+                headers,
+                body  : bodyString,
+                signal: AbortSignal.timeout(timeoutMs)
+            });
+
+            if (response.ok) {
+                return 'delivered';
+            }
+
+            if (response.status === 404 || response.status === 409 || (response.status >= 400 && response.status < 500)) {
+                return 'skipped';
+            }
+
+            logger.warn?.(`WebhookDeliveryService: Server status ${response.status} settling handled wakes for ${subscription.id}.`);
+            return 'failed';
+        } catch (error) {
+            logger.warn?.(`WebhookDeliveryService: Network error settling handled wakes for ${subscription.id}: ${error.message}`);
+            return 'failed';
+        }
+    }
+
+    /**
      * @summary Whether a 404 is the receiver saying "not in the manifest I have loaded" rather than "this
      * route does not exist".
      *

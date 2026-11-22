@@ -48,6 +48,14 @@ const FAILURE_STATES = new Set(['failed', 'unknown']);
 const STALE_SKIP_RUN = 3;
 
 /**
+ * Outcome reason stamped when `POST /wake/settle` retires a pending digest whose source events were
+ * already handled in Memory Core. Supersession is neither a failed delivery nor an untested silence,
+ * so it stays transparent to both `consecutiveFailures` and `consecutiveSkips`.
+ * @type {String}
+ */
+export const SOURCE_EVENTS_HANDLED_REASON = 'source-events-already-handled';
+
+/**
  * @summary The order in which attempts concluded, falling back through the fields a record may carry.
  *
  * `dispatchFinishedAt` is attempt order, which is what a streak is about. `acceptedAt` is queue
@@ -150,7 +158,7 @@ export function projectWakeDelivery(records = []) {
                 // whether a wake can land.
                 verdict.lastAttemptedAt ??= when;
 
-                if (!sawDelivered && verdict.consecutiveFailures === 0) {
+                if (record.outcomeReason !== SOURCE_EVENTS_HANDLED_REASON && !sawDelivered && verdict.consecutiveFailures === 0) {
                     verdict.consecutiveSkips++;
                 }
 
