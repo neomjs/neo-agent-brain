@@ -30,6 +30,11 @@ import {
 import {readWakeDelivery} from './wakeDeliveryReader.mjs';
 import {ownOpenWorkOf}    from './openWorkCopyStore.mjs';
 import {
+    WAKE_SETTLE_EVENT_TYPE,
+    isSettleableSourceEventId,
+    isSettleableWakeRecord
+} from './wakeCoalescePolicy.mjs';
+import {
     activeWakeSubscriptionStatusSql,
     isActiveWakeSubscriptionStatus,
     isReusableWakeSubscriptionStatus,
@@ -188,6 +193,15 @@ class WakeSubscriptionService extends Base {
      * @protected
      */
     subscriptionCache = new Map()
+
+    /**
+     * Per-owner signature of the last historical pending-record candidate set sent to `/wake/settle`,
+     * preventing repeated settlement requests across back-to-back zero-unread count calls when pending
+     * records remain unchanged on disk.
+     * @member {Map<String, String>} _lastHistoricalSettleSignatures
+     * @protected
+     */
+    _lastHistoricalSettleSignatures = new Map()
 
     /**
      * @member {String[]} validHarnessPresenceStates
@@ -2835,7 +2849,7 @@ class WakeSubscriptionService extends Base {
     async settleHandledSources(owner, settledSourceEventIds = []) {
         const validIds = [...new Set(
             (Array.isArray(settledSourceEventIds) ? settledSourceEventIds : [])
-                .filter(id => typeof id === 'string' && /^(?:MESSAGE|TASK):(?!\s*$)\S+$/.test(id))
+                .filter(isSettleableSourceEventId)
         )];
 
         if (validIds.length === 0) return {settledRoutes: 0};
@@ -2860,7 +2874,7 @@ class WakeSubscriptionService extends Base {
                 const chunk    = validIds.slice(offset, offset + chunkSize);
                 const envelope = {
                     schemaVersion : '1.0',
-                    eventType     : 'wake/settle',
+                    eventType     : WAKE_SETTLE_EVENT_TYPE,
                     eventId       : `wake-settle:${crypto.randomUUID()}`,
                     agentIdentity : subscription.agentIdentity,
                     subscriptionId: subscription.id,
@@ -2879,59 +2893,94 @@ class WakeSubscriptionService extends Base {
 
     /**
      * @summary Scans readable host-receiver `pending` records for an agent identity and emits one
-     * bounded `wake/settle` batch for source IDs already durably handled in Memory Core.
+     * bounded `wake/settle` batch containing only source IDs from records the receiver can actually
+     * settle (`isSettleableWakeRecord` with every `sourceEventId` durably handled), skipping the send
+     * when the owner's settleable candidate set is unchanged since its previous sweep.
      * @param {String} owner AgentIdentity node id.
      * @param {Object} [options={}]
-     * @param {Function} options.isSourceHandled `(sourceId, owner) => Boolean` durable-truth predicate.
+     * @param {Function} [options.resolveHandledSources] `(candidateIds, owner) => Set<String>|Iterable<String>` batch resolver.
+     * @param {Function} [options.isSourceHandled] `(sourceId, owner) => Boolean` single-ID fallback predicate.
      * @returns {Promise<{settledCount: Number, settledRoutes: Number}>}
      */
-    async reconcileHistoricalPendingWakes(owner, {isSourceHandled} = {}) {
-        if (typeof owner !== 'string' || !owner || typeof isSourceHandled !== 'function') {
+    async reconcileHistoricalPendingWakes(owner, {resolveHandledSources, isSourceHandled} = {}) {
+        if (typeof owner !== 'string' || !owner ||
+            (typeof resolveHandledSources !== 'function' && typeof isSourceHandled !== 'function')) {
             return {settledCount: 0, settledRoutes: 0};
         }
 
         const subscriptions = this._getActiveWebhookWakeSubscriptions(owner);
         if (subscriptions.length === 0) {
+            this._lastHistoricalSettleSignatures.delete(owner);
             return {settledCount: 0, settledRoutes: 0};
         }
 
         const delivery = await (this.wakeDeliveryReadFn || readWakeDelivery)({includePendingRecords: true});
         if (!delivery?.deliveryReadable || !Array.isArray(delivery.pendingRecords) || delivery.pendingRecords.length === 0) {
+            this._lastHistoricalSettleSignatures.delete(owner);
             return {settledCount: 0, settledRoutes: 0};
         }
 
         const subscriptionIds = new Set(subscriptions.map(sub => sub.id));
+        const eligibleRecords = [];
         const candidateIds    = new Set();
 
         for (const record of delivery.pendingRecords) {
-            if (!subscriptionIds.has(record?.subscriptionId) || record.envelope?.eventType !== 'wake/digest') {
+            if (!subscriptionIds.has(record?.subscriptionId) || !isSettleableWakeRecord(record)) {
                 continue;
             }
 
-            for (const id of Array.isArray(record.sourceEventIds) ? record.sourceEventIds : []) {
-                if (typeof id === 'string' && /^(?:MESSAGE|TASK):(?!\s*$)\S+$/.test(id)) {
-                    candidateIds.add(id);
+            eligibleRecords.push(record);
+            for (const id of record.sourceEventIds) {
+                candidateIds.add(id);
+            }
+        }
+
+        if (eligibleRecords.length === 0 || candidateIds.size === 0) {
+            this._lastHistoricalSettleSignatures.delete(owner);
+            return {settledCount: 0, settledRoutes: 0};
+        }
+
+        let handledSet;
+        if (typeof resolveHandledSources === 'function') {
+            const resolved = resolveHandledSources([...candidateIds], owner);
+            handledSet     = resolved instanceof Set ? resolved : new Set(resolved || []);
+        } else {
+            handledSet = new Set();
+            for (const sourceId of candidateIds) {
+                if (isSourceHandled(sourceId, owner) === true) {
+                    handledSet.add(sourceId);
                 }
             }
         }
 
-        if (candidateIds.size === 0) {
+        const settleableRecords = eligibleRecords.filter(record =>
+            record.sourceEventIds.every(id => handledSet.has(id))
+        );
+
+        if (settleableRecords.length === 0) {
+            this._lastHistoricalSettleSignatures.delete(owner);
             return {settledCount: 0, settledRoutes: 0};
         }
 
-        const handledIds = [];
-        for (const sourceId of candidateIds) {
-            if (isSourceHandled(sourceId, owner) === true) {
-                handledIds.push(sourceId);
-            }
-        }
+        const handledIds = [...new Set(settleableRecords.flatMap(record => record.sourceEventIds))].sort();
+        const signature  = settleableRecords
+            .map(record => `${record.recordKey || `${record.subscriptionId}:${record.eventId || ''}`}@${record.acceptedAt || ''}`)
+            .sort()
+            .join('|') + `::${handledIds.join(',')}`;
 
-        if (handledIds.length === 0) {
+        if (this._lastHistoricalSettleSignatures.get(owner) === signature) {
             return {settledCount: 0, settledRoutes: 0};
         }
 
-        const {settledRoutes} = await this.settleHandledSources(owner, handledIds);
-        return {settledCount: handledIds.length, settledRoutes};
+        this._lastHistoricalSettleSignatures.set(owner, signature);
+
+        try {
+            const {settledRoutes} = await this.settleHandledSources(owner, handledIds);
+            return {settledCount: handledIds.length, settledRoutes};
+        } catch (error) {
+            this._lastHistoricalSettleSignatures.delete(owner);
+            throw error;
+        }
     }
 
     /**

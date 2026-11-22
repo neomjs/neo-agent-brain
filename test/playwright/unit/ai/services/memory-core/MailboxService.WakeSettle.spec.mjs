@@ -151,21 +151,26 @@ test.describe('MailboxService ↔ WakeSubscriptionService ↔ createWakeReceiver
 
         await asRecipient(() => MailboxService.markRead({messageId: [msg1.messageId, taskMsg.messageId]}));
 
-        expect((await state.read(recMsg1.recordKey)).state).toBe('skipped');
+        await expect.poll(async () => (await state.read(recMsg1.recordKey)).state).toBe('skipped');
+        await receiver.drain();
         expect((await state.read(recMsg1.recordKey)).outcomeReason).toBe('source-events-already-handled');
         expect((await state.read(recMsg2.recordKey)).state).toBe('pending');
         // recTask still awaits TASK:open-work-review-1 terminal transition
         expect((await state.read(recTask.recordKey)).state).toBe('pending');
 
         await asRecipient(() => MailboxService.transitionTask({taskId: taskMsg.messageId, newState: 'Working'}));
+        await receiver.drain();
         expect((await state.read(recTask.recordKey)).state).toBe('pending');
 
         await asRecipient(() => MailboxService.transitionTask({taskId: taskMsg.messageId, newState: 'Completed'}));
-        expect((await state.read(recTask.recordKey)).state).toBe('skipped');
+        await expect.poll(async () => (await state.read(recTask.recordKey)).state).toBe('skipped');
+        await receiver.drain();
         expect((await state.read(recTask.recordKey)).outcomeReason).toBe('source-events-already-handled');
 
         // Clean up unread msg2 so next serial test starts at unreadCount === 0
         await asRecipient(() => MailboxService.markRead({messageId: msg2.messageId}));
+        await expect.poll(async () => (await state.read(recMsg2.recordKey)).state).toBe('skipped');
+        await receiver.drain();
     });
 
     test('historical 189-record pending backlog settles on unreadCount === 0 while unhandled records stay pending', async () => {
@@ -176,6 +181,7 @@ test.describe('MailboxService ↔ WakeSubscriptionService ↔ createWakeReceiver
         }
         // Mark read BEFORE the 189 historical pending records are written (simulating pre-existing queue)
         await asRecipient(() => MailboxService.markRead({messageId: settledIds}));
+        await receiver.drain();
 
         const historicalKeys = [];
         for (let mask = 1; mask <= 189; mask++) {
@@ -190,9 +196,134 @@ test.describe('MailboxService ↔ WakeSubscriptionService ↔ createWakeReceiver
         const counts = await asRecipient(() => MailboxService.listMessages({status: 'unread', projection: 'counts'}));
         expect(counts.unreadCount).toBe(0);
 
+        await expect.poll(async () => (await state.list('skipped')).length).toBe(189);
+        await receiver.drain();
         const skipped = await state.list('skipped');
-        expect(skipped.length).toBe(189);
         expect(new Set(skipped.map(r => r.recordKey))).toEqual(new Set(historicalKeys));
         expect((await state.read(unhandledRecord.recordKey)).state).toBe('pending');
+    });
+
+    test('a deliverSettle that never resolves leaves markRead and zero-unread counts returning promptly', async () => {
+        const msg = await sendDirect('off-path promptness');
+        await acceptPendingDigest('wake-digest:off-path', [msg.messageId]);
+
+        const originalDeliverSettle = WebhookDeliveryService.deliverSettle;
+        let releaseSettle;
+        let settleInvocations = 0;
+        WebhookDeliveryService.deliverSettle = () => {
+            settleInvocations++;
+            return new Promise(resolve => {
+                releaseSettle = () => resolve('skipped');
+            });
+        };
+
+        try {
+            const tMark = performance.now();
+            const markRes = await asRecipient(() => MailboxService.markRead({messageId: msg.messageId}));
+            const markElapsedMs = performance.now() - tMark;
+            expect(markRes.status).toBe('read');
+            expect(markElapsedMs).toBeLessThan(250);
+
+            const tCounts = performance.now();
+            const countsRes = await asRecipient(() => MailboxService.listMessages({status: 'unread', projection: 'counts'}));
+            const countsElapsedMs = performance.now() - tCounts;
+            expect(countsRes.unreadCount).toBe(0);
+            expect(countsElapsedMs).toBeLessThan(250);
+
+            await expect.poll(() => settleInvocations).toBeGreaterThanOrEqual(1);
+        } finally {
+            WebhookDeliveryService.deliverSettle = originalDeliverSettle;
+            releaseSettle?.();
+        }
+    });
+
+    test('historical sweep sends only wholly-settleable records, batches TASK:* lookups in one query, and skips unchanged candidate sets', async () => {
+        const settledMsg = await sendDirect('partial digest handled half');
+        const taskMsgA   = await sendDirect('batch task A', {
+            task: {id: 'batch-task-1', state: 'Submitted', assignee: RECIPIENT}
+        });
+        const taskMsgB   = await sendDirect('batch task B', {
+            task: {id: 'batch-task-2', state: 'Submitted', assignee: RECIPIENT}
+        });
+
+        const originalDeliverSettle = WebhookDeliveryService.deliverSettle;
+        // Suppress incremental HTTP settles during fixture setup so sentEnvelopes measures only the historical sweep.
+        WebhookDeliveryService.deliverSettle = async () => 'skipped';
+
+        await asRecipient(() => MailboxService.markRead({
+            messageId: [settledMsg.messageId, taskMsgA.messageId, taskMsgB.messageId]
+        }));
+        await asRecipient(() => MailboxService.transitionTask({taskId: taskMsgA.messageId, newState: 'Working'}));
+        await asRecipient(() => MailboxService.transitionTask({taskId: taskMsgA.messageId, newState: 'Completed'}));
+        await asRecipient(() => MailboxService.transitionTask({taskId: taskMsgB.messageId, newState: 'Working'}));
+        await asRecipient(() => MailboxService.transitionTask({taskId: taskMsgB.messageId, newState: 'Failed'}));
+
+        // Seed 4 pending records:
+        // 1. Non-settleable pulse breakdown (receiver would refuse)
+        await state.accept({
+            subscriptionId,
+            eventId       : 'wake-digest:refused-pulse',
+            sourceEventIds: ['HEARTBEAT_PULSE:@wake-settle-recipient:1'],
+            route         : {agentIdentity: RECIPIENT, harnessTargetMetadata: {adapter: 'tmux', tmuxSession: 'settle-spec'}, adapterConfig: {attemptTimeoutMs: 100}},
+            envelope      : {
+                schemaVersion: '1.0',
+                eventType    : 'wake/digest',
+                eventId      : 'wake-digest:refused-pulse',
+                subscriptionId,
+                agentIdentity: RECIPIENT,
+                payload      : {
+                    totalEvents   : 1,
+                    sourceEventIds: ['HEARTBEAT_PULSE:@wake-settle-recipient:1'],
+                    breakdown     : {heartbeat_pulse: {count: 1}}
+                }
+            }
+        });
+        // 2. Partially handled digest (settledMsg + unhandled sibling -> receiver would refuse)
+        await acceptPendingDigest('wake-digest:refused-partial', [settledMsg.messageId, 'MESSAGE:unhandled-sibling']);
+        // 3 & 4. Two wholly-settleable TASK:* digests
+        await acceptPendingDigest('wake-digest:task-batch-1', ['TASK:batch-task-1']);
+        await acceptPendingDigest('wake-digest:task-batch-2', ['TASK:batch-task-2']);
+
+        const sqlite          = GraphService.db.storage.db;
+        const originalPrepare = sqlite.prepare.bind(sqlite);
+        const sentEnvelopes   = [];
+        let   taskBatchSqlCount = 0;
+
+        sqlite.prepare = sql => {
+            if (typeof sql === 'string' && sql.includes("$.properties.task.id") && sql.includes('json_each')) {
+                taskBatchSqlCount++;
+            }
+            return originalPrepare(sql);
+        };
+        // Return 'skipped' (simulating un-upgraded or non-mutating endpoint) so pending records remain unchanged on disk.
+        WebhookDeliveryService.deliverSettle = async (_sub, envelope) => {
+            sentEnvelopes.push(envelope);
+            return 'skipped';
+        };
+
+        try {
+            const firstCounts = await asRecipient(() => MailboxService.listMessages({status: 'unread', projection: 'counts'}));
+            expect(firstCounts.unreadCount).toBe(0);
+
+            await expect.poll(() => sentEnvelopes.length).toBe(1);
+            expect(taskBatchSqlCount).toBe(1);
+            expect(sentEnvelopes[0].payload.settledSourceEventIds.slice().sort()).toEqual([
+                'TASK:batch-task-1',
+                'TASK:batch-task-2'
+            ]);
+
+            // Second zero-unread counts call over unchanged pending records sends NO settle.
+            taskBatchSqlCount = 0;
+            const secondCounts = await asRecipient(() => MailboxService.listMessages({status: 'unread', projection: 'counts'}));
+            expect(secondCounts.unreadCount).toBe(0);
+
+            await WakeSubscriptionService.reconcileHistoricalPendingWakes(RECIPIENT, {
+                resolveHandledSources: (ids, owner) => MailboxService._resolveHandledWakeSources(ids, owner)
+            });
+            expect(sentEnvelopes.length).toBe(1);
+        } finally {
+            sqlite.prepare                       = originalPrepare;
+            WebhookDeliveryService.deliverSettle = originalDeliverSettle;
+        }
     });
 });

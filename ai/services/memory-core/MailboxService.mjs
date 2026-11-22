@@ -4760,8 +4760,8 @@ class MailboxService extends Base {
             if (box === 'inbox' && status === 'unread' && sameMailboxIdentity(target, me) &&
                 !fromIdentity && !threadId && !requestedTaggedConceptGroups.length && !taskView &&
                 countsResult.unreadCount === 0) {
-                await WakeSubscriptionService.reconcileHistoricalPendingWakes(me, {
-                    isSourceHandled: (sourceId, owner) => this._isWakeSourceHandled(sourceId, owner)
+                void WakeSubscriptionService.reconcileHistoricalPendingWakes(me, {
+                    resolveHandledSources: (candidateIds, owner) => this._resolveHandledWakeSources(candidateIds, owner)
                 }).catch(error => logger.warn?.(`[MailboxService] historical wake settle skipped: ${error.message}`));
             }
 
@@ -5561,7 +5561,7 @@ class MailboxService extends Base {
 
                 if (boundIdentity && settledIds.length > 0) {
                     const me = normalizeMailboxIdentityForComparison(boundIdentity);
-                    await WakeSubscriptionService.settleHandledSources(me, settledIds)
+                    void WakeSubscriptionService.settleHandledSources(me, settledIds)
                         .catch(error => logger.warn?.(`[MailboxService] wake settle skipped: ${error.message}`));
                 }
             }
@@ -5616,11 +5616,11 @@ class MailboxService extends Base {
             }
         }
 
-        const finishMarkRead = async (readAt, durable) => {
+        const finishMarkRead = (readAt, durable) => {
             const receipt = receiptWithDurability({ messageId, readAt, status: 'read' }, durable, 'mark_read');
 
             if (!_skipSettle && receipt.durable !== false) {
-                await WakeSubscriptionService.settleHandledSources(me, [messageId])
+                void WakeSubscriptionService.settleHandledSources(me, [messageId])
                     .catch(error => logger.warn?.(`[MailboxService] wake settle skipped: ${error.message}`));
             }
 
@@ -5677,40 +5677,74 @@ class MailboxService extends Base {
     }
 
     /**
-     * @summary Checks whether a wake `sourceEventId` (`MESSAGE:*` or `TASK:*`) is durably handled in storage.
-     * @param {String} sourceId
+     * @summary Batch-resolves which `MESSAGE:*` and `TASK:*` wake `sourceEventIds` are durably handled
+     * for `owner`, resolving all `TASK:*` candidates in a single `json_each` SQLite query rather than
+     * scanning `MESSAGE` rows per task ID.
+     * @param {String[]} candidateIds
      * @param {String} owner Normalized recipient AgentIdentity node id.
-     * @returns {Boolean}
+     * @returns {Set<String>}
      * @private
      */
-    _isWakeSourceHandled(sourceId, owner) {
-        if (typeof sourceId !== 'string' || typeof owner !== 'string' || !owner) {
-            return false;
+    _resolveHandledWakeSources(candidateIds, owner) {
+        const handled = new Set();
+
+        if (!Array.isArray(candidateIds) || candidateIds.length === 0 || typeof owner !== 'string' || !owner) {
+            return handled;
         }
 
-        if (sourceId.startsWith('MESSAGE:')) {
-            return Boolean(readBackgroundDeliveryState(sourceId, owner)?.readAt);
+        const taskCandidates = [];
+
+        for (const sourceId of candidateIds) {
+            if (typeof sourceId !== 'string') continue;
+
+            if (sourceId.startsWith('MESSAGE:')) {
+                if (readBackgroundDeliveryState(sourceId, owner)?.readAt) {
+                    handled.add(sourceId);
+                }
+            } else if (sourceId.startsWith('TASK:')) {
+                taskCandidates.push(sourceId);
+            }
         }
 
-        if (sourceId.startsWith('TASK:')) {
+        if (taskCandidates.length > 0) {
             const sqlite = GraphService.db?.storage?.db;
-            if (!sqlite) return false;
+            if (!sqlite) return handled;
 
-            const rawTaskKey  = sourceId.slice('TASK:'.length);
-            const terminalSet = new Set(['Completed', 'Canceled', 'Failed', 'Rejected', 'Expired']);
-            const matchedRow  = sqlite.prepare(`
-                SELECT id, json_extract(data, '$.properties.task.state') AS taskState
+            const lookupKeys = new Set();
+            for (const sourceId of taskCandidates) {
+                lookupKeys.add(sourceId);
+                lookupKeys.add(sourceId.slice('TASK:'.length));
+            }
+
+            const matchedRows = sqlite.prepare(`
+                SELECT id,
+                       json_extract(data, '$.properties.task.id')    AS rawTaskId,
+                       json_extract(data, '$.properties.task.state') AS taskState
                 FROM Nodes
                 WHERE json_extract(data, '$.label') = 'MESSAGE'
-                  AND (json_extract(data, '$.properties.task.id') = ? OR json_extract(data, '$.properties.task.id') = ?)
-                LIMIT 1
-            `).get(sourceId, rawTaskKey);
+                  AND json_extract(data, '$.properties.task.id') IN (SELECT value FROM json_each(?))
+            `).all(JSON.stringify([...lookupKeys]));
 
-            return Boolean(matchedRow && terminalSet.has(matchedRow.taskState) &&
-                readBackgroundDeliveryState(matchedRow.id, owner)?.readAt);
+            const handledTaskKeys = new Set();
+            for (const row of matchedRows) {
+                if (!TERMINAL_TASK_STATE_SET.has(row.taskState) || !readBackgroundDeliveryState(row.id, owner)?.readAt) {
+                    continue;
+                }
+
+                const rawId = typeof row.rawTaskId === 'string' ? row.rawTaskId : '';
+                if (rawId) {
+                    handledTaskKeys.add(rawId.startsWith('TASK:') ? rawId : `TASK:${rawId}`);
+                }
+            }
+
+            for (const sourceId of taskCandidates) {
+                if (handledTaskKeys.has(sourceId)) {
+                    handled.add(sourceId);
+                }
+            }
         }
 
-        return false;
+        return handled;
     }
 
     /**
@@ -5856,8 +5890,8 @@ class MailboxService extends Base {
 
         if ((status === 'read' || status === 'noop') && withheldUnseenCount === 0 &&
             failures.length === 0 && nonDurable.length === 0 && notApplied.length === 0) {
-            await WakeSubscriptionService.reconcileHistoricalPendingWakes(me, {
-                isSourceHandled: (sourceId, owner) => this._isWakeSourceHandled(sourceId, owner)
+            void WakeSubscriptionService.reconcileHistoricalPendingWakes(me, {
+                resolveHandledSources: (candidateIds, owner) => this._resolveHandledWakeSources(candidateIds, owner)
             }).catch(error => logger.warn?.(`[MailboxService] historical wake settle skipped: ${error.message}`));
         }
 
@@ -6981,7 +7015,7 @@ class MailboxService extends Base {
         const fresh = getStorageTaskMutableState(taskId);
         applyStorageTaskMutableState(messageNode, fresh);
 
-        if (['Completed', 'Canceled', 'Failed', 'Rejected', 'Expired'].includes(newState)) {
+        if (TERMINAL_TASK_STATE_SET.has(newState)) {
             const settleTargets = [...new Set([me, ...(nextAssignee ? [nextAssignee] : [])].filter(Boolean))];
             const rawTaskId     = typeof fresh.task?.id === 'string' && fresh.task.id.trim()
                 ? (fresh.task.id.startsWith('TASK:') ? fresh.task.id : `TASK:${fresh.task.id}`)
@@ -6993,7 +7027,7 @@ class MailboxService extends Base {
                     ...(readBackgroundDeliveryState(taskId, recipient)?.readAt ? [taskId] : [])
                 ];
                 if (settledIds.length > 0) {
-                    await WakeSubscriptionService.settleHandledSources(recipient, settledIds)
+                    void WakeSubscriptionService.settleHandledSources(recipient, settledIds)
                         .catch(error => logger.warn?.(`[MailboxService] task wake settle skipped: ${error.message}`));
                 }
             }

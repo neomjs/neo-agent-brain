@@ -57,55 +57,20 @@ import {
 import {readNativeWakeOptIn, readPrivateWakeJson} from './nativeWakeEnrollment.mjs';
 import {withOutboxLock}                           from './outboxLock.mjs';
 import {readPrimarySessionWake}                   from './primarySessionWake.mjs';
-import {isUrgentWakeEnvelope}                     from '../../services/memory-core/wakeCoalescePolicy.mjs';
+import {
+    SOURCE_EVENTS_HANDLED_REASON,
+    WAKE_SETTLE_EVENT_TYPE,
+    isSettleableSourceEventId,
+    isSettleableWakeRecord,
+    isUrgentWakeEnvelope
+} from '../../services/memory-core/wakeCoalescePolicy.mjs';
 
-export const WAKE_SETTLE_EVENT_TYPE      = 'wake/settle';
-export const SOURCE_EVENTS_HANDLED_REASON = 'source-events-already-handled';
+export {SOURCE_EVENTS_HANDLED_REASON, WAKE_SETTLE_EVENT_TYPE};
 
-const DEFAULT_MAX_BODY_BYTES     = 256 * 1024;
-const SETTLEABLE_SOURCE_ID_REGEX = /^(?:MESSAGE|TASK):(?!\s*$)\S+$/;
+const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 
 function isSeatId(value) {
     return typeof value === 'string' && /^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/.test(value)
-}
-
-/**
- * @summary Returns whether a wake source identifier represents a settleable mailbox message or task.
- * Heartbeat pulses, permission grants, bare UUIDs, and fallback event IDs are never settleable.
- * @param {*} value
- * @returns {Boolean}
- */
-function isSettleableSourceEventId(value) {
-    return typeof value === 'string' && SETTLEABLE_SOURCE_ID_REGEX.test(value)
-}
-
-/**
- * @summary Checks that a pending receiver record carries only settleable message/task wake sources
- * and zero non-settleable digest buckets (`heartbeat_pulse`, `permission_granted`, `task_state_changed`).
- * @param {Object|null} record
- * @returns {Boolean}
- */
-function isSettleableWakeRecord(record) {
-    if (record?.state !== 'pending' || record.envelope?.eventType !== WAKE_DIGEST_EVENT_TYPE) {
-        return false
-    }
-
-    const ids = record.sourceEventIds;
-    if (!Array.isArray(ids) || ids.length === 0 || !ids.every(isSettleableSourceEventId)) {
-        return false
-    }
-
-    const breakdown = record.envelope?.payload?.breakdown;
-    if (breakdown && typeof breakdown === 'object') {
-        if ((breakdown.heartbeat_pulse?.count || 0) > 0 ||
-            (breakdown.permission_granted?.count || 0) > 0 ||
-            (breakdown.task_state_changed?.count || 0) > 0
-        ) {
-            return false
-        }
-    }
-
-    return true
 }
 
 /**

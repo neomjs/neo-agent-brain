@@ -67,6 +67,63 @@ export const POST_FLUSH_REFRACTORY_MS = 120000;
 export const MESSAGE_WAKE_MAX_AGE_MS = 60 * 60 * 1000;
 
 /**
+ * Signed envelope `eventType` sent from Memory Core to a Shape-B host receiver's `/wake/settle`
+ * endpoint when `MESSAGE:*` or `TASK:*` wake sources are durably handled.
+ * @type {String}
+ */
+export const WAKE_SETTLE_EVENT_TYPE = 'wake/settle';
+
+/**
+ * Outcome reason stamped on a receiver record skipped via `POST /wake/settle`. Transparent to both
+ * `consecutiveFailures` and `consecutiveSkips` in `wakeDeliveryProjection`.
+ * @type {String}
+ */
+export const SOURCE_EVENTS_HANDLED_REASON = 'source-events-already-handled';
+
+const SETTLEABLE_SOURCE_ID_REGEX = /^(?:MESSAGE|TASK):(?!\s*$)\S+$/;
+
+/**
+ * @summary Returns whether a wake source identifier represents a settleable mailbox message or task.
+ * Heartbeat pulses, permission grants, bare UUIDs, and fallback event IDs are never settleable.
+ * @param {*} value
+ * @returns {Boolean}
+ */
+export function isSettleableSourceEventId(value) {
+    return typeof value === 'string' && SETTLEABLE_SOURCE_ID_REGEX.test(value)
+}
+
+/**
+ * @summary Checks that a pending receiver record carries only settleable message/task wake sources
+ * and zero non-settleable digest buckets (`heartbeat_pulse`, `permission_granted`, `task_state_changed`).
+ * Shared by both the graphless host receiver and Memory Core's historical backlog sweep so neither half
+ * can drift on which pending digests are eligible for positive-attestation settlement.
+ * @param {Object|null} record
+ * @returns {Boolean}
+ */
+export function isSettleableWakeRecord(record) {
+    if (record?.state !== 'pending' || record.envelope?.eventType !== 'wake/digest') {
+        return false
+    }
+
+    const ids = record.sourceEventIds;
+    if (!Array.isArray(ids) || ids.length === 0 || !ids.every(isSettleableSourceEventId)) {
+        return false
+    }
+
+    const breakdown = record.envelope?.payload?.breakdown;
+    if (breakdown && typeof breakdown === 'object') {
+        if ((breakdown.heartbeat_pulse?.count || 0) > 0 ||
+            (breakdown.permission_granted?.count || 0) > 0 ||
+            (breakdown.task_state_changed?.count || 0) > 0
+        ) {
+            return false
+        }
+    }
+
+    return true
+}
+
+/**
  * @summary Returns whether a canonical mailbox timestamp is still eligible for live wake delivery.
  *
  * `MailboxService.addMessage()` owns `sentAt` and stamps it with `Date#toISOString()`. Requiring

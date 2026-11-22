@@ -28,7 +28,10 @@
  * @module ai/services/memory-core/wakeDeliveryProjection
  */
 
-import {SPOOL_CONTENTION_REASONS} from '../../daemons/wake/primaryWakeSpool.mjs';
+import {SPOOL_CONTENTION_REASONS}     from '../../daemons/wake/primaryWakeSpool.mjs';
+import {SOURCE_EVENTS_HANDLED_REASON} from './wakeCoalescePolicy.mjs';
+
+export {SOURCE_EVENTS_HANDLED_REASON};
 
 /**
  * States that count against a subscription. `failed` is a concluded non-delivery; `unknown` is a
@@ -46,14 +49,6 @@ const FAILURE_STATES = new Set(['failed', 'unknown']);
 
 /** Skips newer than the last delivery that retire it as evidence: the route reads `unknown`, never `unreachable`. */
 const STALE_SKIP_RUN = 3;
-
-/**
- * Outcome reason stamped when `POST /wake/settle` retires a pending digest whose source events were
- * already handled in Memory Core. Supersession is neither a failed delivery nor an untested silence,
- * so it stays transparent to both `consecutiveFailures` and `consecutiveSkips`.
- * @type {String}
- */
-export const SOURCE_EVENTS_HANDLED_REASON = 'source-events-already-handled';
 
 /**
  * @summary The order in which attempts concluded, falling back through the fields a record may carry.
