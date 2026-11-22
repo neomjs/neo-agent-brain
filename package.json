@@ -74,6 +74,7 @@
         "ai:lint-identity-vocabulary": "node ./ai/scripts/lint/lint-identity-vocabulary.mjs",
         "ai:lint-mcp-test-locations": "node ./ai/scripts/lint/lint-mcp-test-locations.mjs",
         "ai:lint-openapi-service-parity": "node ./ai/scripts/lint/lint-openapi-service-parity.mjs",
+        "ai:lint-public-docs": "node ./ai/scripts/lint/lint-public-docs.mjs",
         "ai:lint-retry-bounds": "node ./ai/scripts/lint/lint-retry-bounds.mjs",
         "ai:host-edge": "node ./ai/daemons/orchestrator/hostEdge.mjs",
         "ai:delta-digest": "node ./ai/scripts/diagnostics/deltaDigest.mjs",

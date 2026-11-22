@@ -185,12 +185,12 @@ flat list.
 
 ## Go Deeper
 
-- [Dream Pipeline & Golden Path](../agentos/DreamPipeline.md) - the detailed REM
+- [Dream Pipeline & Golden Path](../../agentos/DreamPipeline.md) - the detailed REM
   and forecasting mechanics.
-- [Model Experience (MX)](../agentos/MX.md) - how model friction becomes
+- [Model Experience (MX)](../../agentos/MX.md) - how model friction becomes
   evolved substrate.
 - [The AI Engineering Team](AIEngineeringTeam.md) - who acts on the forecast.
-- [The Memory Core](../agentos/MemoryCore.md) - the shared memory substrate the
+- [The Memory Core](../../agentos/MemoryCore.md) - the shared memory substrate the
   Dream Pipeline digests.
-- [Introduction](Introduction.md) - the front-door story tying self-evolution to
+- [Introduction](https://neomjs.com/learn/benefits/Introduction) - the front-door story tying self-evolution to
   the whole organism.

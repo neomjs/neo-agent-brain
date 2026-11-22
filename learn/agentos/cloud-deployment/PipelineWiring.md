@@ -1,6 +1,6 @@
 # Cloud Deployment — Downstream Pipeline Wiring
 
-> **Status — Post-MVP residual [#11733](https://github.com/neomjs/neo/issues/11733).** Epic [#11720](https://github.com/neomjs/neo/issues/11720) shipped the in-repo deployment proof: the profile-structured [`deploy/cloud/`](../../../deploy/cloud/) compose stack, the deployed MCP healthcheck, and the [Day-0 Cloud Deployment Tutorial](./Day0Tutorial.md). This guide is the next phase — wiring that deployment into an external team's downstream CI/CD pipeline so a release can build, deploy, and redeploy the Agent OS stack without a human running `docker compose` by hand. It is a *reference integration*, not a turnkey pipeline: CI systems differ, so the moving parts are documented here and a CI-system-neutral reference script ships under [`ai/examples/cloud-deployment/deploy-pipeline.sh`](../../../ai/examples/cloud-deployment/deploy-pipeline.sh).
+> **Status — Post-MVP residual [#11733](https://github.com/neomjs/neo/issues/11733).** Epic [#11720](https://github.com/neomjs/neo/issues/11720) shipped the in-repo deployment proof: the profile-structured [`deploy/cloud/`](https://github.com/neomjs/neo-agent-brain/tree/dev/deploy/cloud) compose stack, the deployed MCP healthcheck, and the [Day-0 Cloud Deployment Tutorial](./Day0Tutorial.md). This guide is the next phase — wiring that deployment into an external team's downstream CI/CD pipeline so a release can build, deploy, and redeploy the Agent OS stack without a human running `docker compose` by hand. It is a *reference integration*, not a turnkey pipeline: CI systems differ, so the moving parts are documented here and a CI-system-neutral reference script ships under [`ai/examples/cloud-deployment/deploy-pipeline.sh`](../../../ai/examples/cloud-deployment/deploy-pipeline.sh).
 
 ## Deployment-pipeline vs content-pipeline
 
@@ -50,7 +50,7 @@ The script resolves that selector to a full commit id before Docker runs, and **
 
 Release-gating chooses *which* revision to deploy. This section is how the deployment **proves** which revision it actually runs — a separate problem, and the one that lets a stale stack look healthy.
 
-**Resolve the channel, then pin once.** Every Neo service in [`deploy/cloud/docker-compose.yml`](../../../deploy/cloud/docker-compose.yml) still receives two internal build arguments — `NEO_REF` for source acquisition and `NEO_REVISION` for the OCI assertion — but Compose derives both from one operator-facing resolved pin. Resolve once, pass `NEO_REVISION` once, build once:
+**Resolve the channel, then pin once.** Every Neo service in [`deploy/cloud/docker-compose.yml`](https://github.com/neomjs/neo-agent-brain/blob/dev/deploy/cloud/docker-compose.yml) still receives two internal build arguments — `NEO_REF` for source acquisition and `NEO_REVISION` for the OCI assertion — but Compose derives both from one operator-facing resolved pin. Resolve once, pass `NEO_REVISION` once, build once:
 
 ```bash
 export NEO_REVISION=$(git ls-remote https://github.com/neomjs/neo-agent-brain.git dev | cut -f1)
@@ -241,4 +241,4 @@ Two bounds, stated because they are real. For an overlay-only Compose-owned serv
 - [Hook Wiring](./HookWiring.md) — the *content* pipeline (tenant repo content into the KB), distinct from this *deployment* pipeline.
 - [`ai/examples/cloud-deployment/deploy-pipeline.sh`](../../../ai/examples/cloud-deployment/deploy-pipeline.sh) — the runnable, CI-neutral reference deploy/redeploy script.
 - [`ai/scripts/maintenance/migrateDeployment.mjs`](../../../ai/scripts/maintenance/migrateDeployment.mjs) — the supervised `plan`/`apply` bootstrap for a plane that is already behind.
-- [ADR 0014](../decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md) — the cloud topology + scheduler taxonomy this deployment implements.
+- [ADR 0014](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0014-cloud-deployment-topology-and-scheduler-task-taxonomy.md) — the cloud topology + scheduler taxonomy this deployment implements.

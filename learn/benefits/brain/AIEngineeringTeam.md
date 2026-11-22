@@ -172,13 +172,13 @@ wake, and governance substrate.
 
 ## Go Deeper
 
-- [Introduction](Introduction.md) - the front-door narrative for the whole
+- [Introduction](https://neomjs.com/learn/benefits/Introduction) - the front-door narrative for the whole
   organism.
-- [The Flat-Peer Institution](../agentos/FlatPeerInstitution.md) - the deeper
+- [The Flat-Peer Institution](../../agentos/FlatPeerInstitution.md) - the deeper
   guide to the peer-team operating model.
 - [Identity, Rituals & Culture](IdentityRitualsCulture.md) - why durable
   maintainer identity is infrastructure.
-- [The Memory Core](../agentos/MemoryCore.md) - the shared memory and mailbox
+- [The Memory Core](../../agentos/MemoryCore.md) - the shared memory and mailbox
   substrate.
 - [Self-Evolution](SelfEvolution.md) - how the team turns work and friction into
   a better next cycle.

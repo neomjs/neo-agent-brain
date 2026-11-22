@@ -171,7 +171,7 @@ meaning goes on new fields, never on this one.
 ## Restoration Procedures
 
 ### 1. Knowledge Base (KB)
-The Knowledge Base is the `neo-knowledge-base` collection inside the one flat `unified` ChromaDB store ([ADR 0017](../decisions/0017-chroma-single-flat-unified-store.md)) — **a cache, not a store**. Recover it by deterministic rebuild from source, at collection scope. Never delete the store folder: `chroma/unified` also holds the irreplaceable Memory Core collections.
+The Knowledge Base is the `neo-knowledge-base` collection inside the one flat `unified` ChromaDB store ([ADR 0017](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0017-chroma-single-flat-unified-store.md)) — **a cache, not a store**. Recover it by deterministic rebuild from source, at collection scope. Never delete the store folder: `chroma/unified` also holds the irreplaceable Memory Core collections.
 
 **Procedure:**
 1. Re-synchronize the KB from the source files (deterministic rebuild — clears and repopulates only the `neo-knowledge-base` collection):
@@ -181,7 +181,7 @@ The Knowledge Base is the `neo-knowledge-base` collection inside the one flat `u
    *(Note: Direct JSONL import of the `kb/` bundle is deferred to #10871. Do **not** `rm -rf` the `chroma/unified` folder — it is shared with Memory Core; KB recovery is collection-scoped, handled by the rebuild above.)*
 
 ### 2. Memory Core (MC) - Memories & Summaries
-Memory Core memories and session summaries live as the `neo-agent-memory` and `neo-agent-sessions` collections inside the same flat `unified` ChromaDB store ([ADR 0017](../decisions/0017-chroma-single-flat-unified-store.md)). Unlike the KB, MC is the **irreplaceable store** — recover it from the backup bundle, at collection scope via the SDK. The pre-unification `chroma/memory-core/` folder is retired.
+Memory Core memories and session summaries live as the `neo-agent-memory` and `neo-agent-sessions` collections inside the same flat `unified` ChromaDB store ([ADR 0017](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0017-chroma-single-flat-unified-store.md)). Unlike the KB, MC is the **irreplaceable store** — recover it from the backup bundle, at collection scope via the SDK. The pre-unification `chroma/memory-core/` folder is retired.
 
 **Procedure:**
 1. Re-import the MC JSONL from the backup bundle via the SDK (`mode: 'replace'` clears and repopulates the MC collections at collection scope — no folder deletion):

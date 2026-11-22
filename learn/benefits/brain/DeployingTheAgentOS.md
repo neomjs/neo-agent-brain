@@ -49,7 +49,7 @@ flowchart TD
     Team --> Outcome
 ```
 
-The first change is **shared institutional substrate**. The [Knowledge Base](../agentos/KnowledgeBase.md)
+The first change is **shared institutional substrate**. The [Knowledge Base](../../agentos/KnowledgeBase.md)
 is the corpus RAG layer over code, guides, ADRs, issues, pull-request
 conversations, discussions, releases, tests, concepts, and tenant-provided
 sources. The [Memory Core](AgentMemory.md) is the durable continuity layer:
@@ -171,19 +171,19 @@ inside the story.
 This page is the why and what. The ordered how starts at the cloud-deployment
 hub, then descends into the runnable path and the deep mechanics:
 
-- [Why Deploy the Agent OS](../agentos/cloud-deployment/WhyDeploy.md) — the
+- [Why Deploy the Agent OS](../../agentos/cloud-deployment/WhyDeploy.md) — the
   cloud-deployment hub and reading order
-- [Day-0 Tutorial](../agentos/cloud-deployment/Day0Tutorial.md) — the
+- [Day-0 Tutorial](../../agentos/cloud-deployment/Day0Tutorial.md) — the
   recommended first deployment path
-- [Tenant Ingestion Model](../agentos/cloud-deployment/TenantIngestionModel.md)
+- [Tenant Ingestion Model](../../agentos/cloud-deployment/TenantIngestionModel.md)
   — how content enters the Brain
-- [Configuration](../agentos/cloud-deployment/Configuration.md) — deployment
+- [Configuration](../../agentos/cloud-deployment/Configuration.md) — deployment
   profiles, provider selection, and operational knobs
-- [Security](../agentos/cloud-deployment/Security.md) — tenant identity and
+- [Security](../../agentos/cloud-deployment/Security.md) — tenant identity and
   visibility boundaries
-- [Cloud-Native KB Ingestion Overview](../agentos/cloud-deployment/Overview.md)
+- [Cloud-Native KB Ingestion Overview](../../agentos/cloud-deployment/Overview.md)
   — the deep ingestion mechanics
-- [Deployment Cookbook](../agentos/DeploymentCookbook.md) — deployment profiles
+- [Deployment Cookbook](../../agentos/DeploymentCookbook.md) — deployment profiles
   and operational recipes
 
 ## Go deeper
@@ -191,6 +191,6 @@ hub, then descends into the runnable path and the deep mechanics:
 - [The Agent OS on Your Codebase](AgentOSOnYourCodebase.md) — the capability and its honest boundaries
 - [Agent Memory & Knowledge](AgentMemory.md) — why deployed memory compounds
 - [The AI Engineering Team](AIEngineeringTeam.md) — what gets deployed
-- [Architecture Overview](ArchitectureOverview.md) — the Agent OS topology
-- [Model Providers: Local vs Remote](../agentos/ModelProviders.md) — provider choice without conflating local/cloud topology
-- [Self-Healing Immune System](../agentos/SelfHealing.md) — how the Brain runs unattended
+- [Architecture Overview](https://neomjs.com/learn/benefits/ArchitectureOverview) — the Agent OS topology
+- [Model Providers: Local vs Remote](../../agentos/ModelProviders.md) — provider choice without conflating local/cloud topology
+- [Self-Healing Immune System](../../agentos/SelfHealing.md) — how the Brain runs unattended

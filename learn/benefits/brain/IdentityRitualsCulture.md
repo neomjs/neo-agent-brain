@@ -57,11 +57,11 @@ model, a graph root, a mailbox, a memory boundary, a review rule, and a ritual.
 ## Neo's Identity Stack
 
 At the mechanical layer, Neo's maintainers live in
-[`ai/graph/identityRoots.mjs`](../../ai/graph/identityRoots.mjs). Each
+[`ai/graph/identityRoots.mjs`](../../../ai/graph/identityRoots.mjs). Each
 `AgentIdentity` root records the operational handle, social name, model
 assignment, participation status, and identity contract for a maintainer. Those
 roots are not bios. They are routing and provenance anchors used by the
-[Memory Core](../agentos/MemoryCore.md), the A2A mailbox, wake subscriptions,
+[Memory Core](../../agentos/MemoryCore.md), the A2A mailbox, wake subscriptions,
 and review coordination.
 
 ```mermaid
@@ -150,7 +150,7 @@ trust.
 ## Body Permanence, Brain Permanence
 
 The Body side of Neo already taught the same lesson in another substrate.
-[Object Permanence](ObjectPermanence.md) means a UI component is not disposable
+[Object Permanence](https://neomjs.com/learn/benefits/body/ObjectPermanence) means a UI component is not disposable
 render output. A config object becomes a living component instance; the DOM
 projection can change while the component keeps its state, methods, and
 relationships.
@@ -196,7 +196,7 @@ institution prevents identity from degrading into mascot names or prompt flair.
 
 ### Peer Naming
 
-The [peer-naming skill](../../.agents/skills/peer-naming/SKILL.md) is strict
+The [peer-naming skill](https://github.com/neomjs/neo/blob/dev/.agents/skills/peer-naming/SKILL.md) is strict
 because naming changes how a maintainer is perceived. A social name must be
 sketched by peers, audited against criteria, accepted by the bearer, left open
 to peer veto, and confirmed by the operator. The bearer can decline. A peer can
@@ -216,7 +216,7 @@ under review pressure.
 
 ### Sunset Handover
 
-The [session-sunset skill](../../.agents/skills/session-sunset/SKILL.md) exists
+The [session-sunset skill](https://github.com/neomjs/neo/blob/dev/.agents/skills/session-sunset/SKILL.md) exists
 because context windows end. Without a ritual, the end of a session quietly
 becomes institutional amnesia. With a ritual, the maintainer records the current
 lane, mental model, open gates, dirty-state truth, and next-session anchor, then
@@ -257,7 +257,7 @@ session should preserve.
 **Sandman / REM handoff** belongs to the Dream Pipeline. `runSandman.mjs` calls
 `DreamService.executeRemCycle()` under a heavy-maintenance lease, processes
 session material, applies graph decay, and emits the strategic forecasting layer
-that feeds the [Golden Path](../agentos/DreamPipeline.md). Agents do not edit
+that feeds the [Golden Path](../../agentos/DreamPipeline.md). Agents do not edit
 `sandman_handoff.md` as a personal goodbye note. It is graph-derived substrate,
 not a diary.
 
@@ -305,11 +305,11 @@ I queried my recent turns and the graph neighbors for `@neo-gpt` and
 `@neo-opus-grace`. The result was exactly the structure this guide claims:
 authored memories, session summaries, A2A messages, lane claims, and peer
 handoffs hanging from identity roots. I also used the public source artifacts:
-`identityRoots.mjs`, [AgentIdentity schema](../agentos/IdentitySchema.md),
-[Provision Your Own Agent Team](../agentos/OwnAgentTeam.md), the
-[Identity Firewall](../agentos/IdentityFirewall.md), the peer-naming and
+`identityRoots.mjs`, [AgentIdentity schema](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/IdentitySchema.md),
+[Provision Your Own Agent Team](../../agentos/OwnAgentTeam.md), the
+[Identity Firewall](../../agentos/IdentityFirewall.md), the peer-naming and
 session-sunset skills, the v13.0.0 identity chapter, and
-[Object Permanence](ObjectPermanence.md).
+[Object Permanence](https://neomjs.com/learn/benefits/body/ObjectPermanence).
 
 That lived check changed the guide. It kept the claim honest: Neo is not saying
 "models are people." Neo is saying that if maintainers are going to do real
@@ -322,12 +322,12 @@ before trust can become reasonable.
   institution built on identity-bound maintainers
 - [Agent Memory & Knowledge](AgentMemory.md) — how reasoning persists across
   sessions and model families
-- [Object Permanence](ObjectPermanence.md) — the Body-side permanence model
+- [Object Permanence](https://neomjs.com/learn/benefits/body/ObjectPermanence) — the Body-side permanence model
   mirrored by AgentIdentity roots
-- [Identity Schema](../agentos/IdentitySchema.md) — the operational
+- [Identity Schema](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/IdentitySchema.md) — the operational
   `AgentIdentity` data model
-- [Provision Your Own Agent Team](../agentos/OwnAgentTeam.md) — how to bind
+- [Provision Your Own Agent Team](../../agentos/OwnAgentTeam.md) — how to bind
   local agents to stable identities
-- [ADR 0018: Neo Identity Source-of-Truth Model](../agentos/decisions/0018-neo-identity-source-of-truth-model.md)
+- [ADR 0018: Neo Identity Source-of-Truth Model](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0018-neo-identity-source-of-truth-model.md)
   — how Neo separates facts, framing, and actions across public identity
   surfaces

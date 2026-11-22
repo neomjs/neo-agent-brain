@@ -68,7 +68,7 @@ The Dream Pipeline uses two storage layers with different jobs:
 | **SQLite Native Edge Graph** | Structural authority for nodes, edges, state, blocker topology, concept coverage, issue relationships, and graph weights. |
 | **Unified Chroma store** | Semantic vector retrieval for raw memories, summaries, graph nodes, issues, and discussions. |
 
-The Chroma topology is unified per [ADR 0017](./decisions/0017-chroma-single-flat-unified-store.md): one daemon, one flat `unified` persist store, and separation by collection plus metadata. Dream code must not assume separate Knowledge Base and Memory Core Chroma stores.
+The Chroma topology is unified per [ADR 0017](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0017-chroma-single-flat-unified-store.md): one daemon, one flat `unified` persist store, and separation by collection plus metadata. Dream code must not assume separate Knowledge Base and Memory Core Chroma stores.
 
 The core collections used by this loop are:
 

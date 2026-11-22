@@ -200,7 +200,7 @@ authority"* — only the derived terminal is.
 
 ## Authority
 
-- **ADR-0027 §2.7.4** — [committed-only eligibility, forward completion, no cross-store rollback](../decisions/0027-autonomous-data-recovery-actuator.md).
+- **ADR-0027 §2.7.4** — [committed-only eligibility, forward completion, no cross-store rollback](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/decisions/0027-autonomous-data-recovery-actuator.md).
   This is the adopted authority for everything above.
 - **ADR-0027 OQ8** — the bound behind the promotion gate: journal replay has **no source authority**, and any
   later replay action requires a *complete ordered mutation source*. Count evidence never supplies row

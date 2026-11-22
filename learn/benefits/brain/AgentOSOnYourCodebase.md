@@ -41,7 +41,7 @@ challenge itself.
 
 When the Agent OS is pointed at a codebase, three surfaces matter first.
 
-The [Knowledge Base](../agentos/KnowledgeBase.md) is the technical cortex. It
+The [Knowledge Base](../../agentos/KnowledgeBase.md) is the technical cortex. It
 ingests source, guides, ADRs, tickets, pull requests, tests, releases, and
 generated API data into a branch-aware corpus. Agents can ask grounded
 questions and receive cited references instead of relying on training-data
@@ -106,7 +106,7 @@ beside the checkout. You can run a CLOUD Agent OS as a shared service around a
 team's repositories, with tenant-scoped ingestion and shared memory. Those are
 two modes of the same organism, not a path-conversion story.
 
-The model choice is a separate axis. [Model Providers: Local vs Remote](../agentos/ModelProviders.md)
+The model choice is a separate axis. [Model Providers: Local vs Remote](../../agentos/ModelProviders.md)
 documents the current split: chat, summaries, embeddings, graph extraction, and
 Knowledge Base answer synthesis can be configured per role. Remote providers
 are the fast path. Local OpenAI-compatible or Ollama providers are the ownership
@@ -123,7 +123,7 @@ budget constraints, and keep working when the human team is asleep?
 A deployed Agent OS needs more than retrieval. It needs to keep its memory
 trustworthy.
 
-The [Self-Healing immune system](../agentos/SelfHealing.md) exists because a
+The [Self-Healing immune system](../../agentos/SelfHealing.md) exists because a
 green process is not proof of intact memory. Neo now distinguishes liveness from
 integrity: vector coverage, embedding dimensions, SQLite health, store bloat,
 provider readiness, and container state are separate signals. The system
@@ -144,7 +144,7 @@ Learning an arbitrary repository does **not** require Neural Link. Codebase
 understanding comes from tenant-scoped ingestion, Knowledge Base search,
 Memory Core, the Native Edge Graph, and the review process.
 
-[Neural Link](../agentos/NeuralLink.md) is different. It is the Possession
+[Neural Link](https://neomjs.com/learn/agentos/NeuralLink) is different. It is the Possession
 Interface for live Neo applications: a trusted bridge into a running Neo App
 Worker. It lets an agent inspect semantic runtime state, read component trees,
 inspect stores, mutate live config, and verify the same live application again.
@@ -207,15 +207,15 @@ with a task. A memory-backed Agent OS can become part of how a codebase learns.
 
 - [Deploying the Agent OS](DeployingTheAgentOS.md) — why and where the Brain
   can run as a service
-- [Tenant Ingestion Model](../agentos/cloud-deployment/TenantIngestionModel.md)
+- [Tenant Ingestion Model](../../agentos/cloud-deployment/TenantIngestionModel.md)
   — how external content enters the Brain
-- [Knowledge Base](../agentos/KnowledgeBase.md) — the technical cortex over
+- [Knowledge Base](../../agentos/KnowledgeBase.md) — the technical cortex over
   source and history
 - [Agent Memory & Knowledge](AgentMemory.md) — continuity across sessions and
   model families
-- [Model Providers: Local vs Remote](../agentos/ModelProviders.md) — choosing
+- [Model Providers: Local vs Remote](../../agentos/ModelProviders.md) — choosing
   local or remote model routes per role
-- [Self-Healing](../agentos/SelfHealing.md) — how unattended deployments keep
+- [Self-Healing](../../agentos/SelfHealing.md) — how unattended deployments keep
   memory trustworthy
-- [Neural Link](../agentos/NeuralLink.md) — live Neo UI possession when the
+- [Neural Link](https://neomjs.com/learn/agentos/NeuralLink) — live Neo UI possession when the
   product is a Neo application

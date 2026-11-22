@@ -8,7 +8,7 @@ Cloud KB ingestion is configured at two layers:
 
 | Layer | Scope | Storage | Lifecycle |
 |---|---|---|---|
-| **`aiConfig`** — deployment config | One KB server process | [`ai/mcp/server/knowledge-base/config.mjs`](../../../ai/mcp/server/knowledge-base/config.mjs) — gitignored, cloned from `config.template.mjs` | Loaded once at boot; a harness restart picks up changes |
+| **`aiConfig`** — deployment config | One KB server process | [`ai/mcp/server/knowledge-base/config.mjs`](../../../ai/mcp/server/knowledge-base/config.template.mjs) — gitignored, cloned from `config.template.mjs` | Loaded once at boot; a harness restart picks up changes |
 | **`KnowledgeBaseTenantConfig`** — per-tenant config | One tenant | A graph node in the Native Edge Graph (`memory-core-graph.sqlite`) | Mutated at runtime via `setTenantConfig`; versioned |
 
 `aiConfig` carries the deployment's defaults — the single-tenant case is fully described by it. `KnowledgeBaseTenantConfig` is the multi-tenant layer: each tenant's source/parser config stored durably, per-tenant, versioned.

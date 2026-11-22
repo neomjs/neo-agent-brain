@@ -5,6 +5,7 @@ import path           from 'node:path';
 
 import {SCAN_SURFACE as CONFIG_TEMPLATE_SURFACE} from '../../../../../../ai/scripts/lint/lint-config-template-ssot.mjs';
 import {SCAN_SURFACE as MCP_LOCATION_SURFACE}    from '../../../../../../ai/scripts/lint/lint-mcp-test-locations.mjs';
+import {SCAN_SURFACE as PUBLIC_DOCS_SURFACE}     from '../../../../../../ai/scripts/lint/lint-public-docs.mjs';
 import {SCAN_SURFACE as SCRIPT_PLANE_SURFACE}    from '../../../../../../ai/scripts/lint/lint-script-plane.mjs';
 
 /**
@@ -68,6 +69,12 @@ const REGISTRY = Object.freeze({
         scriptRel: 'ai/scripts/lint/lint-mcp-test-locations.mjs',
         source   : 'imported',
         surface  : MCP_LOCATION_SURFACE
+    },
+    'Public Documentation Manifest Lint': {
+        workflow : 'brain-lint.yml',
+        scriptRel: 'ai/scripts/lint/lint-public-docs.mjs',
+        source   : 'imported',
+        surface  : PUBLIC_DOCS_SURFACE
     },
     // Its categories scan any file under `ai/` (`openapi.yaml` included), plus `ACTIVE_ANTIGRAVITY_ROOTS` and
     // `RETIRED_ACTIVE_PATHS`. The untracked ones stay listed because a PR can add them.

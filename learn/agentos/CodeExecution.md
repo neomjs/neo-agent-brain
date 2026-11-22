@@ -195,13 +195,13 @@ The script does:
 ✅ Found 25 results.
 
 --- Top Result ---
-Source: /Users/Shared/github/neomjs/neo/learn/guides/fundamentals/ConfigSystemDeepDive.md
+Source: /Users/<you>/workspace/neo/learn/guides/fundamentals/ConfigSystemDeepDive.md
 Score:  5378
 
 --- "Smart" Filter: Top 3 Guides ---
-- /Users/Shared/github/neomjs/neo/learn/guides/fundamentals/ConfigSystemDeepDive.md (5378)
-- /Users/Shared/github/neomjs/neo/learn/benefits/body/ConfigSystem.md (4754)
-- /Users/Shared/github/neomjs/neo/learn/guides/fundamentals/DeclarativeComponentTreesVsImperativeVdom.md (2811)
+- /Users/<you>/workspace/neo/learn/guides/fundamentals/ConfigSystemDeepDive.md (5378)
+- /Users/<you>/workspace/neo/learn/benefits/body/ConfigSystem.md (4754)
+- /Users/<you>/workspace/neo/learn/guides/fundamentals/DeclarativeComponentTreesVsImperativeVdom.md (2811)
 ```
 
 ---
@@ -279,7 +279,7 @@ await GH_IssueService.createComment({
 
 [3] Understand: Querying Knowledge Base...
    - Analyzed 25 documents.
-   - Top Context: /Users/Shared/github/neomjs/neo/learn/guides/userinteraction/events/DomEvents.md (Score: 7387)
+   - Top Context: /Users/<you>/workspace/neo/learn/guides/userinteraction/events/DomEvents.md (Score: 7387)
 
 [4] Plan: Persisting Strategy to Memory...
    - Strategy saved to long-term memory.

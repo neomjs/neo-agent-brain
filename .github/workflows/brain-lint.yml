@@ -31,8 +31,10 @@ on:
       - 'ai/**'
       - 'cloud/package.json'
       - 'deploy/cloud/**'
-      - 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'
-      - 'learn/agentos/tooling/**'
+      - 'docs/public-manifest.json'
+      - 'learn/agentos/**'
+      - 'learn/benefits/**'
+      - 'learn/tree.json'
       - 'package.json'
       - 'src/**'
       - 'test/**/*.mjs'
@@ -50,8 +52,10 @@ on:
       - 'ai/**'
       - 'cloud/package.json'
       - 'deploy/cloud/**'
-      - 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'
-      - 'learn/agentos/tooling/**'
+      - 'docs/public-manifest.json'
+      - 'learn/agentos/**'
+      - 'learn/benefits/**'
+      - 'learn/tree.json'
       - 'package.json'
       - 'src/**'
       - 'test/**/*.mjs'
@@ -89,6 +93,10 @@ jobs:
       - name: MCP Test Location Lint
         if: ${{ !cancelled() }}
         run: npm run ai:lint-mcp-test-locations
+
+      - name: Public Documentation Manifest Lint
+        if: ${{ !cancelled() }}
+        run: npm run ai:lint-public-docs
 
       - name: Install dependencies
         id: install

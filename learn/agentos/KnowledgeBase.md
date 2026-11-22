@@ -257,7 +257,7 @@ Measured findings across both subsets and the `10`-question second-seat
 
 Full per-slice numbers (`13` slices across balanced-40 and all-49), synthesis
 verdicts, and declared limits live in
-[Knowledge Base Ranking Measurement](./measurements/kb-ranking-2026-11-16.md).
+[Knowledge Base Ranking Measurement](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/measurements/kb-ranking-2026-11-16.md).
 
 ## Tooling Reference
 
@@ -280,5 +280,5 @@ options that need to stay exact.
   cloud-facing source ingestion contract.
 - [Deploying the Agent OS](../benefits/brain/DeployingTheAgentOS.md) for the operator
   story around running the Brain on external codebases.
-- [Knowledge Base Ranking Measurement](./measurements/kb-ranking-2026-11-16.md) for the
+- [Knowledge Base Ranking Measurement](https://github.com/neomjs/neo-agent-brain/blob/dev/learn/agentos/measurements/kb-ranking-2026-11-16.md) for the
   three-arm retrieval benchmark, ten-question synthesis audit, and follow-up tickets.
