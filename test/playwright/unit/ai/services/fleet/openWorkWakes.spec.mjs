@@ -863,7 +863,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
             previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash, outsideHash].includes(entry.queryHash)),
             observed = history(), item = observed.pulses[100], base = item.quota[0];
 
-        expect(previous).toEqual({queryHash: '646e164c6f2f26aba55510f0e44506616ae47d23f7739eb2eb7e3d3d20e874b3', formulaCost: 5});
+        expect(previous).toEqual({queryHash: 'b5ff22d235e6f55be3d305f2684aeb8102789e434bd2f5f739b407614f68b4f0', formulaCost: 5});
         item.quota = [
             classified(base),
             classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: previous.queryHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})

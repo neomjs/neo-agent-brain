@@ -532,9 +532,12 @@ test.describe('PullRequestService.managePrReview — live mergeability gate on A
 
     test('reviewer invited on clean base, then base moves before approval: conflict and unavailable refuse without mutating, and fresh positive submits one approval', async () => {
         let reviewMutations   = 0,
-            reviewerMutations = 0;
+            reviewerMutations = 0,
+            remoteHeadOid     = REVIEWED_HEAD,
+            remoteBaseSha     = CLEAN_BASE;
+        const reviewCalls     = [];
 
-        GraphqlService.query = async query => {
+        GraphqlService.query = async (query, variables) => {
             if (query.includes('GetPullRequestId')) {
                 return {
                     repository: {
@@ -552,6 +555,7 @@ test.describe('PullRequestService.managePrReview — live mergeability gate on A
             }
             if (query.includes('AddPullRequestReview')) {
                 reviewMutations++;
+                reviewCalls.push({query, variables, remoteHeadAtWrite: remoteHeadOid, remoteBaseAtWrite: remoteBaseSha});
                 return {
                     addPullRequestReview: {
                         pullRequestReview: {
@@ -640,37 +644,77 @@ test.describe('PullRequestService.managePrReview — live mergeability gate on A
         expect(transportError).toMatchObject({
             code                : 'PR_MERGEABILITY_UNAVAILABLE',
             pr_number           : 1900,
+            headSha             : REVIEWED_HEAD,
+            baseSha             : MOVED_BASE,
             mergeabilityAttempts: 2
         });
         expect(reviewMutations).toBe(0);
 
+        const OTHER_HEAD  = '4'.repeat(40);
         const headDrifted = await runApproval([
-            mergeabilityResponse(true, {headSha: '4'.repeat(40), baseSha: MOVED_BASE})
+            mergeabilityResponse(true, {headSha: OTHER_HEAD, baseSha: MOVED_BASE})
         ]);
         expect(headDrifted).toMatchObject({
             code                : 'PR_MERGEABILITY_UNAVAILABLE',
             pr_number           : 1900,
-            headSha             : '4'.repeat(40),
+            headSha             : OTHER_HEAD,
             baseSha             : MOVED_BASE,
             mergeabilityAttempts: 1
         });
         expect(reviewMutations).toBe(0);
 
-        const approved = await runApproval([
-            mergeabilityResponse(null, {headSha: REVIEWED_HEAD, baseSha: MOVED_BASE}),
-            mergeabilityResponse(true, {headSha: REVIEWED_HEAD, baseSha: MOVED_BASE, mergeableState: 'behind'})
+        const conflictingOtherHead = await runApproval([
+            mergeabilityResponse(false, {headSha: OTHER_HEAD, baseSha: MOVED_BASE, mergeableState: 'dirty'})
         ]);
+        expect(conflictingOtherHead).toMatchObject({
+            code                : 'PR_MERGEABILITY_UNAVAILABLE',
+            pr_number           : 1900,
+            headSha             : OTHER_HEAD,
+            baseSha             : MOVED_BASE,
+            mergeabilityAttempts: 1
+        });
+        expect(reviewMutations).toBe(0);
+
+        const LATER_PUSHED_HEAD = '5'.repeat(40),
+              LATER_BASE        = '6'.repeat(40);
+        const approved = await PullRequestService.managePrReview(
+            {repo: 'neo-agent-brain', action: 'create', pr_number: 1900, state: 'APPROVED', body: VALID_APPROVAL_BODY},
+            {
+                waitFn: async () => {},
+                execFn: async () => {
+                    const response = mergeabilityResponse(true, {headSha: REVIEWED_HEAD, baseSha: MOVED_BASE, mergeableState: 'behind'});
+                    // Simulate a concurrent push and base advance immediately after the final REST read
+                    // before AddPullRequestReview executes: commitOID binds the approval to REVIEWED_HEAD,
+                    // while the separate-read base limitation remains explicit.
+                    remoteHeadOid = LATER_PUSHED_HEAD;
+                    remoteBaseSha = LATER_BASE;
+                    return response;
+                }
+            }
+        );
         expect(approved.code).toBeUndefined();
         expect(approved.state).toBe('APPROVED');
         expect(reviewMutations).toBe(1);
         expect(reviewerMutations).toBe(1);
+        expect(reviewCalls).toHaveLength(1);
+        expect(reviewCalls[0].query).toContain('$commitOID: GitObjectID');
+        expect(reviewCalls[0].query).toContain('commitOID: $commitOID');
+        expect(reviewCalls[0].remoteHeadAtWrite).toBe(LATER_PUSHED_HEAD);
+        expect(reviewCalls[0].remoteBaseAtWrite).toBe(LATER_BASE);
+        expect(reviewCalls[0].variables).toEqual({
+            pullRequestId: 'PR_kwDOUBzDFM1899',
+            body         : VALID_APPROVAL_BODY,
+            event        : 'APPROVE',
+            commitOID    : REVIEWED_HEAD
+        });
     });
 
     test('COMMENT, REQUEST_CHANGES, review updates, and unacknowledged-RC approvals retain existing paths without REST mergeability reads', async () => {
-        let   mergeabilityReads = 0;
-        const failIfRead        = {execFn: async () => { mergeabilityReads++; throw new Error('unexpected mergeability read'); }};
+        let   mergeabilityReads    = 0;
+        const nonApprovalVariables = [],
+              failIfRead           = {execFn: async () => { mergeabilityReads++; throw new Error('unexpected mergeability read'); }};
 
-        GraphqlService.query = async query => {
+        GraphqlService.query = async (query, variables) => {
             if (query.includes('GetPullRequestId')) {
                 return {
                     repository: {
@@ -721,6 +765,7 @@ test.describe('PullRequestService.managePrReview — live mergeability gate on A
                 };
             }
             if (query.includes('AddPullRequestReview')) {
+                nonApprovalVariables.push(variables);
                 return {addPullRequestReview: {pullRequestReview: {id: 'PRR_new', url: 'https://example.test/1', state: 'COMMENTED', submittedAt: '2026-11-22T22:21:00Z', databaseId: 2}}};
             }
             if (query.includes('UpdatePullRequestReview')) {
@@ -746,6 +791,11 @@ test.describe('PullRequestService.managePrReview — live mergeability gate on A
             failIfRead
         );
         expect(comment.code).toBeUndefined();
+        expect(nonApprovalVariables).toEqual([{
+            pullRequestId: 'PR_kwDOUBzDFM1899',
+            body         : VALID_COMMENT_BODY,
+            event        : 'COMMENT'
+        }]);
 
         const update = await PullRequestService.managePrReview(
             {repo: 'neo-agent-brain', action: 'update', review_id: 'PRR_existing', body: VALID_COMMENT_BODY},

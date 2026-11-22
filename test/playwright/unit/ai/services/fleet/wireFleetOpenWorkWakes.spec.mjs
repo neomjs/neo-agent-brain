@@ -953,7 +953,8 @@ test.describe('wireFleetOpenWorkWakes — a repair-ci wake names the checks that
         expect(failedChecksOf(contexts([
             {name: 'unit', conclusion: 'FAILURE'}, {name: 'lint', conclusion: 'SUCCESS'}, {name: 'e2e', conclusion: 'TIMED_OUT'},
             {name: 'docs', conclusion: 'SKIPPED'}, {name: 'old', conclusion: 'STALE'}, {name: 'running', conclusion: null},
-            {name: 'boot', conclusion: 'STARTUP_FAILURE'}, {context: 'ci/legacy', state: 'ERROR'}, {context: 'ci/ok', state: 'SUCCESS'}
+            {name: 'boot', conclusion: 'STARTUP_FAILURE'}, {context: 'ci/legacy', state: 'ERROR'}, {context: 'ci/ok', state: 'SUCCESS'},
+            {context: 'review-admission/mergeability', state: 'FAILURE'}
         ]))).toEqual(['unit', 'e2e', 'boot', 'ci/legacy']);
         expect(failedChecksOf(contexts([]))).toEqual([]);
         expect(failedChecksOf(contexts([{name: 'unit', conclusion: 'FAILURE'}], true)), 'a second page may hold more').toBeNull();

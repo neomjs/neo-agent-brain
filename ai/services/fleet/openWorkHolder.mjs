@@ -27,8 +27,9 @@
  * outside red head reaches maintainer investigation unless a current content decision or native on-head
  * change request preserves the author's action. With complete coverage, a confirmed conflict on an
  * independently approved head takes precedence over red CI. For a non-draft, unapproved green head with an
- * already-requested reviewer (`row.mergeable`), `CONFLICTING` routes integration to `rotation` or `author`
- * while preserving `reviewRequests`, and `UNKNOWN`/missing withholds the action as `unknown` until resolved.
+ * already-requested reviewer (`row.mergeable` and `row.reviewAdmission`), `CONFLICTING` routes integration to
+ * `rotation` or `author` while preserving `reviewRequests`, and `UNKNOWN`/missing mergeability or a non-success
+ * review-admission status withholds the action as `unknown` until resolved.
  * Review and merge also require complete coverage.
  *
  * A head that reports no CI (`ci: null`) never turns green, so its merge chip reads GitHub's `CLEAN`
@@ -218,7 +219,7 @@ export function activeCiRepairClassification(row) {
  *     ids: String[], targets?: String[], ahead?: String}} `targets` names the still-blocked issues an `await-prerequisite`
  *     PR closes; `ahead`, the PR an `await-merge-turn` PR waits for.
  */
-export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions, disclosedFamilies = [], blockedTargets = [], targetsComplete = false,
+export function holderOf({ci, reviewAdmission = null, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions, disclosedFamilies = [], blockedTargets = [], targetsComplete = false,
     repo, number, head, ciRepairEvidence = null, ciRepairClassification = null, ciRepairRead = null}, {seatFamilies = null, line = null} = {}) {
     const incomplete = partial || !Array.isArray(requested) || !Array.isArray(reviews) || !Array.isArray(opinions);
     requested = Array.isArray(requested) ? requested : [];
@@ -294,7 +295,7 @@ export function holderOf({ci, mergeable, mergeState = null, draft, owner, author
                 : {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
         }
 
-        if (mergeable !== 'MERGEABLE') {
+        if (mergeable !== 'MERGEABLE' || reviewAdmission && reviewAdmission !== 'success') {
             return {role: 'unknown', kind: null, ids: []}
         }
     }

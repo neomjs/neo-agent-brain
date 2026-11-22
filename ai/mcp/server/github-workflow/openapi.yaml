@@ -1129,9 +1129,9 @@ paths:
       x-annotations:
         readOnlyHint: false
       description: |
-        Create or update one formal PR review using `.agents/skills/pr-review/SKILL.md` templates (`create`: `pr_number`, `state`, `body`; `update`: `review_id`, `body`).
+        Create or update a formal PR review using `.agents/skills/pr-review/SKILL.md` templates (`create`: `pr_number`, `state`, `body`; `update`: `review_id`, `body`).
 
-        APPROVED requires reviewer-keyed `acknowledgedRequestChanges` for live current-head RCs and polls live REST mergeability for the reviewed head before submitting (`PR_MERGE_CONFLICT` on conflict, `PR_MERGEABILITY_UNAVAILABLE` on null/mismatch; zero mutations). REQUEST_CHANGES is budgeted on post-cutover PRs: two submitted RCs, then COMMENT/APPROVED or one terminal Drop+Supersede; incomplete history fails closed, and `reviewBudgetOverrideReason` records an exceptional bypass. CREATE bodies must not supply service-owned `[review-budget-managed]` / `[review-budget-override]` markers or reserved audit fields; the service rejects them before GitHub access and appends the receipt itself. Direct gh/UI submission bypasses this pre-submit gate.
+        APPROVED requires reviewer-keyed `acknowledgedRequestChanges` for live current-head RCs, polls live REST mergeability for the reviewed head (`PR_MERGE_CONFLICT` on reviewed-head conflict, `PR_MERGEABILITY_UNAVAILABLE` on null/error/head-mismatch; zero mutations), and binds submission to the verified `commitOID` (separate from base reads). REQUEST_CHANGES is budgeted on post-cutover PRs: two submitted RCs, then COMMENT/APPROVED or one terminal Drop+Supersede; incomplete history fails closed, and `reviewBudgetOverrideReason` records an exceptional bypass. CREATE bodies must not supply service-owned `[review-budget-managed]` / `[review-budget-override]` markers or reserved audit fields; the service rejects them before GitHub access and appends the receipt itself. Direct gh/UI submission bypasses this gate.
       tags: [Pull Requests]
       parameters:
         - name: pr_number

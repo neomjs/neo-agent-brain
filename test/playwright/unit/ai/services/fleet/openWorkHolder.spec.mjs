@@ -645,6 +645,14 @@ test.describe('openWorkHolder — an already-requested review on an unapproved h
             expect(holderOf(row({requested, mergeable}))).toEqual({role: 'unknown', kind: null, ids: []});
             expect(holderOf(row({owner: outside, requested, mergeable}))).toEqual({role: 'unknown', kind: null, ids: []})
         }
+
+        for (const reviewAdmission of ['error', 'pending', 'failure']) {
+            expect(holderOf(row({requested, mergeable: 'MERGEABLE', reviewAdmission}))).toEqual({role: 'unknown', kind: null, ids: []});
+            expect(holderOf(row({owner: outside, requested, mergeable: 'MERGEABLE', reviewAdmission}))).toEqual({role: 'unknown', kind: null, ids: []})
+        }
+        expect(holderOf(row({requested, mergeable: 'MERGEABLE', reviewAdmission: 'success'}))).toEqual({role: 'reviewer', kind: 'review', ids: [C]});
+        expect(holderOf(row({requested, mergeable: 'CONFLICTING', reviewAdmission: 'failure'}))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({owner: outside, requested, mergeable: 'CONFLICTING', reviewAdmission: 'failure'}))).toEqual({role: 'rotation', kind: 'rebase', ids: []})
     });
 
     test('higher-priority cases, genuine red CI, on-head CRs, partial rows, drafts, unrequested triage/routing and replies retain their rules (AC-3)', () => {

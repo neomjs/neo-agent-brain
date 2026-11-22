@@ -14,6 +14,7 @@ import {exhaustedUntilOf}                                                   from
 import {OPEN_WORK_FAILED_CHECKS}                                            from '../github-workflow/queries/openWorkQueries.mjs';
 import {absentOf, familiesOf, fileStore, seatReaders}                       from './wireFleetOpenWorkSource.mjs';
 import {HOLDER_SILENT_MS, planOpenWorkWakes, wakeGateOf}                    from './openWorkWakes.mjs';
+import {REVIEW_ADMISSION_CONTEXT}                                           from './openWorkReducer.mjs';
 import {ciRepairEvidenceOf, mergeLineOf}                                    from './openWorkHolder.mjs';
 import {isOpenWorkCiRepair, isOpenWorkFailedChecks, OPEN_WORK_HOLDER_KINDS} from './openWorkWakeMessage.mjs';
 import {openWorkFreshness}                                                  from './openWorkFreshness.mjs';
@@ -115,6 +116,8 @@ export function failedChecksOf(data) {
     if (!Array.isArray(contexts?.nodes) || contexts.pageInfo?.hasNextPage !== false) return null;
 
     for (const node of contexts.nodes) {
+        if (node?.context === REVIEW_ADMISSION_CONTEXT) continue;
+
         const
             key   = JSON.stringify([node?.checkSuite?.workflowRun?.workflow?.name ?? null, node?.name ?? node?.context]),
             prior = latest.get(key);
