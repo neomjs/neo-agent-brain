@@ -8,6 +8,7 @@ import path                                                                     
 import Database                                                                                                                                                         from 'better-sqlite3';
 import {
     readAntigravityWakeTarget,
+    readAntigravityWakeThreadState,
     sendAntigravitySessionWake,
     captureAntigravityWakeCursor,
     readAntigravityWakeReceipt,
@@ -864,6 +865,68 @@ test('fences historical resume, post-census restore/import, untrusted pre-census
         });
         await cleanupAntigravityLaunchCensus({stateDir, agentId: 'neo-test', launchId: cancelLaunchId});
         expect(fs.existsSync(path.join(stateDir, 'primary-session-launches', 'neo-test.json'))).toBe(false);
+    } finally {
+        db.close();
+        fs.rmSync(root, {recursive: true, force: true});
+    }
+});
+
+test('settles aborted tool-loop, error/cancel, killed-thread, and terminated-owner wakes while preserving startup and live tool-call guards (#1901)', () => {
+    const root         = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-aborted-'));
+    const databasePath = path.join(root, 'summary.db'), db = new Database(databasePath);
+    const threadId     = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', childId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const nonce        = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', token   = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const marker       = `[NEO_WAKE_V1:${nonce}] [WAKE]`;
+    const dir          = path.join(root, 'brain', threadId, '.system_generated', 'logs');
+    fs.mkdirSync(dir, {recursive: true});
+    const file   = path.join(dir, 'transcript.jsonl'), row = x => JSON.stringify(x) + '\n';
+    const sysEnv = body => `The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-22T09:56:59Z sender=system priority=MESSAGE_PRIORITY_HIGH content=${body}\n</SYSTEM_MESSAGE>`;
+    try {
+        db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, project_id TEXT, parent_conversation_id TEXT, nesting_depth INTEGER, killed INTEGER, source TEXT, status TEXT)');
+        prepareFixtureDb(db);
+        insertFixture(db, threadId, 'p', '', 0, 0, '', 'CASCADE_RUN_STATUS_RUNNING');
+        insertFixture(db, childId, 'p', threadId, 1, 0, '', 'CASCADE_RUN_STATUS_IDLE');
+        expect(readAntigravityWakeThreadState({databasePath, projectId: 'p', threadId})).toEqual({status: 'CASCADE_RUN_STATUS_RUNNING', terminated: false});
+        expect(readAntigravityWakeThreadState({databasePath, projectId: 'wrong', threadId})).toBeNull();
+        expect(readAntigravityWakeThreadState({databasePath, projectId: 'p', threadId: childId})).toBeNull();
+        db.prepare('UPDATE conversation_summaries SET killed = 1 WHERE conversation_id = ?').run(threadId);
+        expect(readAntigravityWakeTarget({databasePath, projectId: 'p', threadId})).toBeNull();
+        expect(readAntigravityWakeThreadState({databasePath, projectId: 'p', threadId})).toEqual({status: 'CASCADE_RUN_STATUS_RUNNING', terminated: true});
+
+        const wake = {type: 'SYSTEM_MESSAGE', source: 'SYSTEM', status: 'DONE', step_index: 100, content: sysEnv(marker)};
+        const sdk  = {type: 'SYSTEM_MESSAGE', source: 'SYSTEM_SDK', status: 'DONE', step_index: 101, content: ''};
+        const call = {type: 'PLANNER_RESPONSE', source: 'MODEL', status: 'DONE', step_index: 102, tool_calls: [{name: 'run_command'}], content: ''};
+        const out  = {type: 'GENERIC', source: 'MODEL', status: 'DONE', step_index: 103, content: 'tool result'};
+
+        // 1. Startup guard: wake + SYSTEM_SDK before any PLANNER_RESPONSE/error stays unknown at IDLE on a live owner.
+        fs.writeFileSync(file, '');
+        let cursor = captureAntigravityWakeCursor({appDataDir: root, threadId});
+        fs.appendFileSync(file, row(wake) + row(sdk));
+        expect(readAntigravityWakeReceipt({appDataDir: root, threadId, text: marker, cursor, receiptToken: token, targetStatus: 'CASCADE_RUN_STATUS_IDLE', settleUnacknowledged: true}).outcome).toBe('unknown');
+
+        // 2. Pending tool call stays unknown on live owner, then settles once tool output arrives and cascade returns to IDLE.
+        fs.appendFileSync(file, row(call));
+        expect(readAntigravityWakeReceipt({appDataDir: root, threadId, text: marker, cursor, receiptToken: token, targetStatus: 'CASCADE_RUN_STATUS_IDLE', settleUnacknowledged: true}).outcome).toBe('unknown');
+        expect(readAntigravityWakeReceipt({appDataDir: root, threadId, text: marker, cursor, receiptToken: token, targetStatus: 'CASCADE_RUN_STATUS_RUNNING', settleUnacknowledged: true, ownerTerminated: true}).outcome).toBe('turn-unacknowledged');
+        fs.appendFileSync(file, row(out));
+        expect(readAntigravityWakeReceipt({appDataDir: root, threadId, text: marker, cursor, receiptToken: token, targetStatus: 'CASCADE_RUN_STATUS_RUNNING', settleUnacknowledged: true}).outcome).toBe('unknown');
+        expect(readAntigravityWakeReceipt({appDataDir: root, threadId, text: marker, cursor, receiptToken: token, targetStatus: 'CASCADE_RUN_STATUS_IDLE', settleUnacknowledged: true}).outcome).toBe('turn-unacknowledged');
+
+        // 3. Echoed receipt still wins over ownerTerminated.
+        fs.appendFileSync(file, row({type: 'PLANNER_RESPONSE', source: 'MODEL', status: 'DONE', step_index: 104, content: `[NEO_WAKE_RECEIVED:${token}]`}));
+        expect(readAntigravityWakeReceipt({appDataDir: root, threadId, text: marker, cursor, receiptToken: token, targetStatus: 'CASCADE_RUN_STATUS_IDLE', settleUnacknowledged: true, ownerTerminated: true}).outcome).toBe('observed');
+
+        // 4. Error step before any PLANNER_RESPONSE settles once IDLE; trailing bookkeeping after tool-less PLANNER_RESPONSE preserves settlement.
+        fs.truncateSync(file, 0);
+        cursor = captureAntigravityWakeCursor({appDataDir: root, threadId});
+        fs.appendFileSync(file, row(wake) + row({type: 'ERROR_MESSAGE', source: 'SYSTEM', status: 'DONE', step_index: 101, content: 'upstream 503'}));
+        expect(readAntigravityWakeReceipt({appDataDir: root, threadId, text: marker, cursor, targetStatus: 'CASCADE_RUN_STATUS_RUNNING', settleUnacknowledged: true}).outcome).toBe('unknown');
+        expect(readAntigravityWakeReceipt({appDataDir: root, threadId, text: marker, cursor, targetStatus: 'CASCADE_RUN_STATUS_IDLE', settleUnacknowledged: true}).outcome).toBe('turn-unacknowledged');
+
+        fs.truncateSync(file, 0);
+        cursor = captureAntigravityWakeCursor({appDataDir: root, threadId});
+        fs.appendFileSync(file, row(wake) + row({type: 'PLANNER_RESPONSE', source: 'MODEL', status: 'DONE', step_index: 101, content: 'No ack'}) + row({type: 'GENERIC', source: 'SYSTEM', status: 'DONE', step_index: 102, content: 'checkpoint'}));
+        expect(readAntigravityWakeReceipt({appDataDir: root, threadId, text: marker, cursor, receiptToken: token, targetStatus: 'CASCADE_RUN_STATUS_IDLE', settleUnacknowledged: true}).outcome).toBe('turn-unacknowledged');
     } finally {
         db.close();
         fs.rmSync(root, {recursive: true, force: true});

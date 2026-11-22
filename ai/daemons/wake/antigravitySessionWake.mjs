@@ -112,17 +112,26 @@ function withDatabase(databasePath, fn) {
     try { return fn(db) } finally { db.close() }
 }
 
+function selectSummaryRow(databasePath, projectId, threadId) {
+    validateInputs(databasePath, projectId);
+    if (!UUID.test(threadId || '')) return null;
+    return withDatabase(databasePath, db => db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status, raw_summary FROM conversation_summaries WHERE conversation_id = ? AND project_id = ?').get(threadId, projectId) || null);
+}
+
 /**
  * @summary Checks an explicitly selected session against non-content App summary metadata.
  * @returns {Object|null} The eligible metadata, or null. Database errors propagate.
  */
 export function readAntigravityWakeTarget({databasePath, projectId, threadId}) {
-    validateInputs(databasePath, projectId);
-    if (!UUID.test(threadId || '')) return null;
-    return withDatabase(databasePath, db => {
-        const row = db.prepare('SELECT conversation_id, project_id, parent_conversation_id, nesting_depth, killed, source, status, raw_summary FROM conversation_summaries WHERE conversation_id = ? AND project_id = ?').get(threadId, projectId);
-        return eligible(row) ? {threadId: row.conversation_id, projectId: row.project_id, status: row.status} : null;
-    });
+    const row = selectSummaryRow(databasePath, projectId, threadId);
+    return eligible(row) ? {threadId: row.conversation_id, projectId: row.project_id, status: row.status} : null;
+}
+
+/** @summary Reports status and `killed === 1` termination for an explicitly bound project root (`null` otherwise). */
+export function readAntigravityWakeThreadState({databasePath, projectId, threadId}) {
+    const row = selectSummaryRow(databasePath, projectId, threadId);
+    if (!row || (row.killed !== 0 && row.killed !== 1) || !eligible({...row, killed: 0})) return null;
+    return {status: row.status, terminated: row.killed === 1};
 }
 
 /**
@@ -247,37 +256,43 @@ export function hasAntigravityPendingSystemWake({appDataDir,threadId,text,cursor
  * @param {Object} options.cursor Pre-send transcript cursor (`{path, offset}`)
  * @param {String|null} [options.receiptToken=null] Per-attempt private acknowledgment token
  * @param {String|null} [options.targetStatus=null] Live conversation cascade status (e.g. `'CASCADE_RUN_STATUS_IDLE'`)
- * @param {Boolean} [options.settleUnacknowledged=false] Set true to settle finished idle or superseded unacknowledged turns
+ * @param {Boolean} [options.settleUnacknowledged=false] Set true to settle finished idle, superseded, or terminated unacknowledged turns
+ * @param {Boolean} [options.ownerTerminated=false] Set true when the bound App generation exited or the root row is `killed === 1`
  * @returns {Object} A bounded model-response observation, `turn-unacknowledged`, or `unknown`.
  */
-export function readAntigravityWakeReceipt({appDataDir,threadId,text,cursor,receiptToken=null,targetStatus=null,settleUnacknowledged=false}) {
+export function readAntigravityWakeReceipt({appDataDir,threadId,text,cursor,receiptToken=null,targetStatus=null,settleUnacknowledged=false,ownerTerminated=false}) {
     const unknown = {outcome:'unknown'};
     if (typeof text !== 'string' || !text || !cursor || !Number.isSafeInteger(cursor.offset) ||
         cursor.offset < 0 || (receiptToken !== null ? !UUID.test(receiptToken || '') : !settleUnacknowledged)) return unknown;
     try {
-        let matched = null, wakeSeen = false, superseded = false, terminalResponse = false;
+        let matched = null, wakeSeen = false, superseded = false, turnProgressed = false, awaitingToolCalls = false;
         for (const item of transcriptRecords({appDataDir,threadId,cursor})) {
-            if (!item) { matched = null; terminalResponse = false; continue }
+            if (!item) { matched = null; turnProgressed = false; awaitingToolCalls = false; continue }
             if (((item.type === 'USER_INPUT' && item.source === 'USER_EXPLICIT' && item.status === 'DONE' &&
                 !isTruncatedField(item,'content') && item.content === text) ||
                 isAntigravityWakeSystemMessage(item,text)) && Number.isSafeInteger(item.step_index)) {
-                matched = item.step_index; wakeSeen = true; superseded = false; terminalResponse = false;
+                matched = item.step_index; wakeSeen = true; superseded = false; turnProgressed = false; awaitingToolCalls = false;
             } else if (matched !== null && (item.type === 'USER_INPUT' || isAntigravityExternalSystemMessage(item))) {
-                matched = null; superseded = true; terminalResponse = false;
+                matched = null; superseded = true; turnProgressed = false; awaitingToolCalls = false;
             } else if (matched !== null && item.type === 'PLANNER_RESPONSE' && item.source === 'MODEL' &&
                 item.status === 'DONE' && Number.isSafeInteger(item.step_index) && item.step_index > matched) {
-                terminalResponse = !isTruncatedField(item,'tool_calls') && (!Array.isArray(item.tool_calls) || item.tool_calls.length === 0);
+                turnProgressed    = true;
+                awaitingToolCalls = isTruncatedField(item,'tool_calls') || (Array.isArray(item.tool_calls) && item.tool_calls.length > 0);
                 if (receiptToken && !isTruncatedField(item,'content')) {
                     const lines = typeof item.content === 'string' ? item.content.split(/\r?\n/) : [];
                     if (lines.some(line => line === '[NEO_WAKE_RECEIVED:' + receiptToken + ']')) {
                         return {outcome:'observed',reason:'private-model-ack'};
                     }
                 }
-            } else if (matched !== null) {
-                terminalResponse = false;
+            } else if (matched !== null && Number.isSafeInteger(item.step_index) && item.step_index > matched &&
+                (item.type === 'ERROR_MESSAGE' || item.status === 'ERROR' || item.status === 'CANCELED' || item.status === 'CANCELLED' ||
+                    (awaitingToolCalls && item.type === 'GENERIC'))) {
+                turnProgressed    = true;
+                awaitingToolCalls = false;
             }
         }
-        if (settleUnacknowledged && wakeSeen && (superseded || (matched !== null && terminalResponse && targetStatus === 'CASCADE_RUN_STATUS_IDLE'))) {
+        if (settleUnacknowledged && wakeSeen && (superseded || ownerTerminated ||
+            (matched !== null && turnProgressed && !awaitingToolCalls && targetStatus === 'CASCADE_RUN_STATUS_IDLE'))) {
             return {outcome:'turn-unacknowledged'};
         }
         return unknown;

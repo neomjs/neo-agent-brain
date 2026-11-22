@@ -376,23 +376,26 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
                     agentapiExecutable:sidecar.environment.ANTIGRAVITY_AGENTAPI_EXE, environment:sidecar.environment})
         },
         readReceipt: async ({binding,nonce,recordKey,urgent:slotUrgent,attempt}) => {
-            const {threadId} = binding, text = wakeText(nonce), saved = await readPrivate(cursorPathFor(slotUrgent));
-            if (saved?.nonce !== nonce) return null;
-            const activeTurn    = attempt?.deliveryMode === 'active-turn';
-            const readAgyStatus = async () => (await Promise.resolve()
-                .then(() => antigravityTransport.readAntigravityWakeTarget?.({databasePath:path.join(appDataDir,'conversation_summaries.db'),projectId,threadId}))
-                .catch(() => null))?.status ?? null;
-            const claim = await readPrivate(claimPathFor(slotUrgent));
+            const {threadId}     = binding, text = wakeText(nonce), activeTurn = attempt?.deliveryMode === 'active-turn';
+            const saved          = await readPrivate(cursorPathFor(slotUrgent)), claim = await readPrivate(claimPathFor(slotUrgent));
+            const readAgySummary = async () => {
+                const databasePath = path.join(appDataDir,'conversation_summaries.db');
+                const summary      = await Promise.resolve()
+                    .then(() => antigravityTransport.readAntigravityWakeThreadState
+                        ? antigravityTransport.readAntigravityWakeThreadState({databasePath,projectId,threadId})
+                        : antigravityTransport.readAntigravityWakeTarget?.({databasePath,projectId,threadId}))
+                    .catch(() => null);
+                return {targetStatus: summary?.status ?? null, threadTerminated: summary?.terminated === true};
+            };
             if (claim?.nonce !== nonce) {
-                // No hook redeemed this nonce. Once its idle wake turn has ended without an acknowledgement,
-                // it never can, so the slot settles instead of holding every later wake behind it.
-                if (activeTurn) return null;
+                if (saved?.nonce !== nonce || activeTurn) return null;
                 if (isCodex) {
                     const proof = await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptOffset:saved.cursor});
                     return proof?.state === 'turn-unacknowledged' && proof.threadId === threadId ? {...binding,recordKey,nonce,status:'unacknowledged'} : null
                 }
-                const proof = await antigravityTransport.readAntigravityWakeReceipt({
-                    appDataDir,threadId,text,cursor:saved.cursor,targetStatus:await readAgyStatus(),settleUnacknowledged:true
+                const {targetStatus, threadTerminated} = await readAgySummary();
+                const proof                            = await antigravityTransport.readAntigravityWakeReceipt({
+                    appDataDir,threadId,text,cursor:saved.cursor,targetStatus,settleUnacknowledged:true,ownerTerminated:threadTerminated
                 });
                 return proof?.outcome === 'turn-unacknowledged' ? {...binding,recordKey,nonce,status:'unacknowledged'} : null
             }
@@ -402,23 +405,28 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
                 return {...binding,recordKey,nonce,status:'not-sent'}
             }
             if (claim.admitted !== true) return null;
-            const targetStatus = !isCodex && !activeTurn ? await readAgyStatus() : null;
-            const proof        = isCodex
+            const agySummary      = !isCodex && !activeTurn ? await readAgySummary() : null;
+            const ownerTerminated = Boolean(agySummary && (binding.generation !== generation || agySummary.threadTerminated));
+            if (saved?.nonce !== nonce) {
+                return ownerTerminated ? {...binding,recordKey,nonce,status:'unacknowledged'} : null;
+            }
+            const proof = isCodex
                 ? (activeTurn && typeof codexTransport.readCodexActiveTurnReceipt === 'function'
                     ? await codexTransport.readCodexActiveTurnReceipt({home,threadId,text,receiptToken:claim.receiptToken,receiptOffset:saved.cursor})
                     : await codexTransport.readCodexWakeReceipt({home,threadId,text,receiptToken:claim.receiptToken,receiptOffset:saved.cursor}))
                 : (activeTurn && typeof antigravityTransport.readAntigravityActiveTurnReceipt === 'function'
                     ? antigravityTransport.readAntigravityActiveTurnReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor})
-                    : antigravityTransport.readAntigravityWakeReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor,targetStatus,settleUnacknowledged:true}));
-            if (!isCodex && !activeTurn && proof?.outcome === 'turn-unacknowledged') {
-                // The admitted idle turn has finished, so no model echo can follow; settle with
-                // acknowledged: false instead of wedging later wakes.
+                    : antigravityTransport.readAntigravityWakeReceipt({appDataDir,threadId,text,receiptToken:claim.receiptToken,cursor:saved.cursor,
+                        targetStatus:agySummary?.targetStatus ?? null,settleUnacknowledged:true,ownerTerminated}));
+            if (['turn-started', 'turn-steered'].includes(proof?.state) || proof?.outcome === 'observed') {
+                if (isCodex && claim.turnId && claim.turnId !== proof.turnId) return null;
+                const observedAt = typeof proof?.observedAt === 'string' ? proof.observedAt : (typeof claim.observedAt === 'string' ? claim.observedAt : null);
+                return {...binding,recordKey,nonce,status:'consumed',...(observedAt ? {observedAt} : {})}
+            }
+            if (!isCodex && !activeTurn && (proof?.outcome === 'turn-unacknowledged' || ownerTerminated)) {
                 return {...binding,recordKey,nonce,status:'unacknowledged'}
             }
-            if (!['turn-started', 'turn-steered'].includes(proof?.state) && proof?.outcome !== 'observed') return null;
-            if (isCodex && claim.turnId && claim.turnId !== proof.turnId) return null;
-            const observedAt = typeof proof?.observedAt === 'string' ? proof.observedAt : (typeof claim.observedAt === 'string' ? claim.observedAt : null);
-            return {...binding,recordKey,nonce,status:'consumed',...(observedAt ? {observedAt} : {})}
+            return null
         }
     });
     if (result.status === 'pending' && denialReason) result = {...result,reason:`native-recipient:${denialReason}`};

@@ -978,7 +978,7 @@ test.describe('signed native wake receiver integration', () => {
 
         test('enforces 48-event overflow, urgent preemption, frozen-member restart recovery, and turn-unacknowledged propagation on Antigravity', async () => {
             const {postAgy, pumpAgy, agyResident} = await setupAntigravityRoute();
-            const chunk = prefix => Array.from({length: 24}, (_, i) => `MESSAGE:${prefix}-${i}`);
+            const chunk                           = prefix => Array.from({length: 24}, (_, i) => `MESSAGE:${prefix}-${i}`);
 
             expect((await postAgy(1, chunk('a'))).status).toBe(202);
             expect((await postAgy(2, chunk('b'))).status).toBe(202);
@@ -1037,6 +1037,122 @@ test.describe('signed native wake receiver integration', () => {
             expect(agySends).toHaveLength(3);
             expect(await state.list('pending')).toHaveLength(0);
             expect(await state.list('delivered')).toHaveLength(4);
+        });
+
+        test('reconciles an admitted prior-launch unacknowledged inflight across an App generation restart while urgent and batched ordinary wakes wait behind it (#1901)', async () => {
+            const {postAgy} = await setupAntigravityRoute();
+            let   livePid   = 405,
+                liveStart   = 'birth',
+                liveThread  = agyThread;
+
+            const dynamicResident = async () => ({
+                pid          : livePid,
+                startedAt    : liveStart,
+                generation   : `${livePid}:${liveStart}`,
+                workspaceRoot: '/fixture/work'
+            });
+            agyTransport.latestAntigravityWakeTarget = async () => ({root: true, threadId: liveThread, startSequence: 1, status: agyStatus});
+            agyTransport.readAntigravityWakeTarget   = async ({threadId}) => ({threadId, projectId: 'proj-1', status: agyStatus});
+            agyTransport.sendAntigravitySessionWake  = async req => {
+                agySends.push(req);
+                const nonce = req.message.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                lastNonce = nonce;
+                if (mode === 'consume') {
+                    const claim = await consumeNativeWakePrompt({
+                        manifestPath,
+                        stateDir,
+                        agentId             : agyAgent,
+                        family              : 'antigravity',
+                        threadId            : liveThread,
+                        nonce,
+                        inspectResident     : dynamicResident,
+                        antigravityTransport: agyTransport,
+                        appDataDir          : agyDataDir
+                    });
+                    if (claim.admitted) {
+                        agyConsumed.push(claim.digest);
+                        agyOutcomes.set(nonce, {outcome: 'observed', reason: 'private-model-ack'});
+                    }
+                }
+                return {outcome: 'unknown', reason: 'agentapi-dispatch-exited-zero'}
+            };
+            agyTransport.readAntigravityWakeReceipt = ({text, ownerTerminated}) => {
+                const nonce = text.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                return agyOutcomes.get(nonce) || (ownerTerminated ? {outcome: 'turn-unacknowledged'} : {outcome: 'unknown'})
+            };
+            const pumpDynamic = () => drainFleetPrimaryWakeRecord({
+                state,
+                stateDir,
+                manifestPath,
+                subscriptionId: agySub,
+                route         : manifest.routes[agySub],
+                sidecar       : {...agySidecar, appPid: livePid, appStart: liveStart},
+                dispatch      : (record, options) => dispatchFleetPrimarySessionWake(record, {
+                    ...options,
+                    inspectResident     : dynamicResident,
+                    antigravityTransport: agyTransport,
+                    appDataDir          : agyDataDir
+                })
+            });
+
+            // 1. Launch A (405:birth) dispatches and redeems ordinary wake 0, then exits without echoing NEO_WAKE_RECEIVED.
+            mode = 'hold';
+            expect((await postAgy(0, ['MESSAGE:prior-launch-wedged'])).status).toBe(202);
+            await receiver.drain();
+            await pumpDynamic();
+            expect(agySends).toHaveLength(1);
+            const oldNonce = lastNonce;
+            const oldClaim = await consumeNativeWakePrompt({
+                manifestPath,
+                stateDir,
+                agentId             : agyAgent,
+                family              : 'antigravity',
+                threadId            : agyThread,
+                nonce               : oldNonce,
+                inspectResident     : dynamicResident,
+                antigravityTransport: agyTransport,
+                appDataDir          : agyDataDir
+            });
+            expect(oldClaim.admitted).toBe(true);
+
+            // 2. App restarts on Launch B (506:relaunch, newThread); an urgent DM and two ordinary digests arrive.
+            livePid    = 506;
+            liveStart  = 'relaunch';
+            liveThread = '9f4290dd-8776-4a35-ab3c-72a32d314f35';
+            mode       = 'consume';
+
+            expect((await postAgy(1, ['MESSAGE:urgent-after-restart'], envelope => {
+                envelope.payload.urgent = true;
+                envelope.payload.breakdown.sent_to_me.highestPriority = 'high';
+                envelope.payload.breakdown.sent_to_me.latest.priority = 'high';
+                envelope.payload.breakdown.sent_to_me.latest.subject  = 'urgent after restart';
+            })).status).toBe(202);
+            expect((await postAgy(2, ['MESSAGE:ord-after-1', 'MESSAGE:ord-after-2'])).status).toBe(202);
+            expect((await postAgy(3, ['MESSAGE:ord-after-3'])).status).toBe(202);
+            await receiver.drain();
+
+            // Pass 1: settles Launch A's inflight behind the waiting urgent pointer; receiver marks event-0 delivered (acknowledged: false).
+            await pumpDynamic();
+            await receiver.drain();
+            // Pass 2: retires Launch A's slot, binds Launch B's root, and delivers the urgent DM first.
+            await pumpDynamic();
+            await receiver.drain();
+            // Pass 3: coalesces the waiting ordinary records into one catch-up batch on Launch B's root.
+            await pumpDynamic();
+            await receiver.drain();
+
+            expect(await state.list('pending')).toHaveLength(0);
+            const deliveredRecords = await state.list('delivered');
+            expect(deliveredRecords).toHaveLength(4);
+            const priorSettled = deliveredRecords.find(r => r.eventId === 'event-0');
+            expect(priorSettled).toMatchObject({
+                acknowledged     : false,
+                expectedRecipient: {generation: '405:birth', threadId: agyThread, nonce: oldNonce}
+            });
+            expect(agySends.slice(1).map(s => s.threadId)).toEqual([liveThread, liveThread]);
+            expect(agyConsumed).toHaveLength(2);
+            expect(agyConsumed[0]).toContain('urgent after restart');
+            expect(agyConsumed[1]).toContain('3 events for @neo-gemini-julia');
         });
     });
 });
