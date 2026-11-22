@@ -81,17 +81,19 @@ const directories = new Map();
  * `fleet.wakeReceiverRecordsDir` leaf.
  * @param {String[]} [options.messageIds] Wake message ids to answer a delivery verdict for.
  * @param {Boolean} [options.includeStages=false] Whether to project stage and split-latency breakdowns.
+ * @param {Boolean} [options.includePendingRecords=false] Whether to attach `pendingRecords` for settled-source reconciliation.
  * @param {Object|Object[]} [options.policyQueue] Optional pending coalescing policy snapshot.
  * @param {Number|String|Date|null} [options.now=null] Optional observation clock for open wait durations.
- * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object, receiver: Object, messages?: Object, messageStages?: Object}>}
+ * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object, receiver: Object, messages?: Object, messageStages?: Object, pendingRecords?: Object[]}>}
  */
-export async function readWakeDelivery({recordsDir, messageIds, includeStages = false, policyQueue = {}, now = null} = {}) {
+export async function readWakeDelivery({recordsDir, messageIds, includeStages = false, includePendingRecords = false, policyQueue = {}, now = null} = {}) {
     const directory = recordsDir ?? aiConfig.fleet.wakeReceiverRecordsDir;
 
     if (!directory) {
         return {deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}, receiver: RECEIVER_UNKNOWN,
             ...(messageIds ? {messages: projectMessageDelivery(null, messageIds)} : {}),
-            ...(includeStages ? {messageStages: projectWakeDeliveryStages(null, {messageIds, policyQueue, now})} : {})};
+            ...(includeStages ? {messageStages: projectWakeDeliveryStages(null, {messageIds, policyQueue, now})} : {}),
+            ...(includePendingRecords ? {pendingRecords: []} : {})};
     }
 
     let state = directories.get(directory);
@@ -107,12 +109,13 @@ export async function readWakeDelivery({recordsDir, messageIds, includeStages = 
 
     const {result, records} = await state.reading;
 
-    if (!messageIds && !includeStages) return result;
+    if (!messageIds && !includeStages && !includePendingRecords) return result;
 
     return {
         ...result,
         ...(messageIds ? {messages: projectMessageDelivery(result.deliveryReadable ? records : null, messageIds)} : {}),
-        ...(includeStages ? {messageStages: projectWakeDeliveryStages(result.deliveryReadable ? records : null, {messageIds, policyQueue, now})} : {})
+        ...(includeStages ? {messageStages: projectWakeDeliveryStages(result.deliveryReadable ? records : null, {messageIds, policyQueue, now})} : {}),
+        ...(includePendingRecords ? {pendingRecords: result.deliveryReadable ? records.filter(record => record?.state === 'pending') : []} : {})
     }
 }
 

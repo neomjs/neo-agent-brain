@@ -266,4 +266,45 @@ test.describe('WebhookDeliveryService', () => {
         expect(updatedNodes[0].properties.status).toBe('degraded');
         expect(fetchCalls).toHaveLength(0);
     });
+
+    test('deliverSettle signs POST /wake/settle and leaves subscriptions active on 404, 409, and network errors', async () => {
+        const subscription = {
+            id        : 'WAKE_SUB:123',
+            properties: {
+                status               : 'active',
+                harnessTargetMetadata: {
+                    url       : 'http://localhost:8080/wake',
+                    signingKey: 'secret123'
+                }
+            }
+        };
+        const settleEnvelope = {
+            schemaVersion : '1.0',
+            eventType     : 'wake/settle',
+            eventId       : 'wake-settle:1',
+            subscriptionId: 'WAKE_SUB:123',
+            agentIdentity : '@alice',
+            payload       : {settledSourceEventIds: ['MESSAGE:1']}
+        };
+
+        expect(await WebhookDeliveryService.deliverSettle(subscription, settleEnvelope)).toBe('delivered');
+        expect(fetchCalls).toHaveLength(1);
+        expect(fetchCalls[0].url).toBe('http://localhost:8080/wake/settle');
+        const expectedSig = crypto.createHmac('sha256', 'secret123').update(JSON.stringify(settleEnvelope)).digest('hex');
+        expect(fetchCalls[0].options.headers['X-Neo-Wake-Signature']).toBe(expectedSig);
+
+        for (const status of [404, 409, 500]) {
+            global.mockFetchResponse = () => ({ok: false, status});
+            const outcome = await WebhookDeliveryService.deliverSettle(subscription, settleEnvelope);
+            expect(outcome).toBe(status === 500 ? 'failed' : 'skipped');
+            expect(WebhookDeliveryService.consecutiveFailures.get('WAKE_SUB:123') || 0).toBe(0);
+            expect(WebhookDeliveryService.degradedSubscriptions.has('WAKE_SUB:123')).toBe(false);
+            expect(updatedNodes).toHaveLength(0);
+        }
+
+        global.mockFetchResponse = () => { throw new Error('ECONNREFUSED'); };
+        expect(await WebhookDeliveryService.deliverSettle(subscription, settleEnvelope)).toBe('failed');
+        expect(WebhookDeliveryService.consecutiveFailures.get('WAKE_SUB:123') || 0).toBe(0);
+        expect(updatedNodes).toHaveLength(0);
+    });
 });

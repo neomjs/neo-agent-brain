@@ -28,7 +28,10 @@
  * @module ai/services/memory-core/wakeDeliveryProjection
  */
 
-import {SPOOL_CONTENTION_REASONS} from '../../daemons/wake/primaryWakeSpool.mjs';
+import {SPOOL_CONTENTION_REASONS}     from '../../daemons/wake/primaryWakeSpool.mjs';
+import {SOURCE_EVENTS_HANDLED_REASON} from './wakeCoalescePolicy.mjs';
+
+export {SOURCE_EVENTS_HANDLED_REASON};
 
 /**
  * States that count against a subscription. `failed` is a concluded non-delivery; `unknown` is a
@@ -150,7 +153,7 @@ export function projectWakeDelivery(records = []) {
                 // whether a wake can land.
                 verdict.lastAttemptedAt ??= when;
 
-                if (!sawDelivered && verdict.consecutiveFailures === 0) {
+                if (record.outcomeReason !== SOURCE_EVENTS_HANDLED_REASON && !sawDelivered && verdict.consecutiveFailures === 0) {
                     verdict.consecutiveSkips++;
                 }
 
