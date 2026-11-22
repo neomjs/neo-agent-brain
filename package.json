@@ -71,6 +71,7 @@
         "ai:mcp-server-github-workflow": "node ./ai/mcp/server/github-workflow/mcp-server.mjs",
         "ai:mcp-server-neural-link": "node ./ai/mcp/server/neural-link/mcp-server.mjs",
         "ai:lint-config-template-ssot": "node ./ai/scripts/lint/lint-config-template-ssot.mjs",
+        "ai:lint-engine-guides": "neo-agent-skills-guides --root node_modules/neo.mjs --script-root . --script-root node_modules/neo.mjs --openapi-root . --skip mermaid-reserved-word,mermaid-self-loop,dead-link,ticket-id,no-mermaid,mermaid-lr-squish,feature-list-heading,identity-framework",
         "ai:lint-identity-vocabulary": "node ./ai/scripts/lint/lint-identity-vocabulary.mjs",
         "ai:lint-mcp-test-locations": "node ./ai/scripts/lint/lint-mcp-test-locations.mjs",
         "ai:lint-openapi-service-parity": "node ./ai/scripts/lint/lint-openapi-service-parity.mjs",

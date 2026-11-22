@@ -81,7 +81,7 @@ test.describe('ai/services/shared/isEntryModule', () => {
         fs.symlinkSync(REPO_ROOT, link);
 
         try {
-            const {stdout, stderr} = spawnSync(process.execPath, [path.join(link, 'ai/scripts/lint/lint-guides.mjs')], {encoding: 'utf8'});
+            const {stdout, stderr} = spawnSync(process.execPath, [path.join(link, 'ai/scripts/lint/lint-identity-vocabulary.mjs')], {encoding: 'utf8'});
 
             expect((stdout + stderr).trim(), 'the lint ran its CLI block and printed its report').not.toBe('')
         } finally {

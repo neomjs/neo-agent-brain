@@ -1,6 +1,7 @@
-# The Brain owns only the event trigger, its permissions, the team roster input and the Skills release it
-# calls. The called workflow owns every job, so their implementation cannot drift here. Product CI
-# (brain-unit.yml, brain-integration.yml and the lint workflows) stays separate: governance never gates the build.
+# The Brain owns only the event trigger, its permissions, the team roster input, the switch that lints its own
+# `learn/` guides and the Skills release it calls. The called workflow owns every job, so their implementation
+# cannot drift here. Product CI (brain-unit.yml, brain-integration.yml and the lint workflows) stays separate:
+# governance never gates the build.
 
 name: Shared PR Baseline
 
@@ -27,3 +28,4 @@ jobs:
     with:
       team_roster_repository: neomjs/neo-agent-brain
       team_roster_path: ai/graph/agentCoAuthorEmails.mjs
+      guides: true
