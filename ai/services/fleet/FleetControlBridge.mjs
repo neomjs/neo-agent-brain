@@ -328,7 +328,7 @@ async function readRetainedQuestions(bridge, {timeoutMs = null, maxAgeMs = 0, no
  * @type {Readonly<String[]>}
  */
 const MAILBOX_OBSERVER_LIST_FILTERS = Object.freeze([
-    'box', 'status', 'fromIdentity', 'threadId', 'taggedConcepts', 'taskStates', 'taskOrder', 'includeArchived'
+    'box', 'status', 'fromIdentity', 'threadId', 'taggedConcepts', 'taskStates', 'taskOrder', 'since', 'directOnly', 'projection', 'includeArchived'
 ]);
 
 /** Caller identity selectors are not part of observer filtering or admission. */

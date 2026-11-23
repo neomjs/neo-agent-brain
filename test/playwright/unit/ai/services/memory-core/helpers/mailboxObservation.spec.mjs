@@ -484,4 +484,154 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
             ['', '-wal', '-shm'].forEach(suffix => fs.rmSync(dbPath + suffix, {force: true}))
         }
     });
+
+    test('#1688 AC-1: since filters inclusively by sentAt instant across scopes, counts matching rows, and refuses unparsable values naming since', () => {
+        const beforeBound = addMessage(db, {id: 'MESSAGE:before', sentAt: '2026-11-13T20:00:00.249Z'}),
+            exactBound    = addMessage(db, {id: 'MESSAGE:exact', sentAt: '2026-11-13T20:00:00.250Z'}),
+            exactNoMillis = addMessage(db, {id: 'MESSAGE:exact-no-ms', sentAt: '2026-11-13T20:00:01Z'}),
+            afterOffset   = addMessage(db, {id: 'MESSAGE:after-offset', sentAt: '2026-11-13T21:00:01.000+01:00'}),
+            missingSentAt = addMessage(db, {id: 'MESSAGE:null-sent', sentAt: null});
+
+        const boundary = '2026-11-13T21:00:00.250+01:00'; // 20:00:00.250Z
+
+        for (const scope of ['own', 'involves-me', 'all']) {
+            const fullWalk = observe(db, {scope, policy: 'team'}).messages
+                    .filter(row => row.sentAt && Date.parse(row.sentAt) >= Date.parse(boundary))
+                    .map(row => row.messageId),
+                bounded = observe(db, {scope, policy: 'team', since: boundary});
+
+            expect(bounded.messages.map(row => row.messageId)).toEqual(fullWalk);
+            expect(bounded.messages.map(row => row.messageId)).toEqual([afterOffset, exactNoMillis, exactBound]);
+            expect(bounded.messages.map(row => row.messageId)).not.toContain(beforeBound);
+            expect(bounded.messages.map(row => row.messageId)).not.toContain(missingSentAt);
+            expect(bounded.totalCount).toBe(3);
+            expect(observe(db, {scope, policy: 'team', since: boundary, messageId: beforeBound})).toBeNull();
+            expect(observe(db, {scope, policy: 'team', since: boundary, messageId: exactBound})?.messageId).toBe(exactBound)
+        }
+
+        const secondCut = observe(db, {scope: 'own', policy: 'team', since: '2026-11-13T20:00:01Z'});
+        expect(secondCut.messages.map(row => row.messageId)).toEqual([afterOffset, exactNoMillis]);
+        expect(secondCut.totalCount).toBe(2);
+
+        for (const bad of ['', 'not-a-date', '1', '2026-11-13', '2026-02-30T00:00:00Z', '2026-11-13T25:00:00Z', 1700000000000, {}]) {
+            expect(() => observe(db, {since: bad}), JSON.stringify(bad)).toThrow(/since/)
+        }
+    });
+
+    test('#1688 AC-2: directOnly returns no broadcast and every viewer-addressed direct message without widening admission', () => {
+        const directCanonical = addMessage(db, {id: 'MESSAGE:direct-canonical', from: '@alice', to: VIEWER, sentAt: '2026-11-13T20:01:00.000Z'}),
+            directVariant     = addMessage(db, {id: 'MESSAGE:direct-variant', from: '@alice', to: 'AGENT:@observer', archivedAt: '2026-11-13T20:05:00.000Z', sentAt: '2026-11-13T20:02:00.000Z'}),
+            selfDirect        = addMessage(db, {id: 'MESSAGE:self-direct', from: VIEWER, to: VIEWER, sentAt: '2026-11-13T20:03:00.000Z'}),
+            outboundToPeer    = addMessage(db, {id: 'MESSAGE:outbound-peer', from: VIEWER, to: '@bob', sentAt: '2026-11-13T20:04:00.000Z'}),
+            grantedDirect     = addMessage(db, {id: 'MESSAGE:granted-direct', from: '@alice', to: '@granted', sentAt: '2026-11-13T20:05:00.000Z'}),
+            foreignDirect     = addMessage(db, {id: 'MESSAGE:foreign-direct', from: '@alice', to: '@bob', sentAt: '2026-11-13T20:06:00.000Z'});
+
+        addMessage(db, {
+            id          : 'MESSAGE:modern-broadcast', from: '@alice', to: 'AGENT:*',
+            toProperties: {broadcastCohort: 'known', intendedRecipientCount: 1},
+            deliveries  : [{target: VIEWER}],
+            sentAt      : '2026-11-13T20:07:00.000Z'
+        });
+        addMessage(db, {
+            id          : 'MESSAGE:legacy-broadcast', from: '@alice', to: 'AGENT:*',
+            toProperties: {broadcastCohort: 'legacy-unknown'},
+            sentAt      : '2026-11-13T20:08:00.000Z'
+        });
+
+        for (const [scope, policy] of [['own', 'team'], ['involves-me', 'team'], ['all', 'team'], ['all', 'private']]) {
+            const unfiltered   = observe(db, {scope, policy, grantedInboxVariants: ['@granted']}),
+                expectedDirect = unfiltered.messages
+                    .filter(row => VIEWER_VARIANTS.includes(row.to))
+                    .map(row => row.messageId),
+                directResult     = observe(db, {scope, policy, grantedInboxVariants: ['@granted'], directOnly: true}),
+                explicitDisabled = observe(db, {scope, policy, grantedInboxVariants: ['@granted'], directOnly: false});
+
+            expect(directResult.messages.map(row => row.messageId)).toEqual([selfDirect, directVariant, directCanonical].filter(id => expectedDirect.includes(id)));
+            expect(directResult.messages.map(row => row.messageId)).toEqual(expectedDirect);
+            expect(directResult.totalCount).toBe(expectedDirect.length);
+            expect(directResult.messages.every(row => row.to !== 'AGENT:*')).toBe(true);
+            expect(directResult.messages.map(row => row.messageId)).not.toContain(outboundToPeer);
+            expect(directResult.messages.map(row => row.messageId)).not.toContain(grantedDirect);
+            expect(directResult.messages.map(row => row.messageId)).not.toContain(foreignDirect);
+            expect(explicitDisabled).toEqual(unfiltered)
+        }
+
+        expect(() => observe(db, {directOnly: 'yes'})).toThrow(/directOnly/)
+    });
+
+    test('#1688 AC-3 & AC-4: compact observer projection returns exact 9 keys with 160-char subject cut under half the bytes of full, while default calls stay byte-identical', () => {
+        const expectedKeys = ['messageId', 'from', 'to', 'sentAt', 'readAt', 'wakeSuppressed', 'priority', 'taskState', 'subject'];
+
+        for (let i = 0; i < 25; i++) {
+            const longSubject = `[review-posted] Round-${i} verification note across multi-repo architectural summary `.padEnd(340, 'x');
+            addMessage(db, {
+                id          : `MESSAGE:row-${String(i).padStart(2, '0')}`,
+                from        : i % 2 === 0 ? '@alice' : '@carol',
+                to          : i % 3 === 0 ? VIEWER : 'AGENT:*',
+                toProperties: i % 3 === 0 ? {} : {broadcastCohort: 'known', intendedRecipientCount: 2},
+                deliveries  : i % 3 === 0 ? [] : [{
+                    target    : VIEWER,
+                    readAt    : '2026-11-13T21:00:00.000Z',
+                    archivedAt: '2026-11-13T22:00:00.000Z'
+                }],
+                subject       : longSubject,
+                priority      : i % 5 === 0 ? 'high' : 'normal',
+                sentAt        : `2026-11-13T20:${String(i).padStart(2, '0')}:00.000Z`,
+                readAt        : '2026-11-13T21:00:00.000Z',
+                archivedAt    : '2026-11-13T22:00:00.000Z',
+                wakeSuppressed: i % 3 !== 0,
+                task          : {state: 'Working', input: 'hidden input'},
+                relatedTickets: [
+                    `neomjs/neo-agent-brain#${1600 + i}`,
+                    `neomjs/neo-agent-institution#${900 + i}`,
+                    `neomjs/neo#${22000 + i}`
+                ],
+                extraEdges    : [{type: 'PART_OF_THREAD', target: `MESSAGE:550e8400-e29b-41d4-a716-4466554400${String(i).padStart(2, '0')}`}]
+            })
+        }
+
+        const omittedProjection = observe(db, {scope: 'involves-me', policy: 'team', limit: 25}),
+            fullProjection      = observe(db, {scope: 'involves-me', policy: 'team', limit: 25, projection: 'full'}),
+            compactProjection   = observe(db, {scope: 'involves-me', policy: 'team', limit: 25, projection: 'compact'});
+
+        expect(JSON.stringify(omittedProjection)).toBe(JSON.stringify(fullProjection));
+        expect(compactProjection.totalCount).toBe(25);
+        expect(compactProjection.messages).toHaveLength(25);
+
+        for (const row of compactProjection.messages) {
+            expect(Object.keys(row)).toEqual(expectedKeys);
+            expect(row.subject).toHaveLength(160);
+            expect(row.subject.endsWith('…')).toBe(true)
+        }
+
+        const fullBytes  = Buffer.byteLength(JSON.stringify(omittedProjection), 'utf8'),
+            compactBytes = Buffer.byteLength(JSON.stringify(compactProjection), 'utf8');
+
+        expect(compactBytes).toBeLessThan(fullBytes / 2);
+
+        addMessage(db, {
+            id       : 'MESSAGE:retracted-compact',
+            from     : '@alice',
+            to       : VIEWER,
+            subject  : 'confidential subject before retraction'.padEnd(220, 'z'),
+            retracted: true,
+            sentAt   : '2026-11-13T23:00:00.000Z'
+        });
+
+        const retractedCompact = observe(db, {scope: 'own', policy: 'team', limit: 1, projection: 'compact'});
+        expect(retractedCompact.messages[0]).toEqual({
+            messageId     : 'MESSAGE:retracted-compact',
+            from          : '@alice',
+            to            : VIEWER,
+            sentAt        : '2026-11-13T23:00:00.000Z',
+            readAt        : null,
+            wakeSuppressed: false,
+            priority      : 'normal',
+            taskState     : null,
+            subject       : '[retracted by sender]'
+        });
+
+        expect(() => observe(db, {projection: 'counts'})).toThrow(/projection/);
+        expect(() => observe(db, {messageId: 'MESSAGE:retracted-compact', projection: 'compact'})).toThrow(/compact/)
+    });
 });
