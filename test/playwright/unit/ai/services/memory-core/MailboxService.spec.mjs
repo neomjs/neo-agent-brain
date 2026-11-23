@@ -727,8 +727,8 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         GraphService.linkNodes('MESSAGE:obs-1688-outbound', '@bob', 'SENT_BY');
         GraphService.linkNodes('MESSAGE:obs-1688-outbound', '@alice', 'SENT_TO');
 
-        const sqlite   = GraphService.db.storage.db,
-            snapshot   = () => JSON.stringify({
+        const sqlite = GraphService.db.storage.db,
+            snapshot = () => JSON.stringify({
                 nodes: sqlite.prepare('SELECT * FROM Nodes ORDER BY id').all(),
                 edges: sqlite.prepare('SELECT * FROM Edges ORDER BY id').all()
             }),
@@ -778,10 +778,10 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                 .rejects.toThrow(/directOnly requires observer/);
 
             // AC-1: since on both plain and observer paths matches full walk and updates totalCount
-            const plainAll   = await MailboxService.listMessages({box: 'all', includeArchived: true, limit: 50}),
-                plainSince   = await callMemoryCoreTool('list_messages', {box: 'all', includeArchived: true, limit: 50, since: sinceBound, projection: 'compact'}),
-                plainCounts  = await callMemoryCoreTool('list_messages', {box: 'inbox', includeArchived: true, since: sinceBound, projection: 'counts'}),
-                obsSince     = await callMemoryCoreTool('list_messages', {observer: {scope: 'involves-me'}, limit: 50, since: sinceBound}),
+            const plainAll       = await MailboxService.listMessages({box: 'all', includeArchived: true, limit: 50}),
+                plainSince       = await callMemoryCoreTool('list_messages', {box: 'all', includeArchived: true, limit: 50, since: sinceBound, projection: 'compact'}),
+                plainCounts      = await callMemoryCoreTool('list_messages', {box: 'inbox', includeArchived: true, since: sinceBound, projection: 'counts'}),
+                obsSince         = await callMemoryCoreTool('list_messages', {observer: {scope: 'involves-me'}, limit: 50, since: sinceBound}),
                 expectedPlainIds = plainAll.messages
                     .filter(row => Date.parse(row.sentAt) >= Date.parse(sinceBound))
                     .map(row => row.messageId),

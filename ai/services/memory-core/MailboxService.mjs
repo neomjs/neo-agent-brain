@@ -1,14 +1,14 @@
-import {resolveTicketReference}                           from '../graph/ticketReferences.mjs';
-import Base                                               from 'neo.mjs/src/core/Base.mjs';
-import aiConfig                                           from '../../mcp/server/memory-core/config.mjs';
-import logger                                             from '../../mcp/server/memory-core/logger.mjs';
-import RequestContextService, {normalizeUserId}           from '../../mcp/server/shared/services/RequestContextService.mjs';
-import {canonicalizeTaggedConceptIds}                     from '../graph/conceptSpineCanonicalization.mjs';
-import GraphService, {isRlsVisible, resolveRlsUserId}     from './GraphService.mjs';
-import PermissionService                                  from './PermissionService.mjs';
-import SourceRegistryService                              from './SourceRegistryService.mjs';
-import WakeSubscriptionService                            from './WakeSubscriptionService.mjs';
-import {inspectDefectNoteCapture}                         from './helpers/defectObservationFold.mjs';
+import {resolveTicketReference}                       from '../graph/ticketReferences.mjs';
+import Base                                           from 'neo.mjs/src/core/Base.mjs';
+import aiConfig                                       from '../../mcp/server/memory-core/config.mjs';
+import logger                                         from '../../mcp/server/memory-core/logger.mjs';
+import RequestContextService, {normalizeUserId}       from '../../mcp/server/shared/services/RequestContextService.mjs';
+import {canonicalizeTaggedConceptIds}                 from '../graph/conceptSpineCanonicalization.mjs';
+import GraphService, {isRlsVisible, resolveRlsUserId} from './GraphService.mjs';
+import PermissionService                              from './PermissionService.mjs';
+import SourceRegistryService                          from './SourceRegistryService.mjs';
+import WakeSubscriptionService                        from './WakeSubscriptionService.mjs';
+import {inspectDefectNoteCapture}                     from './helpers/defectObservationFold.mjs';
 import {
     normalizeMailboxObserver,
     projectCompactMailboxRow,

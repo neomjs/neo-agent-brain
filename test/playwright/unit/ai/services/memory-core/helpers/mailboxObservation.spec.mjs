@@ -486,11 +486,11 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
     });
 
     test('#1688 AC-1: since filters inclusively by sentAt instant across scopes, counts matching rows, and refuses unparsable values naming since', () => {
-        const beforeBound  = addMessage(db, {id: 'MESSAGE:before', sentAt: '2026-11-13T20:00:00.249Z'}),
-            exactBound     = addMessage(db, {id: 'MESSAGE:exact', sentAt: '2026-11-13T20:00:00.250Z'}),
-            exactNoMillis  = addMessage(db, {id: 'MESSAGE:exact-no-ms', sentAt: '2026-11-13T20:00:01Z'}),
-            afterOffset    = addMessage(db, {id: 'MESSAGE:after-offset', sentAt: '2026-11-13T21:00:01.000+01:00'}),
-            missingSentAt  = addMessage(db, {id: 'MESSAGE:null-sent', sentAt: null});
+        const beforeBound = addMessage(db, {id: 'MESSAGE:before', sentAt: '2026-11-13T20:00:00.249Z'}),
+            exactBound    = addMessage(db, {id: 'MESSAGE:exact', sentAt: '2026-11-13T20:00:00.250Z'}),
+            exactNoMillis = addMessage(db, {id: 'MESSAGE:exact-no-ms', sentAt: '2026-11-13T20:00:01Z'}),
+            afterOffset   = addMessage(db, {id: 'MESSAGE:after-offset', sentAt: '2026-11-13T21:00:01.000+01:00'}),
+            missingSentAt = addMessage(db, {id: 'MESSAGE:null-sent', sentAt: null});
 
         const boundary = '2026-11-13T21:00:00.250+01:00'; // 20:00:00.250Z
 
@@ -539,8 +539,8 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
         });
 
         for (const [scope, policy] of [['own', 'team'], ['involves-me', 'team'], ['all', 'team'], ['all', 'private']]) {
-            const unfiltered     = observe(db, {scope, policy, grantedInboxVariants: ['@granted']}),
-                expectedDirect   = unfiltered.messages
+            const unfiltered   = observe(db, {scope, policy, grantedInboxVariants: ['@granted']}),
+                expectedDirect = unfiltered.messages
                     .filter(row => VIEWER_VARIANTS.includes(row.to))
                     .map(row => row.messageId),
                 directResult     = observe(db, {scope, policy, grantedInboxVariants: ['@granted'], directOnly: true}),
@@ -565,11 +565,11 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
         for (let i = 0; i < 25; i++) {
             const longSubject = `[review-posted] Round-${i} verification note across multi-repo architectural summary `.padEnd(340, 'x');
             addMessage(db, {
-                id            : `MESSAGE:row-${String(i).padStart(2, '0')}`,
-                from          : i % 2 === 0 ? '@alice' : '@carol',
-                to            : i % 3 === 0 ? VIEWER : 'AGENT:*',
-                toProperties  : i % 3 === 0 ? {} : {broadcastCohort: 'known', intendedRecipientCount: 2},
-                deliveries    : i % 3 === 0 ? [] : [{
+                id          : `MESSAGE:row-${String(i).padStart(2, '0')}`,
+                from        : i % 2 === 0 ? '@alice' : '@carol',
+                to          : i % 3 === 0 ? VIEWER : 'AGENT:*',
+                toProperties: i % 3 === 0 ? {} : {broadcastCohort: 'known', intendedRecipientCount: 2},
+                deliveries  : i % 3 === 0 ? [] : [{
                     target    : VIEWER,
                     readAt    : '2026-11-13T21:00:00.000Z',
                     archivedAt: '2026-11-13T22:00:00.000Z'
@@ -604,8 +604,8 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
             expect(row.subject.endsWith('…')).toBe(true)
         }
 
-        const fullBytes    = Buffer.byteLength(JSON.stringify(omittedProjection), 'utf8'),
-            compactBytes   = Buffer.byteLength(JSON.stringify(compactProjection), 'utf8');
+        const fullBytes  = Buffer.byteLength(JSON.stringify(omittedProjection), 'utf8'),
+            compactBytes = Buffer.byteLength(JSON.stringify(compactProjection), 'utf8');
 
         expect(compactBytes).toBeLessThan(fullBytes / 2);
 
