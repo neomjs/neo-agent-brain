@@ -1,6 +1,7 @@
 import http                              from 'http';
 import {execFile}                        from 'child_process';
 import {createHash}                      from 'node:crypto';
+import fs                                from 'node:fs';
 import os                                from 'os';
 import path                              from 'path';
 import aiConfig                          from '../../mcp/server/memory-core/config.mjs';
@@ -27,7 +28,9 @@ import {readSecretCarrier} from '../shared/secretCarrier.mjs';
 let openAiCompatibleEmbeddingServingProbeQueue = Promise.resolve(),
     lmsResidencyMutationQueue                  = Promise.resolve(),
     defaultLmsLoadFailureGuard                 = null,
-    defaultLmsLoadFailureGuardPolicyKey        = null;
+    defaultLmsLoadFailureGuardPolicyKey        = null,
+    defaultLmsReplacementFailureStore          = null,
+    defaultLmsReplacementFailureStoreKey       = null;
 
 const
     providerDiscoveryCache             = new Map(),
@@ -1271,6 +1274,39 @@ export function loadLmsModel(model, {execFileFn = execFile, contextLength, paral
 }
 
 /**
+ * @summary Invokes `lms unload <identifier>` to evict a diagnosed wrong resident model in LM Studio.
+ *
+ * Restored strictly for the wrong-resident self-heal (`ensureLmsModelsLoaded` under `warm-provider`):
+ * evicts one pinned role's mis-shaped resident or foreign resident before loading the configured shape.
+ *
+ * @param {String} identifier LM Studio resident model identifier.
+ * @param {Object} [options]
+ * @param {Function} [options.execFileFn=execFile] Child-process seam for tests.
+ * @param {Number} options.timeoutMs Bounded child lifetime.
+ * @probeDisposition intervention (warm-or-evict, advance-state)
+ * @returns {Promise<{stdout: String, stderr: String}>}
+ */
+export function unloadLmsModel(identifier, {execFileFn = execFile, timeoutMs} = {}) {
+    if (!Neo.isString(identifier) || !identifier) {
+        return Promise.reject(new TypeError('unloadLmsModel: identifier is required'));
+    }
+    if (!Neo.isNumber(timeoutMs) || timeoutMs <= 0) {
+        return Promise.reject(new TypeError('unloadLmsModel: timeoutMs is required'));
+    }
+
+    return new Promise((resolve, reject) => {
+        execFileFn('lms', ['unload', identifier], lmsExecOptions({timeout: timeoutMs, killSignal: 'SIGKILL'}), (error, stdout = '', stderr = '') => {
+            if (error) {
+                reject(createLmsCliError(`LM Studio CLI unload (${identifier})`, error, stderr));
+                return;
+            }
+
+            resolve({stdout, stderr});
+        });
+    });
+}
+
+/**
  * @summary Extracts the selected LM Studio runtime rows from `lms runtime ls` output.
  *
  * The CLI exposes no JSON mode, so these rows are deliberately opaque evidence rather than a parsed
@@ -1538,6 +1574,227 @@ function getDefaultLmsLoadFailureGuard() {
 }
 
 /**
+ * @summary Sanitizes CLI failure text so replacement diagnostics never emit `lms load` or `lms unload`
+ * imperatives addressed to an operator.
+ * @param {*} message Raw failure message or Error.
+ * @returns {String}
+ * @private
+ */
+function sanitizeLmsReplacementMessage(message) {
+    return String(message?.message || message || 'unknown LM Studio replacement failure')
+        .replaceAll(os.homedir(), '~')
+        .replace(/\blms\s+(unload|load)\b/gi, 'LM Studio $1')
+        .replace(/\boperator action\b/gi, 'automated heal')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, LMS_LOAD_FAILURE_MESSAGE_MAX_CHARS);
+}
+
+/**
+ * @summary Persists per-role consecutive replacement-failure counts so anti-thrash survives restarts.
+ *
+ * Missing state files resolve to `0` failures. Each failed replacement increments the role counter;
+ * once `count >= maxFailures`, further `unload` / `load` mutations for that role and target shape are
+ * suppressed (`heal-exhausted`) until a successful `replaced` resets the counter to `0`.
+ *
+ * @param {Object} [options]
+ * @param {String|null} [options.statePath=null] Optional JSON persistence path; `null` keeps state in memory.
+ * @param {Number} [options.maxFailures=3] Consecutive failed-replacement ceiling per role.
+ * @param {Function} [options.now=Date.now] Clock seam.
+ * @returns {{getEntry: Function, getCount: Function, isExhausted: Function, recordFailure: Function, recordReplaced: Function, snapshot: Function}}
+ */
+export function createLmsReplacementFailureStore({
+    statePath = null,
+    maxFailures = 3,
+    now = Date.now
+} = {}) {
+    if (!Neo.isNumber(maxFailures) || maxFailures <= 0) {
+        throw new TypeError('createLmsReplacementFailureStore: maxFailures must be a positive number');
+    }
+
+    let memoryRoles = {};
+
+    const buildTargetShapeKey = ({model, contextLength, parallel} = {}) => JSON.stringify({
+        model        : model || null,
+        contextLength: Neo.isNumber(contextLength) ? contextLength : null,
+        parallel     : Neo.isNumber(parallel) ? parallel : null
+    });
+
+    const readRoles = () => {
+        if (!statePath) {
+            return memoryRoles;
+        }
+
+        try {
+            const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+
+            return parsed && typeof parsed.roles === 'object' && parsed.roles !== null
+                ? {...parsed.roles}
+                : {};
+        } catch (error) {
+            if (error?.code === 'ENOENT') {
+                return {};
+            }
+
+            return {};
+        }
+    };
+
+    const writeRoles = roles => {
+        if (!statePath) {
+            memoryRoles = {...roles};
+            return;
+        }
+
+        fs.mkdirSync(path.dirname(statePath), {recursive: true});
+        const tmpPath = `${statePath}.${process.pid}.${now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+
+        fs.writeFileSync(tmpPath, JSON.stringify({schemaVersion: 1, roles}, null, 2), 'utf8');
+        fs.renameSync(tmpPath, statePath);
+    };
+
+    const normalizeEntry = (roleKey, raw) => {
+        const count = Number.isInteger(raw?.count) && raw.count > 0 ? raw.count : 0;
+
+        return {
+            role          : roleKey,
+            count,
+            maxFailures,
+            exhausted     : count >= maxFailures,
+            targetShapeKey: typeof raw?.targetShapeKey === 'string' ? raw.targetShapeKey : null,
+            model         : typeof raw?.model === 'string' ? raw.model : null,
+            unloadedModel : typeof raw?.unloadedModel === 'string' ? raw.unloadedModel : null,
+            lastError     : typeof raw?.lastError === 'string' ? raw.lastError : null,
+            updatedAt     : Number.isFinite(raw?.updatedAt) ? raw.updatedAt : null
+        };
+    };
+
+    return {
+        getEntry(roleKey) {
+            const roles = readRoles();
+
+            return normalizeEntry(roleKey, roles[roleKey]);
+        },
+
+        getCount(roleKey) {
+            return this.getEntry(roleKey).count;
+        },
+
+        isExhausted(roleKey, targetShape = null) {
+            const entry = this.getEntry(roleKey);
+
+            if (entry.count < maxFailures) {
+                return false;
+            }
+            if (targetShape && entry.targetShapeKey && buildTargetShapeKey(targetShape) !== entry.targetShapeKey) {
+                return false;
+            }
+
+            return true;
+        },
+
+        recordFailure(roleKey, {model = null, unloadedModel = null, targetShape = null, error = null} = {}) {
+            const roles          = readRoles(),
+                  prior          = normalizeEntry(roleKey, roles[roleKey]),
+                  nextShapeKey   = targetShape ? buildTargetShapeKey(targetShape) : prior.targetShapeKey,
+                  sameGeneration = !prior.targetShapeKey || !nextShapeKey || prior.targetShapeKey === nextShapeKey,
+                  nextCount      = (sameGeneration ? prior.count : 0) + 1,
+                  nextRaw        = {
+                      role          : roleKey,
+                      count         : nextCount,
+                      targetShapeKey: nextShapeKey,
+                      model         : model || prior.model,
+                      unloadedModel : unloadedModel || prior.unloadedModel,
+                      lastError     : sanitizeLmsReplacementMessage(error),
+                      updatedAt     : now()
+                  };
+
+            roles[roleKey] = nextRaw;
+            writeRoles(roles);
+
+            return normalizeEntry(roleKey, nextRaw);
+        },
+
+        recordReplaced(roleKey) {
+            const roles = readRoles();
+
+            if (Object.hasOwn(roles, roleKey)) {
+                delete roles[roleKey];
+                writeRoles(roles);
+            }
+
+            return normalizeEntry(roleKey, null);
+        },
+
+        snapshot() {
+            const roles = readRoles();
+
+            return Object.fromEntries(
+                Object.keys(roles).map(roleKey => [roleKey, normalizeEntry(roleKey, roles[roleKey])])
+            );
+        }
+    };
+}
+
+/**
+ * @summary Returns the process-shared persisted replacement-failure store for the resolved AiConfig policy.
+ * @returns {Object}
+ * @private
+ */
+function getDefaultLmsReplacementFailureStore() {
+    const statePath   = path.join(aiConfig.orchestrator.dataDir, 'lms-replacement-failures.json'),
+          maxFailures = aiConfig.orchestrator.lms.loadFailureCircuit.maxEquivalentFailures,
+          key         = JSON.stringify({statePath, maxFailures});
+
+    if (!defaultLmsReplacementFailureStore || defaultLmsReplacementFailureStoreKey !== key) {
+        defaultLmsReplacementFailureStore = createLmsReplacementFailureStore({
+            statePath,
+            maxFailures
+        });
+        defaultLmsReplacementFailureStoreKey = key;
+    }
+
+    return defaultLmsReplacementFailureStore;
+}
+
+/**
+ * @summary Creates a bound LM Studio readiness helper instance sharing one persisted replacement-failure store.
+ *
+ * Allows callers and unit tests to construct a fresh helper instance over the same `replacementStatePath`
+ * (simulating a host-edge restart) and verify that `heal-exhausted` counters survive across instances.
+ *
+ * @param {Object} [defaults]
+ * @param {String|null} [defaults.replacementStatePath=null] Persisted failure-counter JSON path.
+ * @param {Number} [defaults.maxReplacementFailures] Per-role consecutive failure budget.
+ * @param {Object} [defaults.replacementFailureStore] Optional pre-constructed store.
+ * @returns {{replacementFailureStore: Object, ensureLmsModelsLoaded: Function}}
+ */
+export function createLmsReadinessHelper({
+    replacementStatePath = null,
+    maxReplacementFailures,
+    replacementFailureStore,
+    ...defaults
+} = {}) {
+    const maxFailures = Neo.isNumber(maxReplacementFailures) && maxReplacementFailures > 0
+        ? maxReplacementFailures
+        : aiConfig.orchestrator.lms.loadFailureCircuit.maxEquivalentFailures;
+    const store = replacementFailureStore || createLmsReplacementFailureStore({
+        statePath: replacementStatePath,
+        maxFailures
+    });
+
+    return {
+        replacementFailureStore: store,
+        ensureLmsModelsLoaded  : (options = {}) => ensureLmsModelsLoaded({
+            ...defaults,
+            replacementFailureStore: store,
+            maxReplacementFailures : maxFailures,
+            ...options
+        })
+    };
+}
+
+/**
  * @summary Builds the per-model `--context-length` override map for `ensureLmsModelsLoaded`.
  *
  * Composes the resolved chat + embedding model identifiers with their respective
@@ -1656,6 +1913,46 @@ export function buildLmsPreloadConfig(config = aiConfig) {
 }
 
 /**
+ * @summary Maps active OpenAI-compatible LM Studio model ids to their owning logical role key.
+ *
+ * Used by the wrong-resident self-heal (`ensureLmsModelsLoaded`) so per-role replacement failure
+ * counters track the role (`'chat'`, `'embedding'`, or `'chat+embedding'` when shared) across
+ * model-id reconfigurations and daemon restarts.
+ *
+ * @param {Object} [config=aiConfig] aiConfig-shaped provider config.
+ * @returns {Object} Map of `{[modelId]: 'chat'|'embedding'|'chat+embedding'}`.
+ */
+export function buildLmsRoleByModelMap(config = aiConfig) {
+    const openAiCompatibleConfig = config.openAiCompatible,
+          chatModel              = openAiCompatibleConfig.model,
+          embeddingModel         = openAiCompatibleConfig.embeddingModel,
+          roles                  = [{
+              provider   : config.modelProvider,
+              model      : chatModel,
+              contextRole: 'chat'
+          }, {
+              provider   : config.graphProvider,
+              model      : chatModel,
+              contextRole: 'chat'
+          }, {
+              provider   : config.embeddingProvider,
+              model      : embeddingModel,
+              contextRole: 'embedding'
+          }].filter(role => isOpenAiCompatibleProvider(role.provider) && role.model),
+          roleByModel            = {};
+
+    for (const {model, contextRole} of roles) {
+        if (!roleByModel[model]) {
+            roleByModel[model] = contextRole;
+        } else if (roleByModel[model] !== contextRole) {
+            roleByModel[model] = 'chat+embedding';
+        }
+    }
+
+    return roleByModel;
+}
+
+/**
  * @summary Builds the native Ollama readiness set from provider-role selectors.
  *
  * Non-null Ollama model leaves are deployment configuration, not proof that the
@@ -1722,58 +2019,72 @@ export function buildOllamaReadinessConfig(config = aiConfig) {
 }
 
 /**
- * @summary Renders the operator action for residents loaded at the wrong shape.
- *
- * Readiness never performs the replacement, so the action has to reach the line an operator reads.
- * That means the observed and required shape, whether the resident is a JIT load that will idle out
- * or a pinned one, and the exact `lms` pair.
- * @param {Object[]} insufficient Assessment mismatches (`{model, contextLength, requiredContextLength, parallel, requiredParallel}`).
- * @param {Object[]} rows Loaded-model rows. A positive `ttlMs` marks a JIT load and `ttlMs: null` a pinned
- *     one. Anything else, including an absent field, is reported as unknown and never as pinned.
- * @returns {String} Empty when nothing needs replacement.
+ * @summary Formats the non-imperative heal receipt when wrong LM Studio residents are replaced.
+ * @param {Object[]} replacedModels Completed replacement entries.
+ * @returns {String}
+ * @private
  */
-function describeLmsReplacement(insufficient = [], rows = []) {
-    return insufficient.map(item => {
-        const ttlMs  = rows.find(row => row.id === item.model)?.ttlMs,
-              origin = Neo.isNumber(ttlMs) && ttlMs > 0 ? `JIT-loaded, unloads after ${Math.round(ttlMs / 1000)} s idle`
-                  : ttlMs === null ? 'pinned'
-                  : 'TTL unknown',
-              parallel = Neo.isNumber(item.requiredParallel),
-              flags    = [
-                  ...(Neo.isNumber(item.requiredContextLength) ? [`--context-length ${item.requiredContextLength}`] : []),
-                  ...(parallel ? [`--parallel ${item.requiredParallel}`] : [])
-              ];
+function formatLmsReplacedSummary(replacedModels = []) {
+    return replacedModels.map(item => {
+        const shapeParts = [
+            ...(Neo.isNumber(item.contextLength) ? [`context ${item.contextLength}`] : []),
+            ...(Neo.isNumber(item.parallel) ? [`parallel ${item.parallel}`] : [])
+        ];
+        const observedSuffix = Neo.isNumber(item.observedContextLength) || Neo.isNumber(item.observedParallel)
+            ? ` (was context ${item.observedContextLength ?? 'unknown'}` +
+                `${Neo.isNumber(item.observedParallel) ? `, parallel ${item.observedParallel}` : ''})`
+            : '';
 
-        return `LM Studio resident '${item.model}' has context ${item.contextLength ?? 'unknown'}` +
-            `${parallel ? `, parallel ${item.parallel ?? 'unknown'}` : ''}; needs context ${item.requiredContextLength ?? 'any'}` +
-            `${parallel ? `, parallel ${item.requiredParallel}` : ''} (${origin}). ` +
-            `Replace it: lms unload ${item.model} && lms load ${item.model} ${[...flags, `--identifier ${item.model}`].join(' ')}`
-    }).join('; ')
+        return `LM Studio healed role '${item.role}': unloaded '${item.unloadedModel}'${observedSuffix} and loaded '${item.loadedModel}'` +
+            `${shapeParts.length ? ` (${shapeParts.join(', ')})` : ''}`;
+    }).join('; ');
 }
 
 /**
- * @summary Ensures LM Studio has all configured OpenAI-compatible models loaded.
+ * @summary Formats the non-imperative exhaustion receipt when per-role replacement reaches its cap.
+ * @param {Object[]} exhaustedEntries Exhausted per-role failure entries.
+ * @returns {String}
+ * @private
+ */
+function formatLmsHealExhaustedSummary(exhaustedEntries = []) {
+    return exhaustedEntries.map(entry =>
+        `LM Studio resident heal exhausted for role '${entry.role}'` +
+        `${entry.model ? ` ('${entry.model}')` : ''} after ${entry.count}/${entry.maxFailures} failed replacement(s); ` +
+        `further unloads suppressed until a replacement succeeds` +
+        `${entry.lastError ? `. Last failure: ${entry.lastError}` : ''}`
+    ).join('; ');
+}
+
+/**
+ * @summary Formats the non-imperative degraded receipt when a replacement attempt fails below the cap.
+ * @param {Object[]} failedEntries Failed per-role replacement entries.
+ * @returns {String}
+ * @private
+ */
+function formatLmsReplacementFailedSummary(failedEntries = []) {
+    return failedEntries.map(entry =>
+        `LM Studio resident replacement failed for role '${entry.role}'` +
+        `${entry.model ? ` ('${entry.model}')` : ''} (attempt ${entry.count}/${entry.maxFailures})` +
+        `${entry.lastError ? `: ${entry.lastError}` : ''}`
+    ).join('; ');
+}
+
+/**
+ * @summary Ensures LM Studio has all configured OpenAI-compatible models loaded, self-healing wrong residents.
  *
  * The orchestrator-owned `lms server start` task gets the server process running;
- * this helper adds the model-residency half by probing `/v1/models`, invoking
- * `lms load <model>` for missing chat / embedding models, then waiting until the
- * endpoint enumerates both. Parameters come from config-owned callers so the helper
- * has no hidden retry or timeout defaults.
+ * this helper adds the model-residency half by probing `/v1/models` and `lms ps --json`,
+ * replacing any pinned role resident at the wrong shape (or foreign resident blocking a missing role)
+ * via `unloadLmsModel` + `loadLmsModel`, additively loading missing roles, and re-probing until the
+ * endpoint enumerates the configured shape.
  *
  * Every call runs behind one process-wide FIFO so the supervisor readiness hook and recovery
- * actuator cannot overlap additive `lms load` operations. Calls are serialized, never coalesced:
- * each queued caller re-probes with its own role set, shape requirements, and authority oracle after
- * its predecessor settles. Exact mismatches and suffixed residents are report-only; this readiness
- * surface never evicts a resident model.
- *
- * Per-model context-length and parallel overrides apply only when a trustworthy residency snapshot
- * proves the exact configured model absent. An additive load receives those shape options. When an
- * exact resident is present with a numeric mismatch, the helper returns `replacement-required` and
- * performs no mutation on that resident. The mismatch is judged per role: every other role that is
- * genuinely missing still gets its additive load in the same pass. Otherwise one mis-shaped
- * resident, typically a JIT load at the server's default shape, would keep every other role
- * unloaded. The result carries an `operatorDiagnostic.summary` naming the resident's observed and
- * required shape and the `lms` pair that replaces it.
+ * actuator cannot overlap mutations. Unreadable metadata (`metadata-unknown`) refuses all mutation;
+ * routine passes over already-sufficient residents touch nothing (the suffixed-resident control arm). Per-role
+ * replacement failures increment a persisted counter; after `maxReplacementFailures` consecutive
+ * failures for a role, the helper returns `status: 'heal-exhausted'` (`observationStatus: 'heal-exhausted'`)
+ * with the heal receipt on `operatorDiagnostic.summary` and issues no further unloads for that role
+ * until a `replaced` resets the counter.
  *
  * @param {Object} options
  * @param {String} options.host OpenAI-compatible host.
@@ -1781,20 +2092,27 @@ function describeLmsReplacement(insufficient = [], rows = []) {
  * @param {Number} options.attempts Probe attempts after load.
  * @param {Number} options.delayMs Delay between probes.
  * @param {Number} options.timeoutMs HTTP probe timeout.
- * @param {Object} [options.contextLengths] Per-model additive-load context-length map keyed by model id.
- * @param {Object} [options.parallels] Per-model additive-load `--parallel` map keyed by model id.
+ * @param {Object} [options.contextLengths] Per-model context-length map keyed by model id.
+ * @param {Object} [options.parallels] Per-model `--parallel` map keyed by model id.
+ * @param {Object} [options.roleByModel] Logical role key map (`{[modelId]: 'chat'|'embedding'}`).
  * @param {Boolean} [options.allowPartial=false] Return degraded readiness instead of throwing when one model cannot be loaded.
  * @param {Function} [options.fetchModelIds] Injectable model-list probe.
  * @param {Function} [options.fetchLoadedModels] Injectable loaded-model metadata probe.
+ * @param {Function} [options.execFileFn] Injectable CLI child-process seam for both `unloadLmsModel` and `loadLmsModel`.
  * @param {Function} [options.loadModel] Injectable model-load function.
+ * @param {Function} [options.unloadModel] Injectable model-unload function.
  * @param {Object|null} [options.loadFailureGuard] Stateful LMS load-failure admission guard.
+ * @param {Object|null} [options.replacementFailureStore] Persisted per-role replacement-failure store.
+ * @param {String|null} [options.replacementStatePath=null] Optional JSON file path for persisted replacement failures.
+ * @param {Number} [options.maxReplacementFailures] Consecutive per-role replacement failure cap before `heal-exhausted`.
+ * @param {Boolean} [options.allowExhaustedRetry=false] Admit one replacement attempt on an exhausted role to reset on `replaced`.
  * @param {Function} [options.embeddingServingProbe] Optional bounded embedding-serving canary seam.
  * @param {String} [options.modelDiscoveryFreshness='force'] Routine callers may use `routine`; post-mutation probes force-refresh.
  * @param {Number} [options.modelDiscoveryCacheTtlMs] Required when `modelDiscoveryFreshness` is `routine`.
  * @param {Object} [options.log=logger] Logger seam.
  * @param {Function|null} [options.isAuthorityHeld] Optional live recovery-authority oracle.
  * @param {Function|null} [options.isEffectStillAdmitted] Optional demand oracle checked immediately
- *     before each additive load.
+ *     before each unload or load.
  * @probeDisposition intervention (abort-in-flight, occupy-slot, warm-or-evict, advance-state)
  * @returns {Promise<Object>}
  */
@@ -1821,11 +2139,18 @@ async function ensureLmsModelsLoadedOnce({
     timeoutMs,
     contextLengths = {},
     parallels      = {},
+    roleByModel    = {},
     allowPartial   = false,
     fetchModelIds     = opts => fetchOpenAiCompatibleModelIds(opts),
     fetchLoadedModels = opts => fetchLmsLoadedModels(opts),
+    execFileFn        = null,
     loadModel         = null,
+    unloadModel       = null,
     loadFailureGuard,
+    replacementFailureStore,
+    replacementStatePath = null,
+    maxReplacementFailures,
+    allowExhaustedRetry = false,
     embeddingServingProbe,
     modelDiscoveryFreshness = PROVIDER_DISCOVERY_FORCE,
     modelDiscoveryCacheTtlMs,
@@ -1849,23 +2174,54 @@ async function ensureLmsModelsLoadedOnce({
           timeoutMs,
           attempts * timeoutMs + Math.max(0, attempts - 1) * delayMs
     ),
-          effectiveLoadFailureGuard = loadFailureGuard === undefined
-              ? loadModel ? null : getDefaultLmsLoadFailureGuard()
-              : loadFailureGuard;
+          effectiveExecFileFn             = execFileFn || execFile,
+          effectiveLoadFailureGuard       = loadFailureGuard === undefined
+              ? (loadModel || execFileFn) ? null : getDefaultLmsLoadFailureGuard()
+              : loadFailureGuard,
+          effectiveMaxReplacementFailures = Neo.isNumber(maxReplacementFailures) && maxReplacementFailures > 0
+              ? maxReplacementFailures
+              : aiConfig.orchestrator.lms.loadFailureCircuit.maxEquivalentFailures,
+          effectiveReplacementStore       = replacementFailureStore || (
+              replacementStatePath
+                  ? createLmsReplacementFailureStore({
+                      statePath  : replacementStatePath,
+                      maxFailures: effectiveMaxReplacementFailures
+                  })
+                  : (loadModel || unloadModel || execFileFn || process.env.UNIT_TEST_MODE === 'true')
+                      ? createLmsReplacementFailureStore({
+                          maxFailures: effectiveMaxReplacementFailures
+                      })
+                      : getDefaultLmsReplacementFailureStore()
+          ),
+          resolveRoleKey                  = model => (
+              typeof roleByModel?.[model] === 'string' && roleByModel[model]
+                  ? roleByModel[model]
+                  : model
+          );
     const invokeLoadModel = loadModel || ((model, options) => loadLmsModel(model, {
         ...options,
-        timeoutMs: mutationTimeoutMs
+        execFileFn: effectiveExecFileFn,
+        timeoutMs : mutationTimeoutMs
     }));
-    const assertMutationAdmitted = ({attemptedModels, loadedModels, failedModels, refusedModel}) => {
+    const invokeUnloadModel = unloadModel || (
+        (loadModel && !execFileFn)
+            ? async () => ({stdout: '', stderr: ''})
+            : (identifier, options) => unloadLmsModel(identifier, {
+                ...options,
+                execFileFn: effectiveExecFileFn,
+                timeoutMs : mutationTimeoutMs
+            })
+    );
+    const assertMutationAdmitted = ({attemptedModels, loadedModels, unloadedModels = [], failedModels, refusedModel}) => {
         if (typeof isAuthorityHeld === 'function' && isAuthorityHeld() !== true) {
-            const error = new Error('Authority moved before an LMS model load; refusing.');
+            const error = new Error('Authority moved before an LM Studio residency mutation; refusing.');
 
             error.reason = 'runtime-authority-lost';
             throw error;
         }
         if (typeof isEffectStillAdmitted === 'function' && isEffectStillAdmitted() !== true) {
-            const error               = new Error('Provider demand changed before an LMS model load; refusing.');
-            const priorProviderEffect = loadedModels.length > 0,
+            const error               = new Error('Provider demand changed before an LM Studio residency mutation; refusing.');
+            const priorProviderEffect = loadedModels.length > 0 || unloadedModels.length > 0,
                   priorAttemptUncertain = !priorProviderEffect && failedModels.length > 0;
 
             error.reason = priorProviderEffect
@@ -1884,6 +2240,7 @@ async function ensureLmsModelsLoadedOnce({
                     refusedModel,
                     attemptedModels: [...attemptedModels],
                     loadedModels   : [...loadedModels],
+                    unloadedModels : [...unloadedModels],
                     failedModels   : [...failedModels]
                 };
             }
@@ -1949,22 +2306,23 @@ async function ensureLmsModelsLoadedOnce({
     let   availableModels    = (await probeCatalog('initial /v1/models probe')).availableModels;
     let   activeLoadedModels = [];
     const attemptedModels    = [],
-          loadedModels    = [],
-          // instances that were already resident and already sufficient, adopted rather than
-          // replaced. Kept separate from `loadedModels` on purpose — a supervisor that cannot tell
-          // "I loaded it" from "someone else already had it" loses the only signal that would show
-          // this collision race recurring.
-          adoptedModels   = [],
-          failedModels    = [],
-          blockedModels   = [],
+          loadedModels        = [],
+          unloadedModels      = [],
+          adoptedModels       = [],
+          failedModels        = [],
+          blockedModels       = [],
           loadFailureCircuits = [];
     const buildResult = ({
         ready,
+        status,
         observationStatus,
         rows = activeLoadedModels,
         missingModels = [],
         unknownLoadedModels = [],
         insufficientLoadedModels = [],
+        replacedModels = [],
+        exhaustedRoles = [],
+        failedReplacements = [],
         observedLoadError,
         attempt = 1,
         elapsedMs
@@ -1972,32 +2330,55 @@ async function ensureLmsModelsLoadedOnce({
         const activeLoadFailureCircuits = loadFailureCircuits
                   .map(item => effectiveLoadFailureGuard?.snapshot?.({host, model: item.model}) ?? item)
                   .filter(Boolean),
-              terminalCircuit    = activeLoadFailureCircuits.find(item => item.terminal),
-              circuitSummary     = terminalCircuit
+              terminalCircuit       = activeLoadFailureCircuits.find(item => item.terminal),
+              circuitSummary        = terminalCircuit
                   ? `LM Studio load circuit open for '${terminalCircuit.model}' after ` +
                       `${terminalCircuit.failureStreak} identical failures; selected runtimes=` +
                       `${terminalCircuit.runtime.selectedRows.join(', ') || 'unknown'}; ` +
-                      `resume via ${terminalCircuit.resumeVia}. Last failure: ${terminalCircuit.failure.message}`
+                      `resume via ${terminalCircuit.resumeVia}. Last failure: ${sanitizeLmsReplacementMessage(terminalCircuit.failure.message)}`
                   : '',
-              replacementSummary = describeLmsReplacement(insufficientLoadedModels, rows),
-              operatorDiagnostic = circuitSummary || replacementSummary ? {
-                  code   : terminalCircuit ? 'LMS_LOAD_FAILURE_CIRCUIT_OPEN' : 'LMS_REPLACEMENT_REQUIRED',
-                  summary: [circuitSummary, replacementSummary].filter(Boolean).join(' · ').slice(0, 1600)
-              } : null;
+              exhaustedSummary      = exhaustedRoles.length ? formatLmsHealExhaustedSummary(exhaustedRoles) : '',
+              replacedSummary       = replacedModels.length ? formatLmsReplacedSummary(replacedModels) : '',
+              failedReplaceSummary  = !exhaustedSummary && failedReplacements.length
+                  ? formatLmsReplacementFailedSummary(failedReplacements)
+                  : '',
+              diagnosticCode        = exhaustedSummary
+                  ? 'LMS_HEAL_EXHAUSTED'
+                  : terminalCircuit
+                      ? 'LMS_LOAD_FAILURE_CIRCUIT_OPEN'
+                      : failedReplaceSummary
+                          ? 'LMS_REPLACEMENT_FAILED'
+                          : replacedSummary
+                              ? 'LMS_RESIDENT_REPLACED'
+                              : null,
+              diagnosticSummary     = [circuitSummary, exhaustedSummary, failedReplaceSummary, replacedSummary]
+                  .filter(Boolean)
+                  .join(' · ')
+                  .slice(0, 1600),
+              operatorDiagnostic    = diagnosticCode && diagnosticSummary
+                  ? {code: diagnosticCode, summary: diagnosticSummary}
+                  : null,
+              effectiveObsStatus    = terminalCircuit
+                  ? 'load-blocked'
+                  : (observationStatus || status || undefined),
+              replacementSnapshot   = effectiveReplacementStore.snapshot();
 
         return {
             ready,
             degraded: !ready,
-            ...(terminalCircuit ? {observationStatus: 'load-blocked'} : observationStatus ? {observationStatus} : {}),
+            ...(status ? {status} : {}),
+            ...(effectiveObsStatus ? {observationStatus: effectiveObsStatus} : {}),
             loadedModels,
             adoptedModels,
             attemptedModels,
             failedModels,
+            ...(replacedModels.length ? {replacedModels} : {}),
+            ...(Object.keys(replacementSnapshot).length ? {replacementFailures: replacementSnapshot} : {}),
             ...(blockedModels.length ? {blockedModels} : {}),
             ...(activeLoadFailureCircuits.length ? {loadFailureCircuits: activeLoadFailureCircuits} : {}),
             ...(operatorDiagnostic ? {operatorDiagnostic} : {}),
             cleanupFailedModels: [],
-            unloadedModels     : [],
+            unloadedModels,
             missingModels,
             unknownLoadedModels,
             insufficientLoadedModels,
@@ -2007,7 +2388,7 @@ async function ensureLmsModelsLoadedOnce({
             ...loadedShape(rows),
             attempts: attempt,
             ...(elapsedMs === undefined ? {} : {elapsedMs})
-        }
+        };
     };
     const failObservation = ({
         status,
@@ -2016,29 +2397,34 @@ async function ensureLmsModelsLoadedOnce({
         missingModels = [],
         unknownLoadedModels = [],
         insufficientLoadedModels = [],
+        exhaustedRoles = [],
+        failedReplacements = [],
         observedLoadError,
         attempt,
         elapsedMs
     }) => {
-        log.warn?.(`[ProviderReadinessHelper] ${warning}`);
-        if (!allowPartial) {
-            throw new Error(warning);
+        const cleanWarning = sanitizeLmsReplacementMessage(warning);
+
+        log.warn?.(`[ProviderReadinessHelper] ${cleanWarning}`);
+        if (!allowPartial && status !== 'heal-exhausted') {
+            throw new Error(cleanWarning);
         }
 
         return buildResult({
             ready            : false,
+            ...(status === 'heal-exhausted' || status === 'replacement-failed' ? {status} : {}),
             observationStatus: status,
             rows,
             missingModels,
             unknownLoadedModels,
             insufficientLoadedModels,
+            exhaustedRoles,
+            failedReplacements,
             observedLoadError,
             attempt,
             elapsedMs
         });
     };
-    // Unreadable metadata refuses the whole pass: no snapshot we cannot read authorizes a load.
-    // A mis-shaped resident does not. It is reported, never replaced, while the missing roles load.
     const rejectUnreadableObservation = (assessment, rows, context = 'loaded-model observation') => {
         if (assessment.unknown.length) {
             return failObservation({
@@ -2049,13 +2435,6 @@ async function ensureLmsModelsLoadedOnce({
             });
         }
     };
-    const reportReplacementRequired = (assessment, rows, extra = {}) => failObservation({
-        status                  : 'replacement-required',
-        warning                 : `LM Studio loaded-model replacement requires an explicit operator action: ${assessment.insufficient.map(item => item.model).join(', ')}`,
-        rows,
-        insufficientLoadedModels: assessment.insufficient,
-        ...extra
-    });
     const completeReadyResult = async result => {
         if (result.ready !== true || typeof embeddingServingProbe !== 'function') {
             return result;
@@ -2094,7 +2473,7 @@ async function ensureLmsModelsLoadedOnce({
     };
     const fetchResidency = async options => {
         try {
-            return await fetchLoadedModels(options)
+            return await fetchLoadedModels(options);
         } catch (error) {
             return failObservation({
                 status           : 'metadata-unknown',
@@ -2119,11 +2498,8 @@ async function ensureLmsModelsLoadedOnce({
     if (initialRefusal) {
         return initialRefusal;
     }
-    if (!assessment.missing.length && assessment.insufficient.length) {
-        return reportReplacementRequired(assessment, activeLoadedModels);
-    }
 
-    if (assessment.missing.length) {
+    if (assessment.missing.length || (assessment.insufficient.length && modelDiscoveryFreshness !== PROVIDER_DISCOVERY_FORCE)) {
         const fresh = await fetchResidency({
             timeoutMs,
             freshness: PROVIDER_DISCOVERY_FORCE,
@@ -2141,12 +2517,143 @@ async function ensureLmsModelsLoadedOnce({
         if (freshRefusal) {
             return freshRefusal;
         }
-        if (!assessment.missing.length && assessment.insufficient.length) {
-            return reportReplacementRequired(assessment, fresh);
+    }
+
+    // Build bounded per-role replacement plan (at most one replacement per role per pass):
+    // 1. Pinned identifier resident at the wrong contextLength or parallel shape.
+    // 2. Foreign resident answering while a required role model is missing.
+    const replacementPlans = [],
+          seenRoles        = new Set(),
+          replacedMissing  = new Set();
+
+    for (const mismatch of assessment.insufficient) {
+        const role = resolveRoleKey(mismatch.model);
+        if (seenRoles.has(role)) continue;
+
+        seenRoles.add(role);
+        replacementPlans.push({
+            role,
+            unloadId             : mismatch.model,
+            loadModelId          : mismatch.model,
+            observedContextLength: mismatch.contextLength,
+            observedParallel     : mismatch.parallel
+        });
+    }
+
+    if (assessment.missing.length > 0) {
+        const foreignRows = activeLoadedModels.filter(row =>
+            row?.id &&
+            !requiredModels.includes(row.id) &&
+            !requiredModels.some(required => row.id.startsWith(`${required}:`))
+        );
+
+        let foreignIndex = 0;
+        for (const missingModel of assessment.missing) {
+            if (foreignIndex >= foreignRows.length) break;
+
+            const role = resolveRoleKey(missingModel);
+            if (seenRoles.has(role)) continue;
+
+            const foreignRow = foreignRows[foreignIndex++];
+            seenRoles.add(role);
+            replacedMissing.add(missingModel);
+            replacementPlans.push({
+                role,
+                unloadId             : foreignRow.id,
+                loadModelId          : missingModel,
+                observedContextLength: foreignRow.contextLength,
+                observedParallel     : foreignRow.parallel,
+                foreignResident      : true
+            });
         }
     }
 
-    for (const model of assessment.missing) {
+    const additiveMissing        = assessment.missing.filter(model => !replacedMissing.has(model)),
+          dispatchedReplacements = [],
+          failedReplacements     = [],
+          exhaustedRoles         = [];
+
+    for (const plan of replacementPlans) {
+        const contextLength = contextLengths?.[plan.loadModelId],
+              parallel      = parallels?.[plan.loadModelId],
+              targetShape   = {model: plan.loadModelId, contextLength, parallel};
+
+        if (!allowExhaustedRetry && effectiveReplacementStore.isExhausted(plan.role, targetShape)) {
+            const entry = effectiveReplacementStore.getEntry(plan.role);
+
+            exhaustedRoles.push(entry);
+            log.warn?.(`[ProviderReadinessHelper] ${formatLmsHealExhaustedSummary([entry])}`);
+            continue;
+        }
+
+        const loadOptions = {identifier: plan.loadModelId};
+        if (Neo.isNumber(contextLength)) loadOptions.contextLength = contextLength;
+        if (Neo.isNumber(parallel)) loadOptions.parallel = parallel;
+
+        try {
+            assertMutationAdmitted({
+                attemptedModels,
+                loadedModels,
+                unloadedModels,
+                failedModels,
+                refusedModel: plan.loadModelId
+            });
+            attemptedModels.push(plan.loadModelId);
+            await invokeUnloadModel(plan.unloadId);
+            unloadedModels.push(plan.unloadId);
+
+            assertMutationAdmitted({
+                attemptedModels,
+                loadedModels,
+                unloadedModels,
+                failedModels,
+                refusedModel: plan.loadModelId
+            });
+            await invokeLoadModel(plan.loadModelId, loadOptions);
+            loadedModels.push(plan.loadModelId);
+            dispatchedReplacements.push({...plan, contextLength, parallel, targetShape});
+        } catch (error) {
+            if (error?.reason?.startsWith('runtime-authority-') || error?.reason?.startsWith('runtime-effect-')) {
+                throw error;
+            }
+
+            const cleanError = sanitizeLmsReplacementMessage(error),
+                  entry      = effectiveReplacementStore.recordFailure(plan.role, {
+                      model        : plan.loadModelId,
+                      unloadedModel: plan.unloadId,
+                      targetShape,
+                      error        : cleanError
+                  }),
+                  failed     = {
+                      role         : plan.role,
+                      model        : plan.loadModelId,
+                      unloadedModel: plan.unloadId,
+                      contextLength,
+                      parallel,
+                      error        : cleanError,
+                      ...(error?.code === undefined ? {} : {code: error.code}),
+                      ...(error?.signal === undefined ? {} : {signal: error.signal}),
+                      ...(error?.killed === undefined ? {} : {killed: error.killed === true})
+                  };
+
+            failedModels.push(failed);
+            failedReplacements.push(entry);
+            if (entry.exhausted) {
+                exhaustedRoles.push(entry);
+            }
+
+            const failureLine = entry.exhausted
+                ? formatLmsHealExhaustedSummary([entry])
+                : formatLmsReplacementFailedSummary([entry]);
+            log.warn?.(`[ProviderReadinessHelper] ${failureLine}`);
+
+            if (!allowPartial && !entry.exhausted) {
+                throw new Error(failureLine, {cause: error});
+            }
+        }
+    }
+
+    for (const model of additiveMissing) {
         const immediate = await fetchResidency({
             timeoutMs,
             freshness: PROVIDER_DISCOVERY_FORCE,
@@ -2208,7 +2715,13 @@ async function ensureLmsModelsLoadedOnce({
         }
 
         try {
-            assertMutationAdmitted({attemptedModels, loadedModels, failedModels, refusedModel: model});
+            assertMutationAdmitted({
+                attemptedModels,
+                loadedModels,
+                unloadedModels,
+                failedModels,
+                refusedModel: model
+            });
             attemptedModels.push(model);
             await invokeLoadModel(model, loadOptions);
             loadedModels.push(model);
@@ -2218,19 +2731,6 @@ async function ensureLmsModelsLoadedOnce({
                 throw error;
             }
 
-            // A collision is a question, not a failure.
-            //
-            // LM Studio refuses the load because an instance under this identifier is already
-            // resident, which is exactly the state the ensure wanted. Treating it as a failure
-            // leaves the verify unsatisfied, so the next round decides to replace again and
-            // collides again — the retry loop the ticket measured. Re-probe and let the same
-            // classifier that gates every other decision answer whether the resident instance
-            // is sufficient.
-            //
-            // Deliberately placed here rather than inside `loadLmsModel()`: that function is a
-            // thin `lms` CLI shim, and adopting needs residency state plus readiness semantics.
-            // Teaching the shim to classify would put the decision a layer below the one that
-            // owns it.
             if (isLmsIdentifierCollision(error)) {
                 const collisionRows = await fetchResidency({
                     timeoutMs,
@@ -2238,9 +2738,6 @@ async function ensureLmsModelsLoadedOnce({
                     unshared : true
                 });
 
-                // A refusal (non-array) means residency is unknowable right now. Absence of a
-                // sufficiency answer is NOT sufficiency: fall through to the failure path rather
-                // than adopting on an unread probe.
                 if (Array.isArray(collisionRows)) {
                     const observation = classifyLmsLoadedModelObservation({
                         loadedModels: collisionRows,
@@ -2257,9 +2754,6 @@ async function ensureLmsModelsLoadedOnce({
                         continue;
                     }
 
-                    // Resident but wrong shape, or unreadable metadata. The collision is real and
-                    // the instance does not satisfy the gate, so this stays a failure — adopting
-                    // here would green a verify the instance cannot honour.
                     error.lmsCollisionObservation = observation.status;
                 }
             }
@@ -2267,11 +2761,12 @@ async function ensureLmsModelsLoadedOnce({
             const loadFailureCircuit = typeof effectiveLoadFailureGuard?.recordFailure === 'function'
                 ? effectiveLoadFailureGuard.recordFailure({attempt: loadAttempt, error})
                 : null;
-            const failed = {
+            const cleanMessage = sanitizeLmsReplacementMessage(loadFailureCircuit?.failure?.message || error.message);
+            const failed       = {
                 model,
                 contextLength,
                 parallel,
-                error: loadFailureCircuit?.failure?.message || error.message,
+                error: cleanMessage,
                 ...(error?.code === undefined ? {} : {code: error.code}),
                 ...(error?.signal === undefined ? {} : {signal: error.signal}),
                 ...(error?.killed === undefined ? {} : {killed: error.killed === true}),
@@ -2293,15 +2788,34 @@ async function ensureLmsModelsLoadedOnce({
                     guardedError.killed                = error.killed;
                     guardedError.signal                = error.signal;
                     guardedError.lmsLoadFailureCircuit = loadFailureCircuit;
-                    throw guardedError
+                    throw guardedError;
                 }
                 throw error;
             }
         }
     }
 
-    const startedAt     = Date.now();
-    let   missingModels = [];
+    if (
+        exhaustedRoles.length > 0 &&
+        dispatchedReplacements.length === 0 &&
+        failedReplacements.length === 0 &&
+        additiveMissing.length === 0
+    ) {
+        return buildResult({
+            ready                   : false,
+            status                  : 'heal-exhausted',
+            observationStatus       : 'heal-exhausted',
+            rows                    : activeLoadedModels,
+            missingModels           : assessment.missing,
+            insufficientLoadedModels: assessment.insufficient,
+            exhaustedRoles,
+            attempt                 : 1
+        });
+    }
+
+    const startedAt       = Date.now(),
+          completedByRole = new Map();
+    let missingModels = [];
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
         availableModels = (await probeCatalog('post-load /v1/models probe', PROVIDER_DISCOVERY_FORCE)).availableModels;
@@ -2327,17 +2841,46 @@ async function ensureLmsModelsLoadedOnce({
         const catalogMissing = requiredModels.filter(model => !availableModels.includes(model));
 
         missingModels = [...new Set([...catalogMissing, ...assessment.missing])];
-        if (missingModels.length === 0 && assessment.insufficient.length) {
-            return reportReplacementRequired(assessment, finalRows, {attempt, elapsedMs: Date.now() - startedAt});
+
+        for (const plan of dispatchedReplacements) {
+            const converged = !missingModels.includes(plan.loadModelId) &&
+                !assessment.insufficient.some(item => item.model === plan.loadModelId);
+
+            if (converged && !completedByRole.has(plan.role)) {
+                effectiveReplacementStore.recordReplaced(plan.role);
+                completedByRole.set(plan.role, {
+                    role                 : plan.role,
+                    unloadedModel        : plan.unloadId,
+                    loadedModel          : plan.loadModelId,
+                    contextLength        : plan.contextLength,
+                    parallel             : plan.parallel,
+                    observedContextLength: plan.observedContextLength,
+                    observedParallel     : plan.observedParallel
+                });
+            }
         }
-        if (missingModels.length === 0) {
-            const ready = failedModels.length === 0;
+
+        if (missingModels.length === 0 && assessment.insufficient.length === 0) {
+            const ready          = failedModels.length === 0 && exhaustedRoles.length === 0,
+                  replacedModels = [...completedByRole.values()],
+                  resultStatus   = ready && replacedModels.length > 0
+                      ? 'replaced'
+                      : exhaustedRoles.length > 0
+                          ? 'heal-exhausted'
+                          : failedReplacements.length > 0
+                              ? 'replacement-failed'
+                              : undefined;
 
             return completeReadyResult(buildResult({
                 ready,
-                rows     : finalRows,
+                status           : resultStatus,
+                observationStatus: resultStatus,
+                rows             : finalRows,
+                replacedModels,
+                exhaustedRoles,
+                failedReplacements,
                 attempt,
-                elapsedMs: Date.now() - startedAt
+                elapsedMs        : Date.now() - startedAt
             }));
         }
         if (attempt < attempts) {
@@ -2345,21 +2888,66 @@ async function ensureLmsModelsLoadedOnce({
         }
     }
 
-    if (allowPartial) {
+    for (const plan of dispatchedReplacements) {
+        if (completedByRole.has(plan.role)) continue;
+
+        const stillMismatch = assessment.insufficient.find(item => item.model === plan.loadModelId),
+              reason        = stillMismatch
+                  ? `post-load resident '${plan.loadModelId}' still at context ${stillMismatch.contextLength ?? 'unknown'}` +
+                      `${Neo.isNumber(stillMismatch.requiredParallel) ? `, parallel ${stillMismatch.parallel ?? 'unknown'}` : ''}; ` +
+                      `expected context ${stillMismatch.requiredContextLength ?? 'any'}` +
+                      `${Neo.isNumber(stillMismatch.requiredParallel) ? `, parallel ${stillMismatch.requiredParallel}` : ''}`
+                  : `post-load model '${plan.loadModelId}' missing from residency verification`,
+              entry         = effectiveReplacementStore.recordFailure(plan.role, {
+                  model        : plan.loadModelId,
+                  unloadedModel: plan.unloadId,
+                  targetShape  : plan.targetShape,
+                  error        : reason
+              });
+
+        failedModels.push({
+            role         : plan.role,
+            model        : plan.loadModelId,
+            unloadedModel: plan.unloadId,
+            contextLength: plan.contextLength,
+            parallel     : plan.parallel,
+            error        : entry.lastError
+        });
+        failedReplacements.push(entry);
+        if (entry.exhausted) {
+            exhaustedRoles.push(entry);
+        }
+        log.warn?.(`[ProviderReadinessHelper] ${entry.exhausted ? formatLmsHealExhaustedSummary([entry]) : formatLmsReplacementFailedSummary([entry])}`);
+    }
+
+    const replacedModels = [...completedByRole.values()],
+          degradedStatus = exhaustedRoles.length > 0
+              ? 'heal-exhausted'
+              : (failedReplacements.length > 0 || assessment.insufficient.length > 0)
+                  ? 'replacement-failed'
+                  : undefined;
+
+    if (allowPartial || degradedStatus === 'heal-exhausted') {
         return buildResult({
             ready                   : false,
+            status                  : degradedStatus,
+            observationStatus       : degradedStatus,
             rows                    : activeLoadedModels,
             missingModels,
             insufficientLoadedModels: assessment.insufficient,
+            replacedModels,
+            exhaustedRoles,
+            failedReplacements,
             attempt                 : attempts,
             elapsedMs               : Date.now() - startedAt
         });
     }
 
     throw new Error(
-        `LM Studio model readiness failed: missing ${missingModels.join(', ')} from ${host}/v1/models after ` +
-        `${attempts} attempt(s). Run ${missingModels.map(model => `lms load ${model}`).join(' && ')} ` +
-        'or raise the LM Studio loaded-model cap so chat and embedding models can stay resident together.'
+        degradedStatus === 'replacement-failed'
+            ? formatLmsReplacementFailedSummary(failedReplacements)
+            : `LM Studio model readiness failed: missing ${missingModels.join(', ')} from ${host}/v1/models after ` +
+                `${attempts} attempt(s). Verify the configured model files exist and raise the LM Studio loaded-model cap so chat and embedding models can stay resident together.`
     );
 }
 
@@ -2933,7 +3521,8 @@ export async function repairProviderRoleSetResidency({
             };
         }
 
-        const preloadConfig = buildLmsPreloadConfig(config);
+        const preloadConfig = buildLmsPreloadConfig(config),
+              roleByModel   = buildLmsRoleByModelMap(config);
 
         if (preloadConfig.models.length === 0) {
             return {
@@ -2959,6 +3548,7 @@ export async function repairProviderRoleSetResidency({
             models        : preloadConfig.models,
             contextLengths: preloadConfig.contextLengths,
             parallels     : preloadConfig.parallels,
+            roleByModel,
             allowPartial  : true,
             attempts,
             delayMs,

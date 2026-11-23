@@ -262,6 +262,14 @@ const
         },
         {
             module           : 'services/graph/providerReadinessHelper.mjs',
+            symbol           : 'unloadLmsModel',
+            disposition      : 'intervention',
+            effects          : ['warm-or-evict', 'advance-state'],
+            armsDeadlineAbort: false,
+            note             : 'Runs `lms unload` CLI to evict a diagnosed wrong resident model in LM Studio.'
+        },
+        {
+            module           : 'services/graph/providerReadinessHelper.mjs',
             symbol           : 'fetchLmsSelectedRuntimeRows',
             disposition      : 'observation',
             effects          : [],

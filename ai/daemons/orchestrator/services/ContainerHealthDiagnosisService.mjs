@@ -482,6 +482,7 @@ export class ContainerHealthDiagnosisService extends Base {
         providerResidency = null,
         providerActivity = null,
         providerLaneShape = null,
+        providerModelIdentity = null,
         providerResidencyEligible = false,
         runtimeContainerId = null,
         churnBaseline = null,
@@ -525,6 +526,7 @@ export class ContainerHealthDiagnosisService extends Base {
             ...this.collectConfigFacts({serviceKey, configCheck, observedAt}),
             ...this.collectEvalAttributionFacts({serviceKey, ollamaEvalAttribution, observedAt}),
             ...this.collectProviderResidencyFacts({serviceKey, providerResidency, observedAt}),
+            ...this.collectProviderModelIdentityFacts({serviceKey, providerModelIdentity, providerResidency, observedAt}),
             ...this.collectProviderLaneShapeFacts({serviceKey, providerLaneShape, observedAt})
         ];
 
@@ -818,6 +820,7 @@ export class ContainerHealthDiagnosisService extends Base {
         configCheckFn = null,
         ollamaEvalAttribution = null,
         providerResidency = null,
+        providerModelIdentity = null,
         statsSamples = null,
         observedAt = this.now()
     } = {}) {
@@ -856,6 +859,7 @@ export class ContainerHealthDiagnosisService extends Base {
                   configCheck,
                   ollamaEvalAttribution,
                   providerResidency,
+                  providerModelIdentity,
                   observedAt
               });
 
@@ -1288,11 +1292,42 @@ export class ContainerHealthDiagnosisService extends Base {
         const reasonCode = this.getProviderResidencyReasonCode(providerResidency);
         if (!reasonCode) return [];
 
-        const baseAuthoritative = !['extra-residents', 'provider-probe-failed'].includes(reasonCode),
+        const baseAuthoritative = !['extra-residents', 'provider-probe-failed', 'heal-exhausted'].includes(reasonCode),
               probeAuthority    = resolveConsumedProbeAuthority({
                   probe               : providerResidency,
                   defaultAuthoritative: baseAuthoritative
-              });
+              }),
+              rawInsufficient          = Array.isArray(providerResidency.insufficientLoadedModels)
+                  ? providerResidency.insufficientLoadedModels.filter(item => item && typeof item === 'object')
+                  : [],
+              firstInsufficient        = rawInsufficient[0] || null,
+              insufficientLoadedModels = rawInsufficient.map(item => ({
+                  model                : typeof item.model === 'string' ? item.model : null,
+                  contextLength        : toSafeNumber(item.contextLength),
+                  requiredContextLength: toSafeNumber(item.requiredContextLength),
+                  parallel             : toSafeNumber(item.parallel),
+                  requiredParallel     : toSafeNumber(item.requiredParallel)
+              })),
+              wrongResidentDetails     = reasonCode === 'wrong-resident' ? {
+                  configuredModel: typeof providerResidency.configuredModel === 'string'
+                      ? providerResidency.configuredModel
+                      : typeof firstInsufficient?.model === 'string'
+                          ? firstInsufficient.model
+                          : typeof providerResidency.embeddingModel === 'string'
+                              ? providerResidency.embeddingModel
+                              : typeof providerResidency.model === 'string' ? providerResidency.model : null,
+                  observedModel  : typeof providerResidency.observedModel === 'string'
+                      ? providerResidency.observedModel
+                      : typeof firstInsufficient?.observed?.id === 'string'
+                          ? firstInsufficient.observed.id
+                          : typeof firstInsufficient?.model === 'string'
+                              ? firstInsufficient.model
+                              : (toSafeArray(providerResidency.availableModels)[0] ?? null),
+                  source         : typeof providerResidency.source === 'string'
+                      ? providerResidency.source
+                      : 'readiness-shape',
+                  insufficientLoadedModels
+              } : {};
 
         return [this.createFact({
             type         : CONTAINER_HEALTH_FACT_TYPES.providerResidency,
@@ -1301,11 +1336,15 @@ export class ContainerHealthDiagnosisService extends Base {
             severity     : ['extra-residents', 'provider-probe-failed'].includes(reasonCode) ? 'warning' : 'critical',
             authoritative: probeAuthority.authoritative,
             details      : {
-                provider                 : typeof providerResidency.provider === 'string' ? providerResidency.provider : null,
-                host                     : typeof providerResidency.host === 'string' ? providerResidency.host : null,
-                model                    : typeof providerResidency.model === 'string' ? providerResidency.model : null,
-                embeddingModel           : typeof providerResidency.embeddingModel === 'string' ? providerResidency.embeddingModel : null,
-                message                  : typeof providerResidency.message === 'string' ? providerResidency.message : null,
+                provider      : typeof providerResidency.provider === 'string' ? providerResidency.provider : null,
+                host          : typeof providerResidency.host === 'string' ? providerResidency.host : null,
+                model         : typeof providerResidency.model === 'string' ? providerResidency.model : null,
+                embeddingModel: typeof providerResidency.embeddingModel === 'string' ? providerResidency.embeddingModel : null,
+                message       : typeof providerResidency.message === 'string'
+                    ? providerResidency.message
+                    : typeof providerResidency.operatorDiagnostic?.summary === 'string'
+                        ? providerResidency.operatorDiagnostic.summary
+                        : null,
                 reasonCode,
                 ready                    : typeof providerResidency.ready === 'boolean' ? providerResidency.ready : null,
                 degraded                 : typeof providerResidency.degraded === 'boolean' ? providerResidency.degraded : null,
@@ -1320,7 +1359,59 @@ export class ContainerHealthDiagnosisService extends Base {
                 observedRequiredCount    : toSafeNumber(providerResidency.observedRequiredCount),
                 requiredResidentModels   : toSafeNumber(providerResidency.requiredResidentModels),
                 residentButNotServing    : providerResidency.residentButNotServing === true,
+                ...wrongResidentDetails,
                 ...probeAuthority.details
+            }
+        })];
+    }
+
+    /**
+     * @summary Emits a recoverable `wrong-resident` residency fact when the OpenAI-compatible
+     * model-identity probe observes a served model list that omits the configured model.
+     *
+     * @param {Object} options
+     * @param {String} options.serviceKey Deployment service key.
+     * @param {Object|null} options.providerModelIdentity Bridge model-identity observation.
+     * @param {Object|null} [options.providerResidency=null] Adjacent residency observation, if any.
+     * @param {Number} options.observedAt Observation timestamp.
+     * @returns {Object[]}
+     */
+    collectProviderModelIdentityFacts({serviceKey, providerModelIdentity, providerResidency = null, observedAt}) {
+        if (!providerModelIdentity || typeof providerModelIdentity !== 'object' || providerModelIdentity.state !== 'mismatch') {
+            return [];
+        }
+
+        const servedModelIds  = toSafeArray(providerModelIdentity.servedModelIds),
+              configuredModel = typeof providerModelIdentity.configuredModel === 'string'
+                  ? providerModelIdentity.configuredModel
+                  : null,
+              observedModel   = typeof providerModelIdentity.observedModel === 'string'
+                  ? providerModelIdentity.observedModel
+                  : (servedModelIds[0] ?? null),
+              targetIdentity  = this.readProviderTargetIdentity(
+                  providerModelIdentity.targetIdentity || providerResidency?.targetIdentity
+              );
+
+        return [this.createFact({
+            type         : CONTAINER_HEALTH_FACT_TYPES.providerResidency,
+            idSuffix     : 'identity-probe',
+            serviceKey,
+            observedAt,
+            severity     : 'critical',
+            authoritative: true,
+            details      : {
+                provider       : typeof providerModelIdentity.provider === 'string' ? providerModelIdentity.provider : 'openAiCompatible',
+                host           : typeof providerModelIdentity.host === 'string' ? providerModelIdentity.host : null,
+                configuredModel,
+                observedModel,
+                servedModelIds,
+                availableModels: servedModelIds,
+                source         : 'identity-probe',
+                reasonCode     : 'wrong-resident',
+                ready          : false,
+                degraded       : true,
+                message        : typeof providerModelIdentity.reason === 'string' ? providerModelIdentity.reason : null,
+                targetIdentity
             }
         })];
     }
@@ -1769,6 +1860,21 @@ export class ContainerHealthDiagnosisService extends Base {
             };
         }
 
+        const healExhaustedFacts = facts.filter(fact =>
+            fact.type === CONTAINER_HEALTH_FACT_TYPES.providerResidency &&
+            fact.details?.reasonCode === 'heal-exhausted'
+        );
+        if (healExhaustedFacts.length > 0) {
+            return {
+                recoveryClass : 'ambiguous',
+                actionClass   : CONTAINER_HEALTH_ACTION_CLASSES.record,
+                confidence    : 0.9,
+                evidenceFacts : this.selectEvidenceFacts(facts, healExhaustedFacts),
+                reason        : 'provider-heal-exhausted-recorded',
+                targetIdentity: this.resolveProviderFactTargetIdentity(healExhaustedFacts[0])
+            };
+        }
+
         return null;
     }
 
@@ -1818,10 +1924,10 @@ export class ContainerHealthDiagnosisService extends Base {
      * @param {Object} options
      * @returns {Object}
      */
-    createFact({type, serviceKey, observedAt, severity, authoritative, details = {}}) {
+    createFact({type, idSuffix = null, serviceKey, observedAt, severity, authoritative, details = {}}) {
         return {
             schemaVersion: 1,
-            id           : `container-health-fact:${sanitizeId(serviceKey)}:${type}:${observedAt}`,
+            id           : `container-health-fact:${sanitizeId(serviceKey)}:${type}${idSuffix ? `:${sanitizeId(idSuffix)}` : ''}:${observedAt}`,
             type,
             serviceKey,
             observedAt,
@@ -1902,6 +2008,21 @@ export class ContainerHealthDiagnosisService extends Base {
         if (providerResidency.residentButNotServing === true) {
             return 'resident-not-serving';
         }
+        if (
+            providerResidency.reasonCode === 'heal-exhausted' ||
+            providerResidency.status === 'heal-exhausted' ||
+            providerResidency.observationStatus === 'heal-exhausted'
+        ) {
+            return 'heal-exhausted';
+        }
+        if (
+            providerResidency.reasonCode === 'wrong-resident' ||
+            providerResidency.status === 'replacement-required' ||
+            providerResidency.observationStatus === 'replacement-required' ||
+            toSafeArray(providerResidency.insufficientLoadedModels).length > 0
+        ) {
+            return 'wrong-resident';
+        }
         if (toSafeArray(providerResidency.missingModels).length > 0) {
             return 'missing-required-model';
         }
@@ -1950,7 +2071,7 @@ export class ContainerHealthDiagnosisService extends Base {
     isProviderRoleResidencyRecoverable(fact) {
         return fact.type === CONTAINER_HEALTH_FACT_TYPES.providerResidency &&
             fact.authoritative === true &&
-            fact.details?.reasonCode === 'missing-required-model';
+            ['missing-required-model', 'wrong-resident'].includes(fact.details?.reasonCode);
     }
 
     /**
