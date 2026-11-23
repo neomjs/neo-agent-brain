@@ -52,7 +52,8 @@ import {
     primaryWakeSpoolPath,
     readPrimaryWakeBatchReceipt,
     primaryWakeSeatForAddress,
-    stagePrimaryWake
+    stagePrimaryWake,
+    urgentPrimaryWakeSpoolPath
 } from './primaryWakeSpool.mjs';
 import {readNativeWakeOptIn, readPrivateWakeJson} from './nativeWakeEnrollment.mjs';
 import {withOutboxLock}                           from './outboxLock.mjs';
@@ -521,27 +522,28 @@ export function createWakeReceiver({
                   urgentBlockerBySeat    = new Map(),
                   normalBlockerBySeat    = new Map(),
                   stagedCandidatesBySeat = new Map(),
-                  isStagedBatchCandidate = async (seat, currentRoute, recordKey) => {
+                  isStagedBatchCandidate = async (seat, currentRoute, recordKey, isOrdinary) => {
                       if (!isBatchCapablePrimaryFamily(currentRoute.adapterConfig?.primarySession?.family) ||
                           !currentRoute.adapterConfig?.contextGate) {
                           return false;
                       }
-                      if (!stagedCandidatesBySeat.has(seat)) {
-                          const pointer = await track('drain', readSpoolPointer(primaryWakeSpoolPath(state.stateDir, seat))).catch(() => null);
-                          stagedCandidatesBySeat.set(seat, new Set(Array.isArray(pointer?.candidates) ? pointer.candidates : []));
+                      const cacheKey = `${seat}:${isOrdinary ? 'normal' : 'urgent'}`;
+                      if (!stagedCandidatesBySeat.has(cacheKey)) {
+                          const spoolPath = isOrdinary
+                              ? primaryWakeSpoolPath(state.stateDir, seat)
+                              : urgentPrimaryWakeSpoolPath(state.stateDir, seat);
+                          const pointer = await track('drain', readSpoolPointer(spoolPath)).catch(() => null);
+                          stagedCandidatesBySeat.set(cacheKey, new Set(Array.isArray(pointer?.candidates) ? pointer.candidates : []));
                       }
-                      return stagedCandidatesBySeat.get(seat).has(recordKey);
+                      return stagedCandidatesBySeat.get(cacheKey).has(recordKey);
                   };
 
+            // Receipt projection is not a new send. Finish every already-observed batch member first so
+            // non-prefix overflow batches release their spool slot before remaining records stage.
+            const remaining = [];
             for (const record of pending) {
-                // Only a presently admitted route may send a native wake. A legacy pending snapshot may
-                // adopt the native route, but a native snapshot is never downgraded back to GUI typing.
-                const current   = activeManifest.routes[record.subscriptionId],
-                      oldNative = record.route?.harnessTargetMetadata?.adapter === 'primary-session',
-                      newNative = current?.harnessTargetMetadata?.adapter === 'primary-session';
-                // Receipt projection is not a new send. Finish an already observed batch before
-                // checking today's route or context, even if the old subscription has been removed.
-                const receipt = oldNative && await track('drain',readPrimaryWakeBatchReceipt(record,state.stateDir,batchReceipts)).catch(() => null);
+                const oldNative = record.route?.harnessTargetMetadata?.adapter === 'primary-session',
+                      receipt   = oldNative && await track('drain',readPrimaryWakeBatchReceipt(record,state.stateDir,batchReceipts)).catch(() => null);
                 if (receipt) {
                     const finishedAt = new Date(clock()).toISOString();
                     await watched.transition(record.recordKey,'pending','delivered',{
@@ -554,8 +556,17 @@ export function createWakeReceiver({
                         dispatchFinishedAt : finishedAt,
                         ...(receipt.acknowledged === false ? {acknowledged:false} : {})
                     });
-                    continue;
+                } else {
+                    remaining.push(record);
                 }
+            }
+
+            for (const record of remaining) {
+                // Only a presently admitted route may send a native wake. A legacy pending snapshot may
+                // adopt the native route, but a native snapshot is never downgraded back to GUI typing.
+                const current   = activeManifest.routes[record.subscriptionId],
+                      oldNative = record.route?.harnessTargetMetadata?.adapter === 'primary-session',
+                      newNative = current?.harnessTargetMetadata?.adapter === 'primary-session';
                 if (oldNative || newNative) {
                     if (!current || current.agentIdentity !== record.route?.agentIdentity ||
                         current.agentIdentity !== record.envelope?.agentIdentity ||
@@ -568,12 +579,13 @@ export function createWakeReceiver({
                 if (newNative && isSpoolContended(record)) {
                     const seat       = current.agentIdentity,
                           isOrdinary = record.deferReason === 'earlier native wake outstanding',
+                          isUrgent   = record.deferReason === 'earlier urgent native wake outstanding',
                           blockerKey = isOrdinary
                               ? normalBlockerBySeat.get(seat)
                               : urgentBlockerBySeat.get(seat);
 
                     if (blockerKey && record.blockedByWake === blockerKey &&
-                        !(isOrdinary && await isStagedBatchCandidate(seat, current, record.recordKey))) {
+                        !((isOrdinary || isUrgent) && await isStagedBatchCandidate(seat, current, record.recordKey, isOrdinary))) {
                         continue;
                     }
                 }

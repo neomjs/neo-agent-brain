@@ -136,7 +136,7 @@ function deliveredResult(attempt) {
  * settles the slot as delivered with `acknowledged: false`, so no later wake waits behind it.
  */
 export async function deliverPrimarySessionWake({statePath, seat, generation, family, recordKey, urgent = false,
-    readTarget, send, readReceipt, isRecordedDelivered, commitNormalAttempt}) {
+    readTarget, send, readReceipt, isRecordedDelivered, commitNormalAttempt, commitUrgentAttempt}) {
     if (!/^[a-f0-9]{64}$/.test(recordKey ?? '') ||
         ![readTarget, send, readReceipt, isRecordedDelivered].every(fn => typeof fn === 'function')) {
         return {status: 'pending', reason: 'invalid delivery'}
@@ -219,6 +219,9 @@ export async function deliverPrimarySessionWake({statePath, seat, generation, fa
                     return {binding, attempt: nextAttempt, activeSlotKey, target, initiate: true}
                 };
 
+                if (activeSlotKey === 'urgentInflight' && target.deliveryMode !== 'active-turn' && commitUrgentAttempt) {
+                    return commitUrgentAttempt(commit)
+                }
                 return activeSlotKey === 'inflight' && commitNormalAttempt ? commitNormalAttempt(commit) : commit()
             }
             return {binding, attempt, activeSlotKey, target: null, initiate: false}

@@ -22,7 +22,9 @@ import {
     isBatchCapablePrimaryFamily,
     matchesPrimaryWakeMember,
     MAX_PRIMARY_WAKE_BATCH_EVENTS,
-    selectPrimaryWakeBatch
+    MAX_URGENT_SPOOL_CANDIDATES,
+    selectPrimaryWakeBatch,
+    selectUrgentPrimaryWakeBatch
 } from './primaryWakeBatch.mjs';
 import {
     bindPrimarySession,
@@ -92,10 +94,10 @@ function validReceiverRecord(record, subscriptionId, seat) {
         record.envelope.eventType === 'wake/digest'
 }
 
-/** @summary Applies the ordinary candidate gates again when admitting or redeeming a frozen digest. */
-function eligibleBatchRecord(record, subscriptionId, publicRoute) {
+/** @summary Applies the candidate gates again when admitting or redeeming a frozen ordinary or urgent digest. */
+function eligibleBatchRecord(record, subscriptionId, publicRoute, urgent = false) {
     return validReceiverRecord(record, subscriptionId, publicRoute.agentIdentity) &&
-        ['pending', 'dispatching'].includes(record.state) && !isUrgentWakeRecord(record) && !isIdleOnlyEnvelope(record.envelope) &&
+        ['pending', 'dispatching'].includes(record.state) && isUrgentWakeRecord(record) === urgent && !isIdleOnlyEnvelope(record.envelope) &&
         isDeepStrictEqual(record.route.harnessTargetMetadata, publicRoute.harnessTargetMetadata) &&
         isDeepStrictEqual(record.route.adapterConfig, publicRoute.adapterConfig)
 }
@@ -174,15 +176,17 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
         if (activeAttempt.members) {
             const publicRoute = {agentIdentity:route.agentIdentity,harnessTargetMetadata:route.harnessTargetMetadata,adapterConfig:route.adapterConfig};
             const members     = activeAttempt.members;
-            if (!isNormalMatch || !isBatchCapablePrimaryFamily(family) || !Array.isArray(members) ||
+            if ((!isNormalMatch && !(isUrgentMatch && activeAttempt.deliveryMode !== 'active-turn')) ||
+                !isBatchCapablePrimaryFamily(family) || !Array.isArray(members) ||
                 members.length < 2 || members.length > MAX_PRIMARY_WAKE_BATCH_EVENTS || members[0]?.recordKey !== record.recordKey) return denied;
             records = [];
             for (const member of members) {
                 const original = member === members[0] ? record : await state.read(member?.recordKey).catch(() => null);
-                if (!eligibleBatchRecord(original, subscriptionId, publicRoute) || !matchesPrimaryWakeMember(original, member)) return denied;
+                if (!eligibleBatchRecord(original, subscriptionId, publicRoute, isUrgentMatch) || !matchesPrimaryWakeMember(original, member)) return denied;
                 records.push(original)
             }
-            if (!isDeepStrictEqual(selectPrimaryWakeBatch(records), members)) return denied
+            const expected = isUrgentMatch ? selectUrgentPrimaryWakeBatch(records) : selectPrimaryWakeBatch(records);
+            if (!isDeepStrictEqual(expected, members)) return denied
         }
         const claimPath = statePath + (isUrgentMatch ? '.urgent.claim.json' : '.claim.json');
         const previous  = await readPrivate(claimPath);
@@ -234,7 +238,7 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
  * @returns {Promise<Object>} Delivered only on recipient evidence. Uncertain sends stay pending for reconciliation.
  */
 export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, manifestPath, sidecar, currentRoute, inspectResident = observePrimaryWakeResident,
-    verifyCodexRoute, commitNormalAttempt, codexTransport = codex, antigravityTransport = antigravity, appDataDir = path.join(os.homedir(), '.gemini', 'antigravity')} = {}) {
+    verifyCodexRoute, commitNormalAttempt, commitUrgentAttempt, codexTransport = codex, antigravityTransport = antigravity, appDataDir = path.join(os.homedir(), '.gemini', 'antigravity')} = {}) {
     const route = record?.route, config = route?.adapterConfig?.primarySession, seat = route?.agentIdentity;
     if (!config || !bareFamily.has(config.family) || !isKey(record.recordKey)) return pending('invalid native route');
     const {family, instanceHome, appBundle, projectId} = config;
@@ -307,7 +311,7 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
     const claimPathFor  = slotUrgent => statePath + (slotUrgent ? '.urgent.claim.json' : '.claim.json');
     let   denialReason  = null,
           result         = await deliverPrimarySessionWake({
-        statePath,seat,generation:deliveryGeneration,family,recordKey:record.recordKey,urgent,isRecordedDelivered:recorded,commitNormalAttempt,
+        statePath,seat,generation:deliveryGeneration,family,recordKey:record.recordKey,urgent,isRecordedDelivered:recorded,commitNormalAttempt,commitUrgentAttempt,
         readTarget: async (binding, {urgent: slotUrgent} = {}) => {
             if (binding.generation !== generation) return null;
             const root = await select();
@@ -472,11 +476,13 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         (await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family}))?.stateDir === stateDir;
 
     const urgentPath = urgentPrimaryWakeSpoolPath(stateDir,route.agentIdentity),
-          normalPath = primaryWakeSpoolPath(stateDir,route.agentIdentity);
+          normalPath = primaryWakeSpoolPath(stateDir,route.agentIdentity),
+          statePath  = statePathFor(stateDir,route.agentIdentity);
     const commitOrdinary = (recordKey, commit) => withOutboxLock(normalPath, async () => {
         const pointer = await readPrivate(normalPath);
         if (pointer?.recordKey !== recordKey || !await currentRoute()) return pending('ordinary pointer changed');
-        if (await isSpoolPointerActive(await readPrivate(urgentPath), state)) return pending('urgent native wake outstanding');
+        const sessionState = await readPrimarySessionWake({statePath}).catch(() => null);
+        if (await isSpoolPointerActive(await readPrivate(urgentPath), state, sessionState?.urgentInflight)) return pending('urgent native wake outstanding');
         const anchor = await state.read(recordKey);
         if (!validReceiverRecord(anchor, subscriptionId, publicRoute.agentIdentity) ||
             !['pending','dispatching'].includes(anchor.state)) return pending('ordinary record changed');
@@ -511,6 +517,39 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         return commit(selectPrimaryWakeBatch(records))
     });
 
+    const commitUrgent = (recordKey, commit) => withOutboxLock(normalPath, async () => {
+        const pointer = await readPrivate(urgentPath);
+        if (pointer?.recordKey !== recordKey || !await currentRoute()) return pending('urgent pointer changed');
+        const anchor = await state.read(recordKey);
+        if (!validReceiverRecord(anchor, subscriptionId, publicRoute.agentIdentity) ||
+            !['pending','dispatching'].includes(anchor.state)) return pending('urgent record changed');
+        if (anchor.deferReason?.startsWith('context-gate:')) return pending('urgent record deferred by context');
+        if (!eligibleBatchRecord(anchor, subscriptionId, publicRoute, true)) return commit();
+        const candidates = [],
+              keys       = Array.isArray(pointer.candidates) ? pointer.candidates.slice(0, MAX_URGENT_SPOOL_CANDIDATES) : [];
+
+        for (const key of keys) {
+            if (!isKey(key)) return commit();
+            const record = await state.read(key).catch(() => null);
+            if (typeof record?.acceptedAt !== 'string') return commit();
+            candidates.push(record)
+        }
+
+        const records = [anchor];
+        candidates.sort((left, right) => left.acceptedAt.localeCompare(right.acceptedAt));
+
+        for (const record of candidates) {
+            if (!validReceiverRecord(record, subscriptionId, publicRoute.agentIdentity)) break;
+            if (TERMINAL_STATES.has(record.state) || isIdleOnlyEnvelope(record.envelope)) continue;
+            if (record.acceptedAt < anchor.acceptedAt) return commit();
+            if (!eligibleBatchRecord(record, subscriptionId, publicRoute, true) || record.expectedRecipient || record.nativeInitiatedAt ||
+                record.state !== 'pending' || record.deferReason !== 'earlier urgent native wake outstanding') continue;
+            records.push(record)
+        }
+
+        return commit(selectUrgentPrimaryWakeBatch(records))
+    });
+
     const drainPointer = async pointerPath => {
         const pointer = await readPrivate(pointerPath);
         if (!pointer || !isKey(pointer.recordKey)) return {active:false};
@@ -518,9 +557,10 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         if (!validReceiverRecord(record,subscriptionId,route.agentIdentity) || !['pending','dispatching'].includes(record.state)) {
             return {active:false}
         }
-        const batchCapable = pointerPath === normalPath && isBatchCapablePrimaryFamily(config.family);
+        const batchCapable = isBatchCapablePrimaryFamily(config.family);
         const result       = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute,verifyCodexRoute,
-            ...(batchCapable ? {commitNormalAttempt: commit => commitOrdinary(record.recordKey,commit)} : {})});
+            ...(batchCapable && pointerPath === normalPath ? {commitNormalAttempt: commit => commitOrdinary(record.recordKey,commit)} : {}),
+            ...(batchCapable && pointerPath === urgentPath ? {commitUrgentAttempt: commit => commitUrgent(record.recordKey,commit)} : {})});
         if (result?.status === 'delivered' && hasPrimaryWakeRecipient(result.recipient, {seat:route.agentIdentity, recordKey:record.recordKey})) {
             const {recordKey} = record;
             await writeFileAtomic(pointerPath+'.result', JSON.stringify({

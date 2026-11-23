@@ -4,6 +4,7 @@ import fs                                                                       
 import os                                                                                                                                   from 'node:os';
 import path                                                                                                                                 from 'node:path';
 import {createWakeReceiver, loadWakeReceiverManifest}                                                                                       from '../../../../../../ai/daemons/wake/receiver.mjs';
+import {selectUrgentPrimaryWakeBatch}                                                                                                       from '../../../../../../ai/daemons/wake/primaryWakeBatch.mjs';
 import {projectMessageDelivery}                                                                                                             from '../../../../../../ai/services/memory-core/wakeDeliveryProjection.mjs';
 import {WakeReceiverState}                                                                                                                  from '../../../../../../ai/daemons/wake/receiverState.mjs';
 import {dispatchFleetPrimarySessionWake, drainFleetPrimaryWakeRecord, startFleetPrimaryWakePump, consumeNativeWakePrompt, enrollNativeWake} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
@@ -1153,6 +1154,437 @@ test.describe('signed native wake receiver integration', () => {
             expect(agyConsumed).toHaveLength(2);
             expect(agyConsumed[0]).toContain('urgent after restart');
             expect(agyConsumed[1]).toContain('3 events for @neo-gemini-julia');
+        });
+
+        test('coalesces returning-seat Antigravity urgent backlog with a fresh urgent arrival at idle', async () => {
+            const {postAgy, pumpAgy} = await setupAntigravityRoute();
+            agyStatus = 'CASCADE_RUN_STATUS_RUNNING';
+
+            const decorateUrgent = subject => envelope => {
+                envelope.payload.urgent = true;
+                envelope.payload.breakdown.sent_to_me.highestPriority = 'high';
+                envelope.payload.breakdown.sent_to_me.latest.priority = 'high';
+                envelope.payload.breakdown.sent_to_me.latest.subject  = subject;
+            };
+
+            expect((await postAgy(1, ['MESSAGE:agy-old-u1', 'MESSAGE:agy-old-u2'], decorateUrgent('older agy urgent 1'))).status).toBe(202);
+            expect((await postAgy(2, ['MESSAGE:agy-old-u3'], decorateUrgent('older agy urgent 2'))).status).toBe(202);
+            await receiver.drain();
+            await pumpAgy();
+            expect(agySends).toHaveLength(0);
+
+            expect((await postAgy(3, ['MESSAGE:agy-fresh-u4'], decorateUrgent('fresh agy urgent probe'))).status).toBe(202);
+            await receiver.drain();
+
+            agyStatus = 'CASCADE_RUN_STATUS_IDLE';
+            await pumpAgy();
+            await receiver.drain();
+
+            expect(agySends).toHaveLength(1);
+            expect(agyConsumed).toHaveLength(1);
+            expect(agyConsumed[0]).toContain('[WAKE][priority:high] 4 events for @neo-gemini-julia');
+            expect(agyConsumed[0]).toContain('fresh agy urgent probe');
+            expect(await state.list('pending')).toHaveLength(0);
+            expect(await state.list('delivered')).toHaveLength(3);
+        });
+    });
+
+    test.describe('returning-seat urgent catch-up batching', () => {
+        const urgentDecorate = subject => envelope => {
+            envelope.payload.urgent                               = true;
+            envelope.payload.breakdown.sent_to_me.highestPriority = 'high';
+            envelope.payload.breakdown.sent_to_me.latest.priority = 'high';
+            envelope.payload.breakdown.sent_to_me.latest.subject  = subject;
+        };
+
+        test('selector enforces fit, fresh-tail visibility under overflow, UTF-8 byte cap, and oversize head-tail fallback', () => {
+            const makeRecord = (idx, ids, subject = `subj-${idx}`, customDecorate = null) => {
+                const recordKey = String(idx + 1).padStart(64, '0');
+                const envelope  = env(idx, ids);
+                urgentDecorate(subject)(envelope);
+                if (customDecorate) customDecorate(envelope);
+                return {recordKey, sourceEventIds: ids, envelope};
+            };
+
+            const fitRecords = [
+                makeRecord(0, ['MESSAGE:u0-a', 'MESSAGE:u0-b'], 'old-0'),
+                makeRecord(1, ['MESSAGE:u1'], 'old-1'),
+                makeRecord(2, ['MESSAGE:u2'], 'fresh-2')
+            ];
+            expect(selectUrgentPrimaryWakeBatch(fitRecords)).toEqual(
+                fitRecords.map(({recordKey, sourceEventIds}) => ({recordKey, sourceEventIds}))
+            );
+
+            const overflowRecords = Array.from({length: 55}, (_, idx) =>
+                makeRecord(idx, [`MESSAGE:over-${idx}`], idx === 54 ? 'fresh-tail' : `older-${idx}`)
+            );
+            const overflowSelected = selectUrgentPrimaryWakeBatch(overflowRecords);
+            expect(overflowSelected).toHaveLength(48);
+            expect(overflowSelected[0].recordKey).toBe(overflowRecords[0].recordKey);
+            expect(overflowSelected.at(-1).recordKey).toBe(overflowRecords[54].recordKey);
+            const byKey = new Map(overflowRecords.map(r => [r.recordKey, r]));
+            expect(selectUrgentPrimaryWakeBatch(overflowSelected.map(m => byKey.get(m.recordKey)))).toEqual(overflowSelected);
+
+            const byteRecords = [
+                makeRecord(0, ['MESSAGE:b0'], 'head-task', envelope => {
+                    envelope.payload.breakdown = {task_state_changed: {count: 1, latest: {taskId: 'é'.repeat(4500), newState: 'Working'}}};
+                }),
+                makeRecord(1, ['MESSAGE:b1'], 'middle-task', envelope => {
+                    envelope.payload.breakdown = {task_state_changed: {count: 1, latest: {taskId: 'é'.repeat(5000), newState: 'Working'}}};
+                }),
+                makeRecord(2, ['MESSAGE:b2'], 'é'.repeat(3400))
+            ];
+            const byteSelected = selectUrgentPrimaryWakeBatch(byteRecords);
+            expect(byteSelected).toEqual([
+                {recordKey: byteRecords[0].recordKey, sourceEventIds: ['MESSAGE:b0']},
+                {recordKey: byteRecords[2].recordKey, sourceEventIds: ['MESSAGE:b2']}
+            ]);
+
+            const makeSpan               = (prefix, count) => Array.from({length: count}, (_, i) => `MESSAGE:${prefix}-${i}`);
+            const incompatibleWithMiddle = [
+                makeRecord(0, makeSpan('head', 30), 'big-head'),
+                makeRecord(1, makeSpan('mid', 10), 'fits-with-head'),
+                makeRecord(2, makeSpan('tail', 25), 'big-tail')
+            ];
+            expect(selectUrgentPrimaryWakeBatch(incompatibleWithMiddle)).toEqual([
+                {recordKey: incompatibleWithMiddle[0].recordKey, sourceEventIds: incompatibleWithMiddle[0].sourceEventIds},
+                {recordKey: incompatibleWithMiddle[1].recordKey, sourceEventIds: incompatibleWithMiddle[1].sourceEventIds}
+            ]);
+
+            const incompatiblePairOnly = [
+                makeRecord(0, makeSpan('head-only', 30), 'big-head'),
+                makeRecord(1, makeSpan('tail-only', 25), 'big-tail')
+            ];
+            expect(selectUrgentPrimaryWakeBatch(incompatiblePairOnly)).toBeUndefined();
+        });
+
+        test('coalesces replayed older urgent records with a fresh urgent probe into one turn when all fit', async () => {
+            let   activity = 'busy';
+            const pump     = await useStagedReceiver();
+            transport.readCodexWakeActivity = async () => ({state: activity});
+
+            const olderRecords = [
+                {ids: ['MESSAGE:old-nov18-a', 'MESSAGE:old-nov18-b'], subject: 'old nov 18 batch'},
+                {ids: ['MESSAGE:old-nov19'], subject: 'old nov 19'},
+                {ids: ['MESSAGE:old-nov20-a', 'MESSAGE:old-nov20-b'], subject: 'old nov 20 batch'},
+                {ids: ['MESSAGE:old-nov21'], subject: 'old nov 21'},
+                {ids: ['MESSAGE:old-nov22-early'], subject: 'old nov 22 early'}
+            ];
+            for (const [idx, item] of olderRecords.entries()) {
+                expect((await post(idx + 1, item.ids, urgentDecorate(item.subject))).status).toBe(202);
+            }
+            await receiver.drain();
+            await pump();
+            expect(sends).toBe(0);
+
+            const freshIds = ['MESSAGE:fresh-probe-1', 'MESSAGE:fresh-probe-2'];
+            expect((await post(99, freshIds, urgentDecorate('fresh returning-seat probe'))).status).toBe(202);
+            await receiver.drain();
+
+            const pendingBefore = await state.list('pending');
+            expect(pendingBefore).toHaveLength(6);
+            expect(pendingBefore.every(r => r.urgent === true)).toBe(true);
+
+            activity = 'idle';
+            await pump();
+            await receiver.drain();
+
+            expect(sends).toBe(1);
+            expect(consumed).toHaveLength(1);
+            expect(consumed[0]).toContain('[WAKE][priority:high] 9 events for @fixture');
+            expect(consumed[0]).toContain('fresh returning-seat probe');
+            expect(await state.list('pending')).toHaveLength(0);
+
+            const deliveredRecords = await state.list('delivered');
+            expect(deliveredRecords).toHaveLength(6);
+            const allSourceIds = [...olderRecords.flatMap(r => r.ids), ...freshIds];
+            expect(deliveredRecords.flatMap(r => r.sourceEventIds)).toEqual(allSourceIds);
+            expect(new Set(deliveredRecords.map(r => r.expectedRecipient.nonce)).size).toBe(1);
+            expect(projectMessageDelivery(deliveredRecords, allSourceIds)).toEqual(
+                Object.fromEntries(allSourceIds.map(id => [id, expect.objectContaining({state: 'delivered'})]))
+            );
+        });
+
+        test('surfaces fresh urgent work on turn 1 under overflow beyond 48 events and drains remaining older plus new arrivals without starvation', async () => {
+            let   activity = 'busy';
+            const pump     = await useStagedReceiver();
+            transport.readCodexWakeActivity = async () => ({state: activity});
+
+            const olderWave = Array.from({length: 50}, (_, idx) => ({
+                ids    : idx < 4 ? [`MESSAGE:old-u-${idx}-a`, `MESSAGE:old-u-${idx}-b`] : [`MESSAGE:old-u-${idx}`],
+                subject: `older-urgent-${idx}`
+            }));
+            for (const [idx, item] of olderWave.entries()) {
+                expect((await post(idx + 1, item.ids, urgentDecorate(item.subject))).status).toBe(202);
+            }
+            await receiver.drain();
+            await pump();
+
+            const freshWave1 = [
+                {ids: ['MESSAGE:fresh-w1-1'], subject: 'fresh wave 1 lead'},
+                {ids: ['MESSAGE:fresh-w1-2a', 'MESSAGE:fresh-w1-2b'], subject: 'fresh wave 1 latest'}
+            ];
+            expect((await post(101, freshWave1[0].ids, urgentDecorate(freshWave1[0].subject))).status).toBe(202);
+            expect((await post(102, freshWave1[1].ids, urgentDecorate(freshWave1[1].subject))).status).toBe(202);
+            await receiver.drain();
+            expect(sends).toBe(0);
+
+            activity = 'idle';
+            await pump();
+            await receiver.drain();
+
+            expect(sends).toBe(1);
+            expect(consumed).toHaveLength(1);
+            expect(consumed[0]).toContain('[WAKE][priority:high] 48 events for @fixture');
+            expect(consumed[0]).toContain('fresh wave 1 latest');
+
+            const deliveredTurn1 = await state.list('delivered');
+            const pendingAfter1  = await state.list('pending');
+            expect(deliveredTurn1.flatMap(r => r.sourceEventIds)).toContain('MESSAGE:old-u-0-a');
+            expect(deliveredTurn1.flatMap(r => r.sourceEventIds)).toContain('MESSAGE:fresh-w1-2b');
+            expect(pendingAfter1).toHaveLength(9);
+            expect(pendingAfter1.flatMap(r => r.sourceEventIds)).toHaveLength(9);
+
+            activity = 'busy';
+            const freshWave2 = [
+                {ids: ['MESSAGE:fresh-w2-1', 'MESSAGE:fresh-w2-2'], subject: 'fresh wave 2 first'},
+                {ids: ['MESSAGE:fresh-w2-3', 'MESSAGE:fresh-w2-4'], subject: 'fresh wave 2 latest'}
+            ];
+            expect((await post(201, freshWave2[0].ids, urgentDecorate(freshWave2[0].subject))).status).toBe(202);
+            expect((await post(202, freshWave2[1].ids, urgentDecorate(freshWave2[1].subject))).status).toBe(202);
+            await receiver.drain();
+
+            activity = 'idle';
+            await pump();
+            await receiver.drain();
+
+            expect(sends).toBe(2);
+            expect(consumed).toHaveLength(2);
+            expect(consumed[1]).toContain('[WAKE][priority:high] 13 events for @fixture');
+            expect(consumed[1]).toContain('fresh wave 2 latest');
+            expect(await state.list('pending')).toHaveLength(0);
+
+            const allExpectedIds = [
+                ...olderWave.flatMap(r => r.ids),
+                ...freshWave1.flatMap(r => r.ids),
+                ...freshWave2.flatMap(r => r.ids)
+            ];
+            expect(allExpectedIds).toHaveLength(61);
+            const finalDelivered = await state.list('delivered');
+            expect(finalDelivered).toHaveLength(54);
+            expect(new Set(finalDelivered.flatMap(r => r.sourceEventIds))).toEqual(new Set(allExpectedIds));
+            expect(projectMessageDelivery(finalDelivered, allExpectedIds)).toEqual(
+                Object.fromEntries(allExpectedIds.map(id => [id, expect.objectContaining({state: 'delivered'})]))
+            );
+        });
+
+        test('preserves immediate singleton and active-turn urgent sends, isolates recipients, keeps normal catch-up intact, and reconciles crash/retry on an in-flight urgent batch', async () => {
+            await new Promise(resolve => server.close(resolve));
+            let busyState      = 'idle',
+                activeTurnOpen = false,
+                steered        = 0;
+
+            const subPeer    = 'WAKE_SUB:peer-isolated',
+                  seatPeer   = '@peerisolated',
+                  agentPeer  = 'peerisolated',
+                  threadPeer = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+                  peerHome   = path.join(root, 'agents', agentPeer, 'harness', family),
+                  peerConfig = {agentId: agentPeer, family, instanceHome: peerHome, appBundle: path.join(root, 'generation', 'Codex.app'), hookNodePath: '/bin/node', hookModulePath: '/brain/hook.mjs'};
+
+            manifest.routes[subPeer] = {
+                agentIdentity        : seatPeer,
+                signingKey           : key,
+                admits               : 'wake/digest',
+                harnessTargetMetadata: {adapter: 'primary-session', addressType: 'userDataDir', instanceAddress: path.join(peerHome, 'electron-profile')},
+                adapterConfig        : {attemptTimeoutMs: 1000, primarySession: peerConfig}
+            };
+            await fs.writeFile(manifestPath, JSON.stringify(manifest), {mode: 0o600});
+            await enrollNativeWake({manifestPath, stateDir, agentId: agentPeer, family});
+
+            const sentLog         = [];
+            const peerConsumed    = [];
+            const customTransport = {
+                listCodexWakeTargets : async ({home}) => [{root: true, threadId: home.includes(agentPeer) ? threadPeer : threadId, startedAt: 100, receiptOffset: 0, activeTurnId: 'active-turn-1'}],
+                readCodexWakeActivity: async ({threadId: tid}) => tid === threadId
+                    ? (busyState === 'busy' ? {state: 'busy', turnId: 'active-turn-1'} : {state: 'idle'})
+                    : {state: 'idle'},
+                verifyCodexWakeAdmission: async () => ({verified: true}),
+                sendCodexSessionWake    : async ({threadId: tid, text}) => {
+                    sends++;
+                    const nonce = text.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                    lastNonce   = nonce;
+                    sentLog.push({threadId: tid, nonce, kind: 'idle'});
+                    if (mode === 'consume' || tid === threadPeer) {
+                        const claim = await consumeNativeWakePrompt({
+                            manifestPath,
+                            stateDir,
+                            agentId        : tid === threadPeer ? agentPeer : agentId,
+                            family,
+                            threadId       : tid,
+                            nonce,
+                            turnId         : `turn-${sentLog.length}`,
+                            inspectResident: resident,
+                            codexTransport : customTransport
+                        });
+                        if (claim.admitted) {
+                            (tid === threadPeer ? peerConsumed : consumed).push(claim.digest);
+                            delivered.add(nonce);
+                        }
+                    }
+                    return {status: 'accepted'};
+                },
+                readCodexWakeReceipt    : async ({text, threadId: tid}) => {
+                    const nonce = text.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                    const idx   = sentLog.findIndex(entry => entry.nonce === nonce);
+                    return delivered.has(nonce) ? {state: 'turn-started', threadId: tid, turnId: `turn-${idx + 1}`} : {state: 'unknown'};
+                }
+            };
+
+            let now = Date.now();
+            receiver = createWakeReceiver({manifest, state, manifestPath, clock: () => now++, logger: {log(){}, warn(){}, error(){}}});
+            server   = receiver.server;
+            await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+            url = `http://127.0.0.1:${server.address().port}/wake`;
+
+            const pumpSeat = targetSub => {
+                const transportView = activeTurnOpen
+                    ? {
+                        ...customTransport,
+                        sendCodexActiveTurnWake   : async ({threadId: tid, text}) => {
+                            steered++;
+                            const nonce = text.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                            sentLog.push({threadId: tid, nonce, kind: 'active-turn'});
+                            const claim = await consumeNativeWakePrompt({
+                                manifestPath,
+                                stateDir,
+                                agentId,
+                                family,
+                                threadId       : tid,
+                                nonce,
+                                turnId         : 'active-turn-1',
+                                inspectResident: resident,
+                                codexTransport : customTransport
+                            });
+                            if (claim.admitted) {
+                                consumed.push(claim.digest);
+                                delivered.add(nonce);
+                            }
+                            return {status: 'accepted'};
+                        },
+                        readCodexActiveTurnReceipt: async ({text, threadId: tid}) => {
+                            const nonce = text.match(/\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+                            return delivered.has(nonce) ? {state: 'turn-steered', threadId: tid, turnId: 'active-turn-1'} : {state: 'unknown'};
+                        }
+                    }
+                    : customTransport;
+                return drainFleetPrimaryWakeRecord({
+                    state,
+                    stateDir,
+                    manifestPath,
+                    subscriptionId: targetSub,
+                    route         : manifest.routes[targetSub],
+                    dispatch      : (record, options) => dispatchFleetPrimarySessionWake(record, {...options, inspectResident: resident, codexTransport: transportView})
+                });
+            };
+
+            expect((await post(1, ['MESSAGE:single-fresh-urgent'], urgentDecorate('immediate singleton urgent'))).status).toBe(202);
+            await receiver.drain();
+            await pumpSeat(sub);
+            await receiver.drain();
+            expect(sends).toBe(1);
+            expect(consumed[0]).toContain('[WAKE][priority:high] 1 events for @fixture');
+            expect(consumed[0]).toContain('immediate singleton urgent');
+
+            busyState      = 'busy';
+            activeTurnOpen = true;
+            expect((await post(2, ['MESSAGE:steer-urgent'], urgentDecorate('active-turn singleton steer'))).status).toBe(202);
+            await receiver.drain();
+            await pumpSeat(sub);
+            await receiver.drain();
+            expect(steered).toBe(1);
+            expect(consumed[1]).toContain('active-turn singleton steer');
+
+            activeTurnOpen = false;
+            expect((await post(3, ['MESSAGE:batch-hold-1'], urgentDecorate('held urgent 1'))).status).toBe(202);
+            expect((await post(4, ['MESSAGE:batch-hold-2'], urgentDecorate('held urgent 2'))).status).toBe(202);
+            await receiver.drain();
+            await pumpSeat(sub);
+            expect(sends).toBe(1);
+
+            busyState = 'idle';
+            mode      = 'hold';
+            await pumpSeat(sub);
+            await receiver.drain();
+            expect(sends).toBe(2);
+            const heldBatchNonce = lastNonce;
+
+            expect((await post(5, ['MESSAGE:late-urgent-3'], urgentDecorate('late urgent arrival'))).status).toBe(202);
+            expect((await post(6, ['MESSAGE:normal-catchup-1', 'MESSAGE:normal-catchup-2'])).status).toBe(202);
+            expect((await post(7, ['MESSAGE:normal-catchup-3'])).status).toBe(202);
+            expect((await post(8, ['MESSAGE:peer-urgent-1'], envelope => {
+                envelope.subscriptionId = subPeer;
+                envelope.agentIdentity  = seatPeer;
+                urgentDecorate('peer urgent isolated')(envelope);
+            })).status).toBe(202);
+            await receiver.drain();
+
+            await pumpSeat(subPeer);
+            await receiver.drain();
+            expect(peerConsumed).toHaveLength(1);
+            expect(peerConsumed[0]).toContain('peer urgent isolated');
+
+            const [heldAnchor] = (await state.list('pending')).filter(r => r.eventId === 'event-3');
+            await state.transition(heldAnchor.recordKey, 'pending', 'dispatching');
+            expect(await state.recoverInterrupted()).toBe(1);
+
+            await pumpSeat(sub);
+            expect(sends, 'crash/retry does not resend an uncertain urgent batch').toBe(3);
+
+            const batchClaim = await consumeNativeWakePrompt({
+                manifestPath,
+                stateDir,
+                agentId,
+                family,
+                threadId,
+                nonce          : heldBatchNonce,
+                turnId         : `turn-${sentLog.findIndex(entry => entry.nonce === heldBatchNonce) + 1}`,
+                inspectResident: resident,
+                codexTransport : customTransport
+            });
+            expect(batchClaim.admitted).toBe(true);
+            expect(batchClaim.digest).toContain('[WAKE][priority:high] 2 events for @fixture');
+            expect(batchClaim.digest).toContain('held urgent 2');
+            expect(batchClaim.digest).not.toContain('late urgent arrival');
+            delivered.add(heldBatchNonce);
+
+            mode = 'consume';
+            await pumpSeat(sub);
+            await receiver.drain();
+
+            await pumpSeat(sub);
+            await receiver.drain();
+            expect(consumed.at(-1)).toContain('[WAKE][priority:high] 1 events for @fixture');
+            expect(consumed.at(-1)).toContain('late urgent arrival');
+
+            await pumpSeat(sub);
+            await receiver.drain();
+            expect(consumed.at(-1)).toContain('[WAKE][priority:normal] 3 events for @fixture');
+
+            expect(await state.list('pending')).toHaveLength(0);
+            const allDelivered = await state.list('delivered');
+            const expectedIds  = [
+                'MESSAGE:single-fresh-urgent',
+                'MESSAGE:steer-urgent',
+                'MESSAGE:batch-hold-1',
+                'MESSAGE:batch-hold-2',
+                'MESSAGE:late-urgent-3',
+                'MESSAGE:normal-catchup-1',
+                'MESSAGE:normal-catchup-2',
+                'MESSAGE:normal-catchup-3',
+                'MESSAGE:peer-urgent-1'
+            ];
+            expect(new Set(allDelivered.flatMap(r => r.sourceEventIds))).toEqual(new Set(expectedIds));
+            expect(sends, '1 singleton urgent + 1 held urgent batch + 1 peer urgent + 1 late urgent + 1 normal batch').toBe(5);
         });
     });
 });
