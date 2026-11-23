@@ -5,6 +5,7 @@ import path           from 'path';
 import {promisify}    from 'util';
 import {test, expect} from '@playwright/test';
 import {
+    applyVectorQueueTail,
     auditChromaVectorCoverage,
     auditCollectionDocumentPresence,
     auditCollectionVectorDimensions,
@@ -16,8 +17,10 @@ import {
     enumerateMetadataVectorDrift,
     normalizeExportabilitySampleSize,
     normalizeVectorCoverageSampleSize,
+    printHuman,
     probeCollection,
     probeStoredEmbeddingExportability,
+    readVectorQueueTail,
     resolveCollectionNames,
     resolveSqlitePath
 } from '../../../../../../ai/scripts/maintenance/checkChromaIntegrity.mjs';
@@ -381,6 +384,217 @@ test.describe('checkChromaIntegrity maintenance helpers', () => {
                 extraVectorIds         : []
             });
             expect(missing.error).toContain('Vector index metadata file not found');
+        } finally {
+            await fs.remove(tmpDir);
+        }
+    });
+
+    test('folds Chroma embeddings_queue tail entries above vector max_seq_id via execFn and SQLite snapshots, and prints pending counts', async () => {
+        // 1. Pure fixture snapshot driven through execFn + fsModule:
+        //    - 'persisted' is in both metadata and HNSW
+        //    - 'persisted-deleted' was deleted in the tail (operation 3), removed from metadata, still in HNSW -> neither missing nor extra
+        //    - 'tail-added' (op 0), 'tail-updated' (op 1), and 'tail-upserted' (op 2) live only in the queue tail -> present + pendingInQueue
+        //    - 'tail-transient' was added then deleted in the tail -> absent
+        //    - 'truly-missing' is in metadata with no vector in HNSW and no queue tail entry -> still missingFromVector
+        const fixtureExecFn = async (cmd, args) => {
+            if (cmd === 'python3') {
+                return {stdout: JSON.stringify(['persisted', 'persisted-deleted'])};
+            }
+
+            const sql = args[2];
+            if (sql.includes('from collections c')) {
+                return {
+                    stdout: JSON.stringify([{
+                        collectionName   : 'neo-knowledge-base',
+                        collectionId     : 'col-kb',
+                        databaseId       : 'db-default',
+                        dimension        : 4096,
+                        metadataSegmentId: 'meta-kb',
+                        vectorSegmentId  : 'vec-kb'
+                    }])
+                };
+            }
+
+            if (sql.includes('from embeddings\n')) {
+                return {
+                    stdout: JSON.stringify([
+                        {id: 'persisted'},
+                        {id: 'tail-added'},
+                        {id: 'tail-updated'},
+                        {id: 'tail-upserted'},
+                        {id: 'truly-missing'}
+                    ])
+                };
+            }
+
+            if (sql.includes('from embeddings_queue q')) {
+                return {
+                    stdout: JSON.stringify([
+                        {seqId: 4001, operation: 3, id: 'persisted-deleted'},
+                        {seqId: 4002, operation: 0, id: 'tail-added'},
+                        {seqId: 4003, operation: 1, id: 'tail-updated'},
+                        {seqId: 4004, operation: 2, id: 'tail-upserted'},
+                        {seqId: 4005, operation: 0, id: 'tail-transient'},
+                        {seqId: 4006, operation: 3, id: 'tail-transient'}
+                    ])
+                };
+            }
+
+            throw new Error(`Unexpected SQL in fixtureExecFn: ${sql}`);
+        };
+
+        const execCoverage = await auditChromaVectorCoverage({
+            snapshotPath   : '/virtual/chroma.sqlite3',
+            persistDir     : '/virtual',
+            collectionNames: ['neo-knowledge-base'],
+            sampleSize     : 2,
+            includeFullIds : true,
+            execFn         : fixtureExecFn,
+            fsModule       : {pathExists: async () => true}
+        });
+
+        expect(execCoverage.failedCollections).toBe(1);
+        expect(execCoverage.collections[0]).toMatchObject({
+            name                   : 'neo-knowledge-base',
+            ok                     : false,
+            metadataRowCount       : 5,
+            vectorIndexIdCount     : 4,
+            overlapCount           : 4,
+            missingFromVectorCount : 1,
+            extraInVectorCount     : 0,
+            pendingInQueueCount    : 3,
+            missingFromVectorSample: ['truly-missing'],
+            extraInVectorSample    : [],
+            pendingInQueueSample   : ['tail-added', 'tail-updated'],
+            missingVectorIds       : ['truly-missing'],
+            extraVectorIds         : [],
+            pendingInQueueIds      : ['tail-added', 'tail-updated', 'tail-upserted']
+        });
+
+        // 2. Real SQLite snapshot proving strict `seq_id > max_seq_id` boundary, topic scoping, clean ok=true when only tail rows differ, and CLI printHuman output
+        const tmpDir     = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-chroma-queue-tail-')),
+              sqlitePath = path.join(tmpDir, 'chroma.sqlite3'),
+              vectorDir  = path.join(tmpDir, 'vec-kb'),
+              picklePath = path.join(vectorDir, 'index_metadata.pickle');
+
+        try {
+            await fs.ensureDir(vectorDir);
+
+            await execFileAsync('sqlite3', [sqlitePath, `
+                create table collections (
+                    id text primary key,
+                    name text not null,
+                    dimension integer,
+                    database_id text not null
+                );
+                create table segments (
+                    id text primary key,
+                    type text not null,
+                    scope text not null,
+                    collection text not null
+                );
+                create table embeddings (
+                    id integer primary key,
+                    segment_id text not null,
+                    embedding_id text not null,
+                    seq_id blob not null,
+                    unique(segment_id, embedding_id)
+                );
+                create table max_seq_id (
+                    segment_id text primary key,
+                    seq_id integer
+                );
+                create table embeddings_queue (
+                    seq_id integer primary key,
+                    operation integer not null,
+                    topic text not null,
+                    id text not null,
+                    vector blob
+                );
+                insert into collections (id, name, dimension, database_id) values
+                    ('col-kb', 'neo-knowledge-base', 4096, 'db-default');
+                insert into segments (id, type, scope, collection) values
+                    ('meta-kb', 'urn:chroma:segment/metadata/sqlite', 'METADATA', 'col-kb'),
+                    ('vec-kb', 'urn:chroma:segment/vector/hnsw-local-persisted', 'VECTOR', 'col-kb');
+                insert into max_seq_id (segment_id, seq_id) values
+                    ('vec-kb', 1000),
+                    ('meta-kb', 1003);
+                insert into embeddings (segment_id, embedding_id, seq_id) values
+                    ('meta-kb', 'id_1000', x'01'),
+                    ('meta-kb', 'id_1002', x'02'),
+                    ('meta-kb', 'id_1003', x'03');
+                insert into embeddings_queue (seq_id, operation, topic, id) values
+                    (999,  0, 'persistent://default/default/col-kb', 'stale-gutted-before-watermark'),
+                    (1000, 0, 'persistent://default/default/col-kb', 'id_1000'),
+                    (1001, 3, 'persistent://default/default/col-kb', 'id_deleted_in_tail'),
+                    (1002, 0, 'persistent://default/default/col-kb', 'id_1002'),
+                    (1003, 2, 'persistent://default/default/col-kb', 'id_1003'),
+                    (1004, 0, 'persistent://default/default/other-col', 'foreign-topic-row');
+            `]);
+
+            const pickleScript = [
+                'import json, pickle, sys',
+                'ids = json.loads(sys.argv[2])',
+                'data = {"id_to_label": {id_: index for index, id_ in enumerate(ids)}}',
+                'with open(sys.argv[1], "wb") as handle:',
+                '    pickle.dump(data, handle)'
+            ].join('\n');
+
+            await execFileAsync('python3', ['-c', pickleScript, picklePath, JSON.stringify(['id_1000', 'id_deleted_in_tail'])]);
+
+            const tailRows = await readVectorQueueTail({
+                snapshotPath   : sqlitePath,
+                collectionId   : 'col-kb',
+                vectorSegmentId: 'vec-kb',
+                execFn         : execFileAsync
+            });
+            expect(tailRows).toEqual([
+                {seqId: 1001, operation: 3, id: 'id_deleted_in_tail'},
+                {seqId: 1002, operation: 0, id: 'id_1002'},
+                {seqId: 1003, operation: 2, id: 'id_1003'}
+            ]);
+
+            const cleanCoverage = await auditChromaVectorCoverage({
+                snapshotPath   : sqlitePath,
+                persistDir     : tmpDir,
+                collectionNames: ['neo-knowledge-base'],
+                sampleSize     : 5,
+                includeFullIds : true,
+                execFn         : execFileAsync
+            });
+
+            expect(cleanCoverage.failedCollections).toBe(0);
+            expect(cleanCoverage.collections[0]).toMatchObject({
+                ok                    : true,
+                metadataRowCount      : 3,
+                vectorIndexIdCount    : 3,
+                overlapCount          : 3,
+                missingFromVectorCount: 0,
+                extraInVectorCount    : 0,
+                pendingInQueueCount   : 2,
+                pendingInQueueSample  : ['id_1002', 'id_1003'],
+                missingVectorIds      : [],
+                extraVectorIds        : [],
+                pendingInQueueIds     : ['id_1002', 'id_1003']
+            });
+
+            const lines = [];
+            printHuman({
+                sqlite  : {sourcePath: sqlitePath, snapshotPath: sqlitePath, checks: [{pragma: 'quick_check', ok: true, output: 'ok'}]},
+                coverage: cleanCoverage,
+                api     : null
+            }, line => lines.push(line));
+
+            expect(lines).toContain('- neo-knowledge-base [col-kb]: ok metadata=3 vector=3 overlap=3 missing=0 extra=0 pending=2');
+            expect(lines).toContain('  - pending sample: id_1002, id_1003');
+
+            expect(applyVectorQueueTail({
+                vectorIds: ['p1'],
+                queueRows: [{seqId: 1, operation: 99, id: 'unknown-op'}]
+            })).toEqual({
+                effectiveVectorIds: ['p1'],
+                pendingInQueueIds : []
+            });
         } finally {
             await fs.remove(tmpDir);
         }

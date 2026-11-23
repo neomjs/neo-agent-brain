@@ -51,8 +51,13 @@ void Neo;
 export const DEFAULT_STORED_EMBEDDING_EXPORTABILITY_SAMPLE_SIZE = 5;
 export const DEFAULT_VECTOR_COVERAGE_SAMPLE_SIZE                = 5;
 
-const METADATA_SEGMENT_SCOPE = 'METADATA',
-      VECTOR_SEGMENT_SCOPE   = 'VECTOR';
+const METADATA_SEGMENT_SCOPE    = 'METADATA',
+      VECTOR_SEGMENT_SCOPE      = 'VECTOR',
+      CHROMA_QUEUE_TOPIC_PREFIX = 'persistent://default/default/',
+      CHROMA_QUEUE_OP_ADD       = 0,
+      CHROMA_QUEUE_OP_UPDATE    = 1,
+      CHROMA_QUEUE_OP_UPSERT    = 2,
+      CHROMA_QUEUE_OP_DELETE    = 3;
 
 registerNeoChromaEmbeddingFunctions({
     dummyEmbeddingFunction: AiConfig.dummyEmbeddingFunction
@@ -445,7 +450,114 @@ export function compareMetadataToVectorIds({
 }
 
 /**
- * @summary Audits collection-level metadata row coverage against persisted HNSW vector index ids.
+ * @summary Reads a collection's unpersisted `embeddings_queue` tail (`seq_id` strictly above the vector
+ * segment's `max_seq_id`) in ascending `seq_id` order from a SQLite snapshot. Snapshots without queue
+ * tables (such as minimal synthetic unit fixtures) resolve an empty tail.
+ * @param {Object} options
+ * @param {String} options.snapshotPath
+ * @param {String} options.collectionId
+ * @param {String|null} [options.vectorSegmentId=null]
+ * @param {Function} [options.execFn=execFileAsync]
+ * @returns {Promise<Array<{seqId: Number, operation: Number, id: String}>>}
+ */
+export async function readVectorQueueTail({
+    snapshotPath,
+    collectionId,
+    vectorSegmentId = null,
+    execFn          = execFileAsync
+} = {}) {
+    if (!collectionId) {
+        return []
+    }
+
+    const escapedTopic   = `${CHROMA_QUEUE_TOPIC_PREFIX}${String(collectionId)}`.replaceAll("'", "''"),
+          escapedSegment = vectorSegmentId ? String(vectorSegmentId).replaceAll("'", "''") : '',
+          maxSeqClause   = escapedSegment
+              ? `coalesce((select cast(m.seq_id as integer) from max_seq_id m where m.segment_id = '${escapedSegment}'), 0)`
+              : '0',
+          sql            = `
+              select
+                  q.seq_id    as seqId,
+                  q.operation as operation,
+                  q.id        as id
+              from embeddings_queue q
+              where q.topic = '${escapedTopic}'
+                  and q.seq_id > ${maxSeqClause}
+              order by q.seq_id asc
+          `;
+
+    try {
+        const {stdout} = await execFn('sqlite3', ['-json', snapshotPath, sql], {
+            maxBuffer: 128 * 1024 * 1024
+        });
+
+        return parseSqliteJsonRows(stdout).map(row => ({
+            seqId    : Number(row.seqId ?? row.seq_id),
+            operation: Number(row.operation),
+            id       : row.id
+        }))
+    } catch (error) {
+        if (/no such table:\s*(?:main\.)?(?:embeddings_queue|max_seq_id)/i.test(String(error?.message || error?.stderr || ''))) {
+            return []
+        }
+
+        throw error
+    }
+}
+
+/**
+ * @summary Folds ordered `embeddings_queue` tail entries onto persisted HNSW vector ids: `ADD` (`0`),
+ * `UPDATE` (`1`), and `UPSERT` (`2`) mark an id present, while `DELETE` (`3`) removes it. Rows whose
+ * only vector lives in the queue tail are returned in `pendingInQueueIds`.
+ * @param {Object} options
+ * @param {String[]} [options.vectorIds=[]]
+ * @param {Array<{seqId?: Number, operation: Number, id: String}>} [options.queueRows=[]]
+ * @returns {{effectiveVectorIds: String[], pendingInQueueIds: String[]}}
+ */
+export function applyVectorQueueTail({
+    vectorIds = [],
+    queueRows = []
+} = {}) {
+    const persistedSet = new Set(vectorIds),
+          effectiveSet = new Set(vectorIds),
+          netById      = new Map();
+
+    for (const row of queueRows) {
+        if (typeof row?.id !== 'string' || !row.id.length) {
+            continue
+        }
+
+        const op = Number(row.operation);
+
+        if (op === CHROMA_QUEUE_OP_ADD || op === CHROMA_QUEUE_OP_UPDATE || op === CHROMA_QUEUE_OP_UPSERT) {
+            netById.set(row.id, 'present');
+        } else if (op === CHROMA_QUEUE_OP_DELETE) {
+            netById.set(row.id, 'deleted');
+        }
+    }
+
+    const pendingInQueueIds = [];
+
+    for (const [id, state] of netById.entries()) {
+        if (state === 'present') {
+            effectiveSet.add(id);
+            if (!persistedSet.has(id)) {
+                pendingInQueueIds.push(id);
+            }
+        } else {
+            effectiveSet.delete(id);
+        }
+    }
+
+    return {
+        effectiveVectorIds: [...effectiveSet],
+        pendingInQueueIds
+    }
+}
+
+/**
+ * @summary Audits collection-level metadata row coverage against persisted HNSW vector index ids plus
+ * any durable `embeddings_queue` tail above the vector segment's `max_seq_id`.
  * @param {Object} options
  * @param {String} options.snapshotPath
  * @param {String} options.persistDir
@@ -465,7 +577,8 @@ export async function auditChromaVectorCoverage({
     execFn          = execFileAsync,
     fsModule        = fs
 } = {}) {
-    const rows = await readCollectionSegmentRows({
+    const normalizedSampleSize = normalizeVectorCoverageSampleSize(sampleSize),
+          rows                 = await readCollectionSegmentRows({
               snapshotPath,
               collectionNames,
               execFn
@@ -489,16 +602,26 @@ export async function auditChromaVectorCoverage({
                   metadataSegmentId: row.metadataSegmentId,
                   execFn
               }),
+              queueRows = await readVectorQueueTail({
+                  snapshotPath,
+                  collectionId   : row.collectionId,
+                  vectorSegmentId: row.vectorSegmentId,
+                  execFn
+              }),
               vectorResult = await readVectorIndexIds({
                   persistDir,
                   vectorSegmentId: row.vectorSegmentId,
                   execFn,
                   fsModule
               }),
+              {effectiveVectorIds, pendingInQueueIds} = applyVectorQueueTail({
+                  vectorIds: vectorResult.ids,
+                  queueRows
+              }),
               comparison = compareMetadataToVectorIds({
                   metadataIds,
-                  vectorIds : vectorResult.ids,
-                  sampleSize: normalizeVectorCoverageSampleSize(sampleSize),
+                  vectorIds : effectiveVectorIds,
+                  sampleSize: normalizedSampleSize,
                   includeFullIds
               }),
               ok = vectorResult.ok &&
@@ -516,7 +639,10 @@ export async function auditChromaVectorCoverage({
             duplicateCollectionName: duplicateNames.has(row.collectionName),
             ok,
             error                  : vectorResult.ok ? null : vectorResult.error,
-            ...comparison
+            ...comparison,
+            pendingInQueueCount : pendingInQueueIds.length,
+            pendingInQueueSample: pendingInQueueIds.slice(0, normalizedSampleSize),
+            ...(includeFullIds ? {pendingInQueueIds} : {})
         });
     }
 
@@ -833,35 +959,40 @@ function formatStepValue(value) {
 }
 
 /**
+ * @summary Formats the human-readable CLI report for SQLite, vector-coverage, and API checks.
  * @param {Object} result
+ * @param {Function} [log=console.log]
  * @returns {void}
  */
-function printHuman(result) {
-    console.log(`SQLite source: ${result.sqlite.sourcePath}`);
-    console.log(`SQLite snapshot: ${result.sqlite.snapshotPath}`);
+export function printHuman(result, log = console.log) {
+    log(`SQLite source: ${result.sqlite.sourcePath}`);
+    log(`SQLite snapshot: ${result.sqlite.snapshotPath}`);
     for (const check of result.sqlite.checks) {
         const status = check.ok ? 'ok' : 'failed';
-        console.log(`- ${check.pragma}: ${status}${check.output ? ` (${check.output})` : ''}${check.error ? ` (${check.error})` : ''}`);
+        log(`- ${check.pragma}: ${status}${check.output ? ` (${check.output})` : ''}${check.error ? ` (${check.error})` : ''}`);
     }
 
     if (result.coverage) {
         if (result.coverage.error) {
-            console.log(`Chroma vector coverage: failed (${result.coverage.error})`);
+            log(`Chroma vector coverage: failed (${result.coverage.error})`);
         } else {
-            console.log('Chroma vector coverage:');
+            log('Chroma vector coverage:');
             for (const collection of result.coverage.collections) {
                 const status    = collection.ok ? 'ok' : 'failed',
                       duplicate = collection.duplicateCollectionName ? ' duplicate-name' : '';
 
-                console.log(`- ${collection.name} [${collection.collectionId}]: ${status}${duplicate} metadata=${collection.metadataRowCount} vector=${collection.vectorIndexIdCount} overlap=${collection.overlapCount} missing=${collection.missingFromVectorCount} extra=${collection.extraInVectorCount}`);
+                log(`- ${collection.name} [${collection.collectionId}]: ${status}${duplicate} metadata=${collection.metadataRowCount} vector=${collection.vectorIndexIdCount} overlap=${collection.overlapCount} missing=${collection.missingFromVectorCount} extra=${collection.extraInVectorCount} pending=${collection.pendingInQueueCount ?? 0}`);
                 if (collection.error) {
-                    console.log(`  - vector metadata: ${collection.error}`);
+                    log(`  - vector metadata: ${collection.error}`);
                 }
                 if (collection.missingFromVectorSample.length) {
-                    console.log(`  - missing sample: ${collection.missingFromVectorSample.join(', ')}`);
+                    log(`  - missing sample: ${collection.missingFromVectorSample.join(', ')}`);
                 }
                 if (collection.extraInVectorSample.length) {
-                    console.log(`  - extra sample: ${collection.extraInVectorSample.join(', ')}`);
+                    log(`  - extra sample: ${collection.extraInVectorSample.join(', ')}`);
+                }
+                if (collection.pendingInQueueSample?.length) {
+                    log(`  - pending sample: ${collection.pendingInQueueSample.join(', ')}`);
                 }
             }
         }
@@ -871,12 +1002,12 @@ function printHuman(result) {
         return
     }
 
-    console.log('Chroma API read probes:');
+    log('Chroma API read probes:');
     for (const collection of result.api.collections) {
-        console.log(`- ${collection.name}`);
+        log(`- ${collection.name}`);
         for (const step of collection.steps) {
             const details = step.error ? ` (${step.error})` : formatStepValue(step.value);
-            console.log(`  - ${step.label}: ${step.ok ? 'ok' : 'failed'}${details}`);
+            log(`  - ${step.label}: ${step.ok ? 'ok' : 'failed'}${details}`);
         }
     }
 }
