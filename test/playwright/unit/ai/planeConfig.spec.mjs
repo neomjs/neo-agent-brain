@@ -237,6 +237,7 @@ test.describe('plane-member derivation witnesses — #15791 seat-variance ground
         expect(data.engines.chroma.dataDirProd.default).toBe(path.resolve(anchor, 'chroma/unified'));
         expect(data.orchestrator.deploymentStateBridge.snapshotPath.default).toBe(path.resolve(anchor, 'deployment-state/snapshot.json'));
         expect(data.orchestrator.recoveryActuator.healAttemptsPath.default).toBe(path.resolve(anchor, 'orchestrator-daemon/heal-attempts.json'));
+        expect(data.orchestrator.recoveryActuator.lmsReplacementFailuresPath.default).toBe(path.resolve(anchor, 'orchestrator-daemon/lms-replacement-failures.json'));
         expect(data.orchestrator.recoveryActuator.recoveryRunStateDir.default).toBe(path.resolve(anchor, 'orchestrator-daemon/recovery-runs'));
         expect(data.remRunStateDir.default).toBe(path.resolve(anchor, 'rem-runs'))
     });

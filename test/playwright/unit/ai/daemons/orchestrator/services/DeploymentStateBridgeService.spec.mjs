@@ -4274,10 +4274,9 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — embeddin
         expect(identity.reason).toContain('Qwen3-Embedding-8B-Q4_K_M');
         expect(identity.servedModelIds).toEqual(['Qwen3-Embedding-8B-Q4_K_M']);
 
-        // The remediation speaks THIS lane's language. Borrowing the residency verdict's vendor-coupled
-        // advice would tell a llama.cpp container to run an `ollama` command that cannot work — on the
-        // very surface an operator reads without shell access.
+        // The remediation speaks THIS lane's language and never addresses a person.
         expect(identity.reason).not.toContain('ollama');
+        expect(identity.reason).not.toMatch(/Point the lane|load the configured model|lms unload|lms load|operator action/i);
 
         bridge.destroy()
     });

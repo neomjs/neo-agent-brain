@@ -30,6 +30,7 @@ import {
     calculateHeapSaturationPercent,
     classifyHeapExhaustion
 } from '../../../../../../../ai/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs';
+import {ContainerHealthControllerService} from '../../../../../../../ai/daemons/orchestrator/services/ContainerHealthControllerService.mjs';
 
 /**
  * A `process-heap-observation` payload as the shipped collector emits it. The defaults are the real
@@ -2651,5 +2652,136 @@ test.describe('ContainerHealthDiagnosisService — plane disk pressure (#1430)',
         });
         expect(belowThreshold.status).toBe('healthy');
         expect(belowThreshold.facts).toEqual([]);
+    });
+});
+
+test.describe('#493 — wrong-resident producer -> transport -> warm-provider actuator route', () => {
+    const createDiagService = () => Neo.create(ContainerHealthDiagnosisService, {nowFn: () => OBSERVED_AT});
+
+    test('AC-5: bridge providerModelIdentity mismatch and readiness replacement-required emit wrong-resident facts and dispatch warm-provider', async () => {
+        const diagnosisService = createDiagService(),
+              actuatorCalls    = [],
+              recordedCalls    = [],
+              controller       = Neo.create(ContainerHealthControllerService, {
+                  nowFn            : () => OBSERVED_AT,
+                  appendHealEventFn: async () => {},
+                  recoveryActuator : {
+                      async apply(serviceKey, action, options) {
+                          actuatorCalls.push({serviceKey, action, targetIdentity: options.targetIdentity, reason: options.reason});
+                          return {status: 'applied', action, serviceKey, targetIdentity: options.targetIdentity};
+                      },
+                      async recordDiagnosis(event, options) {
+                          recordedCalls.push({event, options});
+                          return {status: 'recorded'};
+                      }
+                  }
+              });
+
+        try {
+            // 1. Bridge providerModelIdentity.state = 'mismatch' producer arm -> identity-probe wrong-resident fact -> warm-provider
+            const identityDecision = diagnosisService.diagnose({
+                serviceKey           : 'embedding-model',
+                nodeCommand          : false,
+                observedAt           : OBSERVED_AT,
+                providerModelIdentity: {
+                    state          : 'mismatch',
+                    configuredModel: 'qwen3-embedding-0.6b',
+                    servedModelIds : ['Qwen3-Embedding-8B-Q4_K_M'],
+                    host           : 'http://127.0.0.1:1234',
+                    observedAt     : OBSERVED_AT,
+                    reason         : "configured embedding model 'qwen3-embedding-0.6b' is not served by this endpoint; observed=Qwen3-Embedding-8B-Q4_K_M."
+                }
+            });
+
+            expect(identityDecision.status).toBe('diagnosed');
+            expect(identityDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.warmProvider);
+            const identityFact = identityDecision.facts.find(fact => fact.type === CONTAINER_HEALTH_FACT_TYPES.providerResidency);
+            expect(diagnosisService.isProviderRoleResidencyRecoverable(identityFact)).toBe(true);
+            expect(identityFact.details).toMatchObject({
+                reasonCode     : 'wrong-resident',
+                source         : 'identity-probe',
+                configuredModel: 'qwen3-embedding-0.6b',
+                observedModel  : 'Qwen3-Embedding-8B-Q4_K_M'
+            });
+
+            const identityOutcome = await controller.consume({decision: identityDecision, now: OBSERVED_AT});
+            expect(identityOutcome.status).toBe('actuated');
+            expect(identityOutcome.actuatorAction).toBe('warm-provider');
+
+            // 2. Readiness replacement-required / insufficientLoadedModels producer arm -> readiness-shape wrong-resident fact -> warm-provider
+            const readinessDecision = diagnosisService.diagnose({
+                serviceKey       : 'lms',
+                nodeCommand      : false,
+                observedAt       : OBSERVED_AT,
+                providerResidency: {
+                    provider                : 'openAiCompatible',
+                    host                    : 'http://127.0.0.1:1234',
+                    ready                   : false,
+                    degraded                : true,
+                    status                  : 'replacement-required',
+                    observationStatus       : 'replacement-required',
+                    targetIdentity          : {kind: 'supervised-task', id: 'lms'},
+                    insufficientLoadedModels: [{
+                        model                : 'qwen3-embedding-0.6b',
+                        contextLength        : 8192,
+                        requiredContextLength: 32768
+                    }]
+                }
+            });
+
+            expect(readinessDecision.status).toBe('diagnosed');
+            expect(readinessDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.warmProvider);
+            const readinessFact = readinessDecision.facts.find(fact => fact.type === CONTAINER_HEALTH_FACT_TYPES.providerResidency);
+            expect(diagnosisService.isProviderRoleResidencyRecoverable(readinessFact)).toBe(true);
+            expect(readinessFact.details).toMatchObject({
+                reasonCode     : 'wrong-resident',
+                source         : 'readiness-shape',
+                configuredModel: 'qwen3-embedding-0.6b',
+                observedModel  : 'qwen3-embedding-0.6b',
+                targetIdentity : {kind: 'supervised-task', id: 'lms'}
+            });
+
+            const readinessOutcome = await controller.consume({decision: readinessDecision, now: OBSERVED_AT});
+            expect(readinessOutcome.status).toBe('actuated');
+            expect(readinessOutcome.actuatorAction).toBe('warm-provider');
+
+            expect(actuatorCalls).toEqual([
+                {
+                    serviceKey    : 'embedding-model',
+                    action        : 'warm-provider',
+                    targetIdentity: {kind: 'compose-service', id: 'embedding-model'},
+                    reason        : 'container-health-controller:provider-role-residency-warm'
+                },
+                {
+                    serviceKey    : 'lms',
+                    action        : 'warm-provider',
+                    targetIdentity: {kind: 'supervised-task', id: 'lms'},
+                    reason        : 'container-health-controller:provider-role-residency-warm'
+                }
+            ]);
+
+            // 3. Exhausted heal is recorded, never re-dispatched as warm-provider.
+            const exhaustedDecision = diagnosisService.diagnose({
+                serviceKey       : 'lms',
+                nodeCommand      : false,
+                observedAt       : OBSERVED_AT,
+                providerResidency: {
+                    provider         : 'openAiCompatible',
+                    ready            : false,
+                    degraded         : true,
+                    status           : 'heal-exhausted',
+                    observationStatus: 'heal-exhausted',
+                    targetIdentity   : {kind: 'supervised-task', id: 'lms'}
+                }
+            });
+
+            expect(exhaustedDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+            await controller.consume({decision: exhaustedDecision, now: OBSERVED_AT});
+            expect(actuatorCalls).toHaveLength(2);
+            expect(recordedCalls).toHaveLength(1);
+        } finally {
+            controller.destroy();
+            diagnosisService.destroy();
+        }
     });
 });

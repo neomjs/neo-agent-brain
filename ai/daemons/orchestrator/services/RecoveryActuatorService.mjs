@@ -330,6 +330,7 @@ export class RecoveryActuatorService extends Base {
         isAuthorityHeld = null,
         isEffectStillAdmitted = null,
         expectedContainerId = null,
+        diagnosedWrongResidents = null,
         // `reconfigure` and `raise-ceiling` consume these. A controller names a KNOB, never a config
         // leaf — the transaction boundary belongs to the closed set, so a caller cannot compose an
         // arbitrary group of leaves and have it applied as one. `raise-ceiling` may omit values to
@@ -477,10 +478,11 @@ export class RecoveryActuatorService extends Base {
             };
         }
 
-        const startedAt   = now,
-              diagnosis   = this.resolveDiagnosisEvent({diagnosisEvent, action, target, now: startedAt}),
-              nextAttempt = gate.attempt + 1,
-              runId       = this.getRecoveryRunId({recoveryRunId, serviceKey, action, startedAt});
+        const startedAt              = now,
+              diagnosis              = this.resolveDiagnosisEvent({diagnosisEvent, action, target, now: startedAt}),
+              resolvedWrongResidents = this.extractDiagnosedWrongResidents({diagnosis, diagnosedWrongResidents}),
+              nextAttempt            = gate.attempt + 1,
+              runId                  = this.getRecoveryRunId({recoveryRunId, serviceKey, action, startedAt});
 
         let restartDispatchMarker = null;
 
@@ -554,6 +556,7 @@ export class RecoveryActuatorService extends Base {
                 isAuthorityHeld,
                 isEffectStillAdmitted,
                 expectedContainerId,
+                ...(resolvedWrongResidents.length > 0 ? {diagnosedWrongResidents: resolvedWrongResidents} : {}),
                 onBeforeRestartDispatch
             });
         } catch (error) {
@@ -1189,7 +1192,7 @@ export class RecoveryActuatorService extends Base {
      * @param {Object} options
      * @returns {Promise<Object>}
      */
-    async executeTargetAction({target, action, reason, knob, knobValues, isAuthorityHeld = null, isEffectStillAdmitted = null, expectedContainerId = null, onBeforeRestartDispatch = null}) {
+    async executeTargetAction({target, action, reason, knob, knobValues, isAuthorityHeld = null, isEffectStillAdmitted = null, expectedContainerId = null, diagnosedWrongResidents = null, onBeforeRestartDispatch = null}) {
         // The last COMMON point before every effect kind dispatches — common in syntax, which is not
         // the same as last-owned in time. It fences an action whose effect begins immediately
         // (`warm-provider` awaits its repair as its first statement), and it is NOT sufficient for an
@@ -1202,7 +1205,10 @@ export class RecoveryActuatorService extends Base {
                 target,
                 reason,
                 isAuthorityHeld,
-                ...(typeof isEffectStillAdmitted === 'function' ? {isEffectStillAdmitted} : {})
+                ...(typeof isEffectStillAdmitted === 'function' ? {isEffectStillAdmitted} : {}),
+                ...(Array.isArray(diagnosedWrongResidents) && diagnosedWrongResidents.length > 0
+                    ? {diagnosedWrongResidents}
+                    : {})
             });
         }
 
@@ -1350,9 +1356,10 @@ export class RecoveryActuatorService extends Base {
      * @param {String|null} [options.reason=null] Recovery reason.
      * @param {Function|null} [options.isAuthorityHeld=null] Live recovery-authority oracle.
      * @param {Function|null} [options.isEffectStillAdmitted=null] Live heavy-demand admission oracle.
+     * @param {Object[]|null} [options.diagnosedWrongResidents=null] Diagnosed `{configuredModel, observedModel}` entries from `wrong-resident` facts.
      * @returns {Promise<Object>}
      */
-    async warmProviderResidency({target, reason, isAuthorityHeld = null, isEffectStillAdmitted = null}) {
+    async warmProviderResidency({target, reason, isAuthorityHeld = null, isEffectStillAdmitted = null, diagnosedWrongResidents = null}) {
         // Asserted immediately before the repair dispatches. The repair itself performs awaited
         // provider work, so this is the last point Neo owns before a privileged effect leaves the
         // process; loss DURING the repair is post-dispatch uncertainty, which the catch path records
@@ -1379,6 +1386,9 @@ export class RecoveryActuatorService extends Base {
                   // after the controller decision or an awaited readiness probe. The provider helper
                   // re-checks this immediately before each native warm.
                   ...(typeof isEffectStillAdmitted === 'function' ? {isEffectStillAdmitted} : {}),
+                  ...(Array.isArray(diagnosedWrongResidents) && diagnosedWrongResidents.length > 0
+                      ? {diagnosedWrongResidents}
+                      : {}),
                   log      : {
                       info: message => this.writeLog?.('INFO', message),
                       warn: message => this.writeLog?.('WARN', message)
@@ -2231,6 +2241,38 @@ export class RecoveryActuatorService extends Base {
             source        : 'recovery-actuator',
             details       : {action}
         });
+    }
+
+    /**
+     * @summary Extracts diagnosed `{configuredModel, observedModel}` pairs from `wrong-resident`
+     * residency facts so foreign-resident eviction only unloads a model proven to answer for the role.
+     *
+     * @param {Object} options
+     * @param {Object|null} [options.diagnosis=null] Resolved diagnosis event.
+     * @param {Object[]|null} [options.diagnosedWrongResidents=null] Optional explicit entries.
+     * @returns {Object[]}
+     */
+    extractDiagnosedWrongResidents({diagnosis = null, diagnosedWrongResidents = null} = {}) {
+        if (Array.isArray(diagnosedWrongResidents) && diagnosedWrongResidents.length > 0) {
+            return diagnosedWrongResidents;
+        }
+
+        const facts = Array.isArray(diagnosis?.evidenceFacts) ? diagnosis.evidenceFacts : [];
+
+        return facts
+            .filter(fact =>
+                fact?.type === 'provider-residency' &&
+                fact?.details?.reasonCode === 'wrong-resident' &&
+                typeof fact.details.configuredModel === 'string' &&
+                fact.details.configuredModel.length > 0 &&
+                typeof fact.details.observedModel === 'string' &&
+                fact.details.observedModel.length > 0
+            )
+            .map(fact => ({
+                configuredModel: fact.details.configuredModel,
+                observedModel  : fact.details.observedModel,
+                ...(typeof fact.details.source === 'string' ? {source: fact.details.source} : {})
+            }));
     }
 
     /**

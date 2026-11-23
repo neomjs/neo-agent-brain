@@ -79,6 +79,7 @@ x-plane-env: &plane-env
   NEO_TENANT_REPO_MIRROR_ROOT: /app/.neo-ai-data-parity
   NEO_DEPLOYMENT_STATE_BRIDGE_SNAPSHOT_PATH: /app/.neo-ai-data-parity/deployment-state/snapshot.json
   NEO_RECOVERY_ACTUATOR_HEAL_ATTEMPTS_PATH: /app/.neo-ai-data-parity/orchestrator-daemon/heal-attempts.json
+  NEO_RECOVERY_ACTUATOR_LMS_REPLACEMENT_FAILURES_PATH: /app/.neo-ai-data-parity/orchestrator-daemon/lms-replacement-failures.json
   NEO_RECOVERY_ACTUATOR_RUN_STATE_DIR: /app/.neo-ai-data-parity/orchestrator-daemon/recovery-runs
   # Memory-core members (ai/mcp/server/memory-core/configBase.mjs PLANE_MEMBER_PATHS)
   NEO_RLAIF_PATH: /app/.neo-ai-data-parity/datasets/rlaif/trajectories.jsonl

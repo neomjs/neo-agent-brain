@@ -843,31 +843,34 @@ test.describe('Neo.ai.daemons.services.ProcessSupervisorService', () => {
         expect(degradedLogs[0].message).toContain('chat-model load blocked after three equal failures.');
     });
 
-    test('the degraded readiness line carries the LM Studio replacement action (#460)', async () => {
+    test('the degraded readiness line carries the LM Studio heal receipt without operator imperatives (#493)', async () => {
         const {ensureLmsModelsLoaded} = await import('../../../../../../../ai/services/graph/providerReadinessHelper.mjs');
         const {service, logEntries}   = createTestService();
 
         service.taskDefinitions.mockTask.postSpawn = () => ensureLmsModelsLoaded({
-            host             : 'http://127.0.0.1:1234',
-            models           : ['embed-model'],
-            contextLengths   : {'embed-model': 32768},
-            allowPartial     : true,
-            attempts         : 1,
-            delayMs          : 0,
-            timeoutMs        : 10,
-            fetchModelIds    : async () => ['embed-model'],
-            fetchLoadedModels: async () => [{id: 'embed-model', contextLength: 8192, ttlMs: 3600000}],
-            loadModel        : async () => {},
-            log              : {info() {}, warn() {}}
+            host                  : 'http://127.0.0.1:1234',
+            models                : ['embed-model'],
+            contextLengths        : {'embed-model': 32768},
+            roleByModel           : {'embed-model': 'embedding'},
+            replacementStatePath  : null,
+            maxReplacementFailures: 1,
+            allowPartial          : true,
+            attempts              : 1,
+            delayMs               : 0,
+            timeoutMs             : 10,
+            fetchModelIds         : async () => ['embed-model'],
+            fetchLoadedModels     : async () => [{id: 'embed-model', contextLength: 8192, ttlMs: 3600000}],
+            unloadModel           : async () => {},
+            loadModel             : async () => { throw new Error('lms load embed-model failed: insufficient memory'); },
+            log                   : {info() {}, warn() {}}
         });
 
         await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed');
 
         const degraded = logEntries.find(entry => entry.message.includes('degraded readiness after liveness confirmation'));
 
-        // This line used to end at "confirmation.": the one surface an operator reads said nothing.
-        expect(degraded.message).toContain("— LM Studio resident 'embed-model' has context 8192; needs context 32768");
-        expect(degraded.message).toContain('lms unload embed-model && lms load embed-model --context-length 32768 --identifier embed-model');
+        expect(degraded.message).toContain("LM Studio resident heal exhausted for role 'embedding' ('embed-model') after 1/1 failed replacement(s)");
+        expect(degraded.message).not.toMatch(/lms unload|lms load|operator action/i);
     });
 
     test('reconcileSingletonPort SIGKILLs extra listeners but keeps the canonical pid', () => {

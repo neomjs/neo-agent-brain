@@ -2491,6 +2491,7 @@ class ConfigBase extends ConfigProvider {
                     blockedDeployTargets       : leaf([], 'NEO_RECOVERY_ACTUATOR_BLOCKED_DEPLOY_TARGETS', 'csv'),
                     blockedEngines             : leaf([], 'NEO_RECOVERY_ACTUATOR_BLOCKED_ENGINES', 'csv'),
                     healAttemptsPath           : leaf(path.resolve(planeDataRootDefault, 'orchestrator-daemon/heal-attempts.json'), 'NEO_RECOVERY_ACTUATOR_HEAL_ATTEMPTS_PATH', 'string', {planeMember: true}),
+                    lmsReplacementFailuresPath : leaf(path.resolve(planeDataRootDefault, 'orchestrator-daemon/lms-replacement-failures.json'), 'NEO_RECOVERY_ACTUATOR_LMS_REPLACEMENT_FAILURES_PATH', 'string', {planeMember: true}),
                     recoveryRunStateDir        : leaf(path.resolve(planeDataRootDefault, 'orchestrator-daemon/recovery-runs'), 'NEO_RECOVERY_ACTUATOR_RUN_STATE_DIR', 'string', {planeMember: true}),
                     recoveryRunRetentionLimit  : leaf(100, 'NEO_RECOVERY_ACTUATOR_RUN_RETENTION_LIMIT', 'number'),
                     maxAttemptsPerWindow       : leaf(3, 'NEO_RECOVERY_ACTUATOR_MAX_ATTEMPTS_PER_WINDOW', 'number'),
@@ -3051,6 +3052,7 @@ export const PLANE_MEMBER_PATHS = Object.freeze([
     'orchestrator.dbPath',
     'orchestrator.deploymentStateBridge.snapshotPath',
     'orchestrator.recoveryActuator.healAttemptsPath',
+    'orchestrator.recoveryActuator.lmsReplacementFailuresPath',
     'orchestrator.recoveryActuator.recoveryRunStateDir'
 ]);
 

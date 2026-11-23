@@ -4,6 +4,7 @@ import {readSecretCarrier} from '../../../services/shared/secretCarrier.mjs';
 import neuralLinkConfig    from '../../../mcp/server/neural-link/config.mjs';
 import {
     buildLmsPreloadConfig,
+    buildLmsRoleByModelMap,
     buildOllamaReadinessConfig,
     checkOpenAiCompatibleEmbeddingServing
 } from '../../../services/graph/providerReadinessHelper.mjs';
@@ -108,6 +109,7 @@ function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn}) {
     }
 
     const preloadConfig  = buildLmsPreloadConfig(AiConfig),
+          roleByModel    = buildLmsRoleByModelMap(AiConfig),
           requiredModels = Array.isArray(preloadConfig.models)
               ? [...new Set(preloadConfig.models.filter(Boolean))]
               : [AiConfig.orchestrator.lms.model].filter(Boolean),
@@ -164,6 +166,7 @@ function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn}) {
                 models                  : requiredModels,
                 contextLengths          : preloadConfig.contextLengths,
                 parallels               : preloadConfig.parallels,
+                roleByModel,
                 allowPartial            : true,
                 attempts                : AiConfig.orchestrator.providerReadiness.attempts,
                 delayMs                 : AiConfig.orchestrator.providerReadiness.delayMs,

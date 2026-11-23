@@ -398,12 +398,12 @@ test.describe('provider residency helpers — production mutation authority fenc
         expect(loads).toEqual([]);
     });
 
-    test('LMS routine repair never loads when cached absence becomes a fresh mismatch (#17079)', async () => {
-        const loads     = [],
-              snapshots = [
-                  [],
-                  [{id: 'chat-model', contextLength: 1024}]
-              ];
+    test('LMS repair unloads before loading when cached absence becomes a fresh mismatch (#17079, #493)', async () => {
+        const events    = [];
+        let   snapshots = [
+            [],
+            [{id: 'chat-model', contextLength: 1024}]
+        ];
 
         const result = await ensureLmsModelsLoaded({
             host             : 'http://127.0.0.1:1234',
@@ -414,23 +414,28 @@ test.describe('provider residency helpers — production mutation authority fenc
             delayMs          : 0,
             timeoutMs        : 10,
             fetchModelIds    : async () => ['chat-model'],
-            fetchLoadedModels: async () => snapshots.shift() || [{id: 'chat-model', contextLength: 1024}],
-            loadModel        : async model => loads.push(model),
+            fetchLoadedModels: async () => snapshots.shift() || [{id: 'chat-model', contextLength: 4096}],
+            unloadModel      : async id => events.push({op: 'unload', id}),
+            loadModel        : async (model, options) => events.push({op: 'load', model, options}),
             log              : {info() {}, warn() {}}
         });
 
-        expect(loads).toEqual([]);
+        expect(events).toEqual([
+            {op: 'unload', id: 'chat-model'},
+            {op: 'load', model: 'chat-model', options: {identifier: 'chat-model', contextLength: 4096}}
+        ]);
         expect(result).toMatchObject({
-            ready            : false,
-            degraded         : true,
-            observationStatus: 'replacement-required'
+            ready            : true,
+            degraded         : false,
+            status           : 'replaced',
+            observationStatus: 'replaced',
+            unloadedModels   : ['chat-model'],
+            loadedModels     : ['chat-model']
         });
     });
 
-    test('LMS pins a missing role while another role\'s resident needs replacement (#460)', async () => {
-        // The 2026-09-24 plane: a consumer's JIT request left the embedder resident at the server's
-        // default shape, and the early `replacement-required` return kept the chat model unloaded.
-        const loads    = [];
+    test('LMS replaces a wrong-shape role and additively loads a missing role in the same pass (#460, #493)', async () => {
+        const events   = [];
         let   resident = [{id: 'embed-model', contextLength: 8192, ttlMs: 3600000}];
 
         const result = await ensureLmsModelsLoaded({
@@ -438,85 +443,112 @@ test.describe('provider residency helpers — production mutation authority fenc
             models           : ['chat-model', 'embed-model'],
             contextLengths   : {'chat-model': 131072, 'embed-model': 32768},
             parallels        : {'chat-model': 1, 'embed-model': 1},
+            roleByModel      : {'chat-model': 'chat', 'embed-model': 'embedding'},
             allowPartial     : true,
             attempts         : 1,
             delayMs          : 0,
             timeoutMs        : 10,
             fetchModelIds    : async () => ['chat-model', 'embed-model'],
             fetchLoadedModels: async () => resident,
+            unloadModel      : async id => {
+                events.push({op: 'unload', id});
+                resident = resident.filter(row => row.id !== id);
+            },
             loadModel        : async (model, options) => {
-                loads.push({model, ...options});
+                events.push({op: 'load', model, ...options});
                 resident = [...resident, {id: model, contextLength: options.contextLength, parallel: options.parallel}];
             },
             log              : {info() {}, warn() {}}
         });
 
-        expect(loads).toEqual([{model: 'chat-model', identifier: 'chat-model', contextLength: 131072, parallel: 1}]);
+        expect(events).toEqual([
+            {op: 'unload', id: 'embed-model'},
+            {op: 'load', model: 'embed-model', identifier: 'embed-model', contextLength: 32768, parallel: 1},
+            {op: 'load', model: 'chat-model', identifier: 'chat-model', contextLength: 131072, parallel: 1}
+        ]);
         expect(result).toMatchObject({
-            ready                   : false,
-            degraded                : true,
-            observationStatus       : 'replacement-required',
-            loadedModels            : ['chat-model'],
-            insufficientLoadedModels: [{model: 'embed-model', contextLength: 8192, requiredContextLength: 32768}]
+            ready            : true,
+            degraded         : false,
+            status           : 'replaced',
+            observationStatus: 'replaced',
+            unloadedModels   : ['embed-model'],
+            loadedModels     : ['embed-model', 'chat-model']
         });
-        expect(result.operatorDiagnostic.code).toBe('LMS_REPLACEMENT_REQUIRED');
-        expect(result.operatorDiagnostic.summary).toContain("'embed-model' has context 8192");
-        expect(result.operatorDiagnostic.summary).toContain('needs context 32768, parallel 1 (JIT-loaded, unloads after 3600 s idle)');
-        expect(result.operatorDiagnostic.summary).toContain(
-            'lms unload embed-model && lms load embed-model --context-length 32768 --parallel 1 --identifier embed-model'
-        );
+        expect(result.operatorDiagnostic.code).toBe('LMS_RESIDENT_REPLACED');
+        expect(result.operatorDiagnostic.summary).toContain("LM Studio healed role 'embedding': unloaded 'embed-model'");
+        expect(result.operatorDiagnostic.summary).not.toMatch(/lms unload|lms load|operator action/i);
     });
 
-    test('LMS reports a pinned mis-shaped resident without probing or loading when nothing is missing (#460)', async () => {
-        const loads  = [];
-        let   probes = 0;
+    test('LMS replaces a pinned mis-shaped resident directly via unload -> load -> probe when nothing is missing (#493)', async () => {
+        const events = [];
+        let   rows   = [{id: 'chat-model', contextLength: 131072}, {id: 'embed-model', contextLength: 8192, ttlMs: null}];
 
         const result = await ensureLmsModelsLoaded({
             host             : 'http://127.0.0.1:1234',
             models           : ['chat-model', 'embed-model'],
             contextLengths   : {'chat-model': 131072, 'embed-model': 32768},
+            roleByModel      : {'chat-model': 'chat', 'embed-model': 'embedding'},
             allowPartial     : true,
             attempts         : 1,
             delayMs          : 0,
             timeoutMs        : 10,
             fetchModelIds    : async () => ['chat-model', 'embed-model'],
             fetchLoadedModels: async () => {
-                probes++;
-                return [{id: 'chat-model', contextLength: 131072}, {id: 'embed-model', contextLength: 8192, ttlMs: null}];
+                events.push('probe');
+                return rows;
             },
-            loadModel: async model => loads.push(model),
-            log      : {info() {}, warn() {}}
+            unloadModel: async id => {
+                events.push(`unload:${id}`);
+                rows = rows.filter(row => row.id !== id);
+            },
+            loadModel: async (model, options) => {
+                events.push(`load:${model}:${options.contextLength}`);
+                rows = [...rows, {id: model, contextLength: options.contextLength}];
+            },
+            log: {info() {}, warn() {}}
         });
 
-        expect(loads).toEqual([]);
-        expect(probes).toBe(1);
-        expect(result.observationStatus).toBe('replacement-required');
-        expect(result.operatorDiagnostic.summary).toContain('needs context 32768 (pinned)');
+        expect(events).toEqual([
+            'probe',
+            'unload:embed-model',
+            'load:embed-model:32768',
+            'probe'
+        ]);
+        expect(result.status).toBe('replaced');
+        expect(result.observationStatus).toBe('replaced');
+        expect(result.operatorDiagnostic.summary).not.toMatch(/lms unload|lms load|operator action/i);
     });
 
-    test('LMS never reports an absent or unusable ttlMs as pinned (#460)', async () => {
-        // Only `ttlMs: null` establishes a pinned load. An older `lms` without the field, or a value
-        // the row does not type, is missing evidence and has to read as such.
+    test('LMS replacement summary never emits operator-action imperatives or raw CLI commands (#493)', async () => {
+        let rows = [
+            {id: 'chat-model', contextLength: 4096, ttlMs: 'soon'},
+            {id: 'embed-model', contextLength: 8192}
+        ];
+
         const result = await ensureLmsModelsLoaded({
             host             : 'http://127.0.0.1:1234',
             models           : ['chat-model', 'embed-model'],
             contextLengths   : {'chat-model': 131072, 'embed-model': 32768},
+            roleByModel      : {'chat-model': 'chat', 'embed-model': 'embedding'},
             allowPartial     : true,
             attempts         : 1,
             delayMs          : 0,
             timeoutMs        : 10,
             fetchModelIds    : async () => ['chat-model', 'embed-model'],
-            fetchLoadedModels: async () => [
-                {id: 'chat-model', contextLength: 4096, ttlMs: 'soon'},
-                {id: 'embed-model', contextLength: 8192}
-            ],
-            loadModel: async () => {},
-            log      : {info() {}, warn() {}}
+            fetchLoadedModels: async () => rows,
+            unloadModel      : async id => {
+                rows = rows.filter(item => item.id !== id);
+            },
+            loadModel: async (model, options) => {
+                rows = [...rows, {id: model, contextLength: options.contextLength}];
+            },
+            log: {info() {}, warn() {}}
         });
 
-        expect(result.operatorDiagnostic.summary).toContain("'chat-model' has context 4096; needs context 131072 (TTL unknown)");
-        expect(result.operatorDiagnostic.summary).toContain("'embed-model' has context 8192; needs context 32768 (TTL unknown)");
-        expect(result.operatorDiagnostic.summary).not.toContain('pinned');
+        expect(result.status).toBe('replaced');
+        expect(result.operatorDiagnostic.summary).toContain("LM Studio healed role 'chat'");
+        expect(result.operatorDiagnostic.summary).toContain("LM Studio healed role 'embedding'");
+        expect(result.operatorDiagnostic.summary).not.toMatch(/lms unload|lms load|operator action|pinned/i);
     });
 
     test('LMS reports a suffixed resident without evicting or reloading it (#17079)', async () => {
@@ -1624,6 +1656,290 @@ test.describe('#746 — the readiness probe presents the lane\'s key', () => {
             expect(seen).toHaveLength(4)
         } finally {
             fs.rmSync(keyFile, {force: true})
+        }
+    });
+});
+
+test.describe('#493 — LM Studio wrong-resident self-heal, persisted exhaustion counter, and CLI primitive', () => {
+    let unloadLmsModel, ensureLmsModelsLoaded, createLmsReplacementFailureStore, createLmsReadinessHelper;
+
+    test.beforeAll(async () => {
+        ({
+            unloadLmsModel,
+            ensureLmsModelsLoaded,
+            createLmsReplacementFailureStore,
+            createLmsReadinessHelper
+        } = await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
+    });
+
+    test('unloadLmsModel invokes lms unload <identifier> and surfaces non-zero exit failures', async () => {
+        await expect(unloadLmsModel('', {timeoutMs: 100})).rejects.toThrow(TypeError);
+        await expect(unloadLmsModel('embed-model', {timeoutMs: 0})).rejects.toThrow(TypeError);
+
+        const cliCalls = [];
+        const ok       = await unloadLmsModel('embed-model', {
+            timeoutMs : 250,
+            execFileFn: (bin, args, options, callback) => {
+                cliCalls.push({bin, args, timeout: options.timeout});
+                callback(null, 'unloaded\n', '');
+            }
+        });
+
+        expect(ok).toEqual({stdout: 'unloaded\n', stderr: ''});
+        expect(cliCalls).toEqual([{bin: 'lms', args: ['unload', 'embed-model'], timeout: 250}]);
+
+        await expect(unloadLmsModel('embed-model', {
+            timeoutMs : 250,
+            execFileFn: (_bin, _args, _options, callback) => {
+                const err = Object.assign(new Error('exit 1'), {code: 1});
+                callback(err, '', 'model busy');
+            }
+        })).rejects.toMatchObject({
+            code   : 1,
+            message: expect.stringContaining('stderr=model busy')
+        });
+    });
+
+    test('AC-1: execFileFn recorder proves exact CLI order lms unload -> lms load --context-length --identifier -> probe, plus foreign-resident replacement', async () => {
+        const recorder = [];
+        let   rows     = [{id: 'embed-model', contextLength: 8192}];
+
+        const replaced = await ensureLmsModelsLoaded({
+            host          : 'http://127.0.0.1:1234',
+            models        : ['embed-model', 'chat-model'],
+            contextLengths: {'embed-model': 32768, 'chat-model': 131072},
+            parallels     : {'embed-model': 1, 'chat-model': 1},
+            roleByModel   : {'embed-model': 'embedding', 'chat-model': 'chat'},
+            attempts      : 1,
+            delayMs       : 0,
+            timeoutMs     : 20,
+            fetchModelIds : async () => {
+                recorder.push('catalog-probe');
+                return rows.map(row => row.id);
+            },
+            fetchLoadedModels: async () => {
+                recorder.push('residency-probe');
+                return rows;
+            },
+            execFileFn       : (bin, args, _options, callback) => {
+                recorder.push(`${bin} ${args.join(' ')}`);
+                if (args[0] === 'unload') {
+                    rows = rows.filter(row => row.id !== args[1]);
+                } else if (args[0] === 'load') {
+                    const model       = args[1],
+                          ctxIndex    = args.indexOf('--context-length'),
+                          parIndex    = args.indexOf('--parallel'),
+                          idIndex     = args.indexOf('--identifier'),
+                          loadedId    = idIndex >= 0 ? args[idIndex + 1] : model,
+                          loadedCtx   = ctxIndex >= 0 ? Number(args[ctxIndex + 1]) : undefined,
+                          loadedSlots = parIndex >= 0 ? Number(args[parIndex + 1]) : undefined;
+
+                    rows = [...rows, {id: loadedId, contextLength: loadedCtx, parallel: loadedSlots}];
+                }
+                callback(null, 'ok', '');
+            },
+            log: {info() {}, warn() {}}
+        });
+
+        expect(recorder).toEqual([
+            'catalog-probe',
+            'residency-probe',
+            'residency-probe',
+            'lms unload embed-model',
+            'lms load embed-model --context-length 32768 --parallel 1 --identifier embed-model',
+            'residency-probe',
+            'lms load chat-model --context-length 131072 --parallel 1 --identifier chat-model',
+            'catalog-probe',
+            'residency-probe'
+        ]);
+        expect(replaced).toMatchObject({
+            ready            : true,
+            degraded         : false,
+            status           : 'replaced',
+            observationStatus: 'replaced',
+            unloadedModels   : ['embed-model'],
+            loadedModels     : ['embed-model', 'chat-model']
+        });
+
+        // Control arm: a missing role beside an undiagnosed resident loads additively and issues no unload.
+        const undiagnosedOps      = [];
+        let   undiagnosedRows     = [{id: 'operator-scratch-7b', contextLength: 8192}];
+        const additiveWithForeign = await ensureLmsModelsLoaded({
+            host             : 'http://127.0.0.1:1234',
+            models           : ['qwen3-embedding-0.6b'],
+            contextLengths   : {'qwen3-embedding-0.6b': 32768},
+            roleByModel      : {'qwen3-embedding-0.6b': 'embedding'},
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 20,
+            fetchModelIds    : async () => undiagnosedRows.map(row => row.id),
+            fetchLoadedModels: async () => undiagnosedRows,
+            unloadModel      : async id => {
+                undiagnosedOps.push(`unload:${id}`);
+            },
+            loadModel        : async (model, options) => {
+                undiagnosedOps.push(`load:${model}:${options.contextLength}`);
+                undiagnosedRows = [...undiagnosedRows, {id: model, contextLength: options.contextLength}];
+            },
+            log: {info() {}, warn() {}}
+        });
+
+        expect(undiagnosedOps).toEqual(['load:qwen3-embedding-0.6b:32768']);
+        expect(additiveWithForeign).toMatchObject({
+            ready         : true,
+            degraded      : false,
+            unloadedModels: [],
+            loadedModels  : ['qwen3-embedding-0.6b']
+        });
+        expect(undiagnosedRows.map(row => row.id)).toEqual(['operator-scratch-7b', 'qwen3-embedding-0.6b']);
+
+        // Diagnosed foreign resident answering the role's requests is evicted while any other resident stays untouched.
+        const foreignOps  = [];
+        let   foreignRows = [
+            {id: 'operator-scratch-7b', contextLength: 8192},
+            {id: 'Qwen3-Embedding-8B-Q4_K_M', contextLength: 32768}
+        ];
+        const foreignReplaced = await ensureLmsModelsLoaded({
+            host                   : 'http://127.0.0.1:1234',
+            models                 : ['qwen3-embedding-0.6b'],
+            contextLengths         : {'qwen3-embedding-0.6b': 32768},
+            roleByModel            : {'qwen3-embedding-0.6b': 'embedding'},
+            diagnosedWrongResidents: [{
+                configuredModel: 'qwen3-embedding-0.6b',
+                observedModel  : 'Qwen3-Embedding-8B-Q4_K_M',
+                source         : 'identity-probe'
+            }],
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 20,
+            fetchModelIds    : async () => foreignRows.map(row => row.id),
+            fetchLoadedModels: async () => foreignRows,
+            unloadModel      : async id => {
+                foreignOps.push(`unload:${id}`);
+                foreignRows = foreignRows.filter(row => row.id !== id);
+            },
+            loadModel        : async (model, options) => {
+                foreignOps.push(`load:${model}:${options.contextLength}`);
+                foreignRows = [...foreignRows, {id: model, contextLength: options.contextLength}];
+            },
+            log: {info() {}, warn() {}}
+        });
+
+        expect(foreignOps).toEqual([
+            'unload:Qwen3-Embedding-8B-Q4_K_M',
+            'load:qwen3-embedding-0.6b:32768'
+        ]);
+        expect(foreignReplaced.status).toBe('replaced');
+        expect(foreignReplaced.unloadedModels).toEqual(['Qwen3-Embedding-8B-Q4_K_M']);
+        expect(foreignReplaced.loadedModels).toEqual(['qwen3-embedding-0.6b']);
+        expect(foreignRows.map(row => row.id)).toEqual(['operator-scratch-7b', 'qwen3-embedding-0.6b']);
+    });
+
+    test('AC-2 & AC-4: N consecutive failed replacements return heal-exhausted, suppress further unloads across a fresh helper instance, and reset on replaced', async () => {
+        const tmpDir    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-493-lms-exhaust-')),
+              statePath = path.join(tmpDir, 'lms-replacement-failures.json'),
+              warnings  = [],
+              unloads   = [],
+              loads     = [];
+        let   shouldFail = true,
+              rows       = [{id: 'embed-model', contextLength: 8192}];
+
+        try {
+            // Missing file defaults to 0 failures.
+            const initialStore = createLmsReplacementFailureStore({statePath, maxFailures: 2});
+            expect(initialStore.getCount('embedding')).toBe(0);
+
+            const helperA = createLmsReadinessHelper({
+                replacementStatePath  : statePath,
+                maxReplacementFailures: 2
+            });
+
+            const runPass = (helper, extra = {}) => helper.ensureLmsModelsLoaded({
+                host             : 'http://127.0.0.1:1234',
+                models           : ['embed-model'],
+                contextLengths   : {'embed-model': 32768},
+                roleByModel      : {'embed-model': 'embedding'},
+                allowPartial     : true,
+                attempts         : 1,
+                delayMs          : 0,
+                timeoutMs        : 10,
+                fetchModelIds    : async () => rows.map(row => row.id),
+                fetchLoadedModels: async () => rows,
+                unloadModel      : async id => {
+                    unloads.push(id);
+                },
+                loadModel        : async (model, options) => {
+                    loads.push(model);
+                    if (shouldFail) {
+                        throw new Error('lms load embed-model failed: out of GPU memory');
+                    }
+                    rows = [{id: model, contextLength: options.contextLength}];
+                },
+                log: {
+                    info() {},
+                    warn: message => warnings.push(message)
+                },
+                ...extra
+            });
+
+            const pass1 = await runPass(helperA);
+            expect(pass1.status).toBe('replacement-failed');
+            expect(unloads).toEqual(['embed-model']);
+
+            // Nth failure (N = 2) transitions to heal-exhausted with diagnosis.
+            const pass2 = await runPass(helperA);
+            expect(pass2).toMatchObject({
+                ready             : false,
+                degraded          : true,
+                status            : 'heal-exhausted',
+                observationStatus : 'heal-exhausted',
+                operatorDiagnostic: {
+                    code   : 'LMS_HEAL_EXHAUSTED',
+                    summary: expect.stringContaining("LM Studio resident heal exhausted for role 'embedding'")
+                }
+            });
+            expect(unloads).toHaveLength(2);
+
+            // Even if load would now succeed, pass N+1 issues NO further unload while exhausted.
+            shouldFail = false;
+            const pass3 = await runPass(helperA);
+            expect(pass3.status).toBe('heal-exhausted');
+            expect(unloads).toHaveLength(2);
+            expect(loads).toHaveLength(2);
+
+            // Fresh helper instance reading the persisted counter file still suppresses unloads.
+            const helperB = createLmsReadinessHelper({
+                replacementStatePath  : statePath,
+                maxReplacementFailures: 2
+            });
+            expect(helperB.replacementFailureStore.getCount('embedding')).toBe(2);
+
+            const pass4 = await runPass(helperB);
+            expect(pass4.status).toBe('heal-exhausted');
+            expect(unloads).toHaveLength(2);
+
+            // Admitted replacement (`replaced`) resets the persisted counter to 0.
+            const healed = await runPass(helperB, {allowExhaustedRetry: true});
+            expect(healed.status).toBe('replaced');
+            expect(unloads).toHaveLength(3);
+            expect(helperB.replacementFailureStore.getCount('embedding')).toBe(0);
+
+            // Fresh helper C sees 0 on disk after reset.
+            const helperC = createLmsReadinessHelper({
+                replacementStatePath  : statePath,
+                maxReplacementFailures: 2
+            });
+            expect(helperC.replacementFailureStore.getCount('embedding')).toBe(0);
+
+            // AC-4: zero operator imperatives in any summary or warning.
+            for (const item of [pass1, pass2, pass3, pass4, healed]) {
+                expect(JSON.stringify(item.operatorDiagnostic || '')).not.toMatch(/lms unload|lms load|operator action/i);
+            }
+            for (const warning of warnings) {
+                expect(warning).not.toMatch(/lms unload|lms load|operator action/i);
+            }
+        } finally {
+            fs.rmSync(tmpDir, {force: true, recursive: true});
         }
     });
 });

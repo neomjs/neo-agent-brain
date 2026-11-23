@@ -798,35 +798,47 @@ test.describe('runSandman.mjs provider readiness diagnostics (#10587)', () => {
         });
     });
 
-    test('ensureLmsModelsLoaded reports numeric chat parallel mismatches without mutation (#17079)', async () => {
-        const loadCalls = [];
+    test('ensureLmsModelsLoaded replaces numeric chat parallel mismatches via unload + load (#493)', async () => {
+        const events   = [];
+        let   resident = [{
+            id           : 'chat-model',
+            contextLength: 131072,
+            parallel     : 4
+        }];
 
         const result = await providerReadinessHelper.ensureLmsModelsLoaded({
-            host             : 'http://127.0.0.1:1234',
-            models           : ['chat-model'],
-            contextLengths   : {'chat-model': 131072},
-            parallels        : {'chat-model': 1},
-            allowPartial     : true,
-            attempts         : 1,
-            delayMs          : 0,
-            timeoutMs        : 50,
-            fetchModelIds    : async () => ['chat-model'],
-            loadModel        : async (model, options) => loadCalls.push({model, options}),
-            fetchLoadedModels: async () => [{
-                id           : 'chat-model',
-                contextLength: 131072,
-                parallel     : 4
-            }],
-            log: {info() {}, warn() {}}
+            host          : 'http://127.0.0.1:1234',
+            models        : ['chat-model'],
+            contextLengths: {'chat-model': 131072},
+            parallels     : {'chat-model': 1},
+            allowPartial  : true,
+            attempts      : 1,
+            delayMs       : 0,
+            timeoutMs     : 50,
+            fetchModelIds : async () => ['chat-model'],
+            unloadModel   : async identifier => {
+                events.push({op: 'unload', identifier});
+                resident = [];
+            },
+            loadModel        : async (model, options) => {
+                events.push({op: 'load', model, options});
+                resident = [{id: model, contextLength: options.contextLength, parallel: options.parallel}];
+            },
+            fetchLoadedModels: async () => resident,
+            log              : {info() {}, warn() {}}
         });
 
-        expect(loadCalls).toEqual([]);
+        expect(events).toEqual([
+            {op: 'unload', identifier: 'chat-model'},
+            {op: 'load', model: 'chat-model', options: {identifier: 'chat-model', contextLength: 131072, parallel: 1}}
+        ]);
         expect(result).toMatchObject({
-            ready            : false,
-            degraded         : true,
-            observationStatus: 'replacement-required',
-            loadedModels     : [],
-            unloadedModels   : []
+            ready            : true,
+            degraded         : false,
+            status           : 'replaced',
+            observationStatus: 'replaced',
+            loadedModels     : ['chat-model'],
+            unloadedModels   : ['chat-model']
         });
     });
 
@@ -1207,7 +1219,9 @@ test.describe('runSandman.mjs provider readiness diagnostics (#10587)', () => {
             'chat-model'     : 4,
             'embedding-model': undefined
         });
-        expect(warnings[0]).toContain('replacement requires an explicit operator action');
+        expect(result.status).toBe('replacement-failed');
+        expect(warnings[0]).toContain("LM Studio resident replacement failed for role 'chat-model'");
+        expect(warnings[0]).not.toMatch(/lms unload|lms load|operator action/i);
     });
 
     test('ensureLmsModelsLoaded mixes missing + context-configured verified-resident paths correctly (#13700)', async () => {

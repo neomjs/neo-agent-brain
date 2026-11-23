@@ -1626,7 +1626,7 @@ export class DeploymentStateBridgeService extends Base {
             ? {state: 'match', configuredModel, servedModelIds, host, observedAt, reason: null}
             : {
                 state : 'mismatch', configuredModel, servedModelIds, host, observedAt,
-                reason: `configured embedding model '${configuredModel}' is not served by this endpoint; observed=${servedModelIds.join(', ')}. Point the lane at a served id, or load the configured model on the runtime that owns this endpoint.`
+                reason: `configured embedding model '${configuredModel}' is not served by this endpoint; observed=${servedModelIds.join(', ')}.`
             };
     }
 
