@@ -3090,6 +3090,19 @@ paths:
           description: "With `taskStates: ['Expired']` and no `taskOrder`: only Tasks that expired within the ask span, newest expiry first; the answer adds `expiredSince`."
           schema:
             type: boolean
+        - name: since
+          in: query
+          required: false
+          description: "Inclusive lower bound on `sentAt` (ISO-8601 instant). Filters before pagination on both plain and `observer` reads so `totalCount` counts matching rows; unparsable values are refused naming `since`."
+          schema:
+            type: string
+            format: date-time
+        - name: directOnly
+          in: query
+          required: false
+          description: "With `observer` only: return only direct messages whose `to` matches the stamped viewer (excludes broadcasts and mail addressed to others) without widening viewer admission."
+          schema:
+            type: boolean
         - name: limit
           in: query
           required: false
@@ -3117,7 +3130,7 @@ paths:
         - name: projection
           in: query
           required: false
-          description: "Response shape (`'full'`, `'compact'`, or `'counts'`). `'full'` (default) returns the complete row summary and stamps `seenAt`. `'compact'` returns the 9 triage fields (`messageId, from, to, sentAt, readAt, wakeSuppressed, priority, taskState, subject` truncated to 160 chars) and stamps `seenAt`. `'counts'` ignores `limit`/`offset` (`paginationIgnored: true`), stamps nothing, and returns `totalCount`, `unreadCount`, `byToClass`, `bySender`, `bySubjectTag`, and `unreadDirectMessageIds`."
+          description: "Response shape (`'full'`, `'compact'`, or `'counts'`). `'full'` (default) returns the complete row summary and stamps `seenAt` on ordinary reads. `'compact'` returns the 9 triage fields (`messageId, from, to, sentAt, readAt, wakeSuppressed, priority, taskState, subject` truncated to 160 chars) on both ordinary reads (stamping `seenAt`) and `observer` reads (non-stamping). `'counts'` applies to ordinary reads only, ignores `limit`/`offset` (`paginationIgnored: true`), stamps nothing, and returns `totalCount`, `unreadCount`, `byToClass`, `bySender`, `bySubjectTag`, and `unreadDirectMessageIds`."
           schema:
             type: string
             enum: [full, compact, counts]

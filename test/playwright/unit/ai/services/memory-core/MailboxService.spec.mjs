@@ -669,6 +669,146 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         await expect(callMemoryCoreTool('list_messages', {observer: {scope: 'all'}})).rejects.toThrow();
     });
 
+    test('#1688 AC-1..AC-4: MCP list_messages wires since on both paths, directOnly + 9-field compact on observer reads, and keeps omitted-param calls byte-identical', async () => {
+        for (let i = 0; i < 25; i++) {
+            const isDirect = i % 3 === 0,
+                id         = `MESSAGE:obs-1688-${String(i).padStart(2, '0')}`,
+                to         = isDirect ? '@bob' : 'AGENT:*',
+                sentAt     = `2026-11-13T20:${String(i).padStart(2, '0')}:00.000Z`,
+                subject    = `[lane-claim] Long observer row subject ${i} across multi-repo handoff `.padEnd(340, 'm');
+
+            GraphService.upsertNode({
+                id,
+                type      : 'MESSAGE',
+                name      : subject,
+                properties: {
+                    subject,
+                    bodyText      : 'body text never shown in list',
+                    from          : '@alice',
+                    to,
+                    sentAt,
+                    priority      : i % 4 === 0 ? 'high' : 'normal',
+                    readAt        : null,
+                    seenAt        : null,
+                    archivedAt    : '2026-11-13T21:00:00.000Z',
+                    wakeSuppressed: !isDirect,
+                    relatedTickets: [
+                        `neomjs/neo-agent-brain#${1700 + i}`,
+                        `neomjs/neo-agent-institution#${950 + i}`,
+                        `neomjs/neo#${22100 + i}`
+                    ],
+                    task          : {state: 'Submitted', assignee: '@bob'}
+                }
+            });
+            GraphService.linkNodes(id, '@alice', 'SENT_BY');
+            GraphService.linkNodes(id, to, 'SENT_TO', 0, isDirect ? {} : {broadcastCohort: 'known', intendedRecipientCount: 1});
+            if (!isDirect) {
+                GraphService.linkNodes(id, '@bob', 'DELIVERED_TO', 0, {readAt: null, archivedAt: '2026-11-13T21:00:00.000Z'});
+            }
+            GraphService.linkNodes(id, `MESSAGE:550e8400-e29b-41d4-a716-4466554401${String(i).padStart(2, '0')}`, 'PART_OF_THREAD');
+        }
+
+        // Also seed an outbound DM from @bob to @alice to verify involves-me directOnly keeps only viewer-addressed mail
+        GraphService.upsertNode({
+            id        : 'MESSAGE:obs-1688-outbound',
+            type      : 'MESSAGE',
+            name      : 'outbound dm',
+            properties: {
+                subject : 'outbound dm to alice',
+                bodyText: 'hello alice',
+                from    : '@bob',
+                to      : '@alice',
+                sentAt  : '2026-11-13T20:30:00.000Z',
+                priority: 'normal',
+                readAt  : null,
+                seenAt  : null
+            }
+        });
+        GraphService.linkNodes('MESSAGE:obs-1688-outbound', '@bob', 'SENT_BY');
+        GraphService.linkNodes('MESSAGE:obs-1688-outbound', '@alice', 'SENT_TO');
+
+        const sqlite   = GraphService.db.storage.db,
+            snapshot   = () => JSON.stringify({
+                nodes: sqlite.prepare('SELECT * FROM Nodes ORDER BY id').all(),
+                edges: sqlite.prepare('SELECT * FROM Edges ORDER BY id').all()
+            }),
+            beforeRead = snapshot(),
+            sinceBound = '2026-11-13T20:15:00.000Z';
+
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
+            // AC-4: omitted new parameters match explicit baseline defaults byte-for-byte
+            const observerDefault = await callMemoryCoreTool('list_messages', {observer: {scope: 'involves-me'}, limit: 30}),
+                observerFull      = await callMemoryCoreTool('list_messages', {
+                    observer  : {scope: 'involves-me'},
+                    limit     : 30,
+                    projection: 'full',
+                    directOnly: false
+                });
+            expect(JSON.stringify(observerDefault)).toBe(JSON.stringify(observerFull));
+
+            // AC-3: observer compact returns exact 9 fields and < 50% bytes on 25 rows
+            const full25    = await callMemoryCoreTool('list_messages', {observer: {scope: 'own'}, limit: 25}),
+                compact25   = await callMemoryCoreTool('list_messages', {observer: {scope: 'own'}, limit: 25, projection: 'compact'}),
+                plainSample = await MailboxService.listMessages({includeArchived: true, limit: 1, projection: 'compact'});
+
+            expect(compact25.messages).toHaveLength(25);
+            expect(Object.keys(compact25.messages[0])).toEqual(Object.keys(plainSample.messages[0]));
+            expect(Object.keys(compact25.messages[0])).toEqual([
+                'messageId', 'from', 'to', 'sentAt', 'readAt', 'wakeSuppressed', 'priority', 'taskState', 'subject'
+            ]);
+            expect(compact25.messages.every(row => row.subject.length === 160 && row.subject.endsWith('…'))).toBe(true);
+            expect(Buffer.byteLength(JSON.stringify(compact25), 'utf8'))
+                .toBeLessThan(Buffer.byteLength(JSON.stringify(full25), 'utf8') / 2);
+
+            // AC-2: directOnly on observer returns no broadcast and only viewer-addressed direct messages; to stays refused
+            const directObserver = await callMemoryCoreTool('list_messages', {
+                observer  : {scope: 'involves-me'},
+                directOnly: true,
+                limit     : 30
+            });
+            const expectedDirectIds = observerDefault.messages
+                .filter(row => row.to === '@bob')
+                .map(row => row.messageId);
+            expect(directObserver.messages.map(row => row.messageId)).toEqual(expectedDirectIds);
+            expect(directObserver.totalCount).toBe(expectedDirectIds.length);
+            expect(directObserver.messages.every(row => row.to === '@bob')).toBe(true);
+            await expect(callMemoryCoreTool('list_messages', {observer: {scope: 'involves-me'}, directOnly: true, to: '@bob'}))
+                .rejects.toThrow(/stamped viewer/);
+            await expect(callMemoryCoreTool('list_messages', {directOnly: true}))
+                .rejects.toThrow(/directOnly requires observer/);
+
+            // AC-1: since on both plain and observer paths matches full walk and updates totalCount
+            const plainAll   = await MailboxService.listMessages({box: 'all', includeArchived: true, limit: 50}),
+                plainSince   = await callMemoryCoreTool('list_messages', {box: 'all', includeArchived: true, limit: 50, since: sinceBound, projection: 'compact'}),
+                plainCounts  = await callMemoryCoreTool('list_messages', {box: 'inbox', includeArchived: true, since: sinceBound, projection: 'counts'}),
+                obsSince     = await callMemoryCoreTool('list_messages', {observer: {scope: 'involves-me'}, limit: 50, since: sinceBound}),
+                expectedPlainIds = plainAll.messages
+                    .filter(row => Date.parse(row.sentAt) >= Date.parse(sinceBound))
+                    .map(row => row.messageId),
+                expectedObsIds = observerDefault.messages
+                    .filter(row => Date.parse(row.sentAt) >= Date.parse(sinceBound))
+                    .map(row => row.messageId);
+
+            expect(plainSince.messages.map(row => row.messageId)).toEqual(expectedPlainIds);
+            expect(plainSince.totalCount).toBe(expectedPlainIds.length);
+            expect(obsSince.messages.map(row => row.messageId)).toEqual(expectedObsIds);
+            expect(obsSince.totalCount).toBe(expectedObsIds.length);
+            expect(plainCounts.totalCount).toBe(
+                (await MailboxService.listMessages({box: 'inbox', includeArchived: true, limit: 50})).messages
+                    .filter(row => Date.parse(row.sentAt) >= Date.parse(sinceBound)).length
+            );
+
+            await expect(callMemoryCoreTool('list_messages', {since: 'not-an-instant'})).rejects.toThrow(/since/);
+            await expect(callMemoryCoreTool('list_messages', {observer: {scope: 'own'}, since: 'not-an-instant'})).rejects.toThrow(/since/);
+            await expect(callMemoryCoreTool('list_messages', {observer: {scope: 'own'}, projection: 'counts'})).rejects.toThrow(/projection/);
+
+            // Verify observer calls above left zero receipt mutations prior to plain callMemoryCoreTool('list_messages')
+            expect(JSON.parse(sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get('MESSAGE:obs-1688-00').data).properties.seenAt)
+                .toBeNull();
+        });
+        expect(beforeRead.length).toBeGreaterThan(0);
+    });
+
     test('#16677: add_message returns its durable WAL receipt before graph projection', async () => {
         await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
             await PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'});

@@ -12,11 +12,80 @@ import {TASK_STATES}                      from '../taskAssignmentContract.mjs';
  */
 
 const
-    MAILBOX_RETRACTED_PLACEHOLDER = '[retracted by sender]',
-    MAX_MAILBOX_OBSERVATION_LIMIT = 200,
-    OBSERVER_EDGE_TYPE_SQL        = "'SENT_BY', 'SENT_TO', 'DELIVERED_TO', 'PART_OF_THREAD', 'REFERENCES_TICKET'",
-    OBSERVER_SCOPES               = new Set(['all', 'involves-me', 'own']),
-    SHARING_POLICIES              = new Set(['private', 'legacy', 'team']);
+    COMPACT_OBSERVER_EDGE_TYPE_SQL = "'SENT_BY', 'SENT_TO', 'DELIVERED_TO'",
+    COMPACT_SUBJECT_MAX_LENGTH     = 160,
+    ISO_INSTANT_PATTERN            = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-](\d{2}):(\d{2}))$/,
+    MAILBOX_RETRACTED_PLACEHOLDER  = '[retracted by sender]',
+    MAX_MAILBOX_OBSERVATION_LIMIT  = 200,
+    OBSERVER_EDGE_TYPE_SQL         = "'SENT_BY', 'SENT_TO', 'DELIVERED_TO', 'PART_OF_THREAD', 'REFERENCES_TICKET'",
+    OBSERVER_LIST_PROJECTIONS      = new Set(['full', 'compact']),
+    OBSERVER_SCOPES                = new Set(['all', 'involves-me', 'own']),
+    SHARING_POLICIES               = new Set(['private', 'legacy', 'team']);
+
+/**
+ * @summary Validates and normalizes an optional ISO-8601 instant into canonical UTC millisecond form.
+ * @param {*} since Optional ISO-8601 timestamp string.
+ * @param {String} [surface='mailbox observation'] Caller name for refusal diagnostics.
+ * @returns {String|undefined} Canonical UTC ISO-8601 string (`YYYY-MM-DDTHH:MM:SS.SSSZ`), or `undefined`.
+ * @throws {TypeError} When `since` is present and not a valid ISO-8601 instant.
+ */
+export function resolveSinceInstant(since, surface = 'mailbox observation') {
+    if (since === undefined) return undefined;
+
+    if (typeof since !== 'string') {
+        throw new TypeError(`${surface}: since must be an ISO-8601 instant, received ${JSON.stringify(since)}`)
+    }
+
+    const match = since.match(ISO_INSTANT_PATTERN);
+    if (!match) {
+        throw new TypeError(`${surface}: since must be an ISO-8601 instant, received ${JSON.stringify(since)}`)
+    }
+
+    const
+        year         = Number(match[1]),
+        month        = Number(match[2]),
+        day          = Number(match[3]),
+        hour         = Number(match[4]),
+        minute       = Number(match[5]),
+        second       = Number(match[6]),
+        offsetHour   = match[9] === undefined ? 0 : Number(match[9]),
+        offsetMinute = match[10] === undefined ? 0 : Number(match[10]),
+        maxDay       = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0,
+        epochMs      = Date.parse(since);
+
+    if (month < 1 || month > 12 || day < 1 || day > maxDay ||
+        hour > 23 || minute > 59 || second > 59 ||
+        offsetHour > 23 || offsetMinute > 59 || !Number.isFinite(epochMs)) {
+        throw new TypeError(`${surface}: since must be an ISO-8601 instant, received ${JSON.stringify(since)}`)
+    }
+
+    return new Date(epochMs).toISOString()
+}
+
+/**
+ * @summary Projects a mailbox row summary into the canonical 9-field compact row with a 160-char subject cap.
+ * @param {Object} summary Mailbox row summary.
+ * @returns {Object} Nine-field compact mailbox row.
+ */
+export function projectCompactMailboxRow(summary) {
+    const
+        rawSubject = typeof summary.subject === 'string' ? summary.subject : '',
+        subject    = rawSubject.length > COMPACT_SUBJECT_MAX_LENGTH
+            ? `${rawSubject.slice(0, COMPACT_SUBJECT_MAX_LENGTH - 1)}…`
+            : rawSubject;
+
+    return {
+        messageId     : summary.messageId,
+        from          : summary.from,
+        to            : summary.to,
+        sentAt        : summary.sentAt,
+        readAt        : summary.readAt,
+        wakeSuppressed: Boolean(summary.wakeSuppressed),
+        priority      : summary.priority,
+        taskState     : summary.task?.state ?? null,
+        subject
+    }
+}
 
 /**
  * @summary Validates the public observer selector without resolving the caller or deployment policy.
@@ -58,13 +127,14 @@ export function normalizeMailboxObserver(observer) {
  * @summary Reads only the source edges needed by the observer projection, through the source index.
  * @param {Object} sqlite SQLite handle.
  * @param {String} messageId MESSAGE node id.
+ * @param {Boolean} [compact=false] Whether only routing/receipt edges are required.
  * @returns {Object[]}
  * @private
  */
-function sourceObservationEdges(sqlite, messageId) {
+function sourceObservationEdges(sqlite, messageId, compact = false) {
     return sqlite.prepare(`
         SELECT target, type, data FROM Edges
-        WHERE source = ? AND type IN (${OBSERVER_EDGE_TYPE_SQL})
+        WHERE source = ? AND type IN (${compact ? COMPACT_OBSERVER_EDGE_TYPE_SQL : OBSERVER_EDGE_TYPE_SQL})
         ORDER BY id
     `).all(messageId)
 }
@@ -150,6 +220,8 @@ function buildObservationQuery({
     taskStates,
     taskOrder,
     expiredSince,
+    since,
+    directOnly = false,
     useMessageSentAtIndex = false
 }) {
     const params = {};
@@ -165,7 +237,7 @@ function buildObservationQuery({
     }
 
     const
-        viewer   = scope === 'all' && policy === 'team'
+        viewer   = scope === 'all' && policy === 'team' && !directOnly
             ? null
             : jsonMembership(params, 'viewerVariants', viewerVariants),
         inbox = scope === 'all' && policy !== 'team'
@@ -210,6 +282,20 @@ function buildObservationQuery({
                     : `(${senderIsViewer} OR ${sentToInbox ?? '0'} OR ${deliveredToInbox ?? '0'} OR ${legacyBroadcast})`,
         eligibility = [scopePredicate];
 
+    if (directOnly) {
+        eligibility.push(sentToViewer);
+        eligibility.push(`NOT EXISTS (
+            SELECT 1 FROM Edges observer_broadcast
+            WHERE observer_broadcast.source = n.id AND observer_broadcast.type = 'SENT_TO'
+              AND observer_broadcast.target = 'AGENT:*'
+        )`)
+    }
+
+    if (since !== undefined) {
+        params.since = since;
+        eligibility.push(`strftime('%Y-%m-%dT%H:%M:%fZ', json_extract(n.data, '$.properties.sentAt')) >= @since`)
+    }
+
     if (senderFilter) {
         eligibility.push(routed('SENT_BY', senderFilter, 'observer_from_filter'))
     }
@@ -250,7 +336,9 @@ function buildObservationQuery({
         candidateBranches.push(`SELECT source AS messageId FROM Edges WHERE type = '${edgeType}' AND target ${variants}`)
     };
 
-    if (!(scope === 'all' && policy === 'team')) {
+    if (directOnly) {
+        candidateRoute('SENT_TO', viewer)
+    } else if (!(scope === 'all' && policy === 'team')) {
         if (scope === 'own') {
             candidateRoute('SENT_TO', viewer);
             candidateRoute('DELIVERED_TO', viewer)
@@ -422,6 +510,53 @@ function projectMessage(row, edges, viewerVariants, includeBody = false) {
 }
 
 /**
+ * @summary Projects one admitted MESSAGE into the 9-field compact observer row.
+ * @param {Object} row SQLite node row.
+ * @param {Object[]} edges Routing and delivery source edges.
+ * @param {String[]} viewerVariants Viewer identity variants for broadcast receipts.
+ * @returns {Object}
+ * @private
+ */
+function projectCompactObserverMessage(row, edges, viewerVariants) {
+    const node = parseRecord(row.data, 'MESSAGE');
+
+    if (node.label !== 'MESSAGE') {
+        throw new Error('mailbox observation result is not a MESSAGE node')
+    }
+
+    const properties = node.properties && typeof node.properties === 'object' && !Array.isArray(node.properties)
+            ? node.properties
+            : {},
+        sentByEdge     = edges.find(edge => edge.type === 'SENT_BY'),
+        sentToEdge     = edges.find(edge => edge.type === 'SENT_TO'),
+        deliveryEdges  = edges.filter(edge => edge.type === 'DELIVERED_TO'),
+        viewerDelivery = deliveryEdges.find(edge => viewerVariants.includes(edge.target)),
+        to             = sentToEdge?.target ?? viewerDelivery?.target ?? null,
+        retracted      = Boolean(properties.retracted),
+        receipt        = viewerDelivery ? parseRecord(viewerDelivery.data, 'DELIVERED_TO edge').properties ?? {} : null,
+        readAt         = receipt
+            ? receipt.readAt ?? null
+            : to === 'AGENT:*' && deliveryEdges.length > 0
+                ? null
+                : properties.readAt ?? null,
+        task = properties.task && typeof properties.task === 'object' && !Array.isArray(properties.task)
+            ? {state: typeof properties.task.state === 'string' ? properties.task.state : null}
+            : null;
+
+    return projectCompactMailboxRow({
+        messageId     : row.messageId,
+        from          : sentByEdge?.target ?? null,
+        to,
+        sentAt        : properties.sentAt ?? null,
+        readAt,
+        wakeSuppressed: Boolean(properties.wakeSuppressed),
+        priority      : properties.priority ?? null,
+        task,
+        subject       : retracted ? MAILBOX_RETRACTED_PLACEHOLDER : properties.subject ?? null
+    })
+}
+
+/**
  * @summary Reads one policy-bounded A2A observer population from SQLite without repair, receipt stamping or writes.
  * The count and page share one transaction and one eligibility CTE; a detail id must pass the exact same filter.
  * @param {Object} options
@@ -436,6 +571,9 @@ function projectMessage(row, edges, viewerVariants, includeBody = false) {
  * @param {'priority-age'} [options.taskOrder] Task ordering, valid only with `taskStates`.
  * @param {String} [options.expiredSince] ISO instant: only Tasks whose `task.expiredAt` is at or after it,
  *     newest expiry first. Requires `taskStates`; the list envelope carries it back.
+ * @param {String} [options.since] ISO instant: only messages whose `sentAt` is at or after it.
+ * @param {Boolean} [options.directOnly] When true, keep only messages whose `to` matches the stamped viewer.
+ * @param {'full'|'compact'} [options.projection='full'] List row projection (`'full'` or 9-field `'compact'`).
  * @param {String[]} [options.fromVariants=[]] Optional server-normalized sender filter.
  * @param {String} [options.threadId] Optional thread filter.
  * @param {String[][]} [options.taggedConceptGroups=[]] AND-of-OR tag filters.
@@ -454,6 +592,9 @@ export function readMailboxObservation({
     taskStates,
     taskOrder,
     expiredSince,
+    since,
+    directOnly,
+    projection = 'full',
     fromVariants = [],
     threadId,
     taggedConceptGroups = [],
@@ -493,23 +634,51 @@ export function readMailboxObservation({
     if (expiredSince !== undefined && (typeof expiredSince !== 'string' || Number.isNaN(Date.parse(expiredSince)) || taskStates === undefined)) {
         throw new TypeError('mailbox observation expiredSince must be an ISO instant and requires taskStates')
     }
+    const normalizedSince = resolveSinceInstant(since, 'mailbox observation');
+    if (directOnly !== undefined && typeof directOnly !== 'boolean') {
+        throw new TypeError('mailbox observation directOnly must be a boolean')
+    }
+    if (!OBSERVER_LIST_PROJECTIONS.has(projection)) {
+        throw new TypeError("mailbox observation projection must be 'full' or 'compact'")
+    }
     if (messageId !== undefined && (typeof messageId !== 'string' || !messageId)) {
         throw new TypeError('mailbox observation messageId must be a non-empty string')
     }
+    if (messageId !== undefined && projection !== 'full') {
+        throw new TypeError('mailbox observation detail lookup does not accept compact projection')
+    }
 
-    const isUnfilteredTeamAllList = messageId === undefined
-        && scope === 'all'
-        && policy === 'team'
-        && !fromVariants.length
-        && threadId === undefined
-        && !taggedConceptGroups.length
-        && taskStates === undefined
-        && taskOrder === undefined;
+    const
+        effectiveDirectOnly     = directOnly === true,
+        compactList             = projection === 'compact',
+        isUnfilteredTeamAllList = messageId === undefined
+            && scope === 'all'
+            && policy === 'team'
+            && !fromVariants.length
+            && threadId === undefined
+            && !taggedConceptGroups.length
+            && taskStates === undefined
+            && taskOrder === undefined
+            && normalizedSince === undefined
+            && !effectiveDirectOnly;
 
     return sqlite.transaction(() => {
         if (messageId !== undefined) {
-            const {cte, params} = buildObservationQuery({viewerVariants, grantedInboxVariants, scope, policy, fromVariants, threadId, taggedConceptGroups, taskStates, taskOrder, expiredSince}),
-                row             = sqlite.prepare(`${cte} SELECT messageId, data FROM filtered WHERE messageId = @messageId LIMIT 1`)
+            const {cte, params} = buildObservationQuery({
+                    viewerVariants,
+                    grantedInboxVariants,
+                    scope,
+                    policy,
+                    fromVariants,
+                    threadId,
+                    taggedConceptGroups,
+                    taskStates,
+                    taskOrder,
+                    expiredSince,
+                    since     : normalizedSince,
+                    directOnly: effectiveDirectOnly
+                }),
+                row = sqlite.prepare(`${cte} SELECT messageId, data FROM filtered WHERE messageId = @messageId LIMIT 1`)
                     .get({...params, messageId});
 
             if (!row) return null;
@@ -530,14 +699,18 @@ export function readMailboxObservation({
                 taskStates,
                 taskOrder,
                 expiredSince,
+                since                : normalizedSince,
+                directOnly           : effectiveDirectOnly,
                 useMessageSentAtIndex: isUnfilteredTeamAllList && hasCompositeMessageSentAtIndex(sqlite)
             }),
             totalCount = sqlite.prepare(countSql).get(params).count,
             pageRows   = sqlite.prepare(pageSql).all({...params, limit, offset}),
             messages = pageRows.map(row => {
-                const edges = sourceObservationEdges(sqlite, row.messageId);
+                const edges = sourceObservationEdges(sqlite, row.messageId, compactList);
 
-                return projectMessage(row, edges, viewerVariants)
+                return compactList
+                    ? projectCompactObserverMessage(row, edges, viewerVariants)
+                    : projectMessage(row, edges, viewerVariants)
             }),
             truncated = offset + pageRows.length < totalCount;
 

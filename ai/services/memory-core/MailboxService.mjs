@@ -9,7 +9,12 @@ import PermissionService                                  from './PermissionServ
 import SourceRegistryService                              from './SourceRegistryService.mjs';
 import WakeSubscriptionService                            from './WakeSubscriptionService.mjs';
 import {inspectDefectNoteCapture}                         from './helpers/defectObservationFold.mjs';
-import {normalizeMailboxObserver, readMailboxObservation} from './helpers/mailboxObservation.mjs';
+import {
+    normalizeMailboxObserver,
+    projectCompactMailboxRow,
+    readMailboxObservation,
+    resolveSinceInstant
+} from './helpers/mailboxObservation.mjs';
 import {admissionWhere, canReadMessage}                   from './helpers/messageAdmission.mjs';
 import {
     PUBLISH_LOCK_TIMEZONE,
@@ -1268,7 +1273,7 @@ function buildTaggedConceptFilterGroups(values = []) {
  *     whose rows are `(messageId, sentAt)`; `params` are its named parameters.
  * @private
  */
-function buildMailboxMatchQuery({box, status, target, fromIdentity = null, threadId = null, taggedConceptGroups = [], includeArchived = false, statusOnOutbox = true}) {
+function buildMailboxMatchQuery({box, status, target, fromIdentity = null, threadId = null, taggedConceptGroups = [], since = null, includeArchived = false, statusOnOutbox = true}) {
     const
         params = {
             targetVariants: JSON.stringify(getMailboxIdentityStorageVariants(target))
@@ -1280,6 +1285,11 @@ function buildMailboxMatchQuery({box, status, target, fromIdentity = null, threa
         receiptOnNode    = property => `json_extract(n.data, '$.properties.${property}')`,
         receipt          = property => `CASE WHEN EXISTS (${deliveryToTarget}) THEN ${receiptOnEdge(property)} ELSE ${receiptOnNode(property)} END`,
         common           = [isMessage];
+
+    if (since) {
+        params.since = since;
+        common.push(`strftime('%Y-%m-%dT%H:%M:%fZ', json_extract(n.data, '$.properties.sentAt')) >= @since`);
+    }
 
     if (fromIdentity) {
         params.senderVariants = JSON.stringify(getMailboxIdentityStorageVariants(fromIdentity));
@@ -4581,6 +4591,10 @@ class MailboxService extends Base {
      * @param {Boolean} [args.expiredWithinSpan] With `taskStates: ['Expired']` and no `taskOrder`: only the
      *   Tasks that expired within `mailbox.humanAskTtlMs`, newest expiry first. The answer carries the window
      *   start as `expiredSince`.
+     * @param {String} [args.since] Inclusive lower bound on `sentAt` (ISO-8601 instant). Filters before
+     *   pagination on both plain and `observer` paths so `totalCount` counts matching rows.
+     * @param {Boolean} [args.directOnly] With `observer` only: keep only direct messages whose `to` matches
+     *   the stamped viewer without widening admission.
      * @param {Number} [args.limit=50] Page size. Must be a positive integer — rejected, never
      *   clamped, because a zero or negative page cannot advance the continuation this method
      *   advertises, and a silently-substituted page size hides the caller's bug behind a receipt
@@ -4626,7 +4640,7 @@ class MailboxService extends Base {
         if (args.observer !== undefined) return this._observeMessages(args);
 
         const {box = 'inbox', status = 'all', to, threadId, fromIdentity, taggedConcepts, taskStates,
-            taskOrder, limit = 50, offset = 0, includeArchived = false, projection = 'full'} = args;
+            taskOrder, since, directOnly, limit = 50, offset = 0, includeArchived = false, projection = 'full'} = args;
         const boundIdentity = RequestContextService.getAgentIdentityNodeId();
         if (!boundIdentity) {
             throw RequestContextService.unboundIdentityError('list messages');
@@ -4635,6 +4649,10 @@ class MailboxService extends Base {
         if (!MailboxService.VALID_LIST_PROJECTIONS.includes(projection)) {
             throw new Error(`MailboxService.listMessages: projection must be one of ${MailboxService.VALID_LIST_PROJECTIONS.join(', ')}, received ${JSON.stringify(projection)}`);
         }
+        if (directOnly !== undefined) {
+            throw new Error('MailboxService.listMessages: directOnly requires observer');
+        }
+        const normalizedSince = resolveSinceInstant(since, 'MailboxService.listMessages');
 
         const
             me        = normalizeMailboxIdentityForComparison(boundIdentity),
@@ -4714,6 +4732,7 @@ class MailboxService extends Base {
             fromIdentity       : normalizedFromIdentity,
             threadId           : threadId || null,
             taggedConceptGroups: requestedTaggedConceptGroups,
+            since              : normalizedSince || null,
             includeArchived
         });
 
@@ -4758,7 +4777,7 @@ class MailboxService extends Base {
             };
 
             if (box === 'inbox' && status === 'unread' && sameMailboxIdentity(target, me) &&
-                !fromIdentity && !threadId && !requestedTaggedConceptGroups.length && !taskView &&
+                !fromIdentity && !threadId && !requestedTaggedConceptGroups.length && !taskView && !normalizedSince &&
                 countsResult.unreadCount === 0) {
                 void WakeSubscriptionService.reconcileHistoricalPendingWakes(me, {
                     resolveHandledSources: (candidateIds, owner) => this._resolveHandledWakeSources(candidateIds, owner)
@@ -4834,24 +4853,7 @@ class MailboxService extends Base {
      * @private
      */
     _projectCompactMailboxRow(summary) {
-        const
-            rawSubject = typeof summary.subject === 'string' ? summary.subject : '',
-            maxLength  = MailboxService.COMPACT_SUBJECT_MAX_LENGTH,
-            subject    = rawSubject.length > maxLength
-                ? `${rawSubject.slice(0, maxLength - 1)}…`
-                : rawSubject;
-
-        return {
-            messageId     : summary.messageId,
-            from          : summary.from,
-            to            : summary.to,
-            sentAt        : summary.sentAt,
-            readAt        : summary.readAt,
-            wakeSuppressed: Boolean(summary.wakeSuppressed),
-            priority      : summary.priority,
-            taskState     : summary.task?.state ?? null,
-            subject
-        };
+        return projectCompactMailboxRow(summary);
     }
 
     /**
@@ -5104,6 +5106,19 @@ class MailboxService extends Base {
             throw Object.assign(new Error('Observer reads use the stamped viewer, inbox/all, and status all'),
                 {code: 'MAILBOX_OBSERVER_INVALID_REQUEST'});
         }
+        if (args.projection !== undefined && !['full', 'compact'].includes(args.projection)) {
+            throw Object.assign(
+                new Error(`MailboxService.observeMessages: projection must be 'full' or 'compact', received ${JSON.stringify(args.projection)}`),
+                {code: 'MAILBOX_OBSERVER_INVALID_REQUEST'}
+            );
+        }
+        if (args.directOnly !== undefined && typeof args.directOnly !== 'boolean') {
+            throw Object.assign(
+                new Error(`MailboxService.observeMessages: directOnly must be a boolean, received ${JSON.stringify(args.directOnly)}`),
+                {code: 'MAILBOX_OBSERVER_INVALID_REQUEST'}
+            );
+        }
+        const normalizedSince = resolveSinceInstant(args.since, 'MailboxService.observeMessages');
 
         db.edges.assertIndices(['source', 'target']);
         const sqlite = db.storage?.db;
@@ -5146,6 +5161,9 @@ class MailboxService extends Base {
                 taskStates          : args.taskStates,
                 taskOrder           : args.taskOrder,
                 expiredSince,
+                since               : normalizedSince,
+                directOnly          : args.directOnly,
+                projection          : messageId === null ? args.projection : undefined,
                 fromVariants        : args.fromIdentity ? getMailboxIdentityStorageVariants(args.fromIdentity) : [],
                 threadId            : args.threadId,
                 taggedConceptGroups : buildTaggedConceptFilterGroups(args.taggedConcepts),
