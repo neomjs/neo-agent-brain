@@ -11,6 +11,7 @@ import {
     buildLeasePayload,
     inspectHeavyMaintenanceLease,
     inspectHeavyMaintenanceLeaseSync,
+    isKbWriteExclusiveLease,
     isPidAlive,
     isLeaseStale,
     releaseHeavyMaintenanceLease,
@@ -1820,5 +1821,141 @@ test.describe('#16262 — bootId: cross-boot staleness regardless of pid livenes
 
         const injected = buildLeasePayload({owner: 'kbSync', staleAfterMs: 1000, bootId: 'injected-boot'});
         expect(injected.bootId).toBe('injected-boot');
+    });
+});
+
+test.describe('#1435 — KB-write exclusion flag, public leaseId, and cross-namespace inspection', () => {
+    test('omits kbWriteExclusive by default, stamps it when declared, and mints a public leaseId distinct from token', async () => {
+        const leasePath = createLeasePath('kb-write-exclusive');
+        const now       = new Date('2026-11-23T08:00:00.000Z');
+
+        const nonExclusive = buildLeasePayload({
+            owner       : 'backup',
+            staleAfterMs: TEST_LEASE_STALE_MS,
+            now,
+            token       : 'secret-release-token-1'
+        });
+
+        expect('kbWriteExclusive' in nonExclusive).toBe(false);
+        expect(isKbWriteExclusiveLease(nonExclusive)).toBe(false);
+        expect(typeof nonExclusive.leaseId).toBe('string');
+        expect(nonExclusive.leaseId.length).toBeGreaterThan(0);
+        expect(nonExclusive.leaseId).not.toBe(nonExclusive.token);
+
+        const acquired = await acquireHeavyMaintenanceLease({
+            leasePath,
+            owner           : 'defrag',
+            reason          : 'kb-store-bloat',
+            kbWriteExclusive: true,
+            now,
+            token           : 'secret-release-token-2'
+        });
+
+        expect(acquired.acquired).toBe(true);
+        expect(acquired.lease.kbWriteExclusive).toBe(true);
+        expect(isKbWriteExclusiveLease(acquired.lease)).toBe(true);
+        expect(acquired.lease.leaseId).not.toBe('secret-release-token-2');
+
+        await releaseHeavyMaintenanceLease({leasePath, token: 'secret-release-token-2', now});
+    });
+
+    test('crossNamespace inspection evaluates deadline liveness across container UTS and PID namespaces', async () => {
+        const leasePath  = createLeasePath('cross-namespace-reader');
+        const acquiredAt = new Date('2026-11-23T08:00:00.000Z');
+
+        await fs.writeJson(leasePath, buildLeasePayload({
+            owner           : 'defrag',
+            kbWriteExclusive: true,
+            leaseId         : 'public-lease-id-1435',
+            bootId          : 'orchestrator-container-hostname',
+            pid             : 1,
+            staleAfterMs    : 60_000,
+            now             : acquiredAt,
+            token           : 'secret-orchestrator-token'
+        }));
+
+        const activeNow = new Date('2026-11-23T08:00:30.000Z');
+
+        // Same-container inspection from another boot/PID namespace marks it stale.
+        await expect(inspectHeavyMaintenanceLease({
+            leasePath,
+            now       : activeNow,
+            isPidAlive: () => false
+        })).resolves.toMatchObject({
+            status: 'stale',
+            active: false,
+            stale : true
+        });
+
+        // Cross-namespace reader (kb-server observing orchestrator's :ro mount) sees it active before expiresAt...
+        await expect(inspectHeavyMaintenanceLease({
+            leasePath,
+            now           : activeNow,
+            isPidAlive    : () => false,
+            crossNamespace: true
+        })).resolves.toMatchObject({
+            status: 'active',
+            active: true,
+            stale : false,
+            lease : {
+                leaseId         : 'public-lease-id-1435',
+                kbWriteExclusive: true
+            }
+        });
+        expect(inspectHeavyMaintenanceLeaseSync({
+            leasePath,
+            now           : activeNow,
+            isPidAlive    : () => false,
+            crossNamespace: true
+        })).toMatchObject({
+            status: 'active',
+            active: true,
+            stale : false
+        });
+
+        // ...and stale once expiresAt passes.
+        const expiredNow = new Date('2026-11-23T08:01:00.000Z');
+        await expect(inspectHeavyMaintenanceLease({
+            leasePath,
+            now           : expiredNow,
+            crossNamespace: true
+        })).resolves.toMatchObject({
+            status: 'stale',
+            active: false,
+            stale : true
+        });
+
+        await fs.remove(leasePath);
+    });
+
+    test('withHeavyMaintenanceLease refuses inherited non-exclusive lease when child requires kbWriteExclusive', async () => {
+        const leasePath = createLeasePath('inherit-non-exclusive-refusal');
+        const now       = new Date('2026-11-23T08:00:00.000Z');
+
+        await acquireHeavyMaintenanceLease({
+            leasePath,
+            owner: 'summary',
+            now,
+            token: 'non-exclusive-parent-token'
+        });
+
+        const original = process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN;
+        process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN = 'non-exclusive-parent-token';
+
+        try {
+            await expect(withHeavyMaintenanceLease(() => 'should-not-run', {
+                leasePath,
+                owner           : 'defrag',
+                kbWriteExclusive: true,
+                now
+            })).rejects.toThrow(/does not declare kbWriteExclusive: true/);
+        } finally {
+            if (original === undefined) {
+                delete process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN;
+            } else {
+                process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN = original;
+            }
+            await releaseHeavyMaintenanceLease({leasePath, token: 'non-exclusive-parent-token', now});
+        }
     });
 });

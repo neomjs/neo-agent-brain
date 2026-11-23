@@ -17,6 +17,7 @@ import {RepositorySourcePathClassHierarchyResolver}                             
 import Base                                                                                                                from 'neo.mjs/src/core/Base.mjs';
 import ChromaManager                                                                                                       from './ChromaManager.mjs';
 import DestructiveOperationGuard                                                                                           from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+import {isKbMaintenanceInProgressError, toKbMaintenanceErrorPayload}                                                       from './helpers/kbWriteGate.mjs';
 import VectorService                                                                                                       from './VectorService.mjs';
 import crypto                                                                                                              from 'crypto';
 import dotenv                                                                                                              from 'dotenv';
@@ -811,29 +812,36 @@ class DatabaseService extends Base {
     }
 
     /**
-     * Manages knowledge base data operations based on the provided action.
+     * @summary Manages knowledge base data operations based on the provided action.
      * @param {Object}  params
      * @param {String}        params.action       'sync', 'create', 'embed', or 'delete'
      * @param {Boolean}      [params.viaMcp]      True when dispatched from the MCP toolService
      *                                            wrapper; threaded through to `embed()` to enable
-     *                                            the work-volume gate. CLI callers
-     *                                            omit this and bypass the gate.
+     *                                            the work-volume gate and structured maintenance refusals. CLI callers
+     *                                            omit this and bypass the MCP payload conversion.
      * @param {String}       [params.staleStrategy] Optional VectorService stale strategy.
      * @param {String|Object} [params.confirmation] Explicit production confirmation token for delete.
      * @returns {Promise<Object>}
      */
     async manageKnowledgeBase({action, viaMcp = false, staleStrategy, confirmation}) {
-        switch (action) {
-            case 'sync':
-                return this.syncDatabase({viaMcp, staleStrategy});
-            case 'create':
-                return this.createKnowledgeBase();
-            case 'embed':
-                return this.embedKnowledgeBase({viaMcp, staleStrategy});
-            case 'delete':
-                return this.deleteDatabase({confirmation});
-            default:
-                throw new Error(`Invalid action: ${action}. Must be 'sync', 'create', 'embed', or 'delete'.`);
+        try {
+            switch (action) {
+                case 'sync':
+                    return await this.syncDatabase({viaMcp, staleStrategy});
+                case 'create':
+                    return await this.createKnowledgeBase();
+                case 'embed':
+                    return await this.embedKnowledgeBase({viaMcp, staleStrategy});
+                case 'delete':
+                    return await this.deleteDatabase({confirmation});
+                default:
+                    throw new Error(`Invalid action: ${action}. Must be 'sync', 'create', 'embed', or 'delete'.`);
+            }
+        } catch (error) {
+            if (viaMcp && isKbMaintenanceInProgressError(error)) {
+                return toKbMaintenanceErrorPayload(error);
+            }
+            throw error;
         }
     }
 

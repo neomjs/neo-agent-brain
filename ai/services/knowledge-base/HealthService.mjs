@@ -10,6 +10,7 @@ import {readDeployedRevision}     from '../shared/deployedRevision.mjs';
 import logger                     from '../../mcp/server/knowledge-base/logger.mjs';
 import RuntimeFreshnessService    from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
 import KBRecorderService          from './KBRecorderService.mjs';
+import kbWriteGate                from './helpers/kbWriteGate.mjs';
 
 // The embedding-probe policy is NOT frozen here. It was, with five literals byte-identical to
 // Memory Core's leaf defaults, which made the same policy configurable on one side of the plane and
@@ -118,7 +119,12 @@ class HealthService extends Base {
          * @member {Boolean} singleton=true
          * @protected
          */
-        singleton: true
+        singleton: true,
+        /**
+         * @member {Object} writeGate=kbWriteGate
+         * @summary Shared Knowledge Base Chroma write-admission gate. Injectable for tests.
+         */
+        writeGate: kbWriteGate
     }
 
     /**
@@ -751,7 +757,8 @@ class HealthService extends Base {
                 logger.debug(`[HealthService] Using cached health status (age: ${Math.round(age / 1000)}s)`);
                 return this.#applyEmbeddingProbe({
                     ...this.#cachedHealth,
-                    runtimeFreshness: await this.resolveRuntimeFreshness()
+                    runtimeFreshness: await this.resolveRuntimeFreshness(),
+                    writeGate       : await this.resolveWriteGate()
                 });
             }
         }
@@ -759,7 +766,11 @@ class HealthService extends Base {
         // Check for in-flight request (deduplication)
         if (this.#healthCheckPromise) {
             logger.debug('[HealthService] Joining in-flight health check...');
-            return this.#healthCheckPromise;
+            const joined = await this.#healthCheckPromise;
+            return {
+                ...joined,
+                writeGate: await this.resolveWriteGate()
+            };
         }
 
         // Cache is stale, was unhealthy, or doesn't exist - perform a fresh check
@@ -795,7 +806,10 @@ class HealthService extends Base {
         this.#lastCheckTime  = now;
         this.#previousStatus = health.status;
 
-        return health;
+        return {
+            ...health,
+            writeGate: await this.resolveWriteGate()
+        };
     }
 
     /**
@@ -859,6 +873,17 @@ class HealthService extends Base {
             reader       : this.runtimeFreshnessReader,
             cacheDuration: this.runtimeFreshnessCacheDuration
         });
+    }
+
+    /**
+     * @summary Resolves the live Knowledge Base write-gate state and in-flight Chroma write count.
+     *
+     * Evaluated fresh on every `healthcheck()` return path (never served from `#cachedHealth`) so
+     * maintenance coordinators polling for drain acknowledgement observe current gate and in-flight state.
+     * @returns {Promise<{gate: String, leaseId: String|null, inFlightWrites: Number}>}
+     */
+    async resolveWriteGate() {
+        return this.writeGate.getHealthStatus();
     }
 }
 

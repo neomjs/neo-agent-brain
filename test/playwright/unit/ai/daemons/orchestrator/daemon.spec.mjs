@@ -420,6 +420,7 @@ test.describe('ai/daemons/orchestrator/daemon.mjs (#11006/#11009)', () => {
         const dataDir        = '/app/.neo-ai-data/orchestrator-daemon';
         const volumeName     = 'orchestrator-state';
         const expectedMount  = `${volumeName}:${dataDir}`;
+        const readOnlyMount  = `${expectedMount}:ro`;
         const orchestrator   = compose.services.orchestrator;
         const healthcheckCmd = orchestrator.healthcheck.test.join(' ');
         const templateSource = fs.readFileSync(path.resolve(process.cwd(), 'ai/configBase.mjs'), 'utf8');
@@ -441,18 +442,26 @@ test.describe('ai/daemons/orchestrator/daemon.mjs (#11006/#11009)', () => {
         for (const [serviceName, service] of Object.entries(compose.services)) {
             if (serviceName === 'orchestrator') continue;
 
+            const mounts = (service.volumes || []).filter(mount => typeof mount === 'string');
+
             expect(
-                service.volumes || [],
-                `${serviceName} must not read or write the orchestrator-owned state volume`
+                mounts,
+                `${serviceName} must not mount the orchestrator-owned state volume writable`
             ).not.toContain(expectedMount);
+
+            const allowedTouches    = serviceName === 'kb-server' ? [readOnlyMount] : [];
+            const disallowedTouches = mounts.filter(mount =>
+                !allowedTouches.includes(mount) &&
+                (mount.startsWith(`${volumeName}:`) || mount.includes(`:${dataDir}`))
+            );
+
             expect(
-                (service.volumes || []).some(mount =>
-                    typeof mount === 'string' &&
-                    (mount.startsWith(`${volumeName}:`) || mount.endsWith(`:${dataDir}`))
-                ),
-                `${serviceName} must not alias the orchestrator-owned source or target`
-            ).toBe(false);
+                disallowedTouches,
+                `${serviceName} must not alias the orchestrator-owned source or target outside ADR 0026's read-only KB lease observation`
+            ).toEqual([]);
         }
+
+        expect(compose.services['kb-server'].volumes).toContain(readOnlyMount);
     });
 
     test('#373: the orchestrator probe imports only modules a Brain image carries, and PID 1 reaps its children', () => {

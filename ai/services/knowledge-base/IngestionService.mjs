@@ -3,6 +3,9 @@ import Base              from 'neo.mjs/src/core/Base.mjs';
 import ChromaManager     from './ChromaManager.mjs';
 import GraphService      from '../memory-core/GraphService.mjs';
 import KBRecorderService from './KBRecorderService.mjs';
+import kbWriteGate, {
+    isKbMaintenanceInProgressError
+}                        from './helpers/kbWriteGate.mjs';
 import {
     bytesToTokens,
     emitConsumerFriction
@@ -244,7 +247,12 @@ class IngestionService extends Base {
          * @member {Object} vectorService=VectorService
          * @summary Downstream embedding/upsert service.
          */
-        vectorService: VectorService
+        vectorService: VectorService,
+        /**
+         * @member {Object} writeGate=kbWriteGate
+         * @summary Shared Knowledge Base Chroma write-admission gate. Injectable for tests.
+         */
+        writeGate: kbWriteGate
     }
 
     /**
@@ -435,6 +443,11 @@ class IngestionService extends Base {
                 status: summary.errors.length > 0 ? 'completed_with_errors' : 'completed'
             });
         } catch (error) {
+            if (isKbMaintenanceInProgressError(error)) {
+                summary.durationMs = Date.now() - startedAt;
+                this.finishIngestionProgress({summary, status: 'failed'});
+                throw error;
+            }
             summary.errors.push(this.createError({
                 code   : this.classifyIngestionFailureCode(error),
                 message: error.message
@@ -584,7 +597,7 @@ class IngestionService extends Base {
 
         if (ids.size === 0) return 0;
 
-        await collection.delete({ids: Array.from(ids)});
+        await this.writeGate.runWrite('ingestion-delete', () => collection.delete({ids: Array.from(ids)}));
         return ids.size;
     }
 
@@ -794,7 +807,7 @@ class IngestionService extends Base {
                     settledChunks  : summary.settled
                 });
             } catch (error) {
-                if (ancestry) throw error;
+                if (isKbMaintenanceInProgressError(error) || ancestry) throw error;
                 settlementObservable = false;
                 summary.settled       = null;
                 summary.remaining     = null;

@@ -137,18 +137,20 @@ test.describe('OpenApiValidator: the listed `result` wrapper agrees with the run
     });
 
     test('a composed contract keeps its branches: the declared shapes validate unwrapped, a value neither branch declares is rejected', () => {
-        const doc       = loadDocument('knowledge-base'),
-              operation = findOperation(doc, 'ingest_source_files'),
-              listed    = listedSchema(doc, operation),
-              summary   = envelope({ingested: 3, deleted: 0, embeddingsGenerated: 3, settled: 3, remaining: 0, errors: [], tenantId: 'neo-shared', durationMs: 42}),
-              refused   = envelope({error: 'KB_INGEST_VOLUME_EXCEEDED', message: 'too many files', code: 'KB_INGEST_VOLUME_EXCEEDED', bulkPath: 'ai:ingest-tenant', batchSize: 400, threshold: 200}),
-              malformed = envelope({ingested: 'not-an-integer', error: 42, code: 'NOT_THE_DECLARED_CODE'});
+        const doc                = loadDocument('knowledge-base'),
+              operation          = findOperation(doc, 'ingest_source_files'),
+              listed             = listedSchema(doc, operation),
+              summary            = envelope({ingested: 3, deleted: 0, embeddingsGenerated: 3, settled: 3, remaining: 0, errors: [], tenantId: 'neo-shared', durationMs: 42}),
+              refused            = envelope({error: 'KB_INGEST_VOLUME_EXCEEDED', message: 'too many files', code: 'KB_INGEST_VOLUME_EXCEEDED', bulkPath: 'ai:ingest-tenant', batchSize: 400, threshold: 200}),
+              maintenanceRefused = envelope({error: 'Knowledge Base maintenance window in progress', message: 'window active', code: 'KB_MAINTENANCE_IN_PROGRESS', retryable: true, leaseId: 'lease-1'}),
+              malformed          = envelope({ingested: 'not-an-integer', error: 42, code: 'NOT_THE_DECLARED_CODE'});
 
         expect(listed.type).toBe('object');
         expect(listsWrapper(listed)).toBe(false);
-        expect(listed.anyOf, 'the two declared branches ride the listing').toHaveLength(2);
+        expect(listed.anyOf, 'the three declared branches ride the listing').toHaveLength(3);
         expect(validates(listed, summary)).toMatchObject({valid: true});
         expect(validates(listed, refused)).toMatchObject({valid: true});
+        expect(validates(listed, maintenanceRefused)).toMatchObject({valid: true});
         expect(validates(listed, malformed).valid, 'typed fields and the enum survive the envelope repair').toBe(false)
     });
 

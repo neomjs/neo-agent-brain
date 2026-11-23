@@ -51,8 +51,9 @@ paths:
         ChromaDB vector database.
 
         Use this tool as a first step to diagnose issues if other database-related
-        tools are failing. It provides a quick status check on the server and its
-        primary dependency.
+        tools are failing. It provides a quick status check on the server, its
+        primary dependency, and its live `writeGate` (`{gate, leaseId, inFlightWrites}`)
+        drain state during KB maintenance windows.
       tags: [Health]
       parameters:
         - name: scope
@@ -253,6 +254,8 @@ paths:
         - **delete:** Permanently deletes the entire collection from ChromaDB.
 
         **Volume gate:** when the post-delta diff exceeds `mcpSyncMaxChunks` (default 50), this tool returns `KB_SYNC_VOLUME_EXCEEDED` instead of executing synchronously. Use `npm run ai:sync-kb` for bulk re-embedding work.
+
+        **Maintenance gate:** while a heavy-maintenance lease with KB-write exclusion is active (such as a KB defrag or row-retirement window), mutating actions (`sync`, `embed`, `delete`) refuse without writing to ChromaDB and return a retryable `KB_MAINTENANCE_IN_PROGRESS` payload naming the maintenance window (`leaseId`, `owner`, `expiresAt`). Retry after the maintenance window closes.
       tags: [Database]
       requestBody:
         required: true
@@ -272,11 +275,13 @@ paths:
                   description: Explicit production confirmation token required with the destructive bypass env for delete.
       responses:
         '200':
-          description: Operation completed successfully.
+          description: Operation completed, OR refused with a retryable KB_MAINTENANCE_IN_PROGRESS payload.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - $ref: '#/components/schemas/KbMaintenanceInProgressResponse'
         '500':
           description: Operation failed.
           content:
@@ -302,6 +307,11 @@ paths:
         payload instead of embedding synchronously — split the batch into smaller
         `ingest_source_files` calls. Batch volume = the summed `parsedChunks` length
         across `files`, counting each raw (un-parsed) file as 1.
+
+        **Maintenance gate:** while a heavy-maintenance lease with KB-write exclusion is
+        active, this tool refuses without writing to ChromaDB and returns a retryable
+        `KB_MAINTENANCE_IN_PROGRESS` payload naming the maintenance window (`leaseId`,
+        `owner`, `expiresAt`). Retry after the maintenance window closes.
       tags: [Database]
       requestBody:
         required: true
@@ -311,13 +321,14 @@ paths:
               $ref: '#/components/schemas/IngestSourceFilesRequest'
       responses:
         '200':
-          description: Ingestion completed, OR refused with a KB_INGEST_VOLUME_EXCEEDED payload.
+          description: Ingestion completed, OR refused with a KB_INGEST_VOLUME_EXCEEDED or retryable KB_MAINTENANCE_IN_PROGRESS payload.
           content:
             application/json:
               schema:
                 oneOf:
                   - $ref: '#/components/schemas/IngestSourceFilesResponse'
                   - $ref: '#/components/schemas/KbIngestVolumeExceededResponse'
+                  - $ref: '#/components/schemas/KbMaintenanceInProgressResponse'
         '500':
           description: Ingestion failed.
           content:
@@ -933,6 +944,23 @@ components:
               type: string
               nullable: true
               description: Restart or re-handshake guidance when the runtime is stale.
+        writeGate:
+          type: object
+          description: Live Knowledge Base Chroma write-admission gate and in-flight write count, evaluated fresh on every healthcheck (never served from the 5-minute health cache).
+          required: [gate, leaseId, inFlightWrites]
+          properties:
+            gate:
+              type: string
+              enum: [open, closed]
+              description: "`closed` while an active heavy-maintenance lease declares KB-write exclusion; `open` otherwise."
+            leaseId:
+              type: string
+              nullable: true
+              description: Public identifier of the active KB-exclusive heavy-maintenance lease when `gate` is `closed`; `null` when `open`.
+            inFlightWrites:
+              type: integer
+              minimum: 0
+              description: Count of currently executing KB Chroma write operations in this process; returns to 0 after every write settles.
         database:
           type: object
           properties:
@@ -1425,3 +1453,37 @@ components:
         threshold:
           type: integer
           description: The `mcpSyncMaxChunks` threshold (default 50).
+
+    KbMaintenanceInProgressResponse:
+      type: object
+      description: |
+        Structured retryable refusal returned (not thrown) when a heavy-maintenance lease
+        with KB-write exclusion holds the Knowledge Base maintenance window. The KB server's
+        `'error' in result` contract converts this to an MCP `isError: true` result.
+      required: [error, message, code, retryable, leaseId]
+      properties:
+        error:
+          type: string
+          example: "Knowledge Base maintenance window in progress"
+        message:
+          type: string
+          description: Human-readable guidance naming the active KB maintenance window and retry semantics.
+        code:
+          type: string
+          enum: [KB_MAINTENANCE_IN_PROGRESS]
+        retryable:
+          type: boolean
+          example: true
+        leaseId:
+          type: string
+          nullable: true
+          description: Public identifier of the active KB-exclusive heavy-maintenance lease.
+        owner:
+          type: string
+          nullable: true
+          description: Owner label recorded on the active maintenance lease.
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Declared lease expiry timestamp after which the window reclaims if unrenewed.
