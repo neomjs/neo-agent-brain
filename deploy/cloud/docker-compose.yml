@@ -181,6 +181,10 @@ services:
       # A dedicated volume keeps this graph-independent receipt visible without
       # granting the KB container Docker/runtime authority.
       - shared-deployment-state-data:/app/.neo-ai-data/deployment-state:ro
+      # Read-only lease-observation mount (learn/agentos/decisions/0026-recovery-actuator.md):
+      # kb-server inspects orchestrator's heavy-maintenance-lease.json to fence Chroma KB writes
+      # while a holder declares kbWriteExclusive, without granting write access to orchestrator state.
+      - orchestrator-state:/app/.neo-ai-data/orchestrator-daemon:ro
       # The vector-generation election record is a plane SINGLETON: identical absolute paths inside
       # separate writable layers are separate authorities, and a split record inverts the election
       # fence's legacy fail-safe into a bypass. Every producer/consumer shares this one mount.

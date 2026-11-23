@@ -1,6 +1,10 @@
 import aiConfig                          from './config.mjs';
 import IngestionService                  from '../../../services/knowledge-base/IngestionService.mjs';
 import {isRemoteKnowledgeBaseDeployment} from '../../../services/knowledge-base/helpers/deploymentMode.mjs';
+import {
+    isKbMaintenanceInProgressError,
+    toKbMaintenanceErrorPayload
+}                                        from '../../../services/knowledge-base/helpers/kbWriteGate.mjs';
 
 const ingestToolName = 'ingest_source_files';
 
@@ -95,7 +99,16 @@ const ingestSourceFilesViaMcp = async args => {
 
     delete serviceArgs.materializationAttempt;
 
-    const result = await IngestionService.ingestSourceFiles(serviceArgs);
+    let result;
+
+    try {
+        result = await IngestionService.ingestSourceFiles(serviceArgs);
+    } catch (error) {
+        if (isKbMaintenanceInProgressError(error)) {
+            return toKbMaintenanceErrorPayload(error);
+        }
+        throw error;
+    }
 
     if (!result || typeof result !== 'object' || !Object.hasOwn(result, 'materializationReceipt')) {
         return result

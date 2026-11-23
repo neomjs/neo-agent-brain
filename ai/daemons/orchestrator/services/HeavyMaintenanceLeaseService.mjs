@@ -110,22 +110,23 @@ export class HeavyMaintenanceLeaseService extends Base {
     }
 
     /**
-     * Inspects the current lease file.
-     * @param {Object} [options] Inspect overrides.
+     * @summary Inspects the current lease file.
+     * @param {Object} [options] Inspect overrides, including `crossNamespace: true` for read-only sibling-container observers.
      * @returns {Promise<Object>}
      */
     inspect(options = {}) {
         return inspectHeavyMaintenanceLease({
-            leasePath : this.resolveLeasePath(options),
-            fsModule  : options.fsModule  ?? this.fsModule,
-            now       : options.now       ?? new Date(),
-            isPidAlive: options.isPidAlive
+            leasePath     : this.resolveLeasePath(options),
+            fsModule      : options.fsModule  ?? this.fsModule,
+            now           : options.now       ?? new Date(),
+            isPidAlive    : options.isPidAlive,
+            crossNamespace: options.crossNamespace === true
         });
     }
 
     /**
-     * Acquires the current lease when no active owner exists.
-     * @param {Object} options Acquisition options.
+     * @summary Acquires the current lease when no active owner exists.
+     * @param {Object} options Acquisition options (`owner`, `reason`, `kbWriteExclusive`, `leaseId`, `metadata`, `staleAfterMs`).
      * @returns {Promise<Object>}
      */
     acquire(options = {}) {

@@ -36,6 +36,9 @@ import {
     resolveVectorGenerationElectionDir
 }                                                                      from '../shared/vector/generationElectionStore.mjs';
 import KBRecorderService                                               from './KBRecorderService.mjs';
+import kbWriteGate, {
+    isKbMaintenanceInProgressError
+}                                                                      from './helpers/kbWriteGate.mjs';
 import {
     clearEmbeddingPoisonState,
     createEmbeddingGenerationId,
@@ -279,7 +282,12 @@ class VectorService extends Base {
          * @member {Boolean} singleton=true
          * @protected
          */
-        singleton: true
+        singleton: true,
+        /**
+         * @member {Object} writeGate=kbWriteGate
+         * @summary Shared Knowledge Base Chroma write-admission gate. Injectable for tests.
+         */
+        writeGate: kbWriteGate
     }
 
     /**
@@ -310,7 +318,7 @@ class VectorService extends Base {
 
             // Route through ChromaManager.deleteCollection so the canonical-name guard applies.
             // Forward the operator confirmation so the canonical-name guard accepts it.
-            await ChromaManager.deleteCollection({name: collectionName, confirmation});
+            await this.writeGate.runWrite('delete-collection', () => ChromaManager.deleteCollection({name: collectionName, confirmation}));
             ChromaManager.invalidateKnowledgeBaseCollectionCache();
             const message = `Knowledge base collection '${collectionName}' deleted successfully.`;
             logger.log(message);
@@ -1037,11 +1045,11 @@ class VectorService extends Base {
             throw new Error(`Poison isolation received ${embeddings?.length ?? 0} embedding(s) for ${inputs.length} input(s).`)
         }
 
-        await collection.upsert({
+        await this.writeGate.runWrite('upsert-isolation', () => collection.upsert({
             ids      : inputs.map(input => input.chunk.id),
             embeddings,
             metadatas: inputs.map(input => buildChunkRowMetadata(input.chunk))
-        })
+        }))
     }
 
     /**
@@ -1489,13 +1497,14 @@ class VectorService extends Base {
 
                 for (;;) {
                     try {
-                        await collection.upsert({
+                        await this.writeGate.runWrite('upsert-carried-prefix', () => collection.upsert({
                             ids       : partialChunks.map(chunk => chunk.id),
                             embeddings: carried,
                             metadatas : partialChunks.map(chunk => buildChunkRowMetadata(chunk))
-                        });
+                        }));
                         break;
                     } catch (writeError) {
+                        if (isKbMaintenanceInProgressError(writeError)) throw writeError;
                         lastError = writeError;
                         retries++;
                         if (retries >= maxRetries) throw writeError;
@@ -1521,6 +1530,9 @@ class VectorService extends Base {
                 const dispatchSeq = evidence.seq;
 
                 try {
+                    if (embeddings === null) {
+                        await this.writeGate.assertOpen('embed-batch');
+                    }
                     embeddings ??= await TextEmbeddingService.embedTexts(textsToEmbed, mcConfig.embeddingProvider, {
                         operationLabel          : 'knowledge base tenant ingestion embedding',
                         operationStage          : 'kb-tenant-ingestion-embedding',
@@ -1580,17 +1592,20 @@ class VectorService extends Base {
 
                     const metadatas = batchToEmbed.map(buildChunkRowMetadata);
 
-                    await collection.upsert({
+                    await this.writeGate.runWrite('upsert-batch', () => collection.upsert({
                         ids: batchToEmbed.map(chunk => chunk.id),
                         embeddings,
                         metadatas
-                    });
+                    }));
 
                     embeddedCount += batchToEmbed.length;
                     batchToEmbed.forEach(chunk => landedIds.add(chunk.id));
                     logger.log(`Processed and embedded batch ${batchNumber} of ${Math.ceil(chunksToProcess.length / batchSize)} (${batchToEmbed.length} embedded, ${guardrailSkipped} skipped).`);
                     success = true;
                 } catch (err) {
+                    if (isKbMaintenanceInProgressError(err)) {
+                        throw err;
+                    }
                     // A cooperative yield is a DECISION, not a failure. Falling through to the retry arm would
                     // spend every `maxRetries` attempt re-issuing work the lease holder deliberately stopped —
                     // turning the fairness fix into a maxRetries-fold amplifier of the hold it exists to bound.
@@ -1983,6 +1998,7 @@ class VectorService extends Base {
                             now
                         });
                     } catch (isolationError) {
+                        if (isKbMaintenanceInProgressError(isolationError)) throw isolationError;
                         throw this.createFirstBatchAbort({
                             batchIndex: batchNumber,
                             maxRetries,
@@ -2156,6 +2172,8 @@ class VectorService extends Base {
 
         // Fresh build: discard any stale preserved shadow (corpus-drift / attempt-cap / vanished), then rebuild.
         if (!shadowCollection) {
+            await this.writeGate.assertOpen('shadow-swap-init');
+
             if (resumeState?.shadowName) {
                 await this.discardResumeShadow(resumeState.shadowName);
             }
@@ -2174,7 +2192,10 @@ class VectorService extends Base {
             // discardResumeShadow(resumeState?.shadowName) then no-ops and the shadow orphans permanently. A
             // failure here throws before createCollection, so no shadow is ever created without its marker.
             await writeResumeState({dir: stateDir, fingerprint, shadowName, attempts});
-            shadowCollection = await ChromaManager.client.createCollection({name: shadowName, embeddingFunction: aiConfig.dummyEmbeddingFunction});
+            shadowCollection = await this.writeGate.runWrite(
+                'create-shadow-collection',
+                () => ChromaManager.client.createCollection({name: shadowName, embeddingFunction: aiConfig.dummyEmbeddingFunction})
+            );
         }
 
         const parkingName = this.createSwapCollectionName('parking');
@@ -2271,10 +2292,12 @@ class VectorService extends Base {
             });
 
             logger.log(`Promoting shadow collection '${shadowName}' to '${aiConfig.collectionName}'.`);
-            await liveCollection.modify({name: parkingName});
-            liveParked = true;
-            await shadowCollection.modify({name: aiConfig.collectionName});
-            shadowPromoted = true;
+            await this.writeGate.runWrite('promote-shadow-collection', async () => {
+                await liveCollection.modify({name: parkingName});
+                liveParked = true;
+                await shadowCollection.modify({name: aiConfig.collectionName});
+                shadowPromoted = true;
+            });
 
             ChromaManager.invalidateKnowledgeBaseCollectionCache();
             await clearResumeState({dir: stateDir}); // promoted → nothing to resume
@@ -2709,7 +2732,7 @@ class VectorService extends Base {
         }
 
         if (idsToDelete.length > 0) {
-            await collection.delete({ ids: idsToDelete });
+            await this.writeGate.runWrite('delete-stale', () => collection.delete({ ids: idsToDelete }));
             logger.log(`Deleted ${idsToDelete.length} stale chunks.`);
         }
 
@@ -2748,7 +2771,7 @@ class VectorService extends Base {
         // Replacement is post-write, including retries where all current IDs already landed.
         // An incomplete run retains its prior rows; absence from a partial batch is not a tombstone.
         if (replacedIds.length > 0) {
-            await collection.delete({ids: replacedIds});
+            await this.writeGate.runWrite('delete-replaced', () => collection.delete({ids: replacedIds}));
         }
 
         const count   = await collection.count();

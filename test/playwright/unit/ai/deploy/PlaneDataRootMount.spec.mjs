@@ -114,6 +114,25 @@ test.describe('plane state reaches a volume (#425)', () => {
             .toEqual([{source: HEAP_VOLUME, target, readOnly: true}])
     });
 
+    test('AC-4 (#1435): orchestrator mounts orchestrator-state writable at orchestrator.dataDir, kb-server mounts it :ro, and no other service mounts it', () => {
+        const {plane, orchestrator} = ConfigBase.config.data,
+              orchestratorDir       = path.relative(plane.dataRoot.default, orchestrator.dataDir.default);
+
+        expect(orchestratorDir.startsWith('..'), 'orchestrator.dataDir must live under the plane root').toBe(false);
+
+        const target = `${CONTAINER_PLANE_ROOT}/${orchestratorDir}`;
+
+        expect(mountsOf(services.orchestrator).filter(mount => mount.source === 'orchestrator-state'), 'orchestrator owns orchestrator-state writable')
+            .toEqual([{source: 'orchestrator-state', target, readOnly: false}]);
+        expect(mountsOf(services['kb-server']).filter(mount => mount.source === 'orchestrator-state'), 'kb-server observes orchestrator-state :ro')
+            .toEqual([{source: 'orchestrator-state', target, readOnly: true}]);
+
+        for (const [key, service] of Object.entries(services)) {
+            if (key === 'orchestrator' || key === 'kb-server') continue;
+            expect(mountsOf(service).some(mount => mount.source === 'orchestrator-state'), `${key} does not mount orchestrator-state`).toBe(false);
+        }
+    });
+
     test('the orchestrator writes the REM run-state channel, mc-server reads it, and no other service mounts it', () => {
         const {plane, remRunStateDir} = ConfigBase.config.data;
         const channelDir              = path.relative(plane.dataRoot.default, remRunStateDir.default);

@@ -117,6 +117,7 @@ export function isPidAlive(pid) {
  * @param {Number|String} [options.currentPid=process.pid] Current process id seam.
  * @param {Date|Number|String} [options.currentProcessStartedAt] Current process start seam.
  * @param {String} [options.currentBootId=os.hostname()] Current boot discriminator seam.
+ * @param {Boolean} [options.crossNamespace=false] True when reading a sibling container's lease across UTS/PID namespaces; skips local bootId and pid checks and evaluates deadline liveness only.
  * @returns {Boolean}
  */
 export function isLeaseStale(lease, {
@@ -124,7 +125,8 @@ export function isLeaseStale(lease, {
     isPidAlive: isPidAliveFn = isPidAlive,
     currentPid              = process.pid,
     currentProcessStartedAt = CURRENT_PROCESS_STARTED_AT,
-    currentBootId           = os.hostname()
+    currentBootId           = os.hostname(),
+    crossNamespace          = false
 } = {}) {
     if (!lease || !lease.acquiredAt) {
         return true;
@@ -133,7 +135,7 @@ export function isLeaseStale(lease, {
     // Cross-boot discrimination FIRST: a lease written by a different boot (container recreate,
     // machine restart) belongs to a dead epoch no matter what the pid probe says — inside a
     // container, pid 1 is alive on every boot, so liveness alone is vacuous there.
-    if (typeof lease.bootId === 'string' && lease.bootId.length > 0 && lease.bootId !== currentBootId) {
+    if (!crossNamespace && typeof lease.bootId === 'string' && lease.bootId.length > 0 && lease.bootId !== currentBootId) {
         return true;
     }
 
@@ -152,6 +154,7 @@ export function isLeaseStale(lease, {
     // Historical inspections whose logical `now` predates this process start
     // deliberately skip the live-process comparison.
     if (
+        !crossNamespace &&
         Number(lease.pid) === Number(currentPid) &&
         Number.isFinite(acquiredAtMs) &&
         Number.isFinite(currentProcessStartedAtMs) &&
@@ -161,7 +164,7 @@ export function isLeaseStale(lease, {
         return true;
     }
 
-    if (lease.pid !== undefined && lease.pid !== null && typeof isPidAliveFn === 'function' && !isPidAliveFn(lease.pid)) {
+    if (!crossNamespace && lease.pid !== undefined && lease.pid !== null && typeof isPidAliveFn === 'function' && !isPidAliveFn(lease.pid)) {
         return true;
     }
 
@@ -230,6 +233,8 @@ export function shouldYieldHeavyMaintenanceLease(lease, {now = new Date(), maxAc
  * @param {String} options.owner Stable owner label.
  * @param {String} [options.reason='manual'] Acquisition reason.
  * @param {Object} [options.metadata={}] Diagnostic metadata.
+ * @param {Boolean} [options.kbWriteExclusive=false] Declares KB-write exclusion during the lease window; absent when false.
+ * @param {String} [options.leaseId=crypto.randomUUID()] Public observation identifier distinct from the secret release `token`.
  * @param {Number} [options.pid=process.pid] Owning process ID.
  * @param {Number} options.staleAfterMs Stale TTL in ms — REQUIRED; resolved from AiConfig at the boundary (no primitive default).
  * @param {Date|Number|String} [options.now=new Date()] Current time.
@@ -241,13 +246,15 @@ export function shouldYieldHeavyMaintenanceLease(lease, {now = new Date(), maxAc
  */
 export function buildLeasePayload({
     owner,
-    reason       = 'manual',
-    metadata     = {},
-    pid          = process.pid,
+    reason           = 'manual',
+    metadata         = {},
+    kbWriteExclusive = false,
+    leaseId          = crypto.randomUUID(),
+    pid              = process.pid,
     staleAfterMs,
-    now          = new Date(),
-    token        = crypto.randomUUID(),
-    bootId       = os.hostname()
+    now              = new Date(),
+    token            = crypto.randomUUID(),
+    bootId           = os.hostname()
 }) {
     if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) {
         throw new TypeError('buildLeasePayload: staleAfterMs (positive ms) is required — resolve it from AiConfig.orchestrator.heavyMaintenanceLease.staleAfterMs at the AiConfig-aware boundary; this Neo/Base-free primitive carries no TTL default by design.');
@@ -259,14 +266,25 @@ export function buildLeasePayload({
     return {
         owner,
         reason,
+        leaseId,
         pid,
         token,
         bootId,
         acquiredAt: acquiredAt.toISOString(),
         staleAfterMs,
         expiresAt : expiresAt.toISOString(),
+        ...(kbWriteExclusive === true ? {kbWriteExclusive: true} : {}),
         metadata
     };
+}
+
+/**
+ * @summary Returns true when a lease payload declares Knowledge Base write exclusion.
+ * @param {Object|null|undefined} lease Persisted lease payload.
+ * @returns {Boolean}
+ */
+export function isKbWriteExclusiveLease(lease) {
+    return Boolean(lease && lease.kbWriteExclusive === true);
 }
 
 /**
@@ -276,13 +294,15 @@ export function buildLeasePayload({
  * @param {String} options.leasePath Lease file path.
  * @param {Object} [options.fsModule=fs] File-system implementation seam.
  * @param {Date|Number|String} [options.now=new Date()] Current time.
+ * @param {Boolean} [options.crossNamespace=false] True when inspecting across container UTS/PID namespaces.
  * @returns {Promise<Object>}
  */
 export async function inspectHeavyMaintenanceLease({
     leasePath,
-    fsModule  = fs,
-    now       = new Date(),
-    isPidAlive: isPidAliveFn = isPidAlive
+    fsModule       = fs,
+    now            = new Date(),
+    isPidAlive: isPidAliveFn = isPidAlive,
+    crossNamespace = false
 } = {}) {
     leasePath = resolveHeavyMaintenanceLeasePath({leasePath});
 
@@ -300,7 +320,7 @@ export async function inspectHeavyMaintenanceLease({
 
     try {
         const lease = JSON.parse(raw);
-        const stale = isLeaseStale(lease, {now, isPidAlive: isPidAliveFn});
+        const stale = isLeaseStale(lease, {now, isPidAlive: isPidAliveFn, crossNamespace});
 
         return {
             status: stale ? 'stale' : 'active',
@@ -337,9 +357,10 @@ function writeLeaseFileSync(leasePath, lease, fsModule) {
  */
 export function inspectHeavyMaintenanceLeaseSync({
     leasePath,
-    fsModule  = fs,
-    now       = new Date(),
-    isPidAlive: isPidAliveFn = isPidAlive
+    fsModule       = fs,
+    now            = new Date(),
+    isPidAlive: isPidAliveFn = isPidAlive,
+    crossNamespace = false
 } = {}) {
     leasePath = resolveHeavyMaintenanceLeasePath({leasePath});
 
@@ -357,7 +378,7 @@ export function inspectHeavyMaintenanceLeaseSync({
 
     try {
         const lease = JSON.parse(raw);
-        const stale = isLeaseStale(lease, {now, isPidAlive: isPidAliveFn});
+        const stale = isLeaseStale(lease, {now, isPidAlive: isPidAliveFn, crossNamespace});
 
         return {
             status: stale ? 'stale' : 'active',
@@ -383,12 +404,14 @@ export function inspectHeavyMaintenanceLeaseSync({
  */
 export function acquireHeavyMaintenanceLeaseSync({
     owner,
-    reason       = 'manual',
-    metadata     = {},
+    reason           = 'manual',
+    metadata         = {},
+    kbWriteExclusive = false,
+    leaseId,
     leasePath,
-    fsModule     = fs,
-    now          = new Date(),
-    pid          = process.pid,
+    fsModule         = fs,
+    now              = new Date(),
+    pid              = process.pid,
     staleAfterMs,
     guardStaleAfterMs,
     isPidAlive: isPidAliveFn = isPidAlive,
@@ -400,7 +423,17 @@ export function acquireHeavyMaintenanceLeaseSync({
 
     leasePath = resolveHeavyMaintenanceLeasePath({leasePath});
 
-    const lease = buildLeasePayload({owner, reason, metadata, pid, staleAfterMs, now, token});
+    const lease = buildLeasePayload({
+        owner,
+        reason,
+        metadata,
+        kbWriteExclusive,
+        leaseId,
+        pid,
+        staleAfterMs,
+        now,
+        token
+    });
 
     try {
         writeLeaseFileSync(leasePath, lease, fsModule);
@@ -596,6 +629,8 @@ export function renewHeavyMaintenanceLeaseSync({
  * @param {String} options.owner Stable owner label.
  * @param {String} [options.reason='manual'] Acquisition reason.
  * @param {Object} [options.metadata={}] Diagnostic metadata.
+ * @param {Boolean} [options.kbWriteExclusive=false] Declares KB-write exclusion during the lease window; absent when false.
+ * @param {String} [options.leaseId] Optional public lease identifier override.
  * @param {String} options.leasePath Lease file path.
  * @param {Object} [options.fsModule=fs] File-system implementation seam.
  * @param {Date|Number|String} [options.now=new Date()] Current time.
@@ -607,12 +642,14 @@ export function renewHeavyMaintenanceLeaseSync({
  */
 export async function acquireHeavyMaintenanceLease({
     owner,
-    reason       = 'manual',
-    metadata     = {},
+    reason           = 'manual',
+    metadata         = {},
+    kbWriteExclusive = false,
+    leaseId,
     leasePath,
-    fsModule     = fs,
-    now          = new Date(),
-    pid          = process.pid,
+    fsModule         = fs,
+    now              = new Date(),
+    pid              = process.pid,
     staleAfterMs,
     guardStaleAfterMs,
     isPidAlive: isPidAliveFn = isPidAlive,
@@ -624,7 +661,17 @@ export async function acquireHeavyMaintenanceLease({
 
     leasePath = resolveHeavyMaintenanceLeasePath({leasePath});
 
-    const lease = buildLeasePayload({owner, reason, metadata, pid, staleAfterMs, now, token});
+    const lease = buildLeasePayload({
+        owner,
+        reason,
+        metadata,
+        kbWriteExclusive,
+        leaseId,
+        pid,
+        staleAfterMs,
+        now,
+        token
+    });
 
     try {
         await writeLeaseFile(leasePath, lease, fsModule);
@@ -958,6 +1005,12 @@ export async function withHeavyMaintenanceLease(task, options = {}) {
         });
 
         if (current.active && current.lease && current.lease.token === inheritedToken) {
+            if (options.kbWriteExclusive === true && !isKbWriteExclusiveLease(current.lease)) {
+                throw new Error(
+                    'withHeavyMaintenanceLease: inherited lease does not declare kbWriteExclusive: true; refusing to run KB-write-exclusive work under a non-exclusive parent lease.'
+                );
+            }
+
             const acquisition = {status: 'inherited', acquired: false, lease: current.lease};
             return {
                 status  : 'inherited',
