@@ -18,6 +18,7 @@ import {
     createLiveKbDeadElementGatherer,
     inspectChromaStoreRuntimeBinding,
     readKbDeadElementObservation,
+    readLiveKbDeadElements,
     readSqliteRegistryReadOnly,
     SQLITE_ROLLBACK_JOURNAL_MAGIC
 } from '../../../../../../../ai/daemons/orchestrator/services/kbDeadElementGatherer.mjs';
@@ -501,5 +502,50 @@ test.describe('kbDeadElementGatherer — read-only Chroma 1.5.9 observation & is
             heals : []
         });
         expect(allFailedDecision.probeError).toContain('spawn sqlite3 ENOENT');
+
+        // Shared use-site reader + pending unverified-defrag-attempt re-diagnosis even when store is clean or unknown
+        const capturedArgs = [];
+        const liveRead     = await readLiveKbDeadElements({
+            kbChromaManager     : {},
+            runtimeAccessService: {},
+            readObservationFn   : args => {
+                capturedArgs.push(args);
+                return {status: 'ok', collection: kbConfig.collectionName, hnswOccupancy: 100, liveCount: 100, deadElementCount: 0, deadFraction: 0};
+            }
+        });
+        expect(liveRead.gcDefragThreshold).toBe(AiConfig.knowledgeBase.gcDefragThreshold);
+        expect(capturedArgs).toEqual([
+            expect.objectContaining({
+                dataDir       : AiConfig.engines.chroma.dataDir,
+                endpointHost  : AiConfig.engines.chroma.host,
+                endpointPort  : AiConfig.engines.chroma.port,
+                collectionName: kbConfig.collectionName,
+                databaseName  : kbConfig.chromaDatabase
+            })
+        ]);
+
+        const pendingGatherer = createLiveKbDeadElementGatherer({
+            serviceId               : 'mc-server',
+            kbChromaManager         : {},
+            runtimeAccessService    : {},
+            readObservationFn       : async () => ({status: 'unknown', reason: 'kb-collection-missing'}),
+            readPendingDefragAttempt: async () => ({
+                phase    : 'post-promotion-unverified',
+                bundleSha: 'a'.repeat(64)
+            })
+        });
+        const pendingOutcome = await pendingGatherer(OBSERVED_AT);
+        expect(pendingOutcome).toMatchObject({
+            status    : 'bloated',
+            collection: kbConfig.collectionName
+        });
+        expect(pendingOutcome.diagnosis.evidenceFacts).toEqual([
+            expect.objectContaining({
+                type      : 'store-bloat',
+                signal    : 'unverified-defrag-attempt',
+                collection: kbConfig.collectionName,
+                phase     : 'post-promotion-unverified'
+            })
+        ]);
     });
 });

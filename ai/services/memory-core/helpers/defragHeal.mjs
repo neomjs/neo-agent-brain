@@ -29,8 +29,11 @@ import {
  *    anonymous memory, then re-validates canonical row count, full ID set, and sampled embedding.
  * 7. On any post-restart mismatch (including an empty post-restart store), restores from `<bundleRoot>/kb`,
  *    restarts `kb-server` inside the lease, and returns `failed` with expected and observed counts.
- * 8. On clean post-restart validation, restarts `kb-server` inside the lease to refresh cached collection
- *    handles, then releases the lease and returns `healed`.
+ * 8. On any post-promotion throw (`chroma` restart, readiness wait, or re-validation), retains the durable
+ *    attempt state (`bundleSha` + `bundleRoot`), restarts `kb-server` before releasing the lease, and returns
+ *    structured `failed` details so the next run reconciles the unverified canonical collection.
+ * 9. On clean post-restart validation, restarts `kb-server` inside the lease to refresh cached collection
+ *    handles, clears the durable attempt state, then releases the lease and returns `healed`.
  *
  * @see learn/agentos/decisions/0026-recovery-actuator.md
  * @see learn/agentos/decisions/0027-autonomous-data-recovery-actuator.md
@@ -42,6 +45,37 @@ export const DEFAULT_CHROMA_READY_TIMEOUT_MS    = 30_000;
 export const DEFAULT_CHROMA_READY_POLL_MS       = 500;
 export const DEFAULT_SHADOW_BATCH_SIZE          = 500;
 export const DEFAULT_SHADOW_DISK_SAFETY_FACTOR  = 1.25;
+
+export const UNVERIFIED_DEFRAG_ATTEMPT_PHASES = Object.freeze([
+    'live-parked',
+    'shadow-promoted',
+    'canonical-validated',
+    'parking-deleted',
+    'chroma-restarting',
+    'post-promotion-unverified',
+    'kb-server-refresh-pending'
+]);
+
+const PRE_PROMOTION_ABORTED_PHASES = Object.freeze([
+    'creating-shadow',
+    'shadow-loading',
+    'shadow-loaded',
+    'live-rollback-complete',
+    'shadow-parked-after-failure'
+]);
+
+/**
+ * @summary Checks whether a persisted defrag attempt marker requires post-promotion reconciliation.
+ * @param {Object|null|undefined} state Parsed defrag state JSON.
+ * @returns {Boolean}
+ */
+export function isUnverifiedDefragAttemptState(state) {
+    return Boolean(
+        state &&
+        typeof state === 'object' &&
+        UNVERIFIED_DEFRAG_ATTEMPT_PHASES.includes(state.phase)
+    );
+}
 
 const PER_ROW_NON_VECTOR_OVERHEAD_BYTES = 2048;
 const FLOAT32_EMBEDDING_TOLERANCE       = 1e-3;
@@ -115,25 +149,33 @@ export async function inspectAndHashKbBundle({
     expectedDimension = null,
     fsModule          = fs
 } = {}) {
-    const restorable = isBundleRestorable(meta?.integrity),
-          kbCheck    = Array.isArray(meta?.integrity)
-              ? meta.integrity.find(entry => entry?.subsystem === 'kb') ?? null
-              : null;
+    const checkMeta = candidateMeta => {
+        const restorable = isBundleRestorable(candidateMeta?.integrity),
+              kbCheck    = Array.isArray(candidateMeta?.integrity)
+                  ? candidateMeta.integrity.find(entry => entry?.subsystem === 'kb') ?? null
+                  : null,
+              valid      = (
+                  restorable === true &&
+                  Boolean(kbCheck) &&
+                  kbCheck.status === 'pass' &&
+                  Number.isInteger(kbCheck.bundleCount) &&
+                  kbCheck.bundleCount > 0 &&
+                  kbCheck.bundleCount === kbCheck.sourceCount
+              );
 
-    if (
-        restorable !== true ||
-        !kbCheck ||
-        kbCheck.status !== 'pass' ||
-        !Number.isInteger(kbCheck.bundleCount) ||
-        kbCheck.bundleCount <= 0 ||
-        kbCheck.bundleCount !== kbCheck.sourceCount
-    ) {
-        return {
-            ok         : false,
-            reason     : 'bundle-integrity-check-failed',
-            restorable,
-            kbIntegrity: kbCheck
-        };
+        return {valid, restorable, kbCheck};
+    };
+
+    if (meta !== undefined) {
+        const {valid, restorable, kbCheck} = checkMeta(meta);
+        if (!valid) {
+            return {
+                ok         : false,
+                reason     : 'bundle-integrity-check-failed',
+                restorable,
+                kbIntegrity: kbCheck
+            };
+        }
     }
 
     if (typeof bundleRoot !== 'string' || bundleRoot.length === 0) {
@@ -150,6 +192,18 @@ export async function inspectAndHashKbBundle({
         return {
             ok    : false,
             reason: 'bundle-kb-files-missing'
+        };
+    }
+
+    const resolvedMeta                 = meta !== undefined ? meta : await fsModule.readJson(metaPath),
+          {valid, restorable, kbCheck} = checkMeta(resolvedMeta);
+
+    if (!valid) {
+        return {
+            ok         : false,
+            reason     : 'bundle-integrity-check-failed',
+            restorable,
+            kbIntegrity: kbCheck
         };
     }
 
@@ -654,8 +708,11 @@ export async function waitForKbWriteDrainAck({
 /**
  * @summary Creates the `healOperations.defrag` actuator operation consumed by `dispatchHeal`.
  *
- * All storage, lease, backup, lifecycle-restart, and healthcheck collaborators are injected so the
- * state machine is deterministically unit-testable with zero live-service side effects.
+ * All storage, lease, backup, lifecycle-restart, durable-state, and healthcheck collaborators are injected so the
+ * state machine is deterministically unit-testable with zero live-service side effects. Once `promoteShadow`
+ * mutates the canonical collection, every exit path refreshes `kb-server` inside the writer fence, preserves
+ * `{bundleSha, bundleRoot, failedStep}` on failure, and keeps the durable attempt marker on disk until
+ * post-restart validation (or bundle restore) and `kb-server` refresh both succeed.
  *
  * @param {Object} collaborators
  * @param {Function} collaborators.getExpectedCollection Returns the canonical Knowledge Base collection name.
@@ -670,6 +727,9 @@ export async function waitForKbWriteDrainAck({
  * @param {Function} [collaborators.waitForChromaReady=async()=>{}] Awaits Chroma readiness after `chroma` restart.
  * @param {Function} collaborators.revalidateCanonical Validates post-restart count, ID set, and sampled vector against the bundle.
  * @param {Function} collaborators.restoreFromBundle Restores canonical KB collection from `<bundleRoot>/kb` on post-restart mismatch.
+ * @param {Function} [collaborators.readAttemptState=async()=>null] Reads persisted defrag attempt state when present.
+ * @param {Function} [collaborators.writeAttemptState=async()=>{}] Persists durable post-promotion attempt state.
+ * @param {Function} [collaborators.clearAttemptState=async()=>{}] Clears durable attempt state after verified completion.
  * @param {Number} [collaborators.drainTimeoutMs=DEFAULT_DRAIN_ACK_TIMEOUT_MS] Maximum wait for `kb-server` drain acknowledgement.
  * @param {Number} [collaborators.drainPollIntervalMs=DEFAULT_DRAIN_ACK_POLL_INTERVAL_MS] Poll interval for `kb-server` drain check.
  * @param {Function} [collaborators.clock=Date.now] Clock seam.
@@ -689,6 +749,9 @@ export function createDefragHealOperation({
     waitForChromaReady  = async () => {},
     revalidateCanonical,
     restoreFromBundle,
+    readAttemptState    = async () => null,
+    writeAttemptState   = async () => {},
+    clearAttemptState   = async () => {},
     drainTimeoutMs      = DEFAULT_DRAIN_ACK_TIMEOUT_MS,
     drainPollIntervalMs = DEFAULT_DRAIN_ACK_POLL_INTERVAL_MS,
     clock               = Date.now,
@@ -707,6 +770,9 @@ export function createDefragHealOperation({
         waitForChromaReady,
         revalidateCanonical,
         restoreFromBundle,
+        readAttemptState,
+        writeAttemptState,
+        clearAttemptState,
         clock,
         sleep
     };
@@ -716,6 +782,26 @@ export function createDefragHealOperation({
             throw new TypeError(`createDefragHealOperation: ${name} must be a function`);
         }
     }
+
+    const refreshKbServerSafely = async () => {
+        try {
+            await restartService('kb-server');
+            return {kbServerRestarted: true, kbRestartError: null};
+        } catch (kbError) {
+            return {
+                kbServerRestarted: false,
+                kbRestartError   : kbError?.message ?? String(kbError)
+            };
+        }
+    };
+
+    const readAttemptStateSafely = async () => {
+        try {
+            return await readAttemptState();
+        } catch {
+            return null;
+        }
+    };
 
     return async function defragHealOperation({collection, now} = {}) {
         const expectedCollection = getExpectedCollection();
@@ -734,6 +820,288 @@ export function createDefragHealOperation({
                     expectedCollection: expectedCollection ?? null
                 }
             };
+        }
+
+        const completePostPromotionVerification = async ({
+            bundleRoot,
+            bundleInfo,
+            expectedDimension,
+            initialPhase,
+            reconciledInterruptedAttempt = false,
+            priorFailedStep              = null,
+            observationBefore            = null,
+            promotion                    = null
+        }) => {
+            const persistUnverifiedState = async (phase, failedStep, lastError = null) => {
+                try {
+                    await writeAttemptState({
+                        targetName       : 'knowledge-base',
+                        collectionName   : expectedCollection,
+                        bundleRoot,
+                        bundleSha        : bundleInfo.bundleSha,
+                        expectedCount    : bundleInfo.expectedCount,
+                        expectedDimension: expectedDimension ?? null,
+                        shadowName       : promotion?.shadowName ?? null,
+                        parkingName      : promotion?.parkingName ?? null,
+                        parkingDeleted   : promotion?.parkingDeleted ?? null,
+                        phase,
+                        failedStep,
+                        ...(lastError ? {lastError} : {})
+                    });
+                } catch {
+                    // Best-effort durable state write; structured failed outcome still carries bundleSha/bundleRoot.
+                }
+            };
+
+            const reconcileMeta = reconciledInterruptedAttempt
+                ? {reconciledInterruptedAttempt: true, resumedFromPhase: initialPhase}
+                : {};
+
+            if (initialPhase !== 'kb-server-refresh-pending') {
+                const needsChromaRestart = (
+                    !reconciledInterruptedAttempt ||
+                    ['shadow-promoted', 'canonical-validated', 'parking-deleted'].includes(initialPhase) ||
+                    priorFailedStep === 'chroma-restart'
+                );
+
+                let currentStep = 'chroma-restart',
+                    validation  = null;
+
+                try {
+                    if (needsChromaRestart) {
+                        await persistUnverifiedState('chroma-restarting', null);
+                        await restartService('chroma');
+                    }
+
+                    currentStep = 'chroma-readiness';
+                    await waitForChromaReady();
+
+                    currentStep = 'post-restart-revalidation';
+                    validation = await revalidateCanonical({
+                        collectionName: expectedCollection,
+                        expectedIds   : bundleInfo.sourceIds,
+                        sampleRow     : bundleInfo.sampleRow
+                    });
+                } catch (stepError) {
+                    const errorMsg = stepError?.message ?? String(stepError);
+                    await persistUnverifiedState('post-promotion-unverified', currentStep, errorMsg);
+                    const {kbServerRestarted, kbRestartError} = await refreshKbServerSafely();
+
+                    return {
+                        status: 'failed',
+                        detail: {
+                            reason              : `${currentStep}-failed`,
+                            failedStep          : currentStep,
+                            error               : errorMsg,
+                            collection          : expectedCollection,
+                            expectedCount       : bundleInfo.expectedCount,
+                            bundleSha           : bundleInfo.bundleSha,
+                            bundleRoot,
+                            postRestartValidated: false,
+                            kbServerRestarted,
+                            ...reconcileMeta,
+                            ...(kbRestartError ? {kbRestartError} : {})
+                        }
+                    };
+                }
+
+                if (!validation?.valid) {
+                    let restored     = false,
+                        restoreError = null;
+
+                    try {
+                        await restoreFromBundle({
+                            bundleRoot,
+                            kbDir      : bundleInfo.kbDir,
+                            expectedIds: bundleInfo.sourceIds,
+                            extraIds   : validation?.extraIds ?? []
+                        });
+                        restored = true;
+                    } catch (error) {
+                        restoreError = error?.message ?? String(error);
+                    }
+
+                    const {kbServerRestarted, kbRestartError} = await refreshKbServerSafely(),
+                          failedStep                          = !restored
+                              ? 'bundle-restore'
+                              : (!kbServerRestarted ? 'kb-server-restart' : 'post-restart-validation'),
+                          combinedRestoreError                = [
+                              restoreError,
+                              kbRestartError ? `kb-server restart failed: ${kbRestartError}` : null
+                          ].filter(Boolean).join('; ') || null;
+
+                    if (restored && kbServerRestarted) {
+                        await clearAttemptState();
+                    } else {
+                        await persistUnverifiedState(
+                            restored ? 'kb-server-refresh-pending' : 'post-promotion-unverified',
+                            failedStep,
+                            combinedRestoreError
+                        );
+                    }
+
+                    return {
+                        status: 'failed',
+                        detail: {
+                            reason        : validation?.reason || 'post-restart-validation-mismatch',
+                            failedStep,
+                            collection    : expectedCollection,
+                            expectedCount : validation?.expectedCount ?? bundleInfo.expectedCount,
+                            observedCount : validation?.observedCount ?? null,
+                            missingIdCount: validation?.missingIdCount ?? null,
+                            extraIdCount  : validation?.extraIdCount ?? null,
+                            sampleValid   : validation?.sampleValid ?? false,
+                            bundleSha     : bundleInfo.bundleSha,
+                            bundleRoot,
+                            restored,
+                            kbServerRestarted,
+                            ...reconcileMeta,
+                            ...(combinedRestoreError ? {restoreError: combinedRestoreError} : {})
+                        }
+                    };
+                }
+            }
+
+            const {kbServerRestarted, kbRestartError} = await refreshKbServerSafely();
+
+            if (!kbServerRestarted) {
+                await persistUnverifiedState('kb-server-refresh-pending', 'kb-server-restart', kbRestartError);
+                return {
+                    status: 'failed',
+                    detail: {
+                        reason              : 'kb-server-restart-failed',
+                        failedStep          : 'kb-server-restart',
+                        error               : kbRestartError,
+                        collection          : expectedCollection,
+                        expectedCount       : bundleInfo.expectedCount,
+                        observedCount       : bundleInfo.expectedCount,
+                        bundleSha           : bundleInfo.bundleSha,
+                        bundleRoot,
+                        postRestartValidated: true,
+                        kbServerRestarted   : false,
+                        ...reconcileMeta
+                    }
+                };
+            }
+
+            await clearAttemptState();
+
+            return {
+                status: 'healed',
+                detail: {
+                    collection         : expectedCollection,
+                    bundleSha          : bundleInfo.bundleSha,
+                    bundleRoot,
+                    expectedCount      : bundleInfo.expectedCount,
+                    observedCount      : bundleInfo.expectedCount,
+                    deadFractionBefore : observationBefore?.deadFraction ?? null,
+                    hnswOccupancyBefore: observationBefore?.hnswOccupancy ?? null,
+                    liveCountBefore    : observationBefore?.liveCount ?? null,
+                    shadowName         : promotion?.shadowName ?? null,
+                    parkingName        : promotion?.parkingName ?? null,
+                    parkingDeleted     : promotion?.parkingDeleted ?? null,
+                    ...reconcileMeta
+                }
+            };
+        };
+
+        const acquireAndDrainOrDefer = async lease => {
+            const leaseId = typeof lease?.leaseId === 'string' && lease.leaseId.length > 0
+                ? lease.leaseId
+                : null;
+
+            if (!leaseId) {
+                return {
+                    deferred: {
+                        status: 'deferred',
+                        detail: {reason: 'writer-fence-missing-lease-id'}
+                    }
+                };
+            }
+
+            const drainAck = await waitForKbWriteDrainAck({
+                leaseId,
+                probeKbWriteGate,
+                timeoutMs     : drainTimeoutMs,
+                pollIntervalMs: drainPollIntervalMs,
+                clock,
+                sleep
+            });
+
+            if (!drainAck.acknowledged) {
+                return {
+                    deferred: {
+                        status: 'deferred',
+                        detail: {
+                            reason        : 'kb-write-drain-unacknowledged',
+                            leaseId,
+                            timeoutMs     : drainTimeoutMs,
+                            lastWriteGate : drainAck.writeGate,
+                            lastProbeError: drainAck.lastProbeError
+                        }
+                    }
+                };
+            }
+
+            return {deferred: null};
+        };
+
+        const initialAttemptState = await readAttemptStateSafely();
+
+        if (isUnverifiedDefragAttemptState(initialAttemptState)) {
+            return withWriterFence(async ({lease} = {}) => {
+                const {deferred} = await acquireAndDrainOrDefer(lease);
+                if (deferred) {
+                    return deferred;
+                }
+
+                const priorAttempt = await readAttemptStateSafely();
+                if (!isUnverifiedDefragAttemptState(priorAttempt)) {
+                    return {
+                        status: 'deferred',
+                        detail: {reason: 'prior-attempt-already-reconciled'}
+                    };
+                }
+
+                const bundleInfo = await inspectBundle({
+                    bundleRoot       : priorAttempt.bundleRoot,
+                    expectedDimension: priorAttempt.expectedDimension ?? null
+                });
+
+                if (!bundleInfo?.ok || (priorAttempt.bundleSha && bundleInfo.bundleSha !== priorAttempt.bundleSha)) {
+                    const {kbServerRestarted, kbRestartError} = await refreshKbServerSafely();
+                    return {
+                        status: 'failed',
+                        detail: {
+                            reason                      : bundleInfo?.ok ? 'reconcile-bundle-sha-mismatch' : (bundleInfo?.reason || 'reconcile-bundle-unavailable'),
+                            failedStep                  : 'reconcile-bundle',
+                            collection                  : expectedCollection,
+                            bundleRoot                  : priorAttempt.bundleRoot ?? null,
+                            bundleSha                   : priorAttempt.bundleSha ?? bundleInfo?.bundleSha ?? null,
+                            observedBundleSha           : bundleInfo?.bundleSha ?? null,
+                            postRestartValidated        : false,
+                            kbServerRestarted,
+                            reconciledInterruptedAttempt: true,
+                            resumedFromPhase            : priorAttempt.phase,
+                            ...(kbRestartError ? {kbRestartError} : {})
+                        }
+                    };
+                }
+
+                return completePostPromotionVerification({
+                    bundleRoot                  : priorAttempt.bundleRoot,
+                    bundleInfo,
+                    expectedDimension           : priorAttempt.expectedDimension ?? null,
+                    initialPhase                : priorAttempt.phase,
+                    reconciledInterruptedAttempt: true,
+                    priorFailedStep             : priorAttempt.failedStep ?? null,
+                    promotion                   : {
+                        shadowName    : priorAttempt.shadowName ?? null,
+                        parkingName   : priorAttempt.parkingName ?? null,
+                        parkingDeleted: priorAttempt.parkingDeleted ?? null
+                    }
+                });
+            });
         }
 
         const {observation, gcDefragThreshold} = await readDeadElements();
@@ -783,39 +1151,14 @@ export function createDefragHealOperation({
         }
 
         return withWriterFence(async ({lease} = {}) => {
-            const leaseId = typeof lease?.leaseId === 'string' && lease.leaseId.length > 0
-                ? lease.leaseId
-                : null;
-
-            if (!leaseId) {
-                return {
-                    status: 'deferred',
-                    detail: {
-                        reason: 'writer-fence-missing-lease-id'
-                    }
-                };
+            const {deferred} = await acquireAndDrainOrDefer(lease);
+            if (deferred) {
+                return deferred;
             }
 
-            const drainAck = await waitForKbWriteDrainAck({
-                leaseId,
-                probeKbWriteGate,
-                timeoutMs     : drainTimeoutMs,
-                pollIntervalMs: drainPollIntervalMs,
-                clock,
-                sleep
-            });
-
-            if (!drainAck.acknowledged) {
-                return {
-                    status: 'deferred',
-                    detail: {
-                        reason        : 'kb-write-drain-unacknowledged',
-                        leaseId,
-                        timeoutMs     : drainTimeoutMs,
-                        lastWriteGate : drainAck.writeGate,
-                        lastProbeError: drainAck.lastProbeError
-                    }
-                };
+            const existingState = await readAttemptStateSafely();
+            if (existingState && PRE_PROMOTION_ABORTED_PHASES.includes(existingState.phase)) {
+                await clearAttemptState();
             }
 
             const backupResult = await writeBackupBundle(),
@@ -830,6 +1173,7 @@ export function createDefragHealOperation({
                     status: 'failed',
                     detail: {
                         reason     : bundleInfo?.reason || 'bundle-integrity-check-failed',
+                        failedStep : 'bundle-integrity',
                         bundleRoot : backupResult?.bundleRoot ?? null,
                         bundleSha  : bundleInfo?.bundleSha ?? null,
                         restorable : bundleInfo?.restorable ?? null,
@@ -858,84 +1202,81 @@ export function createDefragHealOperation({
                 };
             }
 
-            const promotion = await promoteShadow({
-                collectionName: expectedCollection,
-                bundleRoot    : backupResult.bundleRoot,
-                kbDir         : bundleInfo.kbDir,
-                sourceIds     : bundleInfo.sourceIds,
-                bundleSha     : bundleInfo.bundleSha,
-                now           : Number.isFinite(now) ? now : clock()
-            });
+            let promotion;
+            try {
+                promotion = await promoteShadow({
+                    collectionName   : expectedCollection,
+                    bundleRoot       : backupResult.bundleRoot,
+                    kbDir            : bundleInfo.kbDir,
+                    sourceIds        : bundleInfo.sourceIds,
+                    bundleSha        : bundleInfo.bundleSha,
+                    expectedDimension: observation.dimension ?? null,
+                    now              : Number.isFinite(now) ? now : clock()
+                });
+            } catch (promoError) {
+                const errorMsg               = promoError?.message ?? String(promoError),
+                      stateAfterPromoFailure = await readAttemptStateSafely();
 
-            await restartService('chroma');
-            await waitForChromaReady();
-
-            const validation = await revalidateCanonical({
-                collectionName: expectedCollection,
-                expectedIds   : bundleInfo.sourceIds,
-                sampleRow     : bundleInfo.sampleRow
-            });
-
-            if (!validation?.valid) {
-                let restored     = false,
-                    restoreError = null;
-
-                try {
-                    await restoreFromBundle({
-                        bundleRoot : backupResult.bundleRoot,
-                        kbDir      : bundleInfo.kbDir,
-                        expectedIds: bundleInfo.sourceIds,
-                        extraIds   : validation?.extraIds ?? []
-                    });
-                    restored = true;
-                } catch (error) {
-                    restoreError = error?.message ?? String(error);
+                if (isUnverifiedDefragAttemptState(stateAfterPromoFailure)) {
+                    try {
+                        await writeAttemptState({
+                            ...stateAfterPromoFailure,
+                            targetName       : 'knowledge-base',
+                            collectionName   : expectedCollection,
+                            bundleRoot       : backupResult.bundleRoot,
+                            bundleSha        : bundleInfo.bundleSha,
+                            expectedCount    : bundleInfo.expectedCount,
+                            expectedDimension: observation.dimension ?? null,
+                            phase            : 'post-promotion-unverified',
+                            failedStep       : 'shadow-promotion',
+                            lastError        : errorMsg
+                        });
+                    } catch {
+                        // Best-effort durable state write.
+                    }
+                    const {kbServerRestarted, kbRestartError} = await refreshKbServerSafely();
+                    return {
+                        status: 'failed',
+                        detail: {
+                            reason              : 'shadow-promotion-failed-after-rename',
+                            failedStep          : 'shadow-promotion',
+                            error               : errorMsg,
+                            collection          : expectedCollection,
+                            expectedCount       : bundleInfo.expectedCount,
+                            bundleSha           : bundleInfo.bundleSha,
+                            bundleRoot          : backupResult.bundleRoot,
+                            postRestartValidated: false,
+                            kbServerRestarted,
+                            ...(kbRestartError ? {kbRestartError} : {})
+                        }
+                    };
                 }
 
-                try {
-                    await restartService('kb-server');
-                } catch (kbRestartError) {
-                    restoreError = restoreError
-                        ? `${restoreError}; kb-server restart failed: ${kbRestartError?.message ?? String(kbRestartError)}`
-                        : `kb-server restart failed: ${kbRestartError?.message ?? String(kbRestartError)}`;
-                }
-
+                await clearAttemptState();
                 return {
                     status: 'failed',
                     detail: {
-                        reason        : validation?.reason || 'post-restart-validation-mismatch',
-                        collection    : expectedCollection,
-                        expectedCount : validation?.expectedCount ?? bundleInfo.expectedCount,
-                        observedCount : validation?.observedCount ?? null,
-                        missingIdCount: validation?.missingIdCount ?? null,
-                        extraIdCount  : validation?.extraIdCount ?? null,
-                        sampleValid   : validation?.sampleValid ?? false,
-                        bundleSha     : bundleInfo.bundleSha,
-                        bundleRoot    : backupResult.bundleRoot,
-                        restored,
-                        ...(restoreError ? {restoreError} : {})
+                        reason              : 'shadow-promotion-failed',
+                        failedStep          : 'shadow-promotion',
+                        error               : errorMsg,
+                        collection          : expectedCollection,
+                        expectedCount       : bundleInfo.expectedCount,
+                        bundleSha           : bundleInfo.bundleSha,
+                        bundleRoot          : backupResult.bundleRoot,
+                        postRestartValidated: false,
+                        kbServerRestarted   : false
                     }
                 };
             }
 
-            await restartService('kb-server');
-
-            return {
-                status: 'healed',
-                detail: {
-                    collection         : expectedCollection,
-                    bundleSha          : bundleInfo.bundleSha,
-                    bundleRoot         : backupResult.bundleRoot,
-                    expectedCount      : validation.expectedCount,
-                    observedCount      : validation.observedCount,
-                    deadFractionBefore : observation.deadFraction,
-                    hnswOccupancyBefore: observation.hnswOccupancy,
-                    liveCountBefore    : observation.liveCount,
-                    shadowName         : promotion?.shadowName ?? null,
-                    parkingName        : promotion?.parkingName ?? null,
-                    parkingDeleted     : promotion?.parkingDeleted ?? null
-                }
-            };
+            return completePostPromotionVerification({
+                bundleRoot       : backupResult.bundleRoot,
+                bundleInfo,
+                expectedDimension: observation.dimension ?? null,
+                initialPhase     : 'parking-deleted',
+                observationBefore: observation,
+                promotion
+            });
         });
     };
 }

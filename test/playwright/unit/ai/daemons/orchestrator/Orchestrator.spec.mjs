@@ -3378,11 +3378,20 @@ test.describe('#1756 — Orchestrator defect-note publisher and DiskPressureDefe
 
     test('registers healOperations.defrag on DataRecoveryActuatorService and refuses non-KB targets with unsafe-input', async () => {
         const tmpDir       = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-orch-defrag-heal-')),
-              orchestrator = createTestOrchestrator({dataDir: tmpDir});
+              relocatedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-orch-defrag-heal-reloc-')),
+              orchestrator = Neo.create(Orchestrator, {
+                  dataDir      : tmpDir,
+                  healthService: {recordTaskOutcome() {}}
+              });
 
         try {
             const actuator = orchestrator.dataRecoveryActuatorService;
             expect(typeof actuator.healOperations.defrag).toBe('function');
+            expect(orchestrator.kbDefragHealStatePath).toBe(path.join(tmpDir, 'defrag-state', 'knowledge-base-heal.json'));
+            expect(await orchestrator.readKbDefragHealState()).toBeNull();
+
+            orchestrator.dataDir = relocatedDir;
+            expect(orchestrator.kbDefragHealStatePath).toBe(path.join(relocatedDir, 'defrag-state', 'knowledge-base-heal.json'));
 
             const rejected = await actuator.applyHeal({
                 action    : 'defrag',
@@ -3399,6 +3408,7 @@ test.describe('#1756 — Orchestrator defect-note publisher and DiskPressureDefe
         } finally {
             orchestrator.destroy();
             fs.removeSync(tmpDir);
+            fs.removeSync(relocatedDir);
         }
     });
 });

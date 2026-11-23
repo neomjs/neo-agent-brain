@@ -87,7 +87,7 @@ import {assembleDataIntegrityEvidence}          from './services/dataIntegrityEv
 import {createLiveDimensionConsistencyGatherer} from './services/dimensionConsistencyGatherer.mjs';
 import {
     createLiveKbDeadElementGatherer,
-    readKbDeadElementObservation
+    readLiveKbDeadElements
 } from './services/kbDeadElementGatherer.mjs';
 import {createRemDigestion}    from '../../../src/evolution/createRemDigestion.mjs';
 import ConceptDiscoveryService from '../../services/ingestion/ConceptDiscoveryService.mjs';
@@ -1102,17 +1102,9 @@ export class Orchestrator extends Base {
                 'restore-empty-target': restoreEmptyTarget,
                 defrag                : createDefragHealOperation({
                     getExpectedCollection: () => kbConfig.collectionName,
-                    readDeadElements     : async () => ({
-                        gcDefragThreshold: AiConfig.knowledgeBase.gcDefragThreshold,
-                        observation      : await readKbDeadElementObservation({
-                            dataDir             : AiConfig.engines.chroma.dataDir,
-                            endpointHost        : AiConfig.engines.chroma.host,
-                            endpointPort        : AiConfig.engines.chroma.port,
-                            collectionName      : kbConfig.collectionName,
-                            databaseName        : kbConfig.chromaDatabase,
-                            kbChromaManager     : KB_ChromaManager,
-                            runtimeAccessService: this.deploymentRuntimeAccessService
-                        })
+                    readDeadElements     : () => readLiveKbDeadElements({
+                        kbChromaManager     : this.kbChromaManager || KB_ChromaManager,
+                        runtimeAccessService: this.deploymentRuntimeAccessService
                     }),
                     withWriterFence: async task => {
                         const outcome = await withHeavyMaintenanceLease(
@@ -1138,8 +1130,7 @@ export class Orchestrator extends Base {
                     },
                     probeKbWriteGate: async () => {
                         const bridgeConfig = AiConfig.orchestrator.deploymentStateBridge,
-                              urls         = Array.isArray(bridgeConfig.directProbeUrls) ? bridgeConfig.directProbeUrls : [],
-                              url          = urls.find(candidate => {
+                              url          = bridgeConfig.directProbeUrls.find(candidate => {
                                   try {
                                       return new URL(candidate).hostname === 'kb-server';
                                   } catch {
@@ -1186,14 +1177,13 @@ export class Orchestrator extends Base {
                             hnswOccupancy,
                             vectorSegmentIds
                         }),
-                    promoteShadow: async ({collectionName, bundleRoot, kbDir, sourceIds, bundleSha, now}) => {
+                    promoteShadow: async ({collectionName, bundleRoot, kbDir, sourceIds, bundleSha, expectedDimension, now}) => {
                         await KB_LifecycleService.ready();
                         const {
                                   assertNoIncompleteDefragState,
-                                  clearDefragState,
                                   rewriteCollectionViaShadowPromotion
                               }               = await import('../../scripts/maintenance/defragChromaDB.mjs'),
-                              defragStatePath = path.join(this.dataDir, 'defrag-state', 'knowledge-base-heal.json');
+                              defragStatePath = this.kbDefragHealStatePath;
 
                         await assertNoIncompleteDefragState({statePath: defragStatePath});
 
@@ -1209,17 +1199,26 @@ export class Orchestrator extends Base {
                             embeddingFunction: kbConfig.dummyEmbeddingFunction,
                             statePath        : defragStatePath,
                             stateBase        : {
-                                targetName: 'knowledge-base',
+                                targetName       : 'knowledge-base',
                                 bundleSha,
                                 bundleRoot,
-                                startedAt : new Date(now).toISOString()
+                                expectedDimension: expectedDimension ?? AiConfig.vectorDimension,
+                                startedAt        : new Date(now).toISOString()
                             },
                             timestamp        : now
                         });
 
-                        await clearDefragState({statePath: defragStatePath});
                         KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
                         return result;
+                    },
+                    readAttemptState : () => this.readKbDefragHealState(),
+                    writeAttemptState: async state => {
+                        const {writeDefragState} = await import('../../scripts/maintenance/defragChromaDB.mjs');
+                        await writeDefragState({statePath: this.kbDefragHealStatePath, state});
+                    },
+                    clearAttemptState: async () => {
+                        const {clearDefragState} = await import('../../scripts/maintenance/defragChromaDB.mjs');
+                        await clearDefragState({statePath: this.kbDefragHealStatePath});
                     },
                     restartService: serviceKey => this.deploymentRuntimeAccessService.applyLifecycle({
                         serviceKey,
@@ -1697,6 +1696,18 @@ export class Orchestrator extends Base {
             collectionNames: ['neo-agent-memory', 'neo-agent-sessions']
         });
     }
+    /** @summary Durable state file tracking in-flight autonomous KB `defrag` heal attempts. */
+    get kbDefragHealStatePath() {
+        return path.join(this.dataDir, 'defrag-state', 'knowledge-base-heal.json');
+    }
+    /** @summary Reads persisted autonomous KB `defrag` heal attempt state when present on disk. */
+    async readKbDefragHealState() {
+        const statePath = this.kbDefragHealStatePath;
+        if (!await fs.pathExists(statePath)) {
+            return null;
+        }
+        return fs.readJson(statePath);
+    }
     /**
      * @summary Builds the read-only KB dead-element gatherer bound to the read-only store-observation scope.
      * @see learn/agentos/decisions/0026-recovery-actuator.md
@@ -1704,9 +1715,10 @@ export class Orchestrator extends Base {
      */
     get dataIntegrityKbDeadElementGatherer() {
         return createLiveKbDeadElementGatherer({
-            serviceId           : this.dataIntegrityServiceId,
-            kbChromaManager     : this.kbChromaManager || KB_ChromaManager,
-            runtimeAccessService: this.deploymentRuntimeAccessService
+            serviceId               : this.dataIntegrityServiceId,
+            kbChromaManager         : this.kbChromaManager || KB_ChromaManager,
+            runtimeAccessService    : this.deploymentRuntimeAccessService,
+            readPendingDefragAttempt: () => this.readKbDefragHealState()
         });
     }
     /**

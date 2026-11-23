@@ -18,7 +18,8 @@ import {dispatchHeal} from '../../../../../../../ai/services/memory-core/helpers
 import {
     clearDefragState,
     listCollectionIds,
-    rewriteCollectionViaShadowPromotion
+    rewriteCollectionViaShadowPromotion,
+    writeDefragState
 } from '../../../../../../../ai/scripts/maintenance/defragChromaDB.mjs';
 import {
     createBundlePayloadWriteStream,
@@ -262,9 +263,9 @@ test.describe('Neo.ai.services.memory-core.helpers.defragHeal', () => {
                 events.push('check-free-disk');
                 return {ok: true, freeBytes: 10_000_000, requiredBytes: 100_000};
             },
-            promoteShadow: async ({collectionName, kbDir, sourceIds, bundleSha, now}) => {
+            promoteShadow: async ({collectionName, bundleRoot, kbDir, sourceIds, bundleSha, expectedDimension, now}) => {
                 events.push('promote-shadow');
-                const promoted = await rewriteCollectionViaShadowPromotion({
+                return rewriteCollectionViaShadowPromotion({
                     client      : chroma,
                     collectionName,
                     sourceIds,
@@ -276,17 +277,19 @@ test.describe('Neo.ai.services.memory-core.helpers.defragHeal', () => {
                     }),
                     embeddingFunction: {},
                     statePath,
-                    stateBase        : {bundleSha},
+                    stateBase        : {bundleSha, bundleRoot, expectedDimension},
                     timestamp        : now,
                     log              : () => {},
                     warn             : () => {}
                 });
-                await clearDefragState({statePath});
-                return promoted;
             },
-            restartService: async serviceKey => {
-                // Verify lease is STILL active on disk during both chroma and kb-server restarts!
+            readAttemptState : async () => (await fs.pathExists(statePath)) ? fs.readJson(statePath) : null,
+            writeAttemptState: state => writeDefragState({statePath, state}),
+            clearAttemptState: () => clearDefragState({statePath}),
+            restartService   : async serviceKey => {
+                // Verify both lease AND durable state marker remain on disk through both restarts
                 expect(await fs.pathExists(leasePath)).toBe(true);
+                expect(await fs.pathExists(statePath)).toBe(true);
                 events.push(`restart:${serviceKey}`);
             },
             waitForChromaReady: async () => {
@@ -559,23 +562,24 @@ test.describe('Neo.ai.services.memory-core.helpers.defragHeal', () => {
             probeKbWriteGate : async () => createKbWriteGate({leasePath}).getHealthStatus(),
             writeBackupBundle: () => createTempKbBundle({rootDir: tempRoot, rows}),
             checkFreeDisk    : async () => ({ok: true, freeBytes: 10_000_000, requiredBytes: 10_000}),
-            promoteShadow    : async ({collectionName, kbDir, sourceIds, bundleSha, now}) => {
-                const res = await rewriteCollectionViaShadowPromotion({
+            promoteShadow    : async ({collectionName, bundleRoot, kbDir, sourceIds, bundleSha, expectedDimension, now}) => {
+                return rewriteCollectionViaShadowPromotion({
                     client           : chroma,
                     collectionName,
                     sourceIds,
                     loadShadowFn     : ({collection}) => streamKbBundleIntoCollection({kbDir, collection, expectedDimension: DIM}),
                     embeddingFunction: {},
                     statePath,
-                    stateBase        : {bundleSha},
+                    stateBase        : {bundleSha, bundleRoot, expectedDimension},
                     timestamp        : now,
                     log              : () => {},
                     warn             : () => {}
                 });
-                await clearDefragState({statePath});
-                return res;
             },
-            restartService: async serviceKey => {
+            readAttemptState : async () => (await fs.pathExists(statePath)) ? fs.readJson(statePath) : null,
+            writeAttemptState: state => writeDefragState({statePath, state}),
+            clearAttemptState: () => clearDefragState({statePath}),
+            restartService   : async serviceKey => {
                 events.push(`restart:${serviceKey}`);
                 if (serviceKey === 'chroma') {
                     // Simulate post-restart data loss: Chroma restart discards the promoted rows, leaving an empty 0-row store.
@@ -740,5 +744,217 @@ test.describe('Neo.ai.services.memory-core.helpers.defragHeal', () => {
             sleep           : async () => {}
         });
         expect(drainTimeout.acknowledged).toBe(false);
+    });
+
+    test('post-promotion throws refresh kb-server before lease release, preserve bundle anchor in dispatchHeal, and reconcile on the next run', async () => {
+        const scenarios = [
+            {
+                name             : 'chroma-restart',
+                expectedReason   : 'chroma-restart-failed',
+                failChromaRestart: true,
+                postRecoveryEmpty: false
+            },
+            {
+                name             : 'chroma-readiness',
+                expectedReason   : 'chroma-readiness-failed',
+                failReadiness    : true,
+                postRecoveryEmpty: true
+            },
+            {
+                name             : 'post-restart-revalidation',
+                expectedReason   : 'post-restart-revalidation-failed',
+                failRevalidation : true,
+                postRecoveryEmpty: false
+            }
+        ];
+
+        for (const scenario of scenarios) {
+            const rows      = sampleRows(),
+                  chroma    = createMockChroma({[KB_COLLECTION]: rows}),
+                  leasePath = path.join(tempRoot, scenario.name, 'heavy-maintenance-lease.json'),
+                  statePath = path.join(tempRoot, scenario.name, 'knowledge-base-heal.json'),
+                  events    = [],
+                  runs      = [];
+
+            let faultActive = true;
+
+            const op = createDefragHealOperation({
+                getExpectedCollection: () => KB_COLLECTION,
+                readDeadElements     : async () => {
+                    events.push('read-dead-elements');
+                    // On Run 2 after promotion, simulate post-swap 0% dead elements (or 0 live rows) to prove
+                    // durable reconciliation is not skipped by the threshold/empty pre-gates.
+                    return faultActive
+                        ? {observation: bloatedObservation(), gcDefragThreshold: 0.2}
+                        : {
+                            observation      : bloatedObservation({
+                                hnswOccupancy   : scenario.postRecoveryEmpty ? 0 : 3,
+                                liveCount       : scenario.postRecoveryEmpty ? 0 : 3,
+                                deadElementCount: 0,
+                                deadFraction    : 0
+                            }),
+                            gcDefragThreshold: 0.2
+                        };
+                },
+                withWriterFence: async task => {
+                    const outcome = await withHeavyMaintenanceLease(
+                        acquisition => task({lease: acquisition.lease}),
+                        {
+                            owner           : 'defrag-heal',
+                            reason          : 'kb-store-bloat-defrag',
+                            kbWriteExclusive: true,
+                            leasePath,
+                            staleAfterMs    : 60_000
+                        }
+                    );
+                    events.push('lease-released');
+                    return outcome.result;
+                },
+                probeKbWriteGate : async () => createKbWriteGate({leasePath}).getHealthStatus(),
+                writeBackupBundle: () => createTempKbBundle({rootDir: tempRoot, rows}),
+                checkFreeDisk    : async () => ({ok: true, freeBytes: 10_000_000, requiredBytes: 10_000}),
+                promoteShadow    : async ({collectionName, bundleRoot, kbDir, sourceIds, bundleSha, expectedDimension, now}) => {
+                    events.push('promote-shadow');
+                    return rewriteCollectionViaShadowPromotion({
+                        client           : chroma,
+                        collectionName,
+                        sourceIds,
+                        loadShadowFn     : ({collection}) => streamKbBundleIntoCollection({kbDir, collection, expectedDimension: DIM}),
+                        embeddingFunction: {},
+                        statePath,
+                        stateBase        : {bundleSha, bundleRoot, expectedDimension},
+                        timestamp        : now,
+                        log              : () => {},
+                        warn             : () => {}
+                    });
+                },
+                readAttemptState : async () => (await fs.pathExists(statePath)) ? fs.readJson(statePath) : null,
+                writeAttemptState: state => writeDefragState({statePath, state}),
+                clearAttemptState: () => clearDefragState({statePath}),
+                restartService   : async serviceKey => {
+                    expect(await fs.pathExists(leasePath)).toBe(true);
+                    events.push(`restart:${serviceKey}`);
+                    if (serviceKey === 'chroma') {
+                        if (faultActive && scenario.failChromaRestart) {
+                            throw new Error('runtime-access-disabled');
+                        }
+                        if (scenario.postRecoveryEmpty) {
+                            chroma.store.set(KB_COLLECTION, new Map());
+                        }
+                    }
+                },
+                waitForChromaReady: async () => {
+                    events.push('wait-chroma-ready');
+                    if (faultActive && scenario.failReadiness) {
+                        throw new Error('Chroma did not become ready within 30000ms after restart');
+                    }
+                },
+                revalidateCanonical: async ({collectionName, expectedIds, sampleRow}) => {
+                    events.push('revalidate-canonical');
+                    if (faultActive && scenario.failRevalidation) {
+                        throw new Error('Chroma get failed: ECONNRESET');
+                    }
+                    const collection = await chroma.getCollection({name: collectionName});
+                    return validateCanonicalCollectionAgainstBundle({
+                        collection,
+                        expectedIds,
+                        sampleRow,
+                        listIdsFn: listCollectionIds
+                    });
+                },
+                restoreFromBundle: async ({kbDir}) => {
+                    events.push('restore-from-bundle');
+                    const collection = await chroma.getCollection({name: KB_COLLECTION});
+                    await streamKbBundleIntoCollection({kbDir, collection, expectedDimension: DIM});
+                }
+            });
+
+            const firstDispatch = await dispatchHeal({
+                action        : 'defrag',
+                collection    : KB_COLLECTION,
+                now           : NOW,
+                recentRuns    : runs,
+                healOperations: {defrag: op},
+                recordRun     : async attempt => { runs.push(attempt); }
+            });
+
+            expect(firstDispatch.status).toBe('failed');
+            expect(firstDispatch.detail).toMatchObject({
+                reason              : scenario.expectedReason,
+                failedStep          : scenario.name,
+                collection          : KB_COLLECTION,
+                expectedCount       : 3,
+                postRestartValidated: false,
+                kbServerRestarted   : true
+            });
+            expect(firstDispatch.detail.bundleSha).toMatch(/^[0-9a-f]{64}$/);
+            expect(typeof firstDispatch.detail.bundleRoot).toBe('string');
+
+            // kb-server restart MUST precede lease release on every post-promotion throw
+            const kbRestartIdx    = events.lastIndexOf('restart:kb-server'),
+                  leaseReleaseIdx = events.lastIndexOf('lease-released');
+            expect(kbRestartIdx).toBeGreaterThan(-1);
+            expect(kbRestartIdx).toBeLessThan(leaseReleaseIdx);
+
+            // Durable state marker remains on disk carrying the restore anchor
+            expect(await fs.pathExists(statePath)).toBe(true);
+            const persisted = await fs.readJson(statePath);
+            expect(persisted).toMatchObject({
+                phase     : 'post-promotion-unverified',
+                failedStep: scenario.name,
+                bundleSha : firstDispatch.detail.bundleSha,
+                bundleRoot: firstDispatch.detail.bundleRoot
+            });
+
+            // Run 2 after cooldown reconciles from the durable attempt state without re-running promoteShadow
+            faultActive  = false;
+            events.length = 0;
+
+            const secondDispatch = await dispatchHeal({
+                action        : 'defrag',
+                collection    : KB_COLLECTION,
+                now           : NOW + 600_001,
+                recentRuns    : runs,
+                healOperations: {defrag: op},
+                recordRun     : async attempt => { runs.push(attempt); }
+            });
+
+            expect(events).not.toContain('promote-shadow');
+            expect(events).not.toContain('read-dead-elements');
+
+            if (scenario.postRecoveryEmpty) {
+                expect(secondDispatch.status).toBe('failed');
+                expect(secondDispatch.detail).toMatchObject({
+                    reason                      : 'post-restart-count-mismatch',
+                    failedStep                  : 'post-restart-validation',
+                    expectedCount               : 3,
+                    observedCount               : 0,
+                    restored                    : true,
+                    kbServerRestarted           : true,
+                    reconciledInterruptedAttempt: true
+                });
+                const restoredCol = await chroma.getCollection({name: KB_COLLECTION});
+                expect(await restoredCol.count()).toBe(3);
+            } else {
+                expect(secondDispatch.status).toBe('healed');
+                expect(secondDispatch.detail).toMatchObject({
+                    collection                  : KB_COLLECTION,
+                    expectedCount               : 3,
+                    observedCount               : 3,
+                    bundleSha                   : firstDispatch.detail.bundleSha,
+                    bundleRoot                  : firstDispatch.detail.bundleRoot,
+                    reconciledInterruptedAttempt: true
+                });
+                // Refused chroma-restart retries restart:chroma on Run 2; readiness/revalidation throws do not re-bounce chroma
+                if (scenario.failChromaRestart) {
+                    expect(events).toContain('restart:chroma');
+                } else {
+                    expect(events).not.toContain('restart:chroma');
+                }
+            }
+
+            expect(await fs.pathExists(statePath)).toBe(false);
+            expect(events.lastIndexOf('restart:kb-server')).toBeLessThan(events.lastIndexOf('lease-released'));
+        }
     });
 });
