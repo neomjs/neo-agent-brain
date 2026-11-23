@@ -147,6 +147,8 @@ function activateStorageScope() {
             path.join(storageRoot, 'deployment-state', 'snapshot.json');
         process.env.NEO_RECOVERY_ACTUATOR_HEAL_ATTEMPTS_PATH =
             path.join(storageRoot, 'orchestrator-daemon', 'heal-attempts.json');
+        process.env.NEO_RECOVERY_ACTUATOR_LMS_REPLACEMENT_FAILURES_PATH =
+            path.join(storageRoot, 'orchestrator-daemon', 'lms-replacement-failures.json');
         process.env.NEO_RECOVERY_ACTUATOR_RUN_STATE_DIR      =
             path.join(storageRoot, 'orchestrator-daemon', 'recovery-runs');
     }

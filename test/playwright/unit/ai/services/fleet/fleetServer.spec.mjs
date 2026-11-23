@@ -974,8 +974,9 @@ test.describe('composed Fleet S1 server', () => {
                     dbPath               : member('orchestrator-daemon/orchestrator.sqlite'),
                     deploymentStateBridge: {snapshotPath: member('deployment-state/snapshot.json')},
                     recoveryActuator     : {
-                        healAttemptsPath   : member('orchestrator-daemon/heal-attempts.json'),
-                        recoveryRunStateDir: member('orchestrator-daemon/recovery-runs')
+                        healAttemptsPath          : member('orchestrator-daemon/heal-attempts.json'),
+                        lmsReplacementFailuresPath: member('orchestrator-daemon/lms-replacement-failures.json'),
+                        recoveryRunStateDir       : member('orchestrator-daemon/recovery-runs')
                     }
                 }
             };

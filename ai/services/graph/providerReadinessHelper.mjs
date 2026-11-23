@@ -1741,9 +1741,11 @@ export function createLmsReplacementFailureStore({
  * @returns {Object}
  * @private
  */
-function getDefaultLmsReplacementFailureStore() {
-    const statePath   = path.join(aiConfig.orchestrator.dataDir, 'lms-replacement-failures.json'),
-          maxFailures = aiConfig.orchestrator.lms.loadFailureCircuit.maxEquivalentFailures,
+function getDefaultLmsReplacementFailureStore(maxFailuresOverride) {
+    const statePath   = aiConfig.orchestrator.recoveryActuator.lmsReplacementFailuresPath,
+          maxFailures = Neo.isNumber(maxFailuresOverride) && maxFailuresOverride > 0
+              ? maxFailuresOverride
+              : aiConfig.orchestrator.lms.loadFailureCircuit.maxEquivalentFailures,
           key         = JSON.stringify({statePath, maxFailures});
 
     if (!defaultLmsReplacementFailureStore || defaultLmsReplacementFailureStoreKey !== key) {
@@ -1758,30 +1760,74 @@ function getDefaultLmsReplacementFailureStore() {
 }
 
 /**
+ * @summary Normalizes diagnosed wrong-resident observations to `{configuredModel -> observedModel}` for
+ * foreign-resident eviction.
+ *
+ * Same-identifier shape mismatches (`observedModel === configuredModel`) are assessed directly from
+ * `lms ps --json`, so this map retains only diagnosed foreign identifiers proven to answer a configured
+ * role's requests.
+ *
+ * @param {Array<Object>|Object|null} [diagnosedWrongResidents=null]
+ * @returns {Map<String, String>}
+ * @private
+ */
+function normalizeDiagnosedForeignByModel(diagnosedWrongResidents = null) {
+    const map = new Map();
+
+    if (Array.isArray(diagnosedWrongResidents)) {
+        for (const entry of diagnosedWrongResidents) {
+            const configuredModel = typeof entry?.configuredModel === 'string' ? entry.configuredModel.trim() : '',
+                  observedModel   = typeof entry?.observedModel === 'string' ? entry.observedModel.trim() : '';
+
+            if (configuredModel && observedModel && observedModel !== configuredModel && !map.has(configuredModel)) {
+                map.set(configuredModel, observedModel);
+            }
+        }
+        return map;
+    }
+
+    if (diagnosedWrongResidents && typeof diagnosedWrongResidents === 'object') {
+        for (const [configuredModel, observedModel] of Object.entries(diagnosedWrongResidents)) {
+            const cleanConfigured = typeof configuredModel === 'string' ? configuredModel.trim() : '',
+                  cleanObserved   = typeof observedModel === 'string' ? observedModel.trim() : '';
+
+            if (cleanConfigured && cleanObserved && cleanObserved !== cleanConfigured) {
+                map.set(cleanConfigured, cleanObserved);
+            }
+        }
+    }
+
+    return map;
+}
+
+/**
  * @summary Creates a bound LM Studio readiness helper instance sharing one persisted replacement-failure store.
  *
  * Allows callers and unit tests to construct a fresh helper instance over the same `replacementStatePath`
  * (simulating a host-edge restart) and verify that `heal-exhausted` counters survive across instances.
  *
  * @param {Object} [defaults]
- * @param {String|null} [defaults.replacementStatePath=null] Persisted failure-counter JSON path.
+ * @param {String|null} [defaults.replacementStatePath] Persisted failure-counter JSON path (defaults to the resolved `AiConfig` leaf; `null` keeps state in memory).
  * @param {Number} [defaults.maxReplacementFailures] Per-role consecutive failure budget.
  * @param {Object} [defaults.replacementFailureStore] Optional pre-constructed store.
  * @returns {{replacementFailureStore: Object, ensureLmsModelsLoaded: Function}}
  */
 export function createLmsReadinessHelper({
-    replacementStatePath = null,
+    replacementStatePath,
     maxReplacementFailures,
     replacementFailureStore,
     ...defaults
 } = {}) {
     const maxFailures = Neo.isNumber(maxReplacementFailures) && maxReplacementFailures > 0
-        ? maxReplacementFailures
-        : aiConfig.orchestrator.lms.loadFailureCircuit.maxEquivalentFailures;
-    const store = replacementFailureStore || createLmsReplacementFailureStore({
-        statePath: replacementStatePath,
-        maxFailures
-    });
+              ? maxReplacementFailures
+              : aiConfig.orchestrator.lms.loadFailureCircuit.maxEquivalentFailures,
+          resolvedStatePath = replacementStatePath === undefined
+              ? aiConfig.orchestrator.recoveryActuator.lmsReplacementFailuresPath
+              : replacementStatePath,
+          store             = replacementFailureStore || createLmsReplacementFailureStore({
+              statePath: resolvedStatePath,
+              maxFailures
+          });
 
     return {
         replacementFailureStore: store,
@@ -2074,7 +2120,8 @@ function formatLmsReplacementFailedSummary(failedEntries = []) {
  *
  * The orchestrator-owned `lms server start` task gets the server process running;
  * this helper adds the model-residency half by probing `/v1/models` and `lms ps --json`,
- * replacing any pinned role resident at the wrong shape (or foreign resident blocking a missing role)
+ * replacing any pinned role resident at the wrong shape (or a diagnosed foreign resident answering a
+ * missing role's requests)
  * via `unloadLmsModel` + `loadLmsModel`, additively loading missing roles, and re-probing until the
  * endpoint enumerates the configured shape.
  *
@@ -2095,6 +2142,7 @@ function formatLmsReplacementFailedSummary(failedEntries = []) {
  * @param {Object} [options.contextLengths] Per-model context-length map keyed by model id.
  * @param {Object} [options.parallels] Per-model `--parallel` map keyed by model id.
  * @param {Object} [options.roleByModel] Logical role key map (`{[modelId]: 'chat'|'embedding'}`).
+ * @param {Array<Object>|Object|null} [options.diagnosedWrongResidents=null] Diagnosed `{configuredModel, observedModel}` entries licensing foreign-resident eviction.
  * @param {Boolean} [options.allowPartial=false] Return degraded readiness instead of throwing when one model cannot be loaded.
  * @param {Function} [options.fetchModelIds] Injectable model-list probe.
  * @param {Function} [options.fetchLoadedModels] Injectable loaded-model metadata probe.
@@ -2103,7 +2151,7 @@ function formatLmsReplacementFailedSummary(failedEntries = []) {
  * @param {Function} [options.unloadModel] Injectable model-unload function.
  * @param {Object|null} [options.loadFailureGuard] Stateful LMS load-failure admission guard.
  * @param {Object|null} [options.replacementFailureStore] Persisted per-role replacement-failure store.
- * @param {String|null} [options.replacementStatePath=null] Optional JSON file path for persisted replacement failures.
+ * @param {String|null} [options.replacementStatePath] Optional JSON file path for persisted replacement failures (`null` keeps state in memory).
  * @param {Number} [options.maxReplacementFailures] Consecutive per-role replacement failure cap before `heal-exhausted`.
  * @param {Boolean} [options.allowExhaustedRetry=false] Admit one replacement attempt on an exhausted role to reset on `replaced`.
  * @param {Function} [options.embeddingServingProbe] Optional bounded embedding-serving canary seam.
@@ -2140,6 +2188,7 @@ async function ensureLmsModelsLoadedOnce({
     contextLengths = {},
     parallels      = {},
     roleByModel    = {},
+    diagnosedWrongResidents = null,
     allowPartial   = false,
     fetchModelIds     = opts => fetchOpenAiCompatibleModelIds(opts),
     fetchLoadedModels = opts => fetchLmsLoadedModels(opts),
@@ -2148,7 +2197,7 @@ async function ensureLmsModelsLoadedOnce({
     unloadModel       = null,
     loadFailureGuard,
     replacementFailureStore,
-    replacementStatePath = null,
+    replacementStatePath,
     maxReplacementFailures,
     allowExhaustedRetry = false,
     embeddingServingProbe,
@@ -2182,17 +2231,14 @@ async function ensureLmsModelsLoadedOnce({
               ? maxReplacementFailures
               : aiConfig.orchestrator.lms.loadFailureCircuit.maxEquivalentFailures,
           effectiveReplacementStore       = replacementFailureStore || (
-              replacementStatePath
+              replacementStatePath !== undefined
                   ? createLmsReplacementFailureStore({
                       statePath  : replacementStatePath,
                       maxFailures: effectiveMaxReplacementFailures
                   })
-                  : (loadModel || unloadModel || execFileFn || process.env.UNIT_TEST_MODE === 'true')
-                      ? createLmsReplacementFailureStore({
-                          maxFailures: effectiveMaxReplacementFailures
-                      })
-                      : getDefaultLmsReplacementFailureStore()
+                  : getDefaultLmsReplacementFailureStore(effectiveMaxReplacementFailures)
           ),
+          diagnosedForeignByModel         = normalizeDiagnosedForeignByModel(diagnosedWrongResidents),
           resolveRoleKey                  = model => (
               typeof roleByModel?.[model] === 'string' && roleByModel[model]
                   ? roleByModel[model]
@@ -2521,7 +2567,7 @@ async function ensureLmsModelsLoadedOnce({
 
     // Build bounded per-role replacement plan (at most one replacement per role per pass):
     // 1. Pinned identifier resident at the wrong contextLength or parallel shape.
-    // 2. Foreign resident answering while a required role model is missing.
+    // 2. Diagnosed foreign resident proven to answer a missing role's requests.
     const replacementPlans = [],
           seenRoles        = new Set(),
           replacedMissing  = new Set();
@@ -2540,21 +2586,24 @@ async function ensureLmsModelsLoadedOnce({
         });
     }
 
-    if (assessment.missing.length > 0) {
-        const foreignRows = activeLoadedModels.filter(row =>
-            row?.id &&
-            !requiredModels.includes(row.id) &&
-            !requiredModels.some(required => row.id.startsWith(`${required}:`))
-        );
+    if (assessment.missing.length > 0 && diagnosedForeignByModel.size > 0) {
+        const scheduledForeignIds = new Set();
 
-        let foreignIndex = 0;
         for (const missingModel of assessment.missing) {
-            if (foreignIndex >= foreignRows.length) break;
-
             const role = resolveRoleKey(missingModel);
             if (seenRoles.has(role)) continue;
 
-            const foreignRow = foreignRows[foreignIndex++];
+            const diagnosedForeignId = diagnosedForeignByModel.get(missingModel);
+            if (!diagnosedForeignId || scheduledForeignIds.has(diagnosedForeignId)) continue;
+
+            const foreignRow = activeLoadedModels.find(row =>
+                row?.id === diagnosedForeignId &&
+                !requiredModels.includes(row.id) &&
+                !requiredModels.some(required => row.id.startsWith(`${required}:`))
+            );
+            if (!foreignRow) continue;
+
+            scheduledForeignIds.add(foreignRow.id);
             seenRoles.add(role);
             replacedMissing.add(missingModel);
             replacementPlans.push({
@@ -3428,6 +3477,7 @@ export async function ensureOllamaModelsReady({
  * @param {Function} [options.ollamaRepairFn=ensureOllamaModelsReady] Test seam for native Ollama repair.
  * @param {Function|null} [options.isAuthorityHeld=null] Live recovery-authority oracle.
  * @param {Function|null} [options.isEffectStillAdmitted=null] Live provider-demand admission oracle.
+ * @param {Object[]|null} [options.diagnosedWrongResidents=null] Diagnosed `{configuredModel, observedModel}` entries for foreign-resident eviction.
  * @returns {Promise<Object>} Provider readiness repair result.
  */
 export async function repairProviderRoleSetResidency({
@@ -3439,7 +3489,8 @@ export async function repairProviderRoleSetResidency({
     lmsRepairFn = ensureLmsModelsLoaded,
     ollamaRepairFn = ensureOllamaModelsReady,
     isAuthorityHeld = null,
-    isEffectStillAdmitted = null
+    isEffectStillAdmitted = null,
+    diagnosedWrongResidents = null
 } = {}) {
     /**
      * Re-asserted immediately before the repair dispatches, after the read-only config resolution
@@ -3549,6 +3600,9 @@ export async function repairProviderRoleSetResidency({
             contextLengths: preloadConfig.contextLengths,
             parallels     : preloadConfig.parallels,
             roleByModel,
+            ...(Array.isArray(diagnosedWrongResidents) && diagnosedWrongResidents.length > 0
+                ? {diagnosedWrongResidents}
+                : {}),
             allowPartial  : true,
             attempts,
             delayMs,

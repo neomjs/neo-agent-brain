@@ -1227,6 +1227,41 @@ test.describe('Neo.ai.daemons.services.RecoveryActuatorService', () => {
         });
     });
 
+    test('warm-provider forwards diagnosed wrong-resident observations from diagnosisEvent into providerResidencyRepair', async () => {
+        const {service, providerResidencyRepairCalls} = createService();
+
+        const result = await service.apply('local-model', 'warm-provider', {
+            now           : 35_000,
+            reason        : 'provider-role-residency-warm',
+            targetIdentity: {kind: 'compose-service', id: 'local-model'},
+            diagnosisEvent: {
+                diagnosisId   : 'diag-wrong-resident-1',
+                recoveryClass : 'provider-role-residency',
+                confidence    : 0.85,
+                targetIdentity: {kind: 'compose-service', id: 'local-model'},
+                observedAt    : 35_000,
+                evidenceFacts : [{
+                    type         : 'provider-residency',
+                    authoritative: true,
+                    details      : {
+                        reasonCode     : 'wrong-resident',
+                        source         : 'identity-probe',
+                        configuredModel: 'qwen3-embedding-0.6b',
+                        observedModel  : 'Qwen3-Embedding-8B-Q4_K_M'
+                    }
+                }]
+            }
+        });
+
+        expect(result.status).toBe('actioned');
+        expect(providerResidencyRepairCalls).toHaveLength(1);
+        expect(providerResidencyRepairCalls[0].diagnosedWrongResidents).toEqual([{
+            configuredModel: 'qwen3-embedding-0.6b',
+            observedModel  : 'Qwen3-Embedding-8B-Q4_K_M',
+            source         : 'identity-probe'
+        }]);
+    });
+
     test('warm-provider honors persisted backoff and does not loop warm attempts', async () => {
         const {service, providerResidencyRepairCalls} = createService({
             actuatorConfig: {

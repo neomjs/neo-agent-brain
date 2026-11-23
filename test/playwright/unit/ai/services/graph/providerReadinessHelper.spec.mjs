@@ -1761,14 +1761,54 @@ test.describe('#493 — LM Studio wrong-resident self-heal, persisted exhaustion
             loadedModels     : ['embed-model', 'chat-model']
         });
 
-        // Foreign resident answering the role's requests is also evicted and replaced.
-        const foreignOps      = [];
-        let   foreignRows     = [{id: 'Qwen3-Embedding-8B-Q4_K_M', contextLength: 32768}];
-        const foreignReplaced = await ensureLmsModelsLoaded({
+        // Control arm: a missing role beside an undiagnosed resident loads additively and issues no unload.
+        const undiagnosedOps      = [];
+        let   undiagnosedRows     = [{id: 'operator-scratch-7b', contextLength: 8192}];
+        const additiveWithForeign = await ensureLmsModelsLoaded({
             host             : 'http://127.0.0.1:1234',
             models           : ['qwen3-embedding-0.6b'],
             contextLengths   : {'qwen3-embedding-0.6b': 32768},
             roleByModel      : {'qwen3-embedding-0.6b': 'embedding'},
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 20,
+            fetchModelIds    : async () => undiagnosedRows.map(row => row.id),
+            fetchLoadedModels: async () => undiagnosedRows,
+            unloadModel      : async id => {
+                undiagnosedOps.push(`unload:${id}`);
+            },
+            loadModel        : async (model, options) => {
+                undiagnosedOps.push(`load:${model}:${options.contextLength}`);
+                undiagnosedRows = [...undiagnosedRows, {id: model, contextLength: options.contextLength}];
+            },
+            log: {info() {}, warn() {}}
+        });
+
+        expect(undiagnosedOps).toEqual(['load:qwen3-embedding-0.6b:32768']);
+        expect(additiveWithForeign).toMatchObject({
+            ready         : true,
+            degraded      : false,
+            unloadedModels: [],
+            loadedModels  : ['qwen3-embedding-0.6b']
+        });
+        expect(undiagnosedRows.map(row => row.id)).toEqual(['operator-scratch-7b', 'qwen3-embedding-0.6b']);
+
+        // Diagnosed foreign resident answering the role's requests is evicted while any other resident stays untouched.
+        const foreignOps  = [];
+        let   foreignRows = [
+            {id: 'operator-scratch-7b', contextLength: 8192},
+            {id: 'Qwen3-Embedding-8B-Q4_K_M', contextLength: 32768}
+        ];
+        const foreignReplaced = await ensureLmsModelsLoaded({
+            host                   : 'http://127.0.0.1:1234',
+            models                 : ['qwen3-embedding-0.6b'],
+            contextLengths         : {'qwen3-embedding-0.6b': 32768},
+            roleByModel            : {'qwen3-embedding-0.6b': 'embedding'},
+            diagnosedWrongResidents: [{
+                configuredModel: 'qwen3-embedding-0.6b',
+                observedModel  : 'Qwen3-Embedding-8B-Q4_K_M',
+                source         : 'identity-probe'
+            }],
             attempts         : 1,
             delayMs          : 0,
             timeoutMs        : 20,
@@ -1792,6 +1832,7 @@ test.describe('#493 — LM Studio wrong-resident self-heal, persisted exhaustion
         expect(foreignReplaced.status).toBe('replaced');
         expect(foreignReplaced.unloadedModels).toEqual(['Qwen3-Embedding-8B-Q4_K_M']);
         expect(foreignReplaced.loadedModels).toEqual(['qwen3-embedding-0.6b']);
+        expect(foreignRows.map(row => row.id)).toEqual(['operator-scratch-7b', 'qwen3-embedding-0.6b']);
     });
 
     test('AC-2 & AC-4: N consecutive failed replacements return heal-exhausted, suppress further unloads across a fresh helper instance, and reset on replaced', async () => {

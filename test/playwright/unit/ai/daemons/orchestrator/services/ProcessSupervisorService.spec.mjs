@@ -852,6 +852,7 @@ test.describe('Neo.ai.daemons.services.ProcessSupervisorService', () => {
             models                : ['embed-model'],
             contextLengths        : {'embed-model': 32768},
             roleByModel           : {'embed-model': 'embedding'},
+            replacementStatePath  : null,
             maxReplacementFailures: 1,
             allowPartial          : true,
             attempts              : 1,

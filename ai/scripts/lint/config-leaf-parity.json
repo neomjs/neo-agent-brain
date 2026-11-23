@@ -510,6 +510,7 @@
         "orchestrator.recoveryActuator.healLedger.maxEvents",
         "orchestrator.recoveryActuator.healLedger.pruneTriggerBytes",
         "orchestrator.recoveryActuator.healthyObservationThreshold",
+        "orchestrator.recoveryActuator.lmsReplacementFailuresPath",
         "orchestrator.recoveryActuator.maxAttemptsPerWindow",
         "orchestrator.recoveryActuator.maxAttemptsWindowMs",
         "orchestrator.recoveryActuator.maxBackoffMs",
