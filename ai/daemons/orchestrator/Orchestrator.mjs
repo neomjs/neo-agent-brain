@@ -61,7 +61,6 @@ import {createThrottleShedHealOperation}                                        
 import {decideSystemicCircuit, foldSystemicCircuitState}                          from '../../services/memory-core/helpers/healSystemicCircuit.mjs';
 import {
     KB_ChromaManager,
-    KB_Config,
     Memory_ChromaManager as ChromaManager,
     Memory_GraphService as GraphService,
     Memory_StorageRouter as StorageRouter,
@@ -1522,17 +1521,9 @@ export class Orchestrator extends Base {
      */
     get dataIntegrityKbDeadElementGatherer() {
         return createLiveKbDeadElementGatherer({
-            serviceId    : this.dataIntegrityServiceId,
-            resolveInputs: () => ({
-                dataDir             : AiConfig.engines.chroma.dataDir,
-                endpointHost        : AiConfig.engines.chroma.host,
-                endpointPort        : AiConfig.engines.chroma.port,
-                gcDefragThreshold   : AiConfig.knowledgeBase.gcDefragThreshold,
-                collectionName      : KB_Config.collectionName,
-                databaseName        : KB_Config.chromaDatabase,
-                kbChromaManager     : this.kbChromaManager || KB_ChromaManager,
-                runtimeAccessService: this.deploymentRuntimeAccessService
-            })
+            serviceId           : this.dataIntegrityServiceId,
+            kbChromaManager     : this.kbChromaManager || KB_ChromaManager,
+            runtimeAccessService: this.deploymentRuntimeAccessService
         });
     }
     /**

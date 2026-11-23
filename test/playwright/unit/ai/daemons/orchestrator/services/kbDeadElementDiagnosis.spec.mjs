@@ -142,6 +142,8 @@ test.describe('kbDeadElementDiagnosis — Chroma 1.5.9 HNSW header & dead-elemen
             headersBySegmentId: {[KB_VECTOR_SEG_ID]: buildChroma159HeaderBuffer({curElementCount: 253_743n})},
             liveCollectionId  : KB_COLLECTION_ID,
             liveCount         : 86_560,
+            collectionName    : KB_COLLECTION,
+            databaseName      : 'default_database',
             gcDefragThreshold : THRESHOLD,
             observedAt        : OBSERVED_AT,
             serviceId         : 'mc-server'
@@ -187,6 +189,8 @@ test.describe('kbDeadElementDiagnosis — Chroma 1.5.9 HNSW header & dead-elemen
             headersBySegmentId: {[KB_VECTOR_SEG_ID]: buildChroma159HeaderBuffer({curElementCount: 100n, maxElements: 1000n})},
             liveCollectionId  : KB_COLLECTION_ID,
             liveCount         : 90,
+            collectionName    : KB_COLLECTION,
+            databaseName      : 'default_database',
             gcDefragThreshold : THRESHOLD,
             observedAt        : OBSERVED_AT,
             serviceId         : 'mc-server'
@@ -199,6 +203,8 @@ test.describe('kbDeadElementDiagnosis — Chroma 1.5.9 HNSW header & dead-elemen
             headersBySegmentId: {[KB_VECTOR_SEG_ID]: buildChroma159HeaderBuffer({curElementCount: 100n, maxElements: 1000n})},
             liveCollectionId  : KB_COLLECTION_ID,
             liveCount         : 95,
+            collectionName    : KB_COLLECTION,
+            databaseName      : 'default_database',
             gcDefragThreshold : THRESHOLD,
             observedAt        : OBSERVED_AT,
             serviceId         : 'mc-server'
@@ -210,7 +216,9 @@ test.describe('kbDeadElementDiagnosis — Chroma 1.5.9 HNSW header & dead-elemen
             registry          : validRegistry({postCheckpointLogCount: 12, maxKnownSeqId: 1_200_012}),
             headersBySegmentId: {[KB_VECTOR_SEG_ID]: buildChroma159HeaderBuffer({curElementCount: 95n, maxElements: 1000n})},
             liveCollectionId  : KB_COLLECTION_ID,
-            liveCount         : 100
+            liveCount         : 100,
+            collectionName    : KB_COLLECTION,
+            databaseName      : 'default_database'
         });
         expect(withLogTail).toMatchObject({status: 'ok', hnswOccupancy: 95, liveCount: 100, deadElementCount: 0, deadFraction: 0});
         expect(buildKbDeadElementDiagnosis({
@@ -233,17 +241,31 @@ test.describe('kbDeadElementDiagnosis — Chroma 1.5.9 HNSW header & dead-elemen
         expect(result).toEqual({status: 'unverified', reason: 'SQLITE_READONLY_ROLLBACK'});
     });
 
-    test('AC-3: returns unknown on Chroma version, schema, identity, or checkpoint mismatch', () => {
+    test('AC-3: returns unknown on Chroma version, schema, identity, or checkpoint mismatch (including missing explicit collection/database scalars)', () => {
         const base = {
             runtimeBinding    : validRuntimeBinding(),
             registry          : validRegistry(),
             headersBySegmentId: {[KB_VECTOR_SEG_ID]: buildChroma159HeaderBuffer({curElementCount: 253_743n})},
             liveCollectionId  : KB_COLLECTION_ID,
             liveCount         : 86_560,
+            collectionName    : KB_COLLECTION,
+            databaseName      : 'default_database',
             gcDefragThreshold : THRESHOLD,
             observedAt        : OBSERVED_AT,
             serviceId         : 'mc-server'
         };
+
+        expect(evaluateKbDeadElementObservation({
+            runtimeBinding: validRuntimeBinding(),
+            registry      : validRegistry(),
+            databaseName  : 'default_database'
+        })).toEqual({status: 'unknown', reason: 'missing-collection-name'});
+
+        expect(evaluateKbDeadElementObservation({
+            runtimeBinding: validRuntimeBinding(),
+            registry      : validRegistry(),
+            collectionName: KB_COLLECTION
+        })).toEqual({status: 'unknown', reason: 'missing-database-name'});
 
         expect(buildKbDeadElementDiagnosis({
             ...base,

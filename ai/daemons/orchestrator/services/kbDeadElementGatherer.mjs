@@ -2,6 +2,8 @@ import Database                   from 'better-sqlite3';
 import fs                         from 'node:fs/promises';
 import {constants as fsConstants} from 'node:fs';
 import path                       from 'node:path';
+import AiConfig                   from '../../../config.mjs';
+import kbConfig                   from '../../../mcp/server/knowledge-base/config.mjs';
 import {
     buildKbDeadElementDiagnosis,
     evaluateKbDeadElementObservation,
@@ -111,8 +113,8 @@ export async function inspectChromaStoreRuntimeBinding({
     dataDir,
     endpointHost,
     endpointPort,
-    expectedEndpointHost = 'chroma',
     chromaServiceKey     = 'chroma',
+    expectedEndpointHost = chromaServiceKey,
     selfServiceKey       = 'orchestrator',
     fsModule             = fs
 } = {}) {
@@ -132,6 +134,7 @@ export async function inspectChromaStoreRuntimeBinding({
           chromaVolume   = resolveMountIdentity(chromaMount);
 
     let readOnlyMountVerified = false,
+        writeRefused          = false,
         orchestratorVolume    = null,
         reason                = null;
 
@@ -146,6 +149,7 @@ export async function inspectChromaStoreRuntimeBinding({
 
         orchestratorVolume    = resolveMountIdentity(selfMount);
         readOnlyMountVerified = Boolean(selfMount && selfMount.RW === false && orchestratorVolume);
+        writeRefused          = readOnlyMountVerified;
         if (!readOnlyMountVerified) {
             reason = selfMount ? 'store-mount-not-readonly' : 'store-mount-missing';
         }
@@ -156,8 +160,13 @@ export async function inspectChromaStoreRuntimeBinding({
             readOnlyMountVerified = false;
             reason                = 'store-mount-not-readonly';
         } catch (writeErr) {
-            if (writeErr?.code === 'EROFS' || writeErr?.code === 'EACCES' || writeErr?.code === 'EPERM') {
+            if (writeErr?.code === 'EROFS') {
                 readOnlyMountVerified = true;
+                writeRefused          = true;
+            } else if (writeErr?.code === 'EACCES' || writeErr?.code === 'EPERM') {
+                writeRefused          = true;
+                readOnlyMountVerified = false;
+                reason                = 'store-mount-write-refused-unverified';
             } else {
                 throw writeErr;
             }
@@ -174,6 +183,7 @@ export async function inspectChromaStoreRuntimeBinding({
         chromaVolume,
         orchestratorVolume,
         readOnlyMountVerified,
+        writeRefused,
         endpointHost,
         endpointPort,
         expectedEndpointHost,
@@ -184,15 +194,24 @@ export async function inspectChromaStoreRuntimeBinding({
 /**
  * @summary Opens `chroma.sqlite3` read-only (`query_only = ON`) and reads KB segment/checkpoint rows without copying.
  * @param {Object} options
+ * @param {String} options.sqlitePath Absolute path to `chroma.sqlite3`.
+ * @param {String} options.databaseName Explicit Chroma database name.
+ * @param {String} options.collectionName Explicit Knowledge Base collection name.
  * @returns {Promise<Object>} `{journalState: 'hot', journalReason}` or `{journalState: 'clean', registry}`.
  */
 export async function readSqliteRegistryReadOnly({
     sqlitePath,
-    databaseName   = 'default_database',
-    collectionName = 'neo-knowledge-base',
+    databaseName,
+    collectionName,
     openDatabaseFn = filePath => new Database(filePath, {readonly: true, fileMustExist: true}),
     fsModule       = fs
 } = {}) {
+    if (typeof collectionName !== 'string' || collectionName.length === 0) {
+        throw new TypeError('readSqliteRegistryReadOnly: collectionName is required');
+    }
+    if (typeof databaseName !== 'string' || databaseName.length === 0) {
+        throw new TypeError('readSqliteRegistryReadOnly: databaseName is required');
+    }
     const journalHeader = await readLeadingBytes(`${sqlitePath}-journal`, 12, fsModule);
     if (journalHeader && isHotRollbackJournalHeader(journalHeader)) {
         return {journalState: 'hot', journalReason: 'hot-rollback-journal'};
@@ -328,6 +347,11 @@ export async function readSqliteRegistryReadOnly({
 /**
  * @summary Reads one KB dead-element observation across runtime `inspect`, SQLite registry, `header.bin`, and live `count()`.
  * @param {Object} options
+ * @param {String} options.dataDir Resolved Chroma data directory.
+ * @param {String} options.endpointHost Resolved Chroma endpoint host.
+ * @param {Number} options.endpointPort Resolved Chroma endpoint port.
+ * @param {String} options.collectionName Resolved Knowledge Base collection name.
+ * @param {String} options.databaseName Resolved Knowledge Base Chroma database name.
  * @returns {Promise<Object>} Evaluated observation (`{status: 'ok'|'unverified'|'unknown', ...}`).
  */
 export async function readKbDeadElementObservation({
@@ -335,8 +359,8 @@ export async function readKbDeadElementObservation({
     endpointHost,
     endpointPort,
     expectedEndpointHost = 'chroma',
-    collectionName       = 'neo-knowledge-base',
-    databaseName         = 'default_database',
+    collectionName,
+    databaseName,
     kbChromaManager,
     runtimeAccessService,
     runtimeBinding       = null,
@@ -345,6 +369,12 @@ export async function readKbDeadElementObservation({
 } = {}) {
     if (typeof dataDir !== 'string' || dataDir.length === 0) {
         return {status: 'unknown', reason: 'missing-chroma-data-dir'};
+    }
+    if (typeof collectionName !== 'string' || collectionName.length === 0) {
+        return {status: 'unknown', reason: 'missing-collection-name'};
+    }
+    if (typeof databaseName !== 'string' || databaseName.length === 0) {
+        return {status: 'unknown', reason: 'missing-database-name'};
     }
 
     const resolvedBinding = runtimeBinding || await inspectChromaStoreRuntimeBinding({
@@ -410,7 +440,8 @@ export async function readKbDeadElementObservation({
 }
 
 /**
- * @summary Builds the orchestrator's live KB dead-element gatherer closure.
+ * @summary Builds the orchestrator's live KB dead-element gatherer closure, reading resolved `AiConfig` and
+ * `kbConfig` leaves directly at the call site without threading config through `Orchestrator`.
  *
  * Never throws into the shared sweep on store/Chroma unavailability: settles as `{status: 'probe-unavailable'}`
  * when an unexpected I/O or transport error occurs, `{status: 'unverified'}` on a hot rollback journal,
@@ -418,7 +449,6 @@ export async function readKbDeadElementObservation({
  * below `gcDefragThreshold`, and `{status: 'bloated', diagnosis}` above threshold.
  *
  * @param {Object} options
- * @param {Function} options.resolveInputs Use-site resolver returning fresh `{dataDir, endpointHost, endpointPort, gcDefragThreshold, collectionName, databaseName}`.
  * @param {Object} options.kbChromaManager Knowledge Base Chroma manager (`getKnowledgeBaseCollection()`).
  * @param {Object} options.runtimeAccessService Orchestrator `DeploymentRuntimeAccessService`.
  * @param {String} options.serviceId Target compose-service id (`mc-server`).
@@ -426,7 +456,6 @@ export async function readKbDeadElementObservation({
  * @returns {Function} `async (observedAt) => Promise<Object>`
  */
 export function createLiveKbDeadElementGatherer({
-    resolveInputs,
     kbChromaManager,
     runtimeAccessService,
     serviceId,
@@ -434,11 +463,15 @@ export function createLiveKbDeadElementGatherer({
 } = {}) {
     return async observedAt => {
         try {
-            const inputs      = resolveInputs(),
-                  observation = await readObservationFn({
+            const gcDefragThreshold = AiConfig.knowledgeBase.gcDefragThreshold,
+                  observation       = await readObservationFn({
+                      dataDir       : AiConfig.engines.chroma.dataDir,
+                      endpointHost  : AiConfig.engines.chroma.host,
+                      endpointPort  : AiConfig.engines.chroma.port,
+                      collectionName: kbConfig.collectionName,
+                      databaseName  : kbConfig.chromaDatabase,
                       kbChromaManager,
-                      runtimeAccessService,
-                      ...inputs
+                      runtimeAccessService
                   });
 
             if (observation.status === 'unverified' || observation.status !== 'ok') {
@@ -451,7 +484,7 @@ export function createLiveKbDeadElementGatherer({
 
             const diagnosis = buildKbDeadElementDiagnosis({
                 observation,
-                gcDefragThreshold: inputs.gcDefragThreshold,
+                gcDefragThreshold,
                 observedAt,
                 serviceId
             });

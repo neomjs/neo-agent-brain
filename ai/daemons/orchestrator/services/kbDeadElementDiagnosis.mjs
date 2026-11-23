@@ -160,11 +160,19 @@ export function evaluateKbDeadElementObservation({
     headersBySegmentId = {},
     liveCollectionId   = null,
     liveCount          = null,
-    collectionName     = 'neo-knowledge-base',
-    databaseName       = 'default_database'
+    collectionName,
+    databaseName
 } = {}) {
     if (journalState === 'hot') {
         return {status: 'unverified', reason: journalReason || 'hot-rollback-journal'};
+    }
+
+    if (typeof collectionName !== 'string' || collectionName.length === 0) {
+        return {status: 'unknown', reason: 'missing-collection-name'};
+    }
+
+    if (typeof databaseName !== 'string' || databaseName.length === 0) {
+        return {status: 'unknown', reason: 'missing-database-name'};
     }
 
     if (!runtimeBinding || typeof runtimeBinding !== 'object') {
