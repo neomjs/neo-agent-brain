@@ -3375,4 +3375,40 @@ test.describe('#1756 — Orchestrator defect-note publisher and DiskPressureDefe
             fs.removeSync(relocated);
         }
     });
+
+    test('registers healOperations.defrag on DataRecoveryActuatorService and refuses non-KB targets with unsafe-input', async () => {
+        const tmpDir       = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-orch-defrag-heal-')),
+              relocatedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-orch-defrag-heal-reloc-')),
+              orchestrator = Neo.create(Orchestrator, {
+                  dataDir      : tmpDir,
+                  healthService: {recordTaskOutcome() {}}
+              });
+
+        try {
+            const actuator = orchestrator.dataRecoveryActuatorService;
+            expect(typeof actuator.healOperations.defrag).toBe('function');
+            expect(orchestrator.kbDefragHealStatePath).toBe(path.join(tmpDir, 'defrag-state', 'knowledge-base-heal.json'));
+            expect(await orchestrator.readKbDefragHealState()).toBeNull();
+
+            orchestrator.dataDir = relocatedDir;
+            expect(orchestrator.kbDefragHealStatePath).toBe(path.join(relocatedDir, 'defrag-state', 'knowledge-base-heal.json'));
+
+            const rejected = await actuator.applyHeal({
+                action    : 'defrag',
+                collection: 'neo-agent-sessions',
+                now       : 1_795_400_000_000
+            });
+
+            expect(rejected).toMatchObject({
+                action    : 'defrag',
+                collection: 'neo-agent-sessions',
+                status    : 'unsafe-input',
+                detail    : {reason: 'unsupported-defrag-target'}
+            });
+        } finally {
+            orchestrator.destroy();
+            fs.removeSync(tmpDir);
+            fs.removeSync(relocatedDir);
+        }
+    });
 });

@@ -631,6 +631,45 @@ test.describe('served-plane verification — a healthy status is not an identity
         expect(describeServedPlane(nameless)).toBeNull();
         expect(describeServedPlane({status: 'healthy', plane: {dataRoot: '/x'}})).toBeNull();
     });
+
+    test('reportWriteGate forwards kb-server writeGate telemetry only when opted in, keeping default shape unchanged', async () => {
+        class FakeTransport {}
+
+        const clientFor = payload => class {
+            async connect() {}
+            async callTool() { return {structuredContent: payload}; }
+            async close() {}
+        };
+
+        const gated    = {status: 'healthy', writeGate: {gate: 'closed', leaseId: 'lease-42', inFlightWrites: 0}},
+              ungated  = {status: 'healthy'},
+              runProbe = (payload, options = {}) => runHealthcheck({
+                  url           : 'http://kb-server:3000',
+                  ClientClass   : clientFor(payload),
+                  TransportClass: FakeTransport,
+                  uptimeMs      : () => 80,
+                  ...options
+              });
+
+        expect(await runProbe(gated)).toEqual({
+            status : 'healthy',
+            url    : 'http://kb-server:3000/',
+            timings: {startupMs: 80, timeoutMs: 8000}
+        });
+
+        expect(await runProbe(gated, {reportWriteGate: true})).toEqual({
+            status   : 'healthy',
+            url      : 'http://kb-server:3000/',
+            writeGate: {gate: 'closed', leaseId: 'lease-42', inFlightWrites: 0},
+            timings  : {startupMs: 80, timeoutMs: 8000}
+        });
+
+        expect(await runProbe(ungated, {reportWriteGate: true})).toEqual({
+            status : 'healthy',
+            url    : 'http://kb-server:3000/',
+            timings: {startupMs: 80, timeoutMs: 8000}
+        });
+    });
 });
 
 /**

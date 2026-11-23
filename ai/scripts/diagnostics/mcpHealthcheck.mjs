@@ -368,6 +368,8 @@ export function parseExpectedStatuses(expectedStatus) {
  * @param {String} [options.mcpPath='/mcp'] MCP endpoint path below `url`.
  * @param {Boolean} [options.reportServedPlane=false] Report the served `plane` block as observed, asserting nothing —
  *     for a caller that compares the identity itself (the first-run recipe); an absent block adds no key.
+ * @param {Boolean} [options.reportWriteGate=false] Report the served `writeGate` block (`{gate, leaseId, inFlightWrites}`)
+ *     when present on `kb-server` healthcheck payloads; omitted by default so existing callers keep their exact shape.
  * @param {Number} [options.timeoutMs=DEFAULT_TIMEOUT_MS]
  * @param {Function} [options.ClientClass=Client] Injectable SDK client constructor for tests.
  * @param {Function} [options.TransportClass=StreamableHTTPClientTransport] Injectable transport constructor for tests.
@@ -384,6 +386,7 @@ export async function runHealthcheck({
     clientName            = 'neo-container-healthcheck',
     mcpPath               = '/mcp',
     reportServedPlane     = false,
+    reportWriteGate       = false,
     timeoutMs             = DEFAULT_TIMEOUT_MS,
     ClientClass           = Client,
     TransportClass        = StreamableHTTPClientTransport,
@@ -454,12 +457,14 @@ export async function runHealthcheck({
             );
         }
 
-        const plane = assertServedPlane(health, {expectedPlaneId, expectedPlaneDataRoot}) ?? (reportServedPlane ? describeServedPlane(health) : null);
+        const plane     = assertServedPlane(health, {expectedPlaneId, expectedPlaneDataRoot}) ?? (reportServedPlane ? describeServedPlane(health) : null),
+              writeGate = reportWriteGate && health?.writeGate && typeof health.writeGate === 'object' ? health.writeGate : null;
 
         return {
             status: health.status,
             url   : baseUrl.toString(),
             ...(plane ? {plane} : {}),
+            ...(writeGate ? {writeGate} : {}),
             // Emitted on SUCCESS too, not only on failure. A starvation verdict is only readable
             // against a baseline, and the baseline has to come from the same probe on the same box
             // — a healthy run is the only place it can be recorded. Docker keeps the last few

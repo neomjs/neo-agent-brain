@@ -9,6 +9,8 @@ import {
     evaluateKbDeadElementObservation,
     HNSW_HEADER_BYTE_LENGTH
 } from './kbDeadElementDiagnosis.mjs';
+import {createRecoveryDiagnosisEvent}   from '../../../services/memory-core/helpers/recoveryRunStateStore.mjs';
+import {isUnverifiedDefragAttemptState} from '../../../services/memory-core/helpers/defragHeal.mjs';
 
 /**
  * @module ai/daemons/orchestrator/services/kbDeadElementGatherer
@@ -440,41 +442,112 @@ export async function readKbDeadElementObservation({
 }
 
 /**
+ * @summary Single use-site reader resolving `AiConfig` and `kbConfig` leaves for KB dead-element checks,
+ * shared by the periodic gatherer and `healOperations.defrag`'s operation-start re-read.
+ *
+ * @param {Object} options
+ * @param {Object} options.kbChromaManager Knowledge Base Chroma manager (`getKnowledgeBaseCollection()`).
+ * @param {Object} options.runtimeAccessService Orchestrator `DeploymentRuntimeAccessService`.
+ * @param {Function} [options.readObservationFn=readKbDeadElementObservation] Injectable reader seam for tests.
+ * @returns {Promise<{gcDefragThreshold: Number, observation: Object}>}
+ */
+export async function readLiveKbDeadElements({
+    kbChromaManager,
+    runtimeAccessService,
+    readObservationFn = readKbDeadElementObservation
+} = {}) {
+    const gcDefragThreshold = AiConfig.knowledgeBase.gcDefragThreshold,
+          observation       = await readObservationFn({
+              dataDir       : AiConfig.engines.chroma.dataDir,
+              endpointHost  : AiConfig.engines.chroma.host,
+              endpointPort  : AiConfig.engines.chroma.port,
+              collectionName: kbConfig.collectionName,
+              databaseName  : kbConfig.chromaDatabase,
+              kbChromaManager,
+              runtimeAccessService
+          });
+
+    return {gcDefragThreshold, observation};
+}
+
+/**
  * @summary Builds the orchestrator's live KB dead-element gatherer closure, reading resolved `AiConfig` and
  * `kbConfig` leaves directly at the call site without threading config through `Orchestrator`.
  *
  * Never throws into the shared sweep on store/Chroma unavailability: settles as `{status: 'probe-unavailable'}`
  * when an unexpected I/O or transport error occurs, `{status: 'unverified'}` on a hot rollback journal,
  * `{status: 'unknown'}` on version/identity/checkpoint incoherence, `{status: 'clean', diagnosis: null}` at or
- * below `gcDefragThreshold`, and `{status: 'bloated', diagnosis}` above threshold.
+ * below `gcDefragThreshold`, and `{status: 'bloated', diagnosis}` above threshold (or when a persisted
+ * unverified post-promotion defrag attempt still awaits post-restart reconciliation).
  *
  * @param {Object} options
  * @param {Object} options.kbChromaManager Knowledge Base Chroma manager (`getKnowledgeBaseCollection()`).
  * @param {Object} options.runtimeAccessService Orchestrator `DeploymentRuntimeAccessService`.
  * @param {String} options.serviceId Target compose-service id (`mc-server`).
  * @param {Function} [options.readObservationFn=readKbDeadElementObservation] Injectable reader seam for tests.
+ * @param {Function} [options.readPendingDefragAttempt=async()=>null] Optional reader for unverified defrag attempt state.
  * @returns {Function} `async (observedAt) => Promise<Object>`
  */
 export function createLiveKbDeadElementGatherer({
     kbChromaManager,
     runtimeAccessService,
     serviceId,
-    readObservationFn = readKbDeadElementObservation
+    readObservationFn        = readKbDeadElementObservation,
+    readPendingDefragAttempt = async () => null
 } = {}) {
     return async observedAt => {
+        let pendingAttempt = null;
         try {
-            const gcDefragThreshold = AiConfig.knowledgeBase.gcDefragThreshold,
-                  observation       = await readObservationFn({
-                      dataDir       : AiConfig.engines.chroma.dataDir,
-                      endpointHost  : AiConfig.engines.chroma.host,
-                      endpointPort  : AiConfig.engines.chroma.port,
-                      collectionName: kbConfig.collectionName,
-                      databaseName  : kbConfig.chromaDatabase,
-                      kbChromaManager,
-                      runtimeAccessService
+            pendingAttempt = await readPendingDefragAttempt();
+        } catch {
+            pendingAttempt = null;
+        }
+
+        const buildPendingReconciliationOutcome = fallbackObservation => {
+            const collectionName = kbConfig.collectionName,
+                  liveCount      = Number.isSafeInteger(fallbackObservation?.liveCount) ? fallbackObservation.liveCount : 0,
+                  diagnosis      = createRecoveryDiagnosisEvent({
+                      diagnosisId   : `data-integrity:${collectionName}:unverified-defrag:${observedAt}`,
+                      recoveryClass : 'data-integrity',
+                      confidence    : 1,
+                      targetIdentity: {kind: 'compose-service', id: serviceId},
+                      evidenceFacts : [{
+                          type      : 'store-bloat',
+                          signal    : 'unverified-defrag-attempt',
+                          collection: collectionName,
+                          liveCount,
+                          phase     : pendingAttempt.phase,
+                          bundleSha : pendingAttempt.bundleSha ?? null
+                      }],
+                      observedAt,
+                      source : 'data-integrity-kb-dead-elements-monitor',
+                      details: {
+                          reasonCode: 'data-integrity-kb-unverified-defrag',
+                          collection: collectionName,
+                          phase     : pendingAttempt.phase
+                      }
                   });
 
+            return {
+                status    : 'bloated',
+                collection: collectionName,
+                liveCount,
+                diagnosis
+            };
+        };
+
+        try {
+            const {gcDefragThreshold, observation} = await readLiveKbDeadElements({
+                kbChromaManager,
+                runtimeAccessService,
+                readObservationFn
+            });
+
             if (observation.status === 'unverified' || observation.status !== 'ok') {
+                if (isUnverifiedDefragAttemptState(pendingAttempt)) {
+                    return buildPendingReconciliationOutcome(observation);
+                }
+
                 return {
                     status   : observation.status === 'unverified' ? 'unverified' : 'unknown',
                     reason   : observation.reason || null,
@@ -489,6 +562,10 @@ export function createLiveKbDeadElementGatherer({
                 serviceId
             });
 
+            if (!diagnosis && isUnverifiedDefragAttemptState(pendingAttempt)) {
+                return buildPendingReconciliationOutcome(observation);
+            }
+
             return {
                 status          : diagnosis ? 'bloated' : 'clean',
                 collection      : observation.collection,
@@ -499,6 +576,10 @@ export function createLiveKbDeadElementGatherer({
                 diagnosis
             };
         } catch (error) {
+            if (isUnverifiedDefragAttemptState(pendingAttempt)) {
+                return buildPendingReconciliationOutcome(null);
+            }
+
             return {
                 status    : 'probe-unavailable',
                 probeError: error?.message ?? String(error),
