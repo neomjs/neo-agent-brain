@@ -451,14 +451,15 @@ export function compareMetadataToVectorIds({
 
 /**
  * @summary Reads a collection's unpersisted `embeddings_queue` tail (`seq_id` strictly above the vector
- * segment's `max_seq_id`) in ascending `seq_id` order from a SQLite snapshot. Snapshots without queue
- * tables (such as minimal synthetic unit fixtures) resolve an empty tail.
+ * segment's `max_seq_id`) in ascending `seq_id` order from a SQLite snapshot, projecting whether each
+ * queue row carries non-empty vector bytes. Snapshots without queue tables (such as minimal synthetic
+ * unit fixtures) resolve an empty tail.
  * @param {Object} options
  * @param {String} options.snapshotPath
  * @param {String} options.collectionId
  * @param {String|null} [options.vectorSegmentId=null]
  * @param {Function} [options.execFn=execFileAsync]
- * @returns {Promise<Array<{seqId: Number, operation: Number, id: String}>>}
+ * @returns {Promise<Array<{seqId: Number, operation: Number, id: String, hasVector: Boolean}>>}
  */
 export async function readVectorQueueTail({
     snapshotPath,
@@ -477,9 +478,10 @@ export async function readVectorQueueTail({
               : '0',
           sql            = `
               select
-                  q.seq_id    as seqId,
-                  q.operation as operation,
-                  q.id        as id
+                  q.seq_id                                         as seqId,
+                  q.operation                                      as operation,
+                  q.id                                             as id,
+                  case when length(q.vector) > 0 then 1 else 0 end as hasVector
               from embeddings_queue q
               where q.topic = '${escapedTopic}'
                   and q.seq_id > ${maxSeqClause}
@@ -494,7 +496,8 @@ export async function readVectorQueueTail({
         return parseSqliteJsonRows(stdout).map(row => ({
             seqId    : Number(row.seqId ?? row.seq_id),
             operation: Number(row.operation),
-            id       : row.id
+            id       : row.id,
+            hasVector: row.hasVector === true || Number(row.hasVector) > 0
         }))
     } catch (error) {
         if (/no such table:\s*(?:main\.)?(?:embeddings_queue|max_seq_id)/i.test(String(error?.message || error?.stderr || ''))) {
@@ -506,12 +509,14 @@ export async function readVectorQueueTail({
 }
 
 /**
- * @summary Folds ordered `embeddings_queue` tail entries onto persisted HNSW vector ids: `ADD` (`0`),
- * `UPDATE` (`1`), and `UPSERT` (`2`) mark an id present, while `DELETE` (`3`) removes it. Rows whose
- * only vector lives in the queue tail are returned in `pendingInQueueIds`.
+ * @summary Folds ordered `embeddings_queue` tail entries onto persisted HNSW vector ids using Chroma's
+ * vector-index membership semantics: only a vector-bearing `ADD` (`0`) or `UPSERT` (`2`) can establish
+ * membership, `DELETE` (`3`) removes it, and `UPDATE` (`1`) preserves existing membership as of that
+ * point in sequence without creating or resurrecting an absent ID. IDs absent from `vectorIds` whose
+ * final folded membership is present are returned in `pendingInQueueIds`.
  * @param {Object} options
  * @param {String[]} [options.vectorIds=[]]
- * @param {Array<{seqId?: Number, operation: Number, id: String}>} [options.queueRows=[]]
+ * @param {Array<{seqId?: Number, operation: Number, id: String, hasVector?: Boolean|Number}>} [options.queueRows=[]]
  * @returns {{effectiveVectorIds: String[], pendingInQueueIds: String[]}}
  */
 export function applyVectorQueueTail({
@@ -520,34 +525,29 @@ export function applyVectorQueueTail({
 } = {}) {
     const persistedSet = new Set(vectorIds),
           effectiveSet = new Set(vectorIds),
-          netById      = new Map();
+          createdOrder = [],
+          seenCreated  = new Set();
 
     for (const row of queueRows) {
         if (typeof row?.id !== 'string' || !row.id.length) {
             continue
         }
 
-        const op = Number(row.operation);
+        const op        = Number(row.operation),
+              hasVector = row.hasVector === true || Number(row.hasVector) > 0;
 
-        if (op === CHROMA_QUEUE_OP_ADD || op === CHROMA_QUEUE_OP_UPDATE || op === CHROMA_QUEUE_OP_UPSERT) {
-            netById.set(row.id, 'present');
-        } else if (op === CHROMA_QUEUE_OP_DELETE) {
-            netById.set(row.id, 'deleted');
-        }
-    }
-
-    const pendingInQueueIds = [];
-
-    for (const [id, state] of netById.entries()) {
-        if (state === 'present') {
-            effectiveSet.add(id);
-            if (!persistedSet.has(id)) {
-                pendingInQueueIds.push(id);
+        if ((op === CHROMA_QUEUE_OP_ADD || op === CHROMA_QUEUE_OP_UPSERT) && hasVector) {
+            effectiveSet.add(row.id);
+            if (!persistedSet.has(row.id) && !seenCreated.has(row.id)) {
+                seenCreated.add(row.id);
+                createdOrder.push(row.id);
             }
-        } else {
-            effectiveSet.delete(id);
+        } else if (op === CHROMA_QUEUE_OP_DELETE) {
+            effectiveSet.delete(row.id);
         }
     }
+
+    const pendingInQueueIds = createdOrder.filter(id => effectiveSet.has(id));
 
     return {
         effectiveVectorIds: [...effectiveSet],
