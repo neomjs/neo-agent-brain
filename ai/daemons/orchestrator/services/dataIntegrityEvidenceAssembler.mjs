@@ -7,8 +7,8 @@
  *
  * The producers emit per-SIGNAL diagnoses (coverage-drift / dimension-mismatch / count-regression /
  * sqlite-integrity / store-bloat) with raw `evidenceFacts`; the classifier reads per-COLLECTION rows. This
- * re-groups the per-collection facts by collection and folds the store-level facts (sqlite / bloat) into a
- * single store-level row keyed by the service id.
+ * re-groups the per-collection facts (including collection-scoped KB dead-element `store-bloat`) by collection
+ * and folds store-wide facts (sqlite / service-level bloat) into one store-level row keyed by `serviceId`.
  *
  * Pure (no I/O): the Orchestrator-side evidence gatherer runs the producers, reads the collection counts (the
  * coverage audit already has them) + the doc-presence audit, then calls this; the runner classifies the rows.
@@ -68,7 +68,27 @@ export function assembleDataIntegrityEvidence({
                     sqliteIntegrityOk = false;
                     break;
                 case 'store-bloat':
-                    sizeAnomaly = true;
+                    if (typeof fact.collection === 'string' && fact.collection.length > 0) {
+                        const row = ensureRow(fact.collection);
+                        row.sizeAnomaly = true;
+                        if (Number.isFinite(fact.liveCount) && !(fact.collection in collectionSizes)) {
+                            row.rowCount = fact.liveCount;
+                        }
+                        if (Number.isFinite(fact.hnswOccupancy)) {
+                            row.hnswOccupancy = fact.hnswOccupancy;
+                        }
+                        if (Number.isFinite(fact.liveCount)) {
+                            row.liveCount = fact.liveCount;
+                        }
+                        if (Number.isFinite(fact.deadElementCount)) {
+                            row.deadElementCount = fact.deadElementCount;
+                        }
+                        if (Number.isFinite(fact.deadFraction)) {
+                            row.deadFraction = fact.deadFraction;
+                        }
+                    } else {
+                        sizeAnomaly = true;
+                    }
                     break;
             }
         }

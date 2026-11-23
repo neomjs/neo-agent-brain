@@ -60,6 +60,8 @@ import {createFreezeHealOperation, createStoreFenceOperations, runFreezeReprobe}
 import {createThrottleShedHealOperation}                                          from '../../services/memory-core/helpers/throttleShedHeal.mjs';
 import {decideSystemicCircuit, foldSystemicCircuitState}                          from '../../services/memory-core/helpers/healSystemicCircuit.mjs';
 import {
+    KB_ChromaManager,
+    KB_Config,
     Memory_ChromaManager as ChromaManager,
     Memory_GraphService as GraphService,
     Memory_StorageRouter as StorageRouter,
@@ -74,6 +76,7 @@ import {
 import {buildDataIntegrityCoverageDiagnosis}    from './services/dataIntegrityCoverageDiagnosis.mjs';
 import {assembleDataIntegrityEvidence}          from './services/dataIntegrityEvidenceAssembler.mjs';
 import {createLiveDimensionConsistencyGatherer} from './services/dimensionConsistencyGatherer.mjs';
+import {createLiveKbDeadElementGatherer}        from './services/kbDeadElementGatherer.mjs';
 import {createRemDigestion}                     from '../../../src/evolution/createRemDigestion.mjs';
 import ConceptDiscoveryService                  from '../../services/ingestion/ConceptDiscoveryService.mjs';
 import SwarmHeartbeatService                    from './services/SwarmHeartbeatService.mjs';
@@ -1513,30 +1516,83 @@ export class Orchestrator extends Base {
         });
     }
     /**
-     * @summary Builds the data-integrity EVIDENCE gatherer the self-heal runner consumes: runs the
-     * detect-producer(s) over the coverage audit and assembles per-collection classifier-input rows. INTERIM
-     * (the escalate-deletion cutover): wires the coverage producer; the false-storm denominator
-     * (`collectionSizes`) + the WAL-stall-vs-wipe discriminator (`documentsPresentByCollection`) wire WITH the
-     * actuator's real heal operations in the follow-up — classification precision only changes the OUTCOME once
-     * a heal acts, and the interim actuator all-defers, so coverage → assemble → classify → defer is
-     * correct-by-construction.
-     * @returns {Function} `async () => Promise<Object[]>` — the assembled classifier-input rows.
+     * @summary Builds the read-only KB dead-element gatherer bound to the read-only store-observation scope.
+     * @see learn/agentos/decisions/0026-recovery-actuator.md
+     * @returns {Function} `async (observedAt) => Promise<Object>`
+     */
+    get dataIntegrityKbDeadElementGatherer() {
+        return createLiveKbDeadElementGatherer({
+            serviceId    : this.dataIntegrityServiceId,
+            resolveInputs: () => ({
+                dataDir             : AiConfig.engines.chroma.dataDir,
+                endpointHost        : AiConfig.engines.chroma.host,
+                endpointPort        : AiConfig.engines.chroma.port,
+                gcDefragThreshold   : AiConfig.knowledgeBase.gcDefragThreshold,
+                collectionName      : KB_Config.collectionName,
+                databaseName        : KB_Config.chromaDatabase,
+                kbChromaManager     : this.kbChromaManager || KB_ChromaManager,
+                runtimeAccessService: this.deploymentRuntimeAccessService
+            })
+        });
+    }
+    /**
+     * @summary Builds the data-integrity EVIDENCE gatherer: isolates coverage from dimension and KB dead-element
+     * gatherers so a failed coverage probe (`sqlite3` unavailable) yields `probe-unavailable` for coverage alone
+     * (running zero coverage heals) while KB dead-element diagnoses still reach the classifier.
+     * @returns {Function} `async () => Promise<{rows: Object[], probes: Object}>`
      */
     get dataIntegrityEvidenceGatherer() {
-        const coverageGatherer  = this.dataIntegrityCoverageGatherer,
-              dimensionGatherer = createLiveDimensionConsistencyGatherer({
+        const coverageGatherer      = () => this.dataIntegrityCoverageGatherer(),
+              kbDeadElementGatherer = observedAt => this.dataIntegrityKbDeadElementGatherer(observedAt),
+              dimensionGatherer     = createLiveDimensionConsistencyGatherer({
                   storageRouter    : StorageRouter,
                   expectedDimension: AiConfig.vectorDimension,
                   serviceId        : this.dataIntegrityServiceId
               }),
-              serviceId         = this.dataIntegrityServiceId;
+              serviceId             = this.dataIntegrityServiceId;
         return async () => {
-            const observedAt         = Date.now(),
-                  coverageResult     = await coverageGatherer(),
-                  coverageDiagnosis  = buildDataIntegrityCoverageDiagnosis({coverageResult, observedAt, serviceId}),
-                  dimensionDiagnosis = await dimensionGatherer(observedAt),
-                  diagnoses          = [coverageDiagnosis, dimensionDiagnosis].filter(Boolean);
-            return assembleDataIntegrityEvidence({diagnoses, serviceId});
+            const observedAt        = Date.now();
+            let   coverageDiagnosis = null,
+                coverageProbe     = {status: 'ok'};
+
+            try {
+                const coverageResult = await coverageGatherer();
+                coverageDiagnosis    = buildDataIntegrityCoverageDiagnosis({coverageResult, observedAt, serviceId});
+            } catch (error) {
+                coverageProbe = {
+                    status    : 'probe-unavailable',
+                    probeError: error?.message ?? String(error)
+                };
+            }
+
+            const [dimensionDiagnosis, kbOutcome] = await Promise.all([
+                dimensionGatherer(observedAt),
+                kbDeadElementGatherer(observedAt)
+            ]);
+
+            const kbDiagnosis = kbOutcome?.diagnosis ?? null,
+                  kbProbe     = kbOutcome
+                      ? (({diagnosis: _omitted, ...probeSummary}) => probeSummary)(kbOutcome)
+                      : {status: 'probe-unavailable', probeError: 'kb dead-element gatherer returned no outcome'};
+
+            if (
+                coverageProbe.status === 'probe-unavailable' &&
+                kbProbe.status === 'probe-unavailable' &&
+                !dimensionDiagnosis
+            ) {
+                throw new Error(`${coverageProbe.probeError}; kbDeadElements: ${kbProbe.probeError}`);
+            }
+
+            const diagnoses = [coverageDiagnosis, dimensionDiagnosis, kbDiagnosis].filter(Boolean),
+                  rows      = assembleDataIntegrityEvidence({diagnoses, serviceId});
+
+            return {
+                rows,
+                probes: {
+                    coverage      : coverageProbe,
+                    kbDeadElements: kbProbe
+                }
+            };
         };
     }
     get swarmHeartbeatEnabled()          { return resolveDeploymentEnabled('swarmHeartbeatEnabled');          }

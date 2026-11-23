@@ -1350,6 +1350,7 @@ async function runDataIntegritySweepTask({taskName, reason, services, runtime}) 
             checkedAt          : new Date().toISOString()
         };
         if (decision.probeError) details.probeError = decision.probeError;
+        if (decision.probes)     details.probes     = decision.probes;
 
         // Chronic unsafe-input mis-wire alert: a sustained fail-closed for the same (action, collection) means a
         // caller is mis-wired and that heal silently never executes — surface it (the immune system's own

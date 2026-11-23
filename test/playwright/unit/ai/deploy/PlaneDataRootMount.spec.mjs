@@ -131,5 +131,24 @@ test.describe('plane state reaches a volume (#425)', () => {
             if (key === REM_RUNS_WRITER || key === REM_RUNS_READER) continue;
             expect(mountsOf(service).some(mount => mount.source === REM_RUNS_VOLUME), `${key} does not mount the channel`).toBe(false)
         }
+    });
+
+    test('AC-2 (#1434): chroma mounts chroma-data writable at /data, orchestrator mounts it :ro at engines.chroma.dataDir, and no other service mounts it', () => {
+        const {plane, engines} = ConfigBase.config.data,
+              chromaDir        = path.relative(plane.dataRoot.default, engines.chroma.dataDirProd.default);
+
+        expect(chromaDir.startsWith('..'), 'engines.chroma.dataDirProd must live under the plane root').toBe(false);
+
+        const target = `${CONTAINER_PLANE_ROOT}/${chromaDir}`;
+
+        expect(mountsOf(services.chroma).filter(mount => mount.source === 'chroma-data'), 'chroma owns chroma-data writable at /data')
+            .toEqual([{source: 'chroma-data', target: '/data', readOnly: false}]);
+        expect(mountsOf(services.orchestrator).filter(mount => mount.source === 'chroma-data'), 'orchestrator observes chroma-data :ro at AiConfig.engines.chroma.dataDir')
+            .toEqual([{source: 'chroma-data', target, readOnly: true}]);
+
+        for (const [key, service] of Object.entries(services)) {
+            if (key === 'chroma' || key === 'orchestrator') continue;
+            expect(mountsOf(service).some(mount => mount.source === 'chroma-data'), `${key} does not mount chroma-data`).toBe(false);
+        }
     })
 });
