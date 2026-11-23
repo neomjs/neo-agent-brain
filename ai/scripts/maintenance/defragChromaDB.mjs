@@ -31,24 +31,29 @@ import {isEntryModule}                                               from '../..
  *
  * ## Peer Architecture
  *
- * This script and `ai/scripts/maintenance/backup.mjs` are **peer scripts with orthogonal responsibilities**.
- * Defrag does NOT call the canonical backup orchestrator — it retains its own private pre-nuke
- * physical-copy snapshot (step 1 below). The rationale:
+ * This CLI script and `ai/scripts/maintenance/backup.mjs` are **peer scripts with orthogonal responsibilities**
+ * on the local CLI path:
  *
- * - `backup.mjs` captures current state as portable JSONL via the `ai/services.mjs` SDK boundary
- * - Defrag needs a *fast* pre-nuke snapshot that preserves exact HNSW index state, which a
- *   physical directory copy provides but a JSONL export does not
- * - Delegation between the two would re-create the discoverability failure this separation solves
+ * - `backup.mjs` captures current state as portable JSONL (including Knowledge Base embeddings) via the
+ *   `ai/services.mjs` SDK boundary.
+ * - The **local CLI path** (`node ai/scripts/maintenance/defragChromaDB.mjs --target knowledge-base`) retains
+ *   its own private physical directory copy (`dist/chromadb-backups/<target>/`, step 1 below) for instant
+ *   local HNSW index rollback without delegating to `backup.mjs`.
+ * - The **autonomous `defrag` heal operation** (`ai/services/memory-core/helpers/defragHeal.mjs`) runs on
+ *   profiles without mutable persist-directory access and snapshots via `backup.mjs`'s integrity-checked JSONL
+ *   bundle (`bundle-meta.integrity`) before invoking {@link rewriteCollectionViaShadowPromotion} over the
+ *   Chroma client; the physical directory copy stays exclusively on the local CLI path.
  *
- * Operators who want compacted backups compose at the shell layer: `npm run ai:defrag-kb && npm run ai:backup`.
+ * Operators who want compacted backups on the local CLI compose at the shell layer:
+ * `npm run ai:defrag-kb && npm run ai:backup`.
  *
  * ## The Shadow-Promote Strategy
  *
- * 1.  **Pre-Rewrite Snapshot (Defrag-Internal Safety)**: Before any rewrite operation, a full physical copy
- *     of the database folder is created via `fs.copy()`. This preserves exact HNSW index state for instant
- *     restore if the shadow-promotion ETL fails mid-flight. Snapshots live at `dist/chromadb-backups/<target>/`
- *     and are explicitly NOT the canonical backup — that lives at `.neo-ai-data/backups/backup-<ts>/` via
- *     `ai/scripts/maintenance/backup.mjs`. Automated retention: keep last 3, delete others older than 7 days.
+ * 1.  **Pre-Rewrite Snapshot (Local CLI Path Only)**: Before a local CLI rewrite, a full physical copy of the
+ *     database folder is created via `fs.copy()`. This preserves exact HNSW index state for instant local
+ *     restore if the shadow-promotion ETL fails mid-flight. Physical copies live at
+ *     `dist/chromadb-backups/<target>/` (local CLI only; autonomous `defrag` heal snapshots via the JSONL
+ *     bundle at `AiConfig.backupPath`). Automated retention: keep last 3, delete others older than 7 days.
  * 2.  **Extract (ETL)**: All data (IDs, embeddings, metadata, documents) is fetched from every collection in the
  *     selected collection group into an in-memory buffer.
  * 3.  **Shadow Load**: A process-unique shadow collection is created and loaded with the extracted data.
@@ -600,7 +605,9 @@ export async function validateLoadedCollectionByIds({collection, ids = [], colle
  * @param {Object} options
  * @param {Object} options.client Chroma client.
  * @param {String} options.collectionName Canonical collection name.
- * @param {Object} options.data Extracted source data.
+ * @param {Object} [options.data] Extracted in-memory source data (`{ids, embeddings, metadatas, documents}`).
+ * @param {String[]} [options.sourceIds] Expected source ids when streaming via `loadShadowFn` instead of `data`.
+ * @param {Function} [options.loadShadowFn] Streaming loader `async ({collection, shadowName}) => void` used when `data` is omitted.
  * @param {Object} options.embeddingFunction Chroma embedding function.
  * @param {String} options.statePath Durable state marker path.
  * @param {Object} [options.stateBase] Stable fields written into every phase marker.
@@ -615,6 +622,8 @@ export async function rewriteCollectionViaShadowPromotion({
     client,
     collectionName,
     data,
+    sourceIds,
+    loadShadowFn,
     embeddingFunction,
     statePath,
     stateBase     = {},
@@ -624,9 +633,18 @@ export async function rewriteCollectionViaShadowPromotion({
     warn          = console.warn,
     writeProgress
 } = {}) {
+    const usesStreamLoader = typeof loadShadowFn === 'function';
+
+    if (!usesStreamLoader && !Array.isArray(data?.ids)) {
+        throw new TypeError("rewriteCollectionViaShadowPromotion requires either 'data' or '{loadShadowFn, sourceIds}'.");
+    }
+    if (usesStreamLoader && !Array.isArray(sourceIds)) {
+        throw new TypeError("rewriteCollectionViaShadowPromotion requires an Array 'sourceIds' when 'loadShadowFn' is used.");
+    }
+
     const shadowName  = createSwapCollectionName(collectionName, 'shadow',  {timestamp, uuid: uuidFactory()});
     const parkingName = createSwapCollectionName(collectionName, 'parking', {timestamp, uuid: uuidFactory()});
-    const sourceCount = data.ids.length;
+    const sourceCount = usesStreamLoader ? sourceIds.length : data.ids.length;
     const baseState   = {
         ...stateBase,
         collectionName,
@@ -651,8 +669,13 @@ export async function rewriteCollectionViaShadowPromotion({
 
     try {
         await writeDefragState({statePath, state: {...baseState, phase: 'shadow-loading'}});
-        await addCollectionData({collection: shadowCollection, data, writeProgress, log});
-        await validateLoadedCollection({collection: shadowCollection, data, collectionName: shadowName});
+        if (usesStreamLoader) {
+            await loadShadowFn({collection: shadowCollection, shadowName});
+            await validateLoadedCollectionByIds({collection: shadowCollection, ids: sourceIds, collectionName: shadowName});
+        } else {
+            await addCollectionData({collection: shadowCollection, data, writeProgress, log});
+            await validateLoadedCollection({collection: shadowCollection, data, collectionName: shadowName});
+        }
         await writeDefragState({statePath, state: {...baseState, phase: 'shadow-loaded'}});
 
         liveCollection = await client.getCollection({
@@ -672,7 +695,11 @@ export async function rewriteCollectionViaShadowPromotion({
             name             : collectionName,
             embeddingFunction
         });
-        await validateLoadedCollection({collection: canonicalCollection, data, collectionName});
+        if (usesStreamLoader) {
+            await validateLoadedCollectionByIds({collection: canonicalCollection, ids: sourceIds, collectionName});
+        } else {
+            await validateLoadedCollection({collection: canonicalCollection, data, collectionName});
+        }
         await writeDefragState({statePath, state: {...baseState, phase: 'canonical-validated'}});
 
         try {

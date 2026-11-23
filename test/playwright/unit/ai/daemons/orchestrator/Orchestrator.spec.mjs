@@ -3375,4 +3375,30 @@ test.describe('#1756 — Orchestrator defect-note publisher and DiskPressureDefe
             fs.removeSync(relocated);
         }
     });
+
+    test('registers healOperations.defrag on DataRecoveryActuatorService and refuses non-KB targets with unsafe-input', async () => {
+        const tmpDir       = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-orch-defrag-heal-')),
+              orchestrator = createTestOrchestrator({dataDir: tmpDir});
+
+        try {
+            const actuator = orchestrator.dataRecoveryActuatorService;
+            expect(typeof actuator.healOperations.defrag).toBe('function');
+
+            const rejected = await actuator.applyHeal({
+                action    : 'defrag',
+                collection: 'neo-agent-sessions',
+                now       : 1_795_400_000_000
+            });
+
+            expect(rejected).toMatchObject({
+                action    : 'defrag',
+                collection: 'neo-agent-sessions',
+                status    : 'unsafe-input',
+                detail    : {reason: 'unsupported-defrag-target'}
+            });
+        } finally {
+            orchestrator.destroy();
+            fs.removeSync(tmpDir);
+        }
+    });
 });

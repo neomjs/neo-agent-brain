@@ -30,6 +30,7 @@ import {getDueTask as dreamGetDueTaskImport}                                    
 import {getDueTask as embedDrainLivenessWatchdogGetDueTaskImport}                 from './scheduling/embedDrainLivenessWatchdog.mjs';
 import {getDueTask as datedItemsOverdueGetDueTaskImport}                          from './scheduling/datedItemsOverdue.mjs';
 import {runSessionRotation}                                                       from './scheduling/sessionRotation.mjs';
+import kbConfig                                                                   from '../../mcp/server/knowledge-base/config.mjs';
 import memoryCoreConfig                                                           from '../../mcp/server/memory-core/config.mjs';
 import {resolveVectorGenerationElectionDir}                                       from '../../services/shared/vector/generationElectionStore.mjs';
 import MailboxService                                                             from '../../services/memory-core/MailboxService.mjs';
@@ -58,9 +59,18 @@ import {detectChronicUnsafeInput}                                               
 import {quarantineCollection, storeFenceTargets, unquarantineCollection}          from '../../services/memory-core/helpers/quarantineStore.mjs';
 import {createFreezeHealOperation, createStoreFenceOperations, runFreezeReprobe}  from '../../services/memory-core/helpers/freezeReprobeRunner.mjs';
 import {createThrottleShedHealOperation}                                          from '../../services/memory-core/helpers/throttleShedHeal.mjs';
+import {
+    createDefragHealOperation,
+    measureChromaDiskHeadroom,
+    streamKbBundleIntoCollection,
+    validateCanonicalCollectionAgainstBundle,
+    waitForChromaHeartbeat
+} from '../../services/memory-core/helpers/defragHeal.mjs';
 import {decideSystemicCircuit, foldSystemicCircuitState}                          from '../../services/memory-core/helpers/healSystemicCircuit.mjs';
 import {
     KB_ChromaManager,
+    KB_DatabaseService,
+    KB_LifecycleService,
     Memory_ChromaManager as ChromaManager,
     Memory_GraphService as GraphService,
     Memory_StorageRouter as StorageRouter,
@@ -75,11 +85,14 @@ import {
 import {buildDataIntegrityCoverageDiagnosis}    from './services/dataIntegrityCoverageDiagnosis.mjs';
 import {assembleDataIntegrityEvidence}          from './services/dataIntegrityEvidenceAssembler.mjs';
 import {createLiveDimensionConsistencyGatherer} from './services/dimensionConsistencyGatherer.mjs';
-import {createLiveKbDeadElementGatherer}        from './services/kbDeadElementGatherer.mjs';
-import {createRemDigestion}                     from '../../../src/evolution/createRemDigestion.mjs';
-import ConceptDiscoveryService                  from '../../services/ingestion/ConceptDiscoveryService.mjs';
-import SwarmHeartbeatService                    from './services/SwarmHeartbeatService.mjs';
-import GoldenPathSynthesizer                    from '../../services/graph/GoldenPathSynthesizer.mjs';
+import {
+    createLiveKbDeadElementGatherer,
+    readKbDeadElementObservation
+} from './services/kbDeadElementGatherer.mjs';
+import {createRemDigestion}    from '../../../src/evolution/createRemDigestion.mjs';
+import ConceptDiscoveryService from '../../services/ingestion/ConceptDiscoveryService.mjs';
+import SwarmHeartbeatService   from './services/SwarmHeartbeatService.mjs';
+import GoldenPathSynthesizer   from '../../services/graph/GoldenPathSynthesizer.mjs';
 import {
     collectFocusV1Projection,
     writeFocusV1Projection
@@ -1086,7 +1099,177 @@ export class Orchestrator extends Base {
                 'throttle-shed': createThrottleShedHealOperation({
                     setShedWindow: (durationMs, now) => this.maintenanceBackpressureService.setShedWindow(durationMs, now)
                 }),
-                'restore-empty-target': restoreEmptyTarget
+                'restore-empty-target': restoreEmptyTarget,
+                defrag                : createDefragHealOperation({
+                    getExpectedCollection: () => kbConfig.collectionName,
+                    readDeadElements     : async () => ({
+                        gcDefragThreshold: AiConfig.knowledgeBase.gcDefragThreshold,
+                        observation      : await readKbDeadElementObservation({
+                            dataDir             : AiConfig.engines.chroma.dataDir,
+                            endpointHost        : AiConfig.engines.chroma.host,
+                            endpointPort        : AiConfig.engines.chroma.port,
+                            collectionName      : kbConfig.collectionName,
+                            databaseName        : kbConfig.chromaDatabase,
+                            kbChromaManager     : KB_ChromaManager,
+                            runtimeAccessService: this.deploymentRuntimeAccessService
+                        })
+                    }),
+                    withWriterFence: async task => {
+                        const outcome = await withHeavyMaintenanceLease(
+                            acquisition => task({lease: acquisition.lease}),
+                            {
+                                owner           : 'defrag-heal',
+                                reason          : 'kb-store-bloat-defrag',
+                                kbWriteExclusive: true,
+                                leasePath       : this.maintenanceBackpressureService.resolveHeavyMaintenanceLeasePath(),
+                                staleAfterMs    : AiConfig.orchestrator.heavyMaintenanceLease.staleAfterMs
+                            }
+                        );
+
+                        return ['completed', 'inherited'].includes(outcome.status)
+                            ? outcome.result
+                            : {
+                                status: 'deferred',
+                                detail: {
+                                    reason: 'writer-fence-not-acquired',
+                                    holder: outcome.lease?.owner ?? null
+                                }
+                            };
+                    },
+                    probeKbWriteGate: async () => {
+                        const bridgeConfig = AiConfig.orchestrator.deploymentStateBridge,
+                              urls         = Array.isArray(bridgeConfig.directProbeUrls) ? bridgeConfig.directProbeUrls : [],
+                              url          = urls.find(candidate => {
+                                  try {
+                                      return new URL(candidate).hostname === 'kb-server';
+                                  } catch {
+                                      return false;
+                                  }
+                              });
+
+                        if (!url) {
+                            return null;
+                        }
+
+                        let bearerToken = null;
+                        if (bridgeConfig.bearerTokenFile) {
+                            try {
+                                bearerToken = (await fs.readFile(bridgeConfig.bearerTokenFile, 'utf8')).trim() || null;
+                            } catch (error) {
+                                this.writeLog?.('WARN', `[Orchestrator] bearer-token file '${bridgeConfig.bearerTokenFile}' unusable for kb-server drain probe: ${error.message}`);
+                            }
+                        }
+
+                        const {runHealthcheck} = await import('../../scripts/diagnostics/mcpHealthcheck.mjs'),
+                              probeResult      = await runHealthcheck({
+                                  url,
+                                  clientName     : 'neo-defrag-heal-drain-probe',
+                                  identity       : 'neo-defrag-heal-drain-probe',
+                                  expectedStatus : bridgeConfig.directProbeExpectedStatus,
+                                  timeoutMs      : bridgeConfig.directProbeTimeoutMs,
+                                  bearerToken,
+                                  reportWriteGate: true
+                              });
+
+                        return probeResult.writeGate ?? null;
+                    },
+                    writeBackupBundle: async () => {
+                        await KB_LifecycleService.ready();
+                        const {runBackup} = await import('../../scripts/maintenance/backup.mjs');
+                        return runBackup();
+                    },
+                    checkFreeDisk: ({liveCount, dimension, hnswOccupancy, vectorSegmentIds}) =>
+                        measureChromaDiskHeadroom({
+                            dataDir: AiConfig.engines.chroma.dataDir,
+                            liveCount,
+                            dimension,
+                            hnswOccupancy,
+                            vectorSegmentIds
+                        }),
+                    promoteShadow: async ({collectionName, bundleRoot, kbDir, sourceIds, bundleSha, now}) => {
+                        await KB_LifecycleService.ready();
+                        const {
+                                  assertNoIncompleteDefragState,
+                                  clearDefragState,
+                                  rewriteCollectionViaShadowPromotion
+                              }               = await import('../../scripts/maintenance/defragChromaDB.mjs'),
+                              defragStatePath = path.join(this.dataDir, 'defrag-state', 'knowledge-base-heal.json');
+
+                        await assertNoIncompleteDefragState({statePath: defragStatePath});
+
+                        const result = await rewriteCollectionViaShadowPromotion({
+                            client      : KB_ChromaManager.client,
+                            collectionName,
+                            sourceIds,
+                            loadShadowFn: ({collection}) => streamKbBundleIntoCollection({
+                                kbDir,
+                                collection,
+                                expectedDimension: AiConfig.vectorDimension
+                            }),
+                            embeddingFunction: kbConfig.dummyEmbeddingFunction,
+                            statePath        : defragStatePath,
+                            stateBase        : {
+                                targetName: 'knowledge-base',
+                                bundleSha,
+                                bundleRoot,
+                                startedAt : new Date(now).toISOString()
+                            },
+                            timestamp        : now
+                        });
+
+                        await clearDefragState({statePath: defragStatePath});
+                        KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
+                        return result;
+                    },
+                    restartService: serviceKey => this.deploymentRuntimeAccessService.applyLifecycle({
+                        serviceKey,
+                        operation: 'restart'
+                    }),
+                    waitForChromaReady: async () => {
+                        KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
+                        await waitForChromaHeartbeat({
+                            heartbeatFn: () => KB_ChromaManager.client.heartbeat()
+                        });
+                    },
+                    revalidateCanonical: async ({collectionName, expectedIds, sampleRow}) => {
+                        KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
+                        const {listCollectionIds} = await import('../../scripts/maintenance/defragChromaDB.mjs');
+                        let   collection          = null;
+
+                        try {
+                            collection = await KB_ChromaManager.client.getCollection({
+                                name             : collectionName,
+                                embeddingFunction: kbConfig.dummyEmbeddingFunction
+                            });
+                        } catch (error) {
+                            if (!KB_ChromaManager.isCollectionNotFoundError(error)) {
+                                throw error;
+                            }
+                        }
+
+                        return validateCanonicalCollectionAgainstBundle({
+                            collection,
+                            expectedIds,
+                            sampleRow,
+                            listIdsFn: listCollectionIds
+                        });
+                    },
+                    restoreFromBundle: async ({kbDir, extraIds}) => {
+                        KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
+                        const collection = await KB_ChromaManager.getKnowledgeBaseCollection();
+
+                        if (Array.isArray(extraIds) && extraIds.length > 0) {
+                            await collection.delete({ids: extraIds});
+                        }
+
+                        await KB_DatabaseService.manageDatabaseBackup({
+                            action: 'import',
+                            file  : kbDir,
+                            mode  : 'merge'
+                        });
+                        KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
+                    }
+                })
             },
             // The ledger is observability, never a gate: readHealLedger now THROWS on an unreadable FILE, so an
             // unreadable ledger must not block a heal — degrade the anti-thrash projection to "no recent runs".
