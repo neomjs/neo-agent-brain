@@ -317,4 +317,26 @@ test.describe('Neo.ai.daemons.services.DataIntegrityDiagnosisService', () => {
 
         expect(decision.chronicUnsafeInput).toEqual([]);
     });
+
+    test('accepts {rows, probes} envelope from evidenceGatherer and preserves per-probe status on decision (#1434)', async () => {
+        const actuator = fakeActuator(),
+              probes   = {
+                  coverage      : {status: 'probe-unavailable', probeError: 'spawn sqlite3 ENOENT'},
+                  kbDeadElements: {status: 'bloated', collection: 'neo-knowledge-base', hnswOccupancy: 253_743, liveCount: 86_560}
+              },
+              service  = createService({
+                  evidenceGatherer: async () => ({
+                      rows: [{collection: 'neo-knowledge-base', rowCount: 86_560, sizeAnomaly: true}],
+                      probes
+                  }),
+                  recoveryActuator: actuator
+              }),
+              decision = await service.gatherAndDiagnose();
+
+        expect(decision.status).toBe('healed');
+        expect(decision.probes).toEqual(probes);
+        expect(actuator.calls.applyHeal).toEqual([
+            expect.objectContaining({action: 'defrag', collection: 'neo-knowledge-base', now: OBSERVED_AT})
+        ]);
+    });
 });

@@ -545,6 +545,12 @@ services:
       # `provenance: self-reported`, so the bridge must never be able to author an observation it
       # then publishes as the service's own claim.
       - shared-heap-observation-data:/app/.neo-ai-data/heap-observation:ro
+      # Read-only store-observation scope (`learn/agentos/decisions/0026-recovery-actuator.md`): read ONLY by the
+      # orchestrator's KB dead-element reader (`kbDeadElementGatherer`) at `AiConfig.engines.chroma.dataDir`
+      # (`chroma.sqlite3` segment registry + 100-byte `header.bin`, Chroma 1.5.9 only). `chroma`
+      # remains the sole read-write owner at `/data`; no full-DB copy, write, journal replay, or other
+      # consumer is admitted.
+      - chroma-data:/app/.neo-ai-data/chroma/unified:ro
       # Plane-singleton vector-generation election record — the restore seam and the rebuild runner
       # mutate it from this container; one shared mount with the KB/MC readers of the same record.
       - shared-vector-generation-data:/app/.neo-ai-data/vector-generation

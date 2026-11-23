@@ -76,4 +76,48 @@ test.describe('assembleDataIntegrityEvidence — producers→classifier glue', (
         });
         expect(classifyDataIntegrityMode(sqlite[0])).toMatchObject({mode: 'sqlite-integrity', terminalAction: 'quarantine'});
     });
+
+    test('AC-4 (#1434): per-collection KB store-bloat routes to neo-knowledge-base row and classifies to defrag (leaving mc-server row distinct)', () => {
+        const kbRows = assembleDataIntegrityEvidence({
+            diagnoses: [{
+                recoveryClass: 'data-integrity',
+                evidenceFacts: [{
+                    type            : 'store-bloat',
+                    signal          : 'dead-elements',
+                    collection      : 'neo-knowledge-base',
+                    hnswOccupancy   : 253_743,
+                    liveCount       : 86_560,
+                    deadElementCount: 167_183,
+                    deadFraction    : 167_183 / 253_743
+                }]
+            }],
+            serviceId: 'mc-server'
+        });
+
+        expect(kbRows).toHaveLength(1);
+        expect(kbRows[0]).toMatchObject({
+            collection      : 'neo-knowledge-base',
+            rowCount        : 86_560,
+            sizeAnomaly     : true,
+            hnswOccupancy   : 253_743,
+            liveCount       : 86_560,
+            deadElementCount: 167_183
+        });
+        expect(classifyDataIntegrityMode(kbRows[0])).toMatchObject({
+            collection    : 'neo-knowledge-base',
+            mode          : 'store-bloat',
+            terminalAction: 'defrag'
+        });
+
+        const combined = assembleDataIntegrityEvidence({
+            diagnoses: [
+                {recoveryClass: 'data-integrity', evidenceFacts: [{type: 'store-bloat', signal: 'dead-elements', collection: 'neo-knowledge-base', hnswOccupancy: 253_743, liveCount: 86_560}]},
+                {recoveryClass: 'data-integrity', evidenceFacts: [{type: 'store-bloat', signal: 'absolute'}]}
+            ],
+            serviceId: 'mc-server'
+        });
+        expect(combined.map(row => row.collection)).toEqual(['neo-knowledge-base', 'mc-server']);
+        expect(classifyDataIntegrityMode(combined[0])).toMatchObject({collection: 'neo-knowledge-base', terminalAction: 'defrag'});
+        expect(classifyDataIntegrityMode(combined[1])).toMatchObject({collection: 'mc-server', terminalAction: 'defrag'});
+    });
 });

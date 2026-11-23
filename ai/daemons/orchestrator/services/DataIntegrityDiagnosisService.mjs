@@ -113,10 +113,10 @@ export class DataIntegrityDiagnosisService extends Base {
     async gatherAndDiagnose({observedAt = this.now()} = {}) {
         this.validateDependencies();
 
-        let evidenceRows;
+        let gathered;
 
         try {
-            evidenceRows = await this.evidenceGatherer();
+            gathered = await this.evidenceGatherer();
         } catch (error) {
             return this.createDecision({
                 serviceId : this.serviceId,
@@ -126,7 +126,10 @@ export class DataIntegrityDiagnosisService extends Base {
             });
         }
 
-        const rows            = Array.isArray(evidenceRows) ? evidenceRows : [],
+        const isEnvelope      = gathered && typeof gathered === 'object' && !Array.isArray(gathered),
+              evidenceRows    = isEnvelope ? gathered.rows : gathered,
+              probes          = isEnvelope ? (gathered.probes ?? null) : null,
+              rows            = Array.isArray(evidenceRows) ? evidenceRows : [],
               classifications = rows.map(evidence => classifyDataIntegrityMode(evidence)),
               actionable      = classifications.filter(classification => classification.terminalAction !== DataIntegrityTerminal.NONE);
 
@@ -144,7 +147,7 @@ export class DataIntegrityDiagnosisService extends Base {
             if (circuit.status === 'tripped' && typeof this.recordCircuitEvent === 'function') {
                 await this.recordCircuitEvent({type: 'circuit-open', at: observedAt, detail: circuit.reason});
             }
-            return this.createDecision({serviceId: this.serviceId, observedAt, status: 'circuit-open', classifications, heals: [], circuit});
+            return this.createDecision({serviceId: this.serviceId, observedAt, status: 'circuit-open', classifications, heals: [], circuit, probes});
         }
 
         // Half-open allows EXACTLY ONE actionable probe heal — not the full batch, which would re-storm a
@@ -178,7 +181,8 @@ export class DataIntegrityDiagnosisService extends Base {
             classifications,
             heals,
             circuit,
-            chronicUnsafeInput
+            chronicUnsafeInput,
+            probes
         });
     }
 
@@ -247,7 +251,7 @@ export class DataIntegrityDiagnosisService extends Base {
      * @param {Object} options
      * @returns {Object}
      */
-    createDecision({serviceId, observedAt, status, classifications = [], heals = [], probeError = null, circuit = null, chronicUnsafeInput = []}) {
+    createDecision({serviceId, observedAt, status, classifications = [], heals = [], probeError = null, circuit = null, chronicUnsafeInput = [], probes = null}) {
         return {
             schemaVersion: 1,
             recordType   : 'data-integrity-self-heal-decision',
@@ -258,7 +262,8 @@ export class DataIntegrityDiagnosisService extends Base {
             classifications,
             heals,
             circuit,
-            chronicUnsafeInput
+            chronicUnsafeInput,
+            ...(probes ? {probes} : {})
         };
     }
 
