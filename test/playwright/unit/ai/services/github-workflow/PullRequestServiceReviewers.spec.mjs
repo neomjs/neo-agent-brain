@@ -451,3 +451,369 @@ test.describe('PullRequestService.managePrReviewers — REST requested_reviewers
         expect(errSchema.properties.code.enum).toEqual(expect.arrayContaining(runtime));
     });
 });
+
+test.describe('PullRequestService.managePrReview — live mergeability gate on APPROVED after invitation (#1899)', () => {
+    const
+        REVIEW_ORIGIN_SESSION_ID = '8c622ae9-0ef1-4bf1-9a27-5dfe228b4fac',
+        REVIEWED_HEAD            = '1111111111111111111111111111111111111111',
+        CLEAN_BASE               = '2222222222222222222222222222222222222222',
+        MOVED_BASE               = '3333333333333333333333333333333333333333',
+        VALID_APPROVAL_BODY      = [
+            '# PR Micro-Review',
+            '',
+            '**Class:** micro — narrow mergeability-gate fixture; no subsystem or schema drift.',
+            '',
+            '**Verdict:** APPROVED',
+            '',
+            '**Glance:** Premise and shape hold on the reviewed head.',
+            '',
+            `- **Origin Session ID:** ${REVIEW_ORIGIN_SESSION_ID}`
+        ].join('\n'),
+        VALID_COMMENT_BODY       = VALID_APPROVAL_BODY.replace('**Verdict:** APPROVED', '**Verdict:** COMMENT'),
+        VALID_RC_BODY            = [
+            '# PR Review Summary',
+            '',
+            '**Status:** Request Changes',
+            '',
+            '### 🪜 Strategic-Fit Decision',
+            '- Decision: Request Changes',
+            '',
+            '### 🧭 Patch-Blind Premise Snapshot',
+            '* **Inputs Read Before Patch:** ticket, changed-file list, current dev source.',
+            '* **Expected Solution Shape:** gate requested-reviewer wakes and approvals on live mergeability.',
+            '* **Patch Verdict:** matches the expected shape.',
+            '* **Premise Coherence:** coheres: flat-peer-team unaffected.',
+            '',
+            '### 🕸️ Context & Graph Linking',
+            '* **Target Epic / Issue ID:** Resolves #1899',
+            '* **Related Graph Nodes:** #759',
+            `* **Origin Session ID:** ${REVIEW_ORIGIN_SESSION_ID}`,
+            '',
+            '### 🔬 Depth Floor',
+            '- Documented search: scanned holderOf and managePrReview surfaces.',
+            '',
+            '### 🧠 Graph Ingestion Notes',
+            '* **`[KB_GAP]`**: N/A.',
+            '* **`[TOOLING_GAP]`**: N/A.',
+            '* **`[RETROSPECTIVE]`**: Budget control fixture.',
+            '',
+            '### 📋 Required Actions',
+            '',
+            '- [ ] rebase onto moved base before approval',
+            '',
+            '### 📊 Evaluation Metrics',
+            '[ARCH_ALIGNMENT]: 80 - structural fit',
+            '[CONTENT_COMPLETENESS]: 80 - covers AC matrix',
+            '[EXECUTION_QUALITY]: 80 - tests pass',
+            '[PRODUCTIVITY]: 70 - bounded scope',
+            '[IMPACT]: 60 - localized fix',
+            '[COMPLEXITY]: 40 - mechanical change',
+            '[EFFORT_PROFILE]: Quick Win'
+        ].join('\n');
+
+    let GraphqlService, PullRequestService, RepositoryService, originalQuery, originalViewerLogin;
+
+    test.beforeAll(async () => {
+        GraphqlService      = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+        PullRequestService  = (await import('../../../../../../ai/services/github-workflow/PullRequestService.mjs')).default;
+        RepositoryService   = (await import('../../../../../../ai/services/github-workflow/RepositoryService.mjs')).default;
+        originalQuery       = GraphqlService.query.bind(GraphqlService);
+        originalViewerLogin = RepositoryService.viewerLogin;
+    });
+
+    test.afterAll(() => {
+        GraphqlService.query          = originalQuery;
+        RepositoryService.viewerLogin = originalViewerLogin;
+    });
+
+    test.beforeEach(() => {
+        RepositoryService.viewerLogin = 'neo-gpt-emmy';
+    });
+
+    test('reviewer invited on clean base, then base moves before approval: conflict and unavailable refuse without mutating, and fresh positive submits one approval', async () => {
+        let reviewMutations   = 0,
+            reviewerMutations = 0,
+            remoteHeadOid     = REVIEWED_HEAD,
+            remoteBaseSha     = CLEAN_BASE;
+        const reviewCalls     = [];
+
+        GraphqlService.query = async (query, variables) => {
+            if (query.includes('GetPullRequestId')) {
+                return {
+                    repository: {
+                        activationIssue: null,
+                        pullRequest    : {
+                            body          : 'Resolves #1899',
+                            createdAt     : '2026-11-22T15:00:00Z',
+                            headRefOid    : REVIEWED_HEAD,
+                            id            : 'PR_kwDOUBzDFM1899',
+                            reviewDecision: 'REVIEW_REQUIRED',
+                            reviews       : {nodes: [], pageInfo: {hasPreviousPage: false}}
+                        }
+                    }
+                };
+            }
+            if (query.includes('AddPullRequestReview')) {
+                reviewMutations++;
+                reviewCalls.push({query, variables, remoteHeadAtWrite: remoteHeadOid, remoteBaseAtWrite: remoteBaseSha});
+                return {
+                    addPullRequestReview: {
+                        pullRequestReview: {
+                            id         : 'PRR_kwDOUBzDFM1899',
+                            url        : 'https://github.com/neomjs/neo-agent-brain/pull/1900#pullrequestreview-1',
+                            state      : 'APPROVED',
+                            submittedAt: '2026-11-22T22:20:00Z',
+                            databaseId : 1
+                        }
+                    }
+                };
+            }
+            return null;
+        };
+
+        const invite = await PullRequestService.managePrReviewers(
+            {repo: 'neo-agent-brain', pr_number: 1900, reviewers: ['neo-gpt-emmy'], action: 'add'},
+            {
+                waitFn: async () => {},
+                execFn: async command => {
+                    if (command.includes('/requested_reviewers')) {
+                        reviewerMutations++;
+                        return reviewerResponse(['neo-gpt-emmy']);
+                    }
+                    return mergeabilityResponse(true, {headSha: REVIEWED_HEAD, baseSha: CLEAN_BASE});
+                }
+            }
+        );
+        expect(invite.verifiedReviewers).toEqual(['neo-gpt-emmy']);
+        expect(reviewerMutations).toBe(1);
+
+        const runApproval = (responses, waitFn = async () => {}) => {
+            let idx = 0;
+            return PullRequestService.managePrReview(
+                {repo: 'neo-agent-brain', action: 'create', pr_number: 1900, state: 'APPROVED', body: VALID_APPROVAL_BODY},
+                {
+                    waitFn,
+                    execFn: async command => {
+                        if (command.includes('/requested_reviewers')) reviewerMutations++;
+                        const next = responses[Math.min(idx++, responses.length - 1)];
+                        if (next instanceof Error) throw next;
+                        return next;
+                    }
+                }
+            );
+        };
+
+        const conflicted = await runApproval([
+            mergeabilityResponse(false, {headSha: REVIEWED_HEAD, baseSha: MOVED_BASE, mergeableState: 'dirty'})
+        ]);
+        expect(conflicted).toMatchObject({
+            code                : 'PR_MERGE_CONFLICT',
+            pr_number           : 1900,
+            headSha             : REVIEWED_HEAD,
+            baseSha             : MOVED_BASE,
+            mergeabilityAttempts: 1
+        });
+        expect(reviewMutations).toBe(0);
+        expect(reviewerMutations).toBe(1);
+
+        const delays      = [];
+        const pendingNull = await runApproval(
+            Array.from({length: 4}, () => mergeabilityResponse(null, {headSha: REVIEWED_HEAD, baseSha: MOVED_BASE})),
+            async delay => { delays.push(delay); }
+        );
+        expect(delays).toEqual([250, 500, 1000]);
+        expect(pendingNull).toMatchObject({
+            code                : 'PR_MERGEABILITY_UNAVAILABLE',
+            pr_number           : 1900,
+            headSha             : REVIEWED_HEAD,
+            baseSha             : MOVED_BASE,
+            mergeabilityAttempts: 4
+        });
+        expect(reviewMutations).toBe(0);
+
+        const malformed = await runApproval([{stdout: '{}'}]);
+        expect(malformed.code).toBe('PR_MERGEABILITY_UNAVAILABLE');
+        expect(malformed.mergeabilityAttempts).toBe(1);
+        expect(malformed.headSha).toBeUndefined();
+        expect(reviewMutations).toBe(0);
+
+        const transportError = await runApproval([
+            mergeabilityResponse(null, {headSha: REVIEWED_HEAD, baseSha: MOVED_BASE}),
+            new Error('REST 502')
+        ]);
+        expect(transportError).toMatchObject({
+            code                : 'PR_MERGEABILITY_UNAVAILABLE',
+            pr_number           : 1900,
+            headSha             : REVIEWED_HEAD,
+            baseSha             : MOVED_BASE,
+            mergeabilityAttempts: 2
+        });
+        expect(reviewMutations).toBe(0);
+
+        const OTHER_HEAD  = '4'.repeat(40);
+        const headDrifted = await runApproval([
+            mergeabilityResponse(true, {headSha: OTHER_HEAD, baseSha: MOVED_BASE})
+        ]);
+        expect(headDrifted).toMatchObject({
+            code                : 'PR_MERGEABILITY_UNAVAILABLE',
+            pr_number           : 1900,
+            headSha             : OTHER_HEAD,
+            baseSha             : MOVED_BASE,
+            mergeabilityAttempts: 1
+        });
+        expect(reviewMutations).toBe(0);
+
+        const conflictingOtherHead = await runApproval([
+            mergeabilityResponse(false, {headSha: OTHER_HEAD, baseSha: MOVED_BASE, mergeableState: 'dirty'})
+        ]);
+        expect(conflictingOtherHead).toMatchObject({
+            code                : 'PR_MERGEABILITY_UNAVAILABLE',
+            pr_number           : 1900,
+            headSha             : OTHER_HEAD,
+            baseSha             : MOVED_BASE,
+            mergeabilityAttempts: 1
+        });
+        expect(reviewMutations).toBe(0);
+
+        const LATER_PUSHED_HEAD = '5'.repeat(40),
+              LATER_BASE        = '6'.repeat(40);
+        const approved = await PullRequestService.managePrReview(
+            {repo: 'neo-agent-brain', action: 'create', pr_number: 1900, state: 'APPROVED', body: VALID_APPROVAL_BODY},
+            {
+                waitFn: async () => {},
+                execFn: async () => {
+                    const response = mergeabilityResponse(true, {headSha: REVIEWED_HEAD, baseSha: MOVED_BASE, mergeableState: 'behind'});
+                    // Simulate a concurrent push and base advance immediately after the final REST read
+                    // before AddPullRequestReview executes: commitOID binds the approval to REVIEWED_HEAD,
+                    // while the separate-read base limitation remains explicit.
+                    remoteHeadOid = LATER_PUSHED_HEAD;
+                    remoteBaseSha = LATER_BASE;
+                    return response;
+                }
+            }
+        );
+        expect(approved.code).toBeUndefined();
+        expect(approved.state).toBe('APPROVED');
+        expect(reviewMutations).toBe(1);
+        expect(reviewerMutations).toBe(1);
+        expect(reviewCalls).toHaveLength(1);
+        expect(reviewCalls[0].query).toContain('$commitOID: GitObjectID');
+        expect(reviewCalls[0].query).toContain('commitOID: $commitOID');
+        expect(reviewCalls[0].remoteHeadAtWrite).toBe(LATER_PUSHED_HEAD);
+        expect(reviewCalls[0].remoteBaseAtWrite).toBe(LATER_BASE);
+        expect(reviewCalls[0].variables).toEqual({
+            pullRequestId: 'PR_kwDOUBzDFM1899',
+            body         : VALID_APPROVAL_BODY,
+            event        : 'APPROVE',
+            commitOID    : REVIEWED_HEAD
+        });
+    });
+
+    test('COMMENT, REQUEST_CHANGES, review updates, and unacknowledged-RC approvals retain existing paths without REST mergeability reads', async () => {
+        let   mergeabilityReads    = 0;
+        const nonApprovalVariables = [],
+              failIfRead           = {execFn: async () => { mergeabilityReads++; throw new Error('unexpected mergeability read'); }};
+
+        GraphqlService.query = async (query, variables) => {
+            if (query.includes('GetPullRequestId')) {
+                return {
+                    repository: {
+                        activationIssue: {
+                            id                            : 'I_kwDOUBzDFM15257',
+                            closedByPullRequestsReferences: {
+                                totalCount: 1,
+                                nodes     : [{id: 'PR_act', number: 15310, state: 'MERGED', mergedAt: '2026-07-16T13:57:03Z', baseRefName: 'dev'}],
+                                pageInfo  : {hasNextPage: false}
+                            }
+                        },
+                        pullRequest: {
+                            body          : 'Resolves #1899',
+                            createdAt     : '2026-11-22T15:00:00Z',
+                            headRefOid    : REVIEWED_HEAD,
+                            id            : 'PR_kwDOUBzDFM1899',
+                            reviewDecision: 'CHANGES_REQUESTED',
+                            reviews       : {
+                                nodes: [{
+                                    id         : 'PRR_rc1',
+                                    state      : 'CHANGES_REQUESTED',
+                                    submittedAt: '2026-11-22T16:00:00Z',
+                                    body       : '# PR Review Summary\n\n### 📋 Required Actions\n\n- [ ] fix conflict',
+                                    author     : {login: 'neo-gpt-emmy'},
+                                    commit     : {oid: REVIEWED_HEAD}
+                                }, {
+                                    id         : 'PRR_rc2',
+                                    state      : 'CHANGES_REQUESTED',
+                                    submittedAt: '2026-11-22T16:05:00Z',
+                                    body       : '# PR Review Summary\n\n### 📋 Required Actions\n\n- [ ] second round',
+                                    author     : {login: 'neo-gpt-euclid'},
+                                    commit     : {oid: REVIEWED_HEAD}
+                                }],
+                                pageInfo: {hasPreviousPage: false}
+                            }
+                        }
+                    }
+                };
+            }
+            if (query.includes('GetPullRequestReview')) {
+                return {
+                    node: {
+                        id         : 'PRR_existing',
+                        state      : 'COMMENTED',
+                        body       : VALID_COMMENT_BODY,
+                        pullRequest: {number: 1900, repository: {nameWithOwner: 'neomjs/neo-agent-brain'}, reviews: {nodes: []}}
+                    }
+                };
+            }
+            if (query.includes('AddPullRequestReview')) {
+                nonApprovalVariables.push(variables);
+                return {addPullRequestReview: {pullRequestReview: {id: 'PRR_new', url: 'https://example.test/1', state: 'COMMENTED', submittedAt: '2026-11-22T22:21:00Z', databaseId: 2}}};
+            }
+            if (query.includes('UpdatePullRequestReview')) {
+                return {updatePullRequestReview: {pullRequestReview: {id: 'PRR_existing', url: 'https://example.test/1', state: 'COMMENTED', submittedAt: '2026-11-22T22:22:00Z'}}};
+            }
+            return null;
+        };
+
+        const unack = await PullRequestService.managePrReview(
+            {repo: 'neo-agent-brain', action: 'create', pr_number: 1900, state: 'APPROVED', body: VALID_APPROVAL_BODY},
+            failIfRead
+        );
+        expect(unack.code).toBe('PR_REVIEW_STATE_VALIDATION_FAILED');
+
+        const overBudgetRc = await PullRequestService.managePrReview(
+            {repo: 'neo-agent-brain', action: 'create', pr_number: 1900, state: 'REQUEST_CHANGES', body: VALID_RC_BODY},
+            failIfRead
+        );
+        expect(overBudgetRc.code).toBe('PR_REVIEW_BUDGET_VALIDATION_FAILED');
+
+        const comment = await PullRequestService.managePrReview(
+            {repo: 'neo-agent-brain', action: 'create', pr_number: 1900, state: 'COMMENT', body: VALID_COMMENT_BODY},
+            failIfRead
+        );
+        expect(comment.code).toBeUndefined();
+        expect(nonApprovalVariables).toEqual([{
+            pullRequestId: 'PR_kwDOUBzDFM1899',
+            body         : VALID_COMMENT_BODY,
+            event        : 'COMMENT'
+        }]);
+
+        const update = await PullRequestService.managePrReview(
+            {repo: 'neo-agent-brain', action: 'update', review_id: 'PRR_existing', body: VALID_COMMENT_BODY},
+            failIfRead
+        );
+        expect(update.code).toBeUndefined();
+        expect(mergeabilityReads).toBe(0);
+    });
+
+    test('OpenAPI documents manage_pr_review 422 mergeability refusals within the 1024-byte description budget', () => {
+        const doc       = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/github-workflow/openapi.yaml'), 'utf8')),
+              op        = Object.values(doc.paths).flatMap(p => Object.values(p)).find(o => o?.operationId === 'manage_pr_review'),
+              errSchema = doc.components.schemas.ManagePrReviewApprovalErrorResponse;
+
+        expect(op.description.length).toBeLessThanOrEqual(1024);
+        expect(op.responses['422'].content['application/json'].schema.$ref)
+            .toBe('#/components/schemas/ManagePrReviewApprovalErrorResponse');
+        expect(errSchema.required).toEqual(expect.arrayContaining(['error', 'message', 'code', 'pr_number', 'mergeabilityAttempts']));
+        expect(errSchema.properties.code.enum).toEqual(['PR_MERGE_CONFLICT', 'PR_MERGEABILITY_UNAVAILABLE']);
+    });
+});

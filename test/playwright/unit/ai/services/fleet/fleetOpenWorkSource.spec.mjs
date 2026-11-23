@@ -278,4 +278,40 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         // Past the unavailable bound, stale seatReads leave the projection alongside snapshot rows
         expect(source(reloadedState, 120).readOpenWork()).toMatchObject({state: 'unavailable', seats: {}})
     });
+
+    test('projects mergeability transitions on an already-requested unapproved review while preserving the reviewer list (#1899)', () => {
+        const
+            seatRow = mergeable => ({...row(11), ci: 'green', verdict: null, mergeable, requested: ['@neo-gpt'], reviews: [], opinions: [], partial: false}),
+            outRow  = mergeable => ({...seatRow(12), key: 'acme/app#12', number: 12, mergeable, owner: {kind: 'outside', seat: null, login: 'contributor'}}),
+            holders = mergeable => {
+                const read = source(state({}, [seatRow(mergeable), outRow(mergeable)])).readOpenWork();
+                return {
+                    authored : read.seats['@neo-opus-ada'].authored[0].holder,
+                    reviewing: read.seats['@neo-gpt'].reviewing.map(({number, holder}) => [number, holder])
+                };
+            };
+
+        expect(holders('MERGEABLE')).toEqual({
+            authored : {role: 'reviewer', kind: 'review', ids: ['@neo-gpt']},
+            reviewing: [
+                [11, {role: 'reviewer', kind: 'review', ids: ['@neo-gpt']}],
+                [12, {role: 'reviewer', kind: 'review', ids: ['@neo-gpt']}]
+            ]
+        });
+        expect(holders('CONFLICTING')).toEqual({
+            authored : {role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']},
+            reviewing: [
+                [11, {role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']}],
+                [12, {role: 'rotation', kind: 'rebase', ids: []}]
+            ]
+        });
+        expect(holders('UNKNOWN')).toEqual({
+            authored : {role: 'unknown', kind: null, ids: []},
+            reviewing: [
+                [11, {role: 'unknown', kind: null, ids: []}],
+                [12, {role: 'unknown', kind: null, ids: []}]
+            ]
+        });
+        expect(holders('MERGEABLE').reviewing.map(([, holder]) => holder.kind)).toEqual(['review', 'review'])
+    });
 });

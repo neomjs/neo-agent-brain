@@ -849,17 +849,20 @@ export const GET_PULL_REQUEST_REVIEW = `
  * - $pullRequestId: ID!                       — The GraphQL node ID of the PR (resolve via GET_PULL_REQUEST_ID)
  * - $body:          String!                   — The review body
  * - $event:         PullRequestReviewEvent!   — APPROVE | REQUEST_CHANGES | COMMENT
+ * - $commitOID:     GitObjectID               — Optional commit OID binding the review to a verified head
  */
 export const ADD_PULL_REQUEST_REVIEW = `
   mutation AddPullRequestReview(
     $pullRequestId: ID!
     $body: String!
     $event: PullRequestReviewEvent!
+    $commitOID: GitObjectID
   ) {
     addPullRequestReview(input: {
       pullRequestId: $pullRequestId
       body: $body
       event: $event
+      commitOID: $commitOID
     }) {
       pullRequestReview {
         id

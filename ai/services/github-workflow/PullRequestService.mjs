@@ -4094,6 +4094,16 @@ class PullRequestService extends Base {
     }
 
     /**
+     * @summary Executes a shell command for GitHub CLI/API reads; exposed on the instance as a test seam.
+     * @param {String} command Shell command string.
+     * @param {Object} [options] Child-process execution options.
+     * @returns {Promise<{stdout: String, stderr: String}>}
+     */
+    execShell(command, options) {
+        return execAsync(command, options);
+    }
+
+    /**
      * @summary Dry-run validates a PR review body against the canonical review templates and, when
      * `pr_number` is supplied on a Round-2 body, against the pull request's cited Round-1 review.
      *
@@ -4273,20 +4283,28 @@ class PullRequestService extends Base {
      * @param {Object} [options.acknowledgedRequestChanges] Reviewer-login → disposition map required when approving over live `CHANGES_REQUESTED`.
      * @param {String} [options.reviewBudgetOverrideReason] Single-line durable disclosure for an exceptional post-budget ordinary RC.
      * @param {String} [options.repo]                       Optional bare name or owner/name repository target.
-     * @returns {Promise<Object>} Review payload on success (`{message, reviewId, state, url, submittedAt, databaseId?}`) or structured error.
+     * @param {Object} [dependencies]                       Test seams for live mergeability reads and bounded polling on `APPROVED`.
+     * @returns {Promise<Object>} Review payload on success, or structured refusal (`PR_MERGE_CONFLICT` / `PR_MERGEABILITY_UNAVAILABLE` on `APPROVED` when live REST mergeability is conflicting, unavailable, or for a different head; separate pre-submit read).
      *
      * @see Neo.ai.services.github-workflow.queries.mutations.ADD_PULL_REQUEST_REVIEW
      */
-    async managePrReview({
-        acknowledgedRequestChanges,
-        action,
-        pr_number,
-        state,
-        body,
-        review_id,
-        reviewBudgetOverrideReason,
-        repo
-    }) {
+    async managePrReview(
+        {
+            acknowledgedRequestChanges,
+            action,
+            pr_number,
+            state,
+            body,
+            review_id,
+            reviewBudgetOverrideReason,
+            repo
+        },
+        {
+            execFn               = (command, config) => this.execShell(command, config),
+            waitFn               = waitForReviewAdmissionMergeability,
+            mergeabilityAttempts = REVIEW_ADMISSION_MERGEABILITY_ATTEMPTS
+        } = {}
+    ) {
         const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
 
         if (target.error) return target;
@@ -4528,10 +4546,95 @@ class PullRequestService extends Base {
                     }
                 }
 
+                let verifiedCommitOid;
+
+                if (event === 'APPROVE') {
+                    let observedReads   = 0,
+                        lastObservation = null,
+                        admission;
+
+                    try {
+                        admission = await readReviewAdmissionMergeability({
+                            target,
+                            prNumber: pr_number,
+                            execFn  : async (command, config) => {
+                                observedReads++;
+                                const result = await execFn(command, config),
+                                      parsed = parseReviewAdmissionMergeability(result?.stdout);
+
+                                if (parsed) {
+                                    lastObservation = parsed;
+                                }
+
+                                return result;
+                            },
+                            waitFn,
+                            attempts: mergeabilityAttempts
+                        });
+                    } catch (mergeabilityError) {
+                        logger.warn(`Approval mergeability read failed on ${target.fullName} PR #${pr_number}: ${mergeabilityError.message}`);
+                        return {
+                            error               : 'Pull request mergeability unavailable',
+                            message             : `Cannot submit APPROVED review on PR #${pr_number}: live GitHub pull-request read failed after ${Math.max(1, observedReads)} source read(s) (${mergeabilityError.message}; separate pre-submit source read, reviewer requests unchanged). Retry after GitHub REST mergeability is reachable.`,
+                            code                : 'PR_MERGEABILITY_UNAVAILABLE',
+                            pr_number,
+                            ...(lastObservation ? {
+                                headSha: lastObservation.headSha,
+                                baseSha: lastObservation.baseSha
+                            } : {}),
+                            mergeabilityAttempts: Math.max(1, observedReads)
+                        };
+                    }
+
+                    const coordinate = admission.observation || lastObservation || {};
+
+                    if (coordinate.headSha && coordinate.headSha !== pullRequest.headRefOid) {
+                        logger.warn(`Approval mergeability head mismatch on ${target.fullName} PR #${pr_number}: reviewed ${pullRequest.headRefOid}, observed ${coordinate.headSha}`);
+                        return {
+                            error               : 'Pull request mergeability unavailable',
+                            message             : `Cannot submit APPROVED review on PR #${pr_number}: live GitHub pull-request read observed head ${coordinate.headSha} on base ${coordinate.baseSha}, which differs from reviewed head ${pullRequest.headRefOid} (separate pre-submit source read; reviewer requests unchanged). Re-read the pull request before approving.`,
+                            code                : 'PR_MERGEABILITY_UNAVAILABLE',
+                            pr_number,
+                            headSha             : coordinate.headSha,
+                            baseSha             : coordinate.baseSha,
+                            mergeabilityAttempts: admission.attempts
+                        };
+                    }
+
+                    if (admission.kind === 'conflicting') {
+                        logger.warn(`Refusing APPROVED review on conflicting ${target.fullName} PR #${pr_number}`);
+                        return {
+                            error               : 'Pull request has merge conflicts',
+                            message             : `Cannot submit APPROVED review on PR #${pr_number}: live GitHub pull-request read observed head ${coordinate.headSha} conflicting with current base ${coordinate.baseSha} (separate pre-submit source read; reviewer requests and public check history are unchanged). Rebase or resolve conflicts, then re-run current-head CI before approving.`,
+                            code                : 'PR_MERGE_CONFLICT',
+                            pr_number,
+                            headSha             : coordinate.headSha,
+                            baseSha             : coordinate.baseSha,
+                            mergeabilityAttempts: admission.attempts
+                        };
+                    }
+
+                    if (admission.kind !== 'mergeable') {
+                        logger.warn(`Approval mergeability unavailable on ${target.fullName} PR #${pr_number}: ${admission.reason}`);
+                        return {
+                            error               : 'Pull request mergeability unavailable',
+                            message             : `Cannot submit APPROVED review on PR #${pr_number}: live GitHub pull-request read did not produce a usable mergeability verdict after ${admission.attempts} source read(s) (${admission.reason}; separate pre-submit source read, reviewer requests unchanged, and unavailable is not evidence of either a conflict or a clean head). Retry after GitHub finishes computing the test merge.`,
+                            code                : 'PR_MERGEABILITY_UNAVAILABLE',
+                            pr_number,
+                            ...(coordinate.headSha ? {headSha: coordinate.headSha} : {}),
+                            ...(coordinate.baseSha ? {baseSha: coordinate.baseSha} : {}),
+                            mergeabilityAttempts: admission.attempts
+                        };
+                    }
+
+                    verifiedCommitOid = coordinate.headSha;
+                }
+
                 const reviewData = await GraphqlService.query(ADD_PULL_REQUEST_REVIEW, {
                     pullRequestId,
                     body: submissionBody,
-                    event
+                    event,
+                    ...(verifiedCommitOid ? {commitOID: verifiedCommitOid} : {})
                 });
 
                 const review = reviewData?.addPullRequestReview?.pullRequestReview;

@@ -863,7 +863,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
             previous = OPEN_WORK_QUERY_COSTS.find(entry => ![snapshotHash, terminalHash, outsideHash].includes(entry.queryHash)),
             observed = history(), item = observed.pulses[100], base = item.quota[0];
 
-        expect(previous).toEqual({queryHash: '646e164c6f2f26aba55510f0e44506616ae47d23f7739eb2eb7e3d3d20e874b3', formulaCost: 5});
+        expect(previous).toEqual({queryHash: 'b5ff22d235e6f55be3d305f2684aeb8102789e434bd2f5f739b407614f68b4f0', formulaCost: 5});
         item.quota = [
             classified(base),
             classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: previous.queryHash, reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4})
@@ -1679,5 +1679,59 @@ test.describe('openWorkWakes — one merge wakes one rebase (#1869)', () => {
         // the round skips the partially read lead, so it must not hold the follower either
         expect(run.step(1, [pr(7, -50, {partial: true, ci: 'red'}), pr(8, -40)]).wakes.map(wake => [wake.pr, wake.kind]))
             .toEqual([['acme/app#8', 'rebase']])
+    });
+});
+
+test.describe('openWorkWakes — an already-requested reviewer after a base move (#1899)', () => {
+    const
+        VEGA    = '@neo-opus-vega',
+        outside = {kind: 'outside', seat: null, login: 'contributor'},
+        roster  = [ADA, VEGA];
+
+    test('seat-owned and eligible outside PRs emit no review wake on conflict or unknown, route integration on conflict, and recover on positive mergeability', () => {
+        const run = journey(), H2 = 'b'.repeat(40);
+
+        run.step(0, []);
+        expect(run.step(1, [
+            {number: 7, base: 'dev', ci: 'green', requested: [GPT], mergeable: 'UNKNOWN'},
+            {number: 8, base: 'dev', ci: 'green', owner: outside, requested: [GPT], mergeable: 'UNKNOWN'}
+        ], {}, {rotationSeats: roster}).wakes).toEqual([]);
+
+        const recovered = run.step(2, [
+            {number: 7, base: 'dev', ci: 'green', requested: [GPT], mergeable: 'MERGEABLE'},
+            {number: 8, base: 'dev', ci: 'green', owner: outside, requested: [GPT], mergeable: 'MERGEABLE'}
+        ], {}, {rotationSeats: roster});
+        expect(recovered.wakes.map(({number, to, role, kind}) => [number, to, role, kind])).toEqual([
+            [7, GPT, 'reviewer', 'review'],
+            [8, GPT, 'reviewer', 'review']
+        ]);
+
+        expect(run.step(3, [
+            {number: 7, base: 'dev', ci: 'green', requested: [GPT], mergeable: 'UNKNOWN'},
+            {number: 8, base: 'dev', ci: 'green', owner: outside, requested: [GPT], mergeable: 'UNKNOWN'}
+        ], {}, {rotationSeats: roster}).wakes).toEqual([]);
+        expect(run.step(4, [
+            {number: 7, base: 'dev', ci: 'green', requested: [GPT], mergeable: 'MERGEABLE'},
+            {number: 8, base: 'dev', ci: 'green', owner: outside, requested: [GPT], mergeable: 'MERGEABLE'}
+        ], {}, {rotationSeats: roster}).wakes).toEqual([]);
+
+        const conflicted = run.step(5, [
+            {number: 7, base: 'dev', ci: 'green', requested: [GPT], mergeable: 'CONFLICTING'},
+            {number: 8, base: 'dev', ci: 'green', owner: outside, requested: [GPT], mergeable: 'CONFLICTING'}
+        ], {}, {rotationSeats: roster});
+        expect(conflicted.wakes.map(({number, role, kind, to}) => [number, role, kind, number === 7 ? to : roster.includes(to)])).toEqual([
+            [7, 'author', 'rebase', ADA],
+            [8, 'rotation', 'rebase', true]
+        ]);
+        expect(conflicted.wakes.some(wake => wake.kind === 'review')).toBe(false);
+
+        const rebased = run.step(6, [
+            {number: 7, head: H2, base: 'dev', ci: 'green', requested: [GPT], mergeable: 'MERGEABLE'},
+            {number: 8, head: H2, base: 'dev', ci: 'green', owner: outside, requested: [GPT], mergeable: 'MERGEABLE'}
+        ], {}, {rotationSeats: roster});
+        expect(rebased.wakes.map(({number, to, role, kind, head}) => [number, to, role, kind, head])).toEqual([
+            [7, GPT, 'reviewer', 'review', H2],
+            [8, GPT, 'reviewer', 'review', H2]
+        ]);
     });
 });

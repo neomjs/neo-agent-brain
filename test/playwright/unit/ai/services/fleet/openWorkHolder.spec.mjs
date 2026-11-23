@@ -106,6 +106,8 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
         expect(holderOf(row({...conflict, ...judged('CHANGES_REQUESTED')})))
             .toEqual({role: 'author', kind: 'address-changes', ids: ['@neo-opus-ada']});
         expect(holderOf(row({...conflict, ...judged('APPROVED', false)})))
+            .toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({...conflict, mergeable: 'MERGEABLE', ...judged('APPROVED', false)})))
             .toEqual({role: 'reviewer', kind: 'review', ids: ['@neo-gpt']});
         expect(holderOf(row({...conflict, ci: 'pending'}))).toEqual({role: 'none', kind: null, ids: []});
         expect(holderOf(row({...conflict, partial: true}))).toEqual({role: 'unknown', kind: null, ids: []})
@@ -612,5 +614,62 @@ test.describe('openWorkHolder — an outside comment owes a reply, beside the ho
         expect(responderOf(pr({turns: [them(1)], ci: 'red'}))).toEqual(reply('rotation', [], 1));
         expect(responderOf(pr({turns: [them(1)], reviews: [{reviewer: 'login:copilot', state: 'COMMENTED', onHead: true, bot: true}]})))
             .toEqual(reply('rotation', [], 1))
+    });
+});
+
+test.describe('openWorkHolder — an already-requested review on an unapproved head checks live mergeability (#1899)', () => {
+    const
+        B         = '@neo-gpt-euclid',
+        C         = '@neo-opus-vega',
+        requested = [C],
+        unowned   = {kind: 'unowned', seat: null, login: 'neo-gpt'},
+        memberOut = {kind: 'outside', seat: null, login: 'member-user'};
+
+    test('seat-owned and eligible outside PRs route MERGEABLE to review, CONFLICTING to rebase, and UNKNOWN/null to unknown (AC-1, AC-2)', () => {
+        expect(holderOf(row({requested, mergeable: 'MERGEABLE'}))).toEqual({role: 'reviewer', kind: 'review', ids: [C]});
+        expect(holderOf(row({requested, mergeable: 'CONFLICTING'}))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({owner: unowned, requested, mergeable: 'CONFLICTING'}))).toEqual({role: 'author', kind: 'rebase', ids: []});
+        expect(holderOf(row({owner: memberOut, authorAssociation: 'MEMBER', requested, mergeable: 'CONFLICTING'})))
+            .toEqual({role: 'author', kind: 'rebase', ids: []});
+
+        expect(holderOf(row({owner: outside, requested, mergeable: 'MERGEABLE'}))).toEqual({role: 'reviewer', kind: 'review', ids: [C]});
+        expect(holderOf(row({owner: outside, requested, mergeable: 'CONFLICTING'}))).toEqual({role: 'rotation', kind: 'rebase', ids: []});
+
+        const earlierCr = {reviews: [{reviewer: B, state: 'CHANGES_REQUESTED', onHead: false}], opinions: [{reviewer: B, state: 'CHANGES_REQUESTED', onHead: false}]};
+        expect(holderOf(row({owner: outside, requested, ...earlierCr, mergeable: 'MERGEABLE'})))
+            .toEqual({role: 'reviewer', kind: 'review', ids: [C, B]});
+        expect(holderOf(row({owner: outside, requested, ...earlierCr, mergeable: 'CONFLICTING'})))
+            .toEqual({role: 'rotation', kind: 'rebase', ids: []});
+
+        for (const mergeable of ['UNKNOWN', null, undefined]) {
+            expect(holderOf(row({requested, mergeable}))).toEqual({role: 'unknown', kind: null, ids: []});
+            expect(holderOf(row({owner: outside, requested, mergeable}))).toEqual({role: 'unknown', kind: null, ids: []})
+        }
+
+        for (const reviewAdmission of ['error', 'pending', 'failure']) {
+            expect(holderOf(row({requested, mergeable: 'MERGEABLE', reviewAdmission}))).toEqual({role: 'unknown', kind: null, ids: []});
+            expect(holderOf(row({owner: outside, requested, mergeable: 'MERGEABLE', reviewAdmission}))).toEqual({role: 'unknown', kind: null, ids: []})
+        }
+        expect(holderOf(row({requested, mergeable: 'MERGEABLE', reviewAdmission: 'success'}))).toEqual({role: 'reviewer', kind: 'review', ids: [C]});
+        expect(holderOf(row({requested, mergeable: 'CONFLICTING', reviewAdmission: 'failure'}))).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({owner: outside, requested, mergeable: 'CONFLICTING', reviewAdmission: 'failure'}))).toEqual({role: 'rotation', kind: 'rebase', ids: []})
+    });
+
+    test('higher-priority cases, genuine red CI, on-head CRs, partial rows, drafts, unrequested triage/routing and replies retain their rules (AC-3)', () => {
+        expect(holderOf(row({owner: outside, requested, runApproval: 'action_required', mergeable: 'CONFLICTING'})))
+            .toEqual({role: 'rotation', kind: 'approve-runs', ids: []});
+        expect(holderOf(row({owner: outside, mergeable: 'CONFLICTING'}))).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(holderOf(row({owner: outside, mergeable: 'UNKNOWN'}))).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(holderOf(row({requested, ci: 'red', mergeable: 'CONFLICTING'}))).toEqual({role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({owner: outside, requested, ci: 'red', mergeable: 'CONFLICTING'}))).toEqual({role: 'rotation', kind: 'repair-ci', ids: []});
+        expect(holderOf(row({requested, ...judged('CHANGES_REQUESTED'), mergeable: 'CONFLICTING'})))
+            .toEqual({role: 'author', kind: 'address-changes', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({owner: outside, requested, ...judged('CHANGES_REQUESTED'), mergeable: 'CONFLICTING'})))
+            .toEqual({role: 'author', kind: 'address-changes', ids: []});
+        expect(holderOf(row({requested, partial: true, mergeable: 'CONFLICTING'}))).toEqual({role: 'unknown', kind: null, ids: []});
+        expect(holderOf(row({requested, draft: true, mergeable: 'CONFLICTING'}))).toEqual({role: 'reviewer', kind: 'review', ids: [C]});
+        expect(holderOf(row({mergeable: 'CONFLICTING'}))).toEqual({role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']});
+        expect(responderOf(row({requested, mergeable: 'CONFLICTING', turns: [{at: '2026-11-22T10:00:00Z', by: 'login:contributor', member: false}]})))
+            .toEqual({role: 'author', kind: 'respond-comment', ids: ['@neo-opus-ada'], episode: '2026-11-22T10:00:00Z'})
     });
 });

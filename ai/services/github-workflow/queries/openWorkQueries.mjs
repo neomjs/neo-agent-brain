@@ -219,6 +219,7 @@ function snapshotQuery(name, includeOutside = false) {
                 status {
                   state
                   contexts {
+                    context
                     state
                   }
                 }
@@ -443,10 +444,10 @@ export const OPEN_WORK_FAILED_CHECKS = `
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1}),
-    Object.freeze({queryHash: '646e164c6f2f26aba55510f0e44506616ae47d23f7739eb2eb7e3d3d20e874b3', formulaCost: 5}),
+    Object.freeze({queryHash: 'b5ff22d235e6f55be3d305f2684aeb8102789e434bd2f5f739b407614f68b4f0', formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_OUTSIDE_SNAPSHOT).digest('hex'), formulaCost: 6}),
-    Object.freeze({queryHash: '2e2e3ccfa6040c1638826669a93a9d9b83ef4f40980c1dd190eb733fcf7b6ce7', formulaCost: 6})
+    Object.freeze({queryHash: 'cc48d6f109037e45aee1f032e624114d81cdd1ce944eaa50ad89d357262a16f2', formulaCost: 6})
 ]);
 
 /**

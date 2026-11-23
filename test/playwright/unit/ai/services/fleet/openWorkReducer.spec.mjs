@@ -738,7 +738,7 @@ test.describe('openWorkReducer — informative pull_request_review checkSuites d
 
     test('snapshot queries select commit.status and checkSuite status/workflow.id at unchanged GraphQL formula cost (AC-1)', () => {
         for (const query of [OPEN_WORK_SNAPSHOT, OPEN_WORK_OUTSIDE_SNAPSHOT]) {
-            expect(query).toMatch(/status\s*\{\s*state\s*contexts\s*\{\s*state\s*\}\s*\}/);
+            expect(query).toMatch(/status\s*\{\s*state\s*contexts\s*\{\s*context\s*state\s*\}\s*\}/);
             expect(query).toMatch(/checkSuites\(last:\s*100\)\s*\{\s*pageInfo\s*\{\s*hasPreviousPage\s*\}\s*nodes\s*\{\s*status\s*conclusion\s*workflowRun\s*\{\s*event\s*workflow\s*\{\s*id\s*\}/);
         }
         expect(openWorkQueryCost(OPEN_WORK_SNAPSHOT).formulaCost).toBe(5);
@@ -823,5 +823,141 @@ test.describe('openWorkReducer — informative pull_request_review checkSuites d
         }), identities);
         expect(truncated.ci).toBe('pending');
         expect(truncated.partial).toBe(true);
+    });
+});
+
+test.describe('openWorkReducer — review-admission/mergeability status is distinguished from genuine CI through wake planning (#1899)', () => {
+    const HEAD = '1'.repeat(40);
+
+    const snapshotAdmissionNode = ({admission, unitPass, mergeable, login = 'neo-opus-ada', body = 'Authored by Ada (Claude Opus 5, Claude Code).'}) => {
+        const rollup = !unitPass ? 'FAILURE'
+            : admission === 'FAILURE' || admission === 'ERROR' ? admission
+            : admission === 'PENDING' ? 'PENDING'
+            : 'SUCCESS';
+
+        return {
+            ...node({head: HEAD, rollup, reviewers: ['neo-gpt'], login, body}),
+            mergeable,
+            closingIssuesReferences: {pageInfo: {hasNextPage: false}, nodes: []},
+            commits                : {
+                nodes: [{
+                    commit: {
+                        oid              : HEAD,
+                        status           : {state: admission, contexts: [{context: 'review-admission/mergeability', state: admission}]},
+                        statusCheckRollup: {state: rollup},
+                        checkSuites      : {
+                            pageInfo: {hasPreviousPage: false},
+                            nodes   : [{
+                                status     : 'COMPLETED',
+                                conclusion : unitPass ? 'SUCCESS' : 'FAILURE',
+                                workflowRun: {event: 'pull_request', workflow: {id: 'WF_UNIT'}}
+                            }]
+                        }
+                    }
+                }]
+            }
+        };
+    };
+
+    const rollupAdmissionNode = ({admission, unitPass, mergeable}) => {
+        const rollup = !unitPass ? 'FAILURE'
+            : admission === 'FAILURE' || admission === 'ERROR' ? admission
+            : admission === 'PENDING' ? 'PENDING'
+            : 'SUCCESS';
+
+        return {
+            ...node({head: HEAD, rollup, reviewers: ['neo-gpt']}),
+            mergeable,
+            closingIssuesReferences: {pageInfo: {hasNextPage: false}, nodes: []},
+            commits                : {
+                nodes: [{
+                    commit: {
+                        oid              : HEAD,
+                        statusCheckRollup: {
+                            state   : rollup,
+                            contexts: {
+                                pageInfo: {hasNextPage: false},
+                                nodes   : [
+                                    {__typename: 'StatusContext', context: 'review-admission/mergeability', state: admission},
+                                    {
+                                        __typename: 'CheckRun',
+                                        name      : 'unit',
+                                        status    : 'COMPLETED',
+                                        conclusion: unitPass ? 'SUCCESS' : 'FAILURE',
+                                        checkSuite: {app: {id: 'APP_1'}, workflowRun: {event: 'pull_request', workflow: {id: 'WF_UNIT'}}}
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }]
+            }
+        };
+    };
+
+    const planSingle = input => {
+        const
+            at      = '2026-11-22T23:00:00Z',
+            row     = normalizePullRequest(input, identities, {apiBase: 'https://api.github.com'}),
+            reduced = reduceOpenWork({
+                previous: {rows: {}, closed: {}, complete: true, missed: []},
+                observed: {rows: [row], complete: true, missed: []},
+                terminal: {rows: [], complete: true},
+                since   : null,
+                id      : at,
+                identities
+            }),
+            planned = planOpenWorkWakes({
+                state        : {observedAt: at, coverage: 'complete', snapshot: reduced, transitions: []},
+                ledger       : {pulse: '2026-11-22T22:59:00Z', holding: {}, pendingMerges: {}, baselines: {}},
+                now          : Date.parse(at),
+                rotationSeats: ['@neo-opus-ada'],
+                routeOf      : () => 'reachable'
+            });
+
+        return {row, wakes: planned.wakes.map(({to, role, kind}) => `${role}:${kind}:${to}`)};
+    };
+
+    test('admission-only conflict routes rebase, admission-only error/pending withholds review without CI repair, and unit/mixed failures retain repair-ci', () => {
+        const cases = [
+            {admission: 'SUCCESS', unitPass: true,  mergeable: 'CONFLICTING', expectedCi: 'green', expectedWakes: ['author:rebase:@neo-opus-ada']},
+            {admission: 'FAILURE', unitPass: true,  mergeable: 'CONFLICTING', expectedCi: 'green', expectedWakes: ['author:rebase:@neo-opus-ada']},
+            {admission: 'ERROR',   unitPass: true,  mergeable: 'UNKNOWN',     expectedCi: 'green', expectedWakes: []},
+            {admission: 'ERROR',   unitPass: true,  mergeable: 'MERGEABLE',   expectedCi: 'green', expectedWakes: []},
+            {admission: 'PENDING', unitPass: true,  mergeable: 'UNKNOWN',     expectedCi: 'green', expectedWakes: []},
+            {admission: 'SUCCESS', unitPass: false, mergeable: 'MERGEABLE',   expectedCi: 'red',   expectedWakes: ['author:repair-ci:@neo-opus-ada']},
+            {admission: 'FAILURE', unitPass: false, mergeable: 'CONFLICTING', expectedCi: 'red',   expectedWakes: ['author:repair-ci:@neo-opus-ada']},
+            {admission: 'SUCCESS', unitPass: true,  mergeable: 'MERGEABLE',   expectedCi: 'green', expectedWakes: ['reviewer:review:@neo-gpt']}
+        ];
+
+        for (const builder of [snapshotAdmissionNode, rollupAdmissionNode]) {
+            for (const item of cases) {
+                const {row, wakes} = planSingle(builder(item));
+                expect(row.ci, `${builder.name}:${item.admission}:${item.unitPass}:${item.mergeable}`).toBe(item.expectedCi);
+                expect(wakes, `${builder.name}:${item.admission}:${item.unitPass}:${item.mergeable}`).toEqual(item.expectedWakes);
+            }
+        }
+    });
+
+    test('recovery on the same head wakes the already-requested reviewer after an admission-only source error clears', () => {
+        const step = repairJourney();
+
+        const held = step(1, snapshotAdmissionNode({admission: 'ERROR', unitPass: true, mergeable: 'UNKNOWN'}));
+        expect(held.row.ci).toBe('green');
+        expect(held.row.reviewAdmission).toBe('error');
+        expect(held.wakes).toEqual([]);
+
+        const heldOnCachedMergeable = step(2, snapshotAdmissionNode({admission: 'ERROR', unitPass: true, mergeable: 'MERGEABLE'}));
+        expect(heldOnCachedMergeable.wakes).toEqual([]);
+
+        const recovered = step(3, snapshotAdmissionNode({admission: 'SUCCESS', unitPass: true, mergeable: 'MERGEABLE'}));
+        expect(recovered.row.ci).toBe('green');
+        expect(recovered.row.reviewAdmission).toBe('success');
+        expect(recovered.wakes.map(({to, role, kind, head}) => ({to, role, kind, head}))).toEqual([{
+            to  : '@neo-gpt',
+            role: 'reviewer',
+            kind: 'review',
+            head: HEAD
+        }]);
     });
 });

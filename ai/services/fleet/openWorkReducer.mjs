@@ -30,6 +30,12 @@ import {normalizeCiRepair, retainCiRepairClassification, retainCiRepairTouch} fr
 const AUTHOR_LINE = /^Authored by\s+([^(\n.]+?)\s*(?:\(|\.|$)/m;
 
 /**
+ * Commit status context published by the review-admission mergeability controller.
+ * @type {String}
+ */
+export const REVIEW_ADMISSION_CONTEXT = 'review-admission/mergeability';
+
+/**
  * GitHub's rollup states, folded into the three a holder acts on.
  * @type {Object}
  */
@@ -39,6 +45,18 @@ const CI_STATES = Object.freeze({
     FAILURE : 'red',
     PENDING : 'pending',
     SUCCESS : 'green'
+});
+
+/**
+ * GitHub's commit-status states for {@link REVIEW_ADMISSION_CONTEXT}, preserved separately from test CI.
+ * @type {Object}
+ */
+const ADMISSION_STATES = Object.freeze({
+    ERROR   : 'error',
+    EXPECTED: 'pending',
+    FAILURE : 'failure',
+    PENDING : 'pending',
+    SUCCESS : 'success'
 });
 
 /**
@@ -63,12 +81,42 @@ const FAILING_CONCLUSIONS = new Set([
 const isInformativeReviewSuite = suite => suite?.workflowRun?.event === 'pull_request_review';
 
 /**
- * @summary Derive head CI state while ignoring informative `pull_request_review` check suites.
+ * @summary Whether a status context entry represents {@link REVIEW_ADMISSION_CONTEXT}.
+ * @param {Object|null|undefined} ctx
+ * @returns {Boolean}
+ * @private
+ */
+const isReviewAdmissionContext = ctx => Boolean(
+    ctx?.context === REVIEW_ADMISSION_CONTEXT &&
+    (ctx.__typename === undefined || ctx.__typename === 'StatusContext')
+);
+
+/**
+ * @summary Normalize the head commit's {@link REVIEW_ADMISSION_CONTEXT} status when present.
+ * @param {Object|undefined} commit Head commit node.
+ * @returns {'success'|'failure'|'error'|'pending'|null}
+ * @private
+ */
+function reviewAdmissionOf(commit) {
+    const
+        statusNodes = Array.isArray(commit?.status?.contexts) ? commit.status.contexts : [],
+        rollupNodes = Array.isArray(commit?.statusCheckRollup?.contexts?.nodes)
+            ? commit.statusCheckRollup.contexts.nodes
+            : [],
+        entry       = statusNodes.findLast(isReviewAdmissionContext) ?? rollupNodes.findLast(isReviewAdmissionContext),
+        key         = typeof entry?.state === 'string' ? entry.state.toUpperCase() : null;
+
+    return key ? ADMISSION_STATES[key] ?? null : null
+}
+
+/**
+ * @summary Derive head CI state while ignoring informative `pull_request_review` check suites and
+ * {@link REVIEW_ADMISSION_CONTEXT} commit statuses.
  * A green `statusCheckRollup` is returned unchanged (the helper never demotes green), and the newest
  * run per `workflow.id` wins because `checkSuites(last: N)` returns nodes oldest first (an ordering
  * assumption a later query change must preserve). Falls back to `statusCheckRollup.state` when
- * check-suite pagination is incomplete, no `pull_request_review` suite is present, or legacy inputs
- * omit `commit.status` / suite `status`.
+ * check-suite pagination is incomplete, neither an excluded review suite nor a review-admission status
+ * is present, or legacy inputs omit `commit.status` / suite `status`.
  * @param {Object|undefined} commit Head commit node.
  * @param {{nodes: Object[], complete: Boolean}} suites Backward-paginated `checkSuites` connection (oldest first).
  * @returns {'green'|'pending'|'red'|null}
@@ -77,8 +125,19 @@ const isInformativeReviewSuite = suite => suite?.workflowRun?.event === 'pull_re
 function headCiOf(commit, suites) {
     const rollup = CI_STATES[commit?.statusCheckRollup?.state] ?? null;
 
-    if (rollup === 'green' || !suites.complete || !commit || !('status' in commit) ||
-        !suites.nodes.some(isInformativeReviewSuite)) {
+    if (rollup === 'green' || !suites.complete || !commit) {
+        return rollup
+    }
+
+    const
+        hasStatusField     = 'status' in commit,
+        statusContexts     = Array.isArray(commit.status?.contexts) ? commit.status.contexts : null,
+        rollupContexts     = connectionOf(commit.statusCheckRollup?.contexts),
+        hasAdmissionStatus = Boolean(statusContexts?.some(isReviewAdmissionContext)),
+        hasAdmissionRollup = rollupContexts.complete && rollupContexts.nodes.some(isReviewAdmissionContext);
+
+    if (!(hasStatusField && (suites.nodes.some(isInformativeReviewSuite) || hasAdmissionStatus)) &&
+        !(!hasStatusField && hasAdmissionRollup)) {
         return rollup
     }
 
@@ -102,14 +161,36 @@ function headCiOf(commit, suites) {
     }
     latestSuites.push(...byWorkflow.values());
 
+    if (latestSuites.length === 0 && rollupContexts.complete) {
+        const byRun = new Map();
+
+        for (const item of rollupContexts.nodes) {
+            if (!item || isReviewAdmissionContext(item)) continue;
+            if (item.__typename === 'StatusContext' || item.context !== undefined && item.status === undefined) continue;
+            if (isInformativeReviewSuite(item.checkSuite)) continue;
+            if (typeof item.status !== 'string') return rollup;
+
+            const runKey = `${item.checkSuite?.app?.id ?? ''}#${item.checkSuite?.workflowRun?.workflow?.id ?? ''}#${item.name ?? ''}`;
+            byRun.set(runKey, item);
+        }
+
+        latestSuites.push(...byRun.values());
+    }
+
     const
-        contextStates = Array.isArray(commit.status?.contexts)
-            ? commit.status.contexts.map(ctx => CI_STATES[ctx?.state]).filter(Boolean)
+        nonAdmissionStatuses = statusContexts
+            ? statusContexts.filter(ctx => !isReviewAdmissionContext(ctx))
+            : rollupContexts.complete
+                ? rollupContexts.nodes.filter(ctx => (ctx?.__typename === 'StatusContext' || ctx?.context !== undefined && ctx?.status === undefined) && !isReviewAdmissionContext(ctx))
+                : null,
+        contextStates = nonAdmissionStatuses
+            ? nonAdmissionStatuses.map(ctx => CI_STATES[typeof ctx?.state === 'string' ? ctx.state.toUpperCase() : ctx?.state]).filter(Boolean)
             : [],
-        statusCi      = CI_STATES[commit.status?.state]
-            ?? (contextStates.includes('red') ? 'red'
+        statusCi = nonAdmissionStatuses
+            ? (contextStates.includes('red') ? 'red'
                 : contextStates.includes('pending') ? 'pending'
-                : contextStates.includes('green') ? 'green' : null);
+                : contextStates.includes('green') ? 'green' : null)
+            : CI_STATES[commit.status?.state] ?? null;
 
     if (latestSuites.length === 0 && statusCi === null) return null;
 
@@ -265,6 +346,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         head,
         base             : node.baseRefName ?? null,
         ci               : headCiOf(commit, suites),
+        reviewAdmission  : reviewAdmissionOf(commit),
         verdict          : node.reviewDecision ?? null,
         mergeable        : node.mergeable ?? null,
         mergeState       : node.mergeStateStatus ?? null,
