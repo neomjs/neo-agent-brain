@@ -33,6 +33,8 @@ import {
     GET_ISSUE_COMMENT_TARGET
 } from './queries/mutations.mjs';
 
+import nullIfNotFound from './shared/nullIfNotFound.mjs';
+
 /**
  * The reasons GitHub's `closeIssue` accepts (`IssueClosedStateReason`).
  * @type {String[]}
@@ -46,19 +48,6 @@ const CLOSE_REASONS = ['COMPLETED', 'NOT_PLANNED', 'DUPLICATE'];
  */
 const isIssueNumber = value => Number.isInteger(value) && value > 0;
 
-/**
- * `.catch()` handler for a lookup whose target may not exist: GitHub answers a number that is no
- * issue with a `NOT_FOUND` error beside the null field, and `GraphqlService.query` throws on it.
- * @param {Error} error
- * @returns {null} For `NOT_FOUND`; any other error is rethrown.
- */
-const nullIfNotFound = error => {
-    if (error?.graphqlErrors?.some(item => item.type === 'NOT_FOUND')) {
-        return null
-    }
-
-    throw error
-};
 
 /**
  * @summary Service for interacting with GitHub issues via the GraphQL API.
@@ -673,9 +662,9 @@ class IssueService extends Base {
             const result = await GraphqlService.query(GET_PROJECT_V2_METADATA, {
                 owner : target.owner,
                 number: projectNumber
-            });
+            }).catch(nullIfNotFound);
 
-            const project = result.organization?.projectV2;
+            const project = result?.organization?.projectV2;
             if (!project) {
                 return {
                     error  : 'Not Found',
@@ -1217,7 +1206,7 @@ class IssueService extends Base {
                       owner: target.owner,
                       repo : target.repo,
                       number
-                  }),
+                  }).catch(nullIfNotFound),
                   viewerLogin    = lookupData?.viewer?.login || null,
                   targetNode     = isPR
                       ? lookupData?.repository?.pullRequest
@@ -1621,7 +1610,7 @@ class IssueService extends Base {
      */
     async #getIssueCommentTargetFailure(commentId, repositoryTarget, {issue_number, pr_number}) {
         try {
-            const data    = await GraphqlService.query(GET_ISSUE_COMMENT_TARGET, {commentId}),
+            const data    = await GraphqlService.query(GET_ISSUE_COMMENT_TARGET, {commentId}).catch(nullIfNotFound),
                   comment = data?.node,
                   subject = comment?.pullRequest || comment?.issue,
                   actual  = subject?.repository?.nameWithOwner;

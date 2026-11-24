@@ -1979,7 +1979,12 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             pullRequest: pullRequestNode(pullRequestOverrides)
         }
     });
+    const graphqlError = type => {
+    const error = new Error(`GitHub GraphQL error: ${type}`);
+    error.graphqlErrors = [{type}];
 
+    return error;
+    };
     // Compact review body that passes BOTH layers of the tool-boundary template-anchor validator:
     // - VISIBLE layer: the 7 evaluation-metric tags from pr-review-template.md / pr-review-followup-template.md
     // - INVISIBLE layer: structural anchors NOT enumerated in error responses; see
@@ -3927,6 +3932,25 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(capturedVariables.body).toContain('Updated review body.');
         expect(capturedVariables.body).toContain('[ARCH_ALIGNMENT]'); // template anchor preserved through dispatch
     });
+    
+    test('#1624: maps typed NOT_FOUND from review lookup to PR_REVIEW_NOT_FOUND', async () => {
+    GraphqlService.query = async queryString => {
+        if (queryString.includes('GetPullRequestReview')) {
+            throw graphqlError('NOT_FOUND');
+        }
+
+        return null;
+    };
+
+    const result = await PullRequestService.managePrReview({
+        action   : 'update',
+        review_id: REVIEW_NODE.id,
+        body     : VALID_REVIEW_BODY
+    });
+
+    expect(result.error).toBe('Not Found');
+    expect(result.code).toBe('PR_REVIEW_NOT_FOUND');
+    });
 
     // The Round-2 relation holds an edit to what it holds a new review to
     const round2UpdateStub = ({reviewId = REVIEW_NODE.id, reviews, state = 'APPROVED'}, mutations) => async (queryString, variables) => {
@@ -3937,6 +3961,25 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         mutations.push(variables);
         return {updatePullRequestReview: {pullRequestReview: {...REVIEW_NODE, id: reviewId, state}}}
     };
+
+    test('#1624: maps typed NOT_FOUND from Round-2 PR lookup to PR_NOT_FOUND', async () => {
+        GraphqlService.query = async queryString => {
+            if (queryString.includes('GetPullRequestId')) {
+                throw graphqlError('NOT_FOUND');
+            }
+
+            return null;
+        };
+
+        const result = await PullRequestService.validatePrReviewBody({
+            body     : VALID_ROUND_2_REVIEW_BODY,
+            pr_number: 11273,
+            repo     : 'devindex'
+        });
+
+        expect(result.valid).toBe(false);
+        expect(result.code).toBe('PR_NOT_FOUND');
+    });
 
     test('#981: update refuses a Round 2 on a pull request with no CHANGES_REQUESTED review, with create\'s payload', async () => {
         const {getRound2DispositionRelationFailure} = await import('../../../../../../ai/services/github-workflow/PullRequestService.mjs'),
@@ -4198,6 +4241,26 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(result.code).toBe('PR_NOT_FOUND');
     });
 
+    test('#1624: managePrReview maps typed NOT_FOUND to PR_NOT_FOUND', async () => {
+        GraphqlService.query = async queryString => {
+            if (queryString.includes('GetPullRequestId')) {
+                throw graphqlError('NOT_FOUND');
+            }
+
+            return null;
+        };
+
+        const result = await PullRequestService.managePrReview({
+            action   : 'create',
+            pr_number: 99999,
+            state    : 'APPROVED',
+            body     : VALID_REVIEW_BODY
+        });
+
+        expect(result.error).toBe('Not Found');
+        expect(result.code).toBe('PR_NOT_FOUND');
+    });
+
     test('create: surfaces GraphQL errors cleanly', async () => {
         // When the underlying GraphQL request throws, we should return a structured
         // error rather than letting the exception propagate to the caller.
@@ -4217,6 +4280,21 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(result.message).toBe('Network failure');
     });
 
+    test('#1624: preserves FORBIDDEN GraphQL errors as GRAPHQL_API_ERROR', async () => {
+    GraphqlService.query = async () => {
+        throw graphqlError('FORBIDDEN');
+    };
+
+    const result = await PullRequestService.managePrReview({
+        action   : 'create',
+        pr_number: 11273,
+        state    : 'APPROVED',
+        body     : VALID_REVIEW_BODY
+    });
+
+    expect(result.error).toBe('GraphQL API request failed');
+    expect(result.code).toBe('GRAPHQL_API_ERROR');
+    });
     // ────────────────────────────────────────────────────────────────────────
     // Tool-boundary mechanical body-shape validation
     //   Visible layer: 7 metric tags, misses named in error
@@ -5523,3 +5601,4 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(mutationCallCount).toBe(1)
     });
 });
+ 
