@@ -89,10 +89,10 @@ function runningInspect(overrides = {}) {
  * window nothing observed — which is precisely the defect these fixtures used to encode, so it is a
  * required argument in spirit even though it defaults for the single-sample cases.
  */
-function statsSample({cpuPercent = 0, memoryPercent = 0, observedAtMs, containerId = null, throttling = null, inactiveFile = null} = {}) {
+function statsSample({cpuPercent = 0, memoryPercent = 0, memoryLimitBytes = 1000, observedAtMs, containerId = null, throttling = null, inactiveFile = null} = {}) {
     const systemDelta = 1_000_000_000,
           cpuDelta    = (cpuPercent / 100) * systemDelta / 4,
-          memoryLimit = 1000;
+          memoryLimit = memoryLimitBytes;
 
     return {
         ...(Number.isFinite(observedAtMs) ? {observedAtMs} : {}),
@@ -1344,6 +1344,89 @@ test.describe('restart churn', () => {
         // And the fact must report the threshold ACTUALLY applied (80 for a store), not the transient
         // default. Reporting 90 here would place a falsehood inside the evidence a heal is chosen from.
         expect(decision.diagnosis.evidenceFacts[0].details.threshold).toBe(80);
+    });
+
+    test('a STORE already at its knob ceiling max routes to record (store-ceiling-at-cap), not raise-ceiling', () => {
+        const service   = createService(),
+              maxBytes  = 16 * 1024 ** 3,
+              atCap     = service.diagnose({
+                  serviceKey        : 'chroma',
+                  nodeCommand       : false,
+                  runtimeContainerId: 'c-chroma',
+                  inspect           : {State: {Status: 'running'}, HostConfig: {Memory: maxBytes}},
+                  statsSamples      : [
+                      statsSample({containerId: 'c-chroma', cpuPercent: 2, memoryPercent: 88, memoryLimitBytes: maxBytes, observedAtMs: 1_000_000}),
+                      statsSample({containerId: 'c-chroma', cpuPercent: 1, memoryPercent: 89, memoryLimitBytes: maxBytes, observedAtMs: 1_030_000})
+                  ]
+              }),
+              belowCap  = service.diagnose({
+                  serviceKey        : 'chroma',
+                  nodeCommand       : false,
+                  runtimeContainerId: 'c-chroma',
+                  inspect           : {State: {Status: 'running'}, HostConfig: {Memory: 8 * 1024 ** 3}},
+                  statsSamples      : [
+                      statsSample({containerId: 'c-chroma', cpuPercent: 2, memoryPercent: 85, memoryLimitBytes: 8 * 1024 ** 3, observedAtMs: 1_000_000}),
+                      statsSample({containerId: 'c-chroma', cpuPercent: 1, memoryPercent: 83, memoryLimitBytes: 8 * 1024 ** 3, observedAtMs: 1_030_000})
+                  ]
+              });
+
+        expect(atCap.status).toBe('diagnosed');
+        expect(atCap.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+        expect(atCap.diagnosis).toMatchObject({
+            recoveryClass: 'exhaustion',
+            details      : {classificationReason: 'store-ceiling-at-cap'}
+        });
+        expect(atCap.diagnosis.evidenceFacts[0].details).toMatchObject({
+            memoryLimitBytes: maxBytes,
+            ceilingMaxBytes : maxBytes
+        });
+
+        expect(belowCap.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.raiseCeiling);
+        expect(belowCap.diagnosis.details.classificationReason).toBe('store-ceiling-exhaustion');
+        expect(belowCap.diagnosis.evidenceFacts[0].details).toMatchObject({
+            memoryLimitBytes: 8 * 1024 ** 3,
+            ceilingMaxBytes : maxBytes
+        });
+    });
+
+    test('missing inspect, unlimited HostConfig.Memory (0), or unproved inspect incarnation leaves memoryLimitBytes unknown so raise-ceiling lets actuator inspect decide', () => {
+        const service   = createService(),
+              noInspect = service.diagnose({
+                  serviceKey        : 'chroma',
+                  nodeCommand       : false,
+                  runtimeContainerId: 'c-chroma',
+                  inspect           : null,
+                  statsSamples      : [
+                      statsSample({containerId: 'c-chroma', cpuPercent: 2, memoryPercent: 85, memoryLimitBytes: 47 * 1024 ** 3, observedAtMs: 1_000_000}),
+                      statsSample({containerId: 'c-chroma', cpuPercent: 1, memoryPercent: 86, memoryLimitBytes: 47 * 1024 ** 3, observedAtMs: 1_030_000})
+                  ]
+              }),
+              unlimited = service.diagnose({
+                  serviceKey        : 'chroma',
+                  nodeCommand       : false,
+                  runtimeContainerId: 'c-chroma',
+                  inspect           : {State: {Status: 'running'}, HostConfig: {Memory: 0}},
+                  statsSamples      : [
+                      statsSample({containerId: 'c-chroma', cpuPercent: 2, memoryPercent: 85, memoryLimitBytes: 47 * 1024 ** 3, observedAtMs: 1_000_000}),
+                      statsSample({containerId: 'c-chroma', cpuPercent: 1, memoryPercent: 86, memoryLimitBytes: 47 * 1024 ** 3, observedAtMs: 1_030_000})
+                  ]
+              }),
+              unproved  = service.diagnose({
+                  serviceKey        : 'chroma',
+                  nodeCommand       : false,
+                  runtimeContainerId: 'c-new',
+                  inspect           : {State: {Status: 'running'}, HostConfig: {Memory: 16 * 1024 ** 3}},
+                  statsSamples      : [
+                      statsSample({containerId: 'c-old', cpuPercent: 2, memoryPercent: 85, memoryLimitBytes: 16 * 1024 ** 3, observedAtMs: 1_000_000}),
+                      statsSample({containerId: 'c-new', cpuPercent: 1, memoryPercent: 86, memoryLimitBytes: 16 * 1024 ** 3, observedAtMs: 1_030_000})
+                  ]
+              });
+
+        for (const decision of [noInspect, unlimited, unproved]) {
+            expect(decision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.raiseCeiling);
+            expect(decision.diagnosis.evidenceFacts[0].details.memoryLimitBytes).toBeUndefined();
+            expect(decision.diagnosis.evidenceFacts[0].details.ceilingMaxBytes).toBe(16 * 1024 ** 3);
+        }
     });
 
     test('the earlier store threshold is store-scoped: a transient service at the same load stays healthy (#16596)', () => {

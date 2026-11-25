@@ -7,6 +7,7 @@ import {
     createRecoveryDiagnosisEvent,
     createRecoveryTargetIdentity
 } from '../../../services/memory-core/helpers/recoveryRunStateStore.mjs';
+import {RECOVERY_KNOBS} from '../../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
 
 // Re-exported from a Neo-free module so a PURE consumer can name a fact type without importing this
 // class. One definition, unchanged import paths.
@@ -933,13 +934,15 @@ export class ContainerHealthDiagnosisService extends Base {
     }
 
     /**
-     * Collects resource saturation facts from Docker stats data. CPU is read against the container's
-     * quota (`HostConfig.NanoCpus`), and the quota's own throttling counters become a fact of their own.
-     * Inspect and stats are separate reads, and a recreate between them lands them on different
-     * containers, so both need the proved identity every sample shares, the gate the provider-residual
-     * path applies. Without it CPU keeps the per-core reading, and no throttling fact is claimed.
+     * @summary Collects CPU and memory saturation facts from Docker stats and proved `inspect` bounds,
+     * attaching proved cgroup `memoryLimitBytes` and store `ceilingMaxBytes` on container-scoped facts.
+     *
+     * CPU is read against the container's quota (`HostConfig.NanoCpus`), and the quota's own throttling
+     * counters become a fact of their own. Inspect and stats are separate reads, and a recreate between
+     * them lands them on different containers, so both `cpuQuota` and `memoryLimitBytes` require the
+     * proved identity every sample shares (`runtimeContainerId`).
      * @param {Object} options
-     * @param {Object|null} [options.inspect=null] Docker inspect payload, for the CPU quota.
+     * @param {Object|null} [options.inspect=null] Docker inspect payload, for CPU quota and cgroup memory limit.
      * @param {String|null} [options.runtimeContainerId=null] Inspect/stats proof identity.
      * @returns {Object[]}
      */
@@ -1094,6 +1097,13 @@ export class ContainerHealthDiagnosisService extends Base {
         }
 
         if (memoryWindow.sustained) {
+            const containerMemoryLimitBytes = isHeapScope
+                      ? null
+                      : resolveContainerMemoryLimitBytes({inspect, proved}),
+                  ceilingMaxBytes           = isHeapScope
+                      ? null
+                      : resolveStoreMemoryCeilingMaxBytes(serviceKey);
+
             facts.push(this.createFact({
                 type         : CONTAINER_HEALTH_FACT_TYPES.memorySaturation,
                 serviceKey,
@@ -1125,7 +1135,9 @@ export class ContainerHealthDiagnosisService extends Base {
                     // two different denominators, and a consumer comparing facts across services —
                     // or across this change — would be comparing unlike quantities while both read
                     // as "memory 91%".
-                    memoryScope         : heapScope.scope
+                    memoryScope         : heapScope.scope,
+                    ...(containerMemoryLimitBytes !== null ? {memoryLimitBytes: containerMemoryLimitBytes} : {}),
+                    ...(ceilingMaxBytes !== null ? {ceilingMaxBytes} : {})
                 }
             }));
         }
@@ -1628,7 +1640,10 @@ export class ContainerHealthDiagnosisService extends Base {
     }
 
     /**
-     * Classifies facts into the recovery diagnosis contract.
+     * @summary Classifies collected facts into the recovery diagnosis contract, routing store memory
+     * saturation below the registry cap (or with unknown cgroup limit) to `raise-ceiling`
+     * (`store-ceiling-exhaustion`) and proved at-cap stores (`memoryLimitBytes >= ceilingMaxBytes`)
+     * to `record` (`store-ceiling-at-cap`).
      * @param {Object} options
      * @returns {Object|null}
      */
@@ -1785,6 +1800,22 @@ export class ContainerHealthDiagnosisService extends Base {
         );
 
         if (storeMemoryFacts.length > 0) {
+            const atCapFact = storeMemoryFacts.find(fact =>
+                Number.isFinite(fact.details?.ceilingMaxBytes) &&
+                Number.isFinite(fact.details?.memoryLimitBytes) &&
+                fact.details.memoryLimitBytes >= fact.details.ceilingMaxBytes
+            );
+
+            if (atCapFact) {
+                return {
+                    recoveryClass: 'exhaustion',
+                    actionClass  : CONTAINER_HEALTH_ACTION_CLASSES.record,
+                    confidence   : 0.8,
+                    evidenceFacts: this.selectEvidenceFacts(facts, [atCapFact]),
+                    reason       : 'store-ceiling-at-cap'
+                };
+            }
+
             return {
                 recoveryClass: 'exhaustion',
                 actionClass  : CONTAINER_HEALTH_ACTION_CLASSES.raiseCeiling,
@@ -2369,6 +2400,39 @@ export function calculateDockerMemoryPercent(stats) {
     }
 
     return (inUse / limit) * 100;
+}
+
+/**
+ * @summary Resolves a container's proved cgroup memory limit in bytes from `inspect.HostConfig.Memory`
+ * (`null` when `inspect` is absent, incarnation is unproved, or `Memory` is `0` / unlimited).
+ * @param {Object} [options]
+ * @param {Object|null} [options.inspect=null]
+ * @param {Boolean} [options.proved=false]
+ * @returns {Number|null}
+ */
+export function resolveContainerMemoryLimitBytes({inspect = null, proved = false} = {}) {
+    const declared = Number(inspect?.HostConfig?.Memory);
+
+    return proved && Number.isFinite(declared) && declared > 0 ? declared : null;
+}
+
+/**
+ * @summary Returns the declared registry ceiling max in bytes for a store service, or `null` if none exists.
+ * @param {String} serviceKey
+ * @returns {Number|null}
+ */
+export function resolveStoreMemoryCeilingMaxBytes(serviceKey) {
+    for (const descriptor of Object.values(RECOVERY_KNOBS)) {
+        if (descriptor?.serviceKey !== serviceKey || descriptor.leaves?.length !== 1) continue;
+
+        const leaf = descriptor.leaves[0];
+
+        if (leaf.role === 'ceiling' && leaf.resource === 'container-memory' && Number.isFinite(leaf.max)) {
+            return leaf.max;
+        }
+    }
+
+    return null;
 }
 
 /**
