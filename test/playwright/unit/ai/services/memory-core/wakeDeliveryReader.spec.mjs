@@ -7,6 +7,10 @@ import os                 from 'os';
 import path               from 'path';
 import {pathToFileURL}    from 'url';
 import {readWakeDelivery} from '../../../../../../ai/services/memory-core/wakeDeliveryReader.mjs';
+import {
+    RECORD_RETENTION_MS,
+    WakeReceiverState
+} from '../../../../../../ai/daemons/wake/receiverState.mjs';
 
 /**
  * The reader's whole job is the distinction between "I looked and there is nothing" and "I could
@@ -170,6 +174,30 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
         });
 
         expect((await readWakeDelivery({recordsDir: records})).subscriptions['WAKE_SUB:gone'].lastOutcomeReason).toBe('returned');
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
+
+    test('a record the receiver retires leaves the verdict like any unlisted name (#1931)', async () => {
+        const root  = await tmpRoot(),
+              state = new WakeReceiverState({stateDir: root}),
+              now   = Date.now();
+
+        await state.init();
+
+        const quiet = await state.accept({subscriptionId: 'WAKE_SUB:quiet', eventId: 'e-old', envelope: {}, route: {},
+                  acceptedAt: new Date(now - RECORD_RETENTION_MS - 60_000).toISOString()}),
+              busy  = await state.accept({subscriptionId: 'WAKE_SUB:busy', eventId: 'e-new', envelope: {}, route: {}});
+
+        await state.transition(quiet.record.recordKey, 'pending', 'failed');
+        await state.transition(busy.record.recordKey, 'pending', 'delivered');
+
+        expect(Object.keys((await readWakeDelivery({recordsDir: state.recordsDir})).subscriptions).sort()).toEqual(['WAKE_SUB:busy', 'WAKE_SUB:quiet']);
+
+        expect(await state.pruneRecords({now})).toBe(1);
+
+        // a route whose newest record retired reads like one that has not dispatched yet
+        expect(Object.keys((await readWakeDelivery({recordsDir: state.recordsDir})).subscriptions)).toEqual(['WAKE_SUB:busy']);
 
         await fs.rm(root, {recursive: true, force: true});
     });

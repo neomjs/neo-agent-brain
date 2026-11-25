@@ -5,8 +5,11 @@ import path           from 'node:path';
 
 import {
     getWakeRecordKey,
+    RECORD_RETENTION_MS,
     WakeReceiverState
 } from '../../../../../../ai/daemons/wake/receiverState.mjs';
+
+const DAY = 24 * 60 * 60 * 1000;
 
 test.describe('ai/daemons/wake/receiverState', () => {
     let state, stateDir;
@@ -127,5 +130,100 @@ test.describe('ai/daemons/wake/receiverState', () => {
         expect(await state.recoverInterrupted()).toBe(0);
         // …and it can re-enter dispatch cleanly when the session shrinks or rotates.
         expect(await state.transition(accepted.record.recordKey, 'pending', 'dispatching')).not.toBeNull();
+    });
+
+    test.describe('retention (#1931)', () => {
+        const now     = Date.now(),
+              expired = new Date(now - RECORD_RETENTION_MS - DAY).toISOString(),
+              recent  = new Date(now - DAY).toISOString();
+
+        const acceptDelivered = async overrides => {
+            const accepted = await accept(overrides);
+
+            await state.transition(accepted.record.recordKey, 'pending', 'delivered');
+            return accepted.record.recordKey
+        };
+
+        const exists = filePath => fs.access(filePath).then(() => true, () => false);
+
+        test('retires a terminal record past the window into the archive and keeps every other file', async () => {
+            const old          = await acceptDelivered({acceptedAt: expired, sourceEventIds: ['MESSAGE:old']}),
+                  young        = await acceptDelivered({acceptedAt: recent, sourceEventIds: ['MESSAGE:young']}),
+                  stalePending = (await accept({acceptedAt: expired, sourceEventIds: ['MESSAGE:pending']})).record.recordKey,
+                  dispatching  = (await accept({acceptedAt: expired, sourceEventIds: ['MESSAGE:dispatching']})).record.recordKey,
+                  liveness     = path.join(state.recordsDir, 'receiver.liveness');
+
+            await state.transition(dispatching, 'pending', 'dispatching');
+            await fs.writeFile(liveness, '{}');
+
+            expect(await state.pruneRecords({now})).toBe(1);
+            expect(await exists(state.getRecordPath(old))).toBe(false);
+            expect(JSON.parse(await fs.readFile(state.getArchivePath(old), 'utf8')).state).toBe('delivered');
+
+            for (const kept of [young, stalePending, dispatching]) {
+                expect(await exists(state.getRecordPath(kept))).toBe(true);
+            }
+            expect(await exists(liveness)).toBe(true);
+            expect((await fs.stat(state.archiveDir)).mode & 0o777).toBe(0o700);
+        });
+
+        test('a retired key still answers duplicate for an event-id key and a source-set key, and writes nothing', async () => {
+            const byEvent  = await acceptDelivered({acceptedAt: expired, eventId: 'wake:event-only', sourceEventIds: []}),
+                  bySource = await acceptDelivered({acceptedAt: expired});
+
+            expect(await state.pruneRecords({now})).toBe(2);
+
+            const replayedEvent  = await accept({eventId: 'wake:event-only', sourceEventIds: []}),
+                  replayedSource = await accept({eventId: 'wake-digest:re-derived'});
+
+            expect(replayedEvent).toMatchObject({status: 'duplicate', record: {recordKey: byEvent, state: 'delivered'}});
+            expect(replayedSource).toMatchObject({status: 'duplicate', record: {recordKey: bySource, state: 'delivered'}});
+            expect(await state.list()).toHaveLength(0);
+        });
+
+        test('an accept racing a retirement answers duplicate: the archive check and the link hold one lock', async () => {
+            const key         = await acceptDelivered({acceptedAt: expired}),
+                  readRetired = state._readRetired.bind(state);
+            let checked, release;
+
+            const inCheck = new Promise(resolve => {checked = resolve}),
+                  gate    = new Promise(resolve => {release = resolve});
+
+            // The check reads the archive, then waits before the link: the window a retirement must not enter.
+            state._readRetired = async recordKey => {
+                const retired = await readRetired(recordKey);
+
+                checked();
+                await gate;
+                return retired
+            };
+
+            const accepting = accept({eventId: 'wake-digest:re-derived'});
+
+            await inCheck;
+
+            const pruning = state.pruneRecords({now});
+
+            // Without the lock the whole retirement fits inside the window, and the link then lands in an
+            // empty slot. With it, the retirement waits for the link.
+            await Promise.race([pruning, new Promise(resolve => setTimeout(resolve, 200))]);
+            release();
+
+            expect((await accepting).status).toBe('duplicate');
+            expect(await pruning).toBe(1);
+            expect(await state.list('pending')).toHaveLength(0);
+            expect(await exists(state.getArchivePath(key))).toBe(true);
+        });
+
+        test('a pass interrupted after the archive link finishes the move on the next pass', async () => {
+            const key = await acceptDelivered({acceptedAt: expired});
+
+            await fs.mkdir(path.dirname(state.getArchivePath(key)), {recursive: true});
+            await fs.link(state.getRecordPath(key), state.getArchivePath(key));
+
+            expect(await state.pruneRecords({now})).toBe(1);
+            expect(await exists(state.getRecordPath(key))).toBe(false);
+            expect(await exists(state.getArchivePath(key))).toBe(true);
+        });
     });
 });

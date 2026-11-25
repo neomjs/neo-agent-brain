@@ -188,7 +188,13 @@ const LOOPBACK_HOSTS         = new Set(['127.0.0.1', 'localhost', '::1']);
  * @type {Number}
  */
 const DRAIN_RETRY_INTERVAL_MS = 60 * 1000;
-const PRODUCTION_ADAPTERS     = new Set([
+/**
+ * How often terminal records past `RECORD_RETENTION_MS` retire (`WakeReceiverState#pruneRecords`).
+ * About 216 records a day arrive, so a pass moves a handful.
+ * @type {Number}
+ */
+const RECORD_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+const PRODUCTION_ADAPTERS      = new Set([
     'osascript',
     'tmux',
     'claude-courier',
@@ -205,7 +211,7 @@ const PRODUCTION_ADAPTERS     = new Set([
  * settlement headroom on top of it.
  * @type {Object<String, Number>}
  */
-const STEP_BOUNDS_MS            = {accept: 15 * 1000, reload: 15 * 1000, drain: 60 * 1000, dispatch: 30 * 1000};
+const STEP_BOUNDS_MS            = {accept: 15 * 1000, reload: 15 * 1000, drain: 60 * 1000, dispatch: 30 * 1000, prune: 60 * 1000};
 const STEP_WATCHDOG_INTERVAL_MS = 5 * 1000;
 
 /**
@@ -1030,6 +1036,20 @@ export function createWakeReceiver({
     };
 
     /**
+     * @summary Retires terminal records past the retention window under the state mutex, so a move
+     * never interleaves with a drain pass. A failed pass is logged and retried on the next interval.
+     * @returns {Promise<Number|undefined>} Records retired, or `undefined` when the pass failed.
+     */
+    const prune = () => withStateMutex(() => track('prune', state.pruneRecords()))
+        .then(retired => {
+            retired > 0 && logger.log?.(`[Wake Receiver] retired ${retired} terminal record(s) past the retention window`);
+            return retired
+        })
+        .catch(error => {
+            logger.error?.(`[Wake Receiver] prune failed: ${error.message}`)
+        });
+
+    /**
      * @summary Transitions eligible pending `wake/digest` records whose source events are all durably
      * handled in Memory Core to `skipped`, serialized behind receiver drain passes and protecting any
      * active `primary-session` in-flight grant.
@@ -1189,7 +1209,7 @@ export function createWakeReceiver({
         clearTimeout(rotationRetry)
     });
 
-    return {server, drain, setManifest, track};
+    return {server, drain, prune, setManifest, track};
 }
 
 /**
@@ -1202,6 +1222,7 @@ export function createWakeReceiver({
  * @param {Object} [options.logger=console]
  * @param {Number} [options.reconcileIntervalMs]
  * @param {Number} [options.drainIntervalMs=DRAIN_RETRY_INTERVAL_MS]
+ * @param {Number} [options.pruneIntervalMs=RECORD_PRUNE_INTERVAL_MS]
  * @param {Function} [options.onStuck] A stuck step kills the process (`SIGKILL`), bypassing `uv__threadpool_cleanup` so the LaunchAgent restarts a fresh process.
  * @param {Object} [options.livenessOptions] Passed to `createReceiverLiveness` (`fsModule`, `readTimeoutMs`); a test seam.
  * @param {Object} [options.stepBoundsMs=STEP_BOUNDS_MS] Passed to `createWakeReceiver`; a test seam.
@@ -1216,6 +1237,7 @@ export async function startWakeReceiver({
     logger = console,
     reconcileIntervalMs = MANIFEST_RECONCILE_INTERVAL_MS,
     drainIntervalMs     = DRAIN_RETRY_INTERVAL_MS,
+    pruneIntervalMs     = RECORD_PRUNE_INTERVAL_MS,
     onStuck             = () => process.kill(process.pid, 'SIGKILL'),
     livenessOptions     = {},
     stepBoundsMs        = STEP_BOUNDS_MS,
@@ -1247,7 +1269,7 @@ export async function startWakeReceiver({
     // stamps queue behind it.
     void liveness.start();
 
-    const {server, drain, setManifest, track} = createWakeReceiver({
+    const {server, drain, prune, setManifest, track} = createWakeReceiver({
         manifest,
         manifestPath,
         state,
@@ -1265,6 +1287,8 @@ export async function startWakeReceiver({
         server.once('error', reject);
         server.listen(port, host, resolve);
     });
+    // Retire first, so the first drain lists only what the window keeps.
+    await prune();
     await drain();
 
     /**
@@ -1378,6 +1402,10 @@ export async function startWakeReceiver({
 
     drainTimer.unref?.();
 
+    const pruneTimer = setInterval(() => { void prune() }, pruneIntervalMs);
+
+    pruneTimer.unref?.();
+
     /**
      * @summary Releases only the filesystem watcher, leaving the periodic sweep running.
      *
@@ -1401,6 +1429,7 @@ export async function startWakeReceiver({
         stopManifestWatcher();
         clearInterval(reconcileTimer);
         clearInterval(drainTimer);
+        clearInterval(pruneTimer);
 
         return reloadChain
     };
@@ -1415,7 +1444,7 @@ export async function startWakeReceiver({
         `(watch + ${reconcileIntervalMs / 1000}s sweep); SIGHUP still forces one`
     );
 
-    return {server, state, drain, reload, reloadIfChanged, stopManifestWatcher, stopWatchingManifest};
+    return {server, state, drain, prune, reload, reloadIfChanged, stopManifestWatcher, stopWatchingManifest};
 }
 
 /**
