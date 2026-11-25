@@ -1735,3 +1735,94 @@ test.describe('openWorkWakes — an already-requested reviewer after a base move
         ]);
     });
 });
+
+test.describe('openWorkWakes — a parent\'s last sub closing wakes each steward once without escalating (#1919)', () => {
+    const
+        EUCLID   = '@neo-gpt-euclid',
+        roster   = [ADA, GPT, EUCLID],
+        closeout = (minute, {number = 100, seats = [ADA, GPT], role = 'assignee', episode = iso(minute)} = {}) => ({
+            id   : `acme/app#${number}:closeout:${episode}#${iso(minute)}`,
+            key  : `acme/app#${number}`,
+            repo : 'acme/app',
+            number,
+            head : null,
+            seats,
+            role,
+            episode,
+            kind : 'closeout',
+            pulse: iso(minute)
+        });
+
+    test('AC-1: closing the last sub emits one closeout wake per holder seat, holds unreachable seats in pendingMerges without escalating, and delivers when reachable', () => {
+        const run = journey();
+        run.step(0, [], {}, {rotationSeats: roster});
+
+        // ADA is reachable, GPT is unreachable: ADA wakes now, GPT stays in pendingMerges with zero rotation escalation
+        const first = run.step(1, [], {transitions: [closeout(1)]}, {
+            rotationSeats: roster,
+            routeOf      : seat => seat === GPT ? 'unreachable' : 'reachable'
+        });
+
+        expect(first.wakes).toEqual([expect.objectContaining({
+            to     : ADA,
+            repo   : 'acme/app',
+            number : 100,
+            head   : null,
+            role   : 'assignee',
+            kind   : 'closeout',
+            episode: iso(1)
+        })]);
+        expect(first.wakes.some(wake => wake.kind === 'holder-unreachable')).toBe(false);
+        expect(Object.values(first.ledger.pendingMerges)).toEqual([expect.objectContaining({to: GPT, kind: 'closeout', head: null, number: 100})]);
+
+        // Still unreachable hours later: still held, never holder-silent or holder-unreachable
+        const waiting = run.step(300, [], {}, {
+            rotationSeats: roster,
+            routeOf      : seat => seat === GPT ? 'unreachable' : 'reachable'
+        });
+        expect(waiting.wakes).toEqual([]);
+
+        // GPT becomes reachable: receives its held closeout wake once, then pendingMerges is empty
+        const delivered = run.step(301, [], {}, {rotationSeats: roster, routeOf: () => 'reachable'});
+        expect(delivered.wakes).toEqual([expect.objectContaining({to: GPT, kind: 'closeout', head: null, number: 100, episode: iso(1)})]);
+        expect(delivered.ledger.pendingMerges).toEqual({});
+        expect(run.step(302, [], {}, {rotationSeats: roster, routeOf: () => 'reachable'}).wakes).toEqual([]);
+    });
+
+    test('AC-2: a held closeout clears when a read re-observes its parent with an open sub, and a later re-close wakes as a new episode', () => {
+        const run = journey();
+        run.step(0, []);
+
+        // Held while ADA is unreachable
+        const held = run.step(1, [], {transitions: [closeout(1, {seats: [ADA]})]}, {routeOf: () => 'unreachable'});
+        expect(held.wakes).toEqual([]);
+        expect(Object.values(held.ledger.pendingMerges)).toHaveLength(1);
+
+        // Parent re-observed with an open sub before ADA's route recovers: held closeout clears
+        const cleared = run.step(2, [], {
+            snapshot: {...state(2, []).snapshot, openSubs: {'acme/app#100': iso(2)}}
+        }, {routeOf: () => 'unreachable'});
+        expect(cleared.ledger.pendingMerges).toEqual({});
+
+        // ADA becomes reachable while sub is still open: zero stale closeout wake
+        expect(run.step(3, [], {
+            snapshot: {...state(3, []).snapshot, openSubs: {'acme/app#100': iso(2)}}
+        }, {routeOf: () => 'reachable'}).wakes).toEqual([]);
+
+        // Open sub closes again with a new closedAt: new episode wakes ADA once
+        const reclosed = run.step(4, [], {transitions: [closeout(4, {seats: [ADA], episode: iso(4)})]}, {routeOf: () => 'reachable'});
+        expect(reclosed.wakes).toEqual([expect.objectContaining({to: ADA, kind: 'closeout', head: null, episode: iso(4)})]);
+    });
+
+    test('AC-3: baseline and quiet rounds admit zero closeout wakes', () => {
+        const initialBaseline = journey().step(0, [], {transitions: [closeout(0)]});
+        expect(initialBaseline.wakes).toEqual([]);
+        expect(initialBaseline.ledger.pendingMerges).toEqual({});
+
+        const quietRun = journey();
+        quietRun.step(0, []);
+        const quietStep = quietRun.step(1, [], {transitions: [closeout(1)]}, {quiet: true});
+        expect(quietStep.wakes).toEqual([]);
+        expect(quietStep.ledger.pendingMerges).toEqual({});
+    });
+});

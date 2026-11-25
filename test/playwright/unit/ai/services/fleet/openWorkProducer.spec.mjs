@@ -10,7 +10,7 @@ import {planOpenWorkWakes}                            from '../../../../../../ai
 import {createPrTransitionEvents, withProducerPrLane} from '../../../../../../ai/services/fleet/producerPrLaneEvents.mjs';
 import * as queryDocuments                            from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 import {
-    OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
+    OPEN_WORK_CLOSEOUT, OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
 } from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const identities = {
@@ -50,11 +50,11 @@ const closed = (number, closedAt, state='CLOSED') => ({
 });
 
 /**
- * @summary The kind of search a read sent: a seat's authored or held open work, or its closed work.
+ * @summary The kind of search a read sent: a seat's authored or held open work, closed PRs, outside PRs, or closed issues.
  * @param {String} search
- * @returns {'open'|'held'|'terminal'}
+ * @returns {'open'|'held'|'terminal'|'outside'|'closeout'}
  */
-const kindOf = search => !search.includes('is:open') ? 'terminal' : search.includes('review-requested:') ? 'held' : search.includes('-author:') ? 'outside' : 'open';
+const kindOf = search => search.startsWith('is:issue ') ? 'closeout' : !search.includes('is:open') ? 'terminal' : search.includes('review-requested:') ? 'held' : search.includes('-author:') ? 'outside' : 'open';
 
 /**
  * @summary A GraphQL stub answering each search from a script: open (authored), held and terminal
@@ -134,15 +134,16 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
         const producer = createOpenWorkProducer(options(async () => [{seat: '@ada', login: 'ada', apiBase: 'https://api.github.com', query}]));
         await producer.pulse();
         const ordinary = (await producer.pulse()).pulses.at(-1);
-        expect(ordinary.quota.map(row => row.queryHash)).toEqual([OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_OUTSIDE_SNAPSHOT].map(text => createHash('sha256').update(text).digest('hex')));
+        expect(ordinary.quota.map(row => row.queryHash)).toEqual([OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_CLOSEOUT].map(text => createHash('sha256').update(text).digest('hex')));
         expect(ordinary.quota[0]).toMatchObject({reported: true, maxMeasuredCost: 2, firstOrdinal: 1, lastOrdinal: 2, zeroCostFailedCalls: 0});
         expect(ordinary.quota[1]).toMatchObject({firstOrdinal: 3, lastOrdinal: 3});
         expect(ordinary.quota[2]).toMatchObject({firstOrdinal: 4, lastOrdinal: 4});
+        expect(ordinary.quota[3]).toMatchObject({firstOrdinal: 5, lastOrdinal: 5});
         failing = true;
         const failed = (await producer.pulse()).pulses.at(-1);
         expect(failed).toMatchObject({cost: 0, costUnknown: false, quota: [{reported: true, calls: 1, failed: 1, zeroCostFailedCalls: 1}]});
         expect(Date.parse(failed.quota[0].firstAttemptAt)).toBeLessThanOrEqual(Date.parse(failed.quota[0].firstAt));
-        expect(calls).toBe(8);
+        expect(calls).toBe(9);
     });
 
     test('a reset within a pulse, missing quota fields and known error costs remain separate evidence', async () => {
@@ -256,7 +257,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         expect(state.coverage).toBe('complete');
         expect(state.transitions.map(({kind, to}) => [kind, to])).toEqual([['verdict', 'APPROVED']]);
-        expect(state.pulses.at(-1)).toMatchObject({cost: 4, pages: 4, coverage: 'complete', transitions: {'@neo-opus-ada': 1}});
+        expect(state.pulses.at(-1)).toMatchObject({cost: 5, pages: 5, coverage: 'complete', transitions: {'@neo-opus-ada': 1}});
         // the seat reads what it authored and holds, one scope per repository; the terminal read is its
         // window of close times from its watermark, an overlap back
         expect(stub.calls.slice(0, 2).map(call => call.search)).toEqual([
@@ -573,7 +574,7 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
      * @param {Object} work `{authored: Object[], held: Object[], outside?: Object[], closed: Object[]}`
      * @returns {{query: Function, searches: String[]}}
      */
-    const asSeat = ({authored = [], held = [], outside = [], closed: ended = []}) => {
+    const asSeat = ({authored = [], held = [], outside = [], closed: ended = [], closeout = []}) => {
         const searches = [];
 
         return {
@@ -581,7 +582,7 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             query: async (text, {query: search}) => {
                 searches.push(search);
 
-                const nodes = {open: authored, held, outside, terminal: ended}[kindOf(search)];
+                const nodes = {open: authored, held, outside, terminal: ended, closeout}[kindOf(search)];
 
                 return {rateLimit: {cost: 1}, search: {nodes, pageInfo: {hasNextPage: false}}}
             }
@@ -725,7 +726,7 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             }),
             ada      = {authored: [], held: [held(19, ['neo-opus-ada'], true), held(21, ['neo-opus-ada'], false)]},
             euclid   = {authored: [], held: [held(19, ['neo-opus-ada'], true)]},
-            answer   = work => async (text, {query: search}) => ({rateLimit: {cost: 1}, search: {nodes: {open: work.authored, held: work.held, outside: [], terminal: []}[kindOf(search)], pageInfo: {hasNextPage: false}}}),
+            answer   = work => async (text, {query: search}) => ({rateLimit: {cost: 1}, search: {nodes: {open: work.authored, held: work.held, outside: [], terminal: [], closeout: []}[kindOf(search)], pageInfo: {hasNextPage: false}}}),
             producer = createOpenWorkProducer({
                 readers   : async () => [
                     {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: answer(ada), benched: false},
@@ -1180,7 +1181,7 @@ test.describe('openWorkProducer — organization-login PRs keep coverage across 
                     }
                 }
 
-                const nodes = kind === 'open' ? state.authored : kind === 'held' ? state.held : state.terminal;
+                const nodes = kind === 'open' ? state.authored : kind === 'held' ? state.held : kind === 'terminal' ? state.terminal : [];
 
                 return {rateLimit: {cost: 1}, search: {nodes, pageInfo: {hasNextPage: false}}}
             };
@@ -1529,5 +1530,118 @@ test.describe('openWorkProducer — concurrent distinct-query lanes (#1842)', ()
             lastOrdinal : 4,
             remaining   : 992
         });
+    });
+});
+
+test.describe('openWorkProducer — parent closeout transition read, cursor pagination and steward wakes (#1919)', () => {
+    const closedSub = (number, closedAt, {parentNumber = 759, state = 'OPEN', repo = 'acme/app', author = 'neo-opus-ada', assignees = [], total = 2, completed = 2} = {}) => ({
+        number,
+        closedAt,
+        parent: {
+            number          : parentNumber,
+            state,
+            repository      : {nameWithOwner: repo},
+            author          : {login: author},
+            assignees       : {nodes: assignees.map(login => ({login}))},
+            subIssuesSummary: {total, completed}
+        }
+    });
+
+    test('baseline pulse skips OPEN_WORK_CLOSEOUT; subsequent pulses page closed issues across restarts and wake stewards once', async () => {
+        const
+            store = memoryStore(),
+            stub  = github({
+                open    : [[]],
+                terminal: [[]],
+                closeout: [
+                    [closedSub(801, '2026-10-02T10:01:10Z', {parentNumber: 700, total: 2, completed: 1})],
+                    [closedSub(802, '2026-10-02T10:01:20Z', {parentNumber: 759, assignees: ['neo-opus-ada', 'neo-gpt']})],
+                    [closedSub(803, '2026-10-02T10:01:40Z', {parentNumber: 760, assignees: [], author: 'neo-opus-ada'})]
+                ]
+            }),
+            make  = start => createOpenWorkProducer({readers: ada(stub.query), repos: async () => ['acme/app'], identities, now: clock(start), store, pageBudget: 2});
+
+        const baseline = await make('2026-10-02T10:00:00Z').pulse();
+        expect(stub.calls.filter(call => call.kind === 'closeout')).toEqual([]);
+        let planned = planOpenWorkWakes({state: baseline, ledger: null, now: Date.parse(baseline.observedAt)});
+        expect(planned.wakes).toEqual([]);
+
+        // Pulse 2 reads 2 of 3 closeout pages -> partial, watermark held, cursor saved
+        const first = await make('2026-10-02T10:01:00Z').pulse();
+        expect(first.coverage).toBe('partial');
+        expect(first.closeout).toMatchObject({watermark: '2026-10-02T09:51:00.000Z', window: {cursor: '2'}});
+        planned = planOpenWorkWakes({state: first, ledger: planned.ledger, now: Date.parse(first.observedAt)});
+        expect(planned.wakes.map(({to, number, head, kind, episode}) => ({to, number, head, kind, episode}))).toEqual([
+            {to: '@neo-opus-ada', number: 759, head: null, kind: 'closeout', episode: '2026-10-02T10:01:20Z'},
+            {to: '@neo-gpt', number: 759, head: null, kind: 'closeout', episode: '2026-10-02T10:01:20Z'}
+        ]);
+
+        // Restarted producer resumes cursor '2', reads page 3, advances closeout watermark, and deduplicates parent 759 on overlap
+        const tail = await make('2026-10-02T10:02:00Z').pulse();
+        expect(stub.calls.filter(call => call.kind === 'closeout').map(call => call.cursor)).toEqual([null, '1', '2']);
+        expect(tail).toMatchObject({coverage: 'complete', closeout: {watermark: '2026-10-02T09:52:00.000Z', window: null}});
+        planned = planOpenWorkWakes({state: tail, ledger: planned.ledger, now: Date.parse(tail.observedAt)});
+        expect(planned.wakes.map(({to, number, role, kind, episode}) => ({to, number, role, kind, episode}))).toEqual([
+            {to: '@neo-opus-ada', number: 760, role: 'author', kind: 'closeout', episode: '2026-10-02T10:01:40Z'}
+        ]);
+
+        // Overlap re-read on next pulse emits zero duplicate wakes
+        const overlap = await make('2026-10-02T10:03:00Z').pulse();
+        planned = planOpenWorkWakes({state: overlap, ledger: planned.ledger, now: Date.parse(overlap.observedAt)});
+        expect(planned.wakes).toEqual([]);
+    });
+
+    test('upgrade deploy with saved snapshot and old watermark but no closeout seeds at the deploy pulse so parents already all-closed at deploy never burst', async () => {
+        const
+            store = memoryStore(),
+            stub  = github({
+                open    : [[]],
+                terminal: [[]],
+                closeout: [[
+                    closedSub(810, '2026-10-01T12:00:00Z', {parentNumber: 770, assignees: ['neo-opus-ada']}),
+                    closedSub(811, '2026-10-02T10:01:30Z', {parentNumber: 771, assignees: ['neo-opus-ada']})
+                ]]
+            }),
+            make  = start => createOpenWorkProducer({readers: ada(stub.query), repos: async () => ['acme/app'], identities, now: clock(start), store});
+
+        store.saved = {
+            snapshot   : {rows: {}, closed: {}, complete: true, missed: []},
+            observedAt : '2026-10-02T10:00:00.000Z',
+            coverage   : 'complete',
+            readers    : {
+                'neo-opus-ada': {watermark: '2026-10-02T09:50:00.000Z', window: null},
+                'stale-seat'  : {watermark: '2026-09-25T00:00:00.000Z', window: null}
+            },
+            watermark  : '2026-09-25T00:00:00.000Z',
+            window     : null,
+            reason     : null,
+            detail     : null,
+            seatReads  : {},
+            transitions: [],
+            pulses     : []
+        };
+
+        let ledger = {
+            pulse        : '2026-10-02T10:00:00.000Z',
+            holding      : {},
+            pendingMerges: {},
+            baselines    : {}
+        };
+
+        const deployPulse = await make('2026-10-02T10:00:00Z').pulse();
+        expect(stub.calls.filter(call => call.kind === 'closeout')).toEqual([]);
+        expect(deployPulse.closeout).toEqual({watermark: '2026-10-02T09:51:00.000Z', window: null});
+        let planned = planOpenWorkWakes({state: deployPulse, ledger, now: Date.parse(deployPulse.observedAt)});
+        expect(planned.wakes).toEqual([]);
+        ledger = planned.ledger;
+
+        const nextPulse = await make('2026-10-02T10:01:00Z').pulse();
+        const closeoutCalls = stub.calls.filter(call => call.kind === 'closeout');
+        expect(closeoutCalls).toHaveLength(1);
+        expect(closeoutCalls[0].search).toContain('closed:2026-10-02T09:51:00Z..2026-10-02T10:02:00Z');
+        planned = planOpenWorkWakes({state: nextPulse, ledger, now: Date.parse(nextPulse.observedAt)});
+        expect(planned.wakes.map(({to, number, kind, episode}) => ({to, number, kind, episode}))).toEqual([
+            {to: '@neo-opus-ada', number: 771, kind: 'closeout', episode: '2026-10-02T10:01:30Z'}
+        ]);
     });
 });

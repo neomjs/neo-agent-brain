@@ -17,7 +17,9 @@
  * A skipped merge keeps its original observation and payload until its route answers, even after the
  * transition leaves the producer's bounded history. Admitted merges need no permanent seen set: the
  * saved pulse excludes their original observations on the next round. A merge's `unblocked` wakes, one
- * per issue and assignee seat, follow the same rule, keyed by the pulse whose read resolved them.
+ * per issue and assignee seat, follow the same rule, keyed by the pulse whose read resolved them. A
+ * parent issue's `closeout` wakes, one per steward seat, also ride `pendingMerges`: they hold until each
+ * route answers, never escalate to the rotation, and clear if a read re-observes the parent with an open sub.
  *
  * Three escalations ride the rotation when an action's holder cannot or does not act. An `unowned` PR owes its author an
  * action, but no seat is that author. A `holder-unreachable` slot is a holder wake that would be sent if the holder's
@@ -131,7 +133,7 @@ function wakeOf(row, seat, role, kind, episode, holder = null, ciRepair = null) 
  * @param {Object} options
  * @param {Object} options.state The producer state, including snapshot, observation and transitions.
  * @param {Object|null} options.ledger Previous {pulse, holding, pendingMerges, baselines}; null starts a quiet baseline.
- *     `pendingMerges` holds a merge's skipped wakes: the author's `post-merge` under its episode, each `unblocked` under its key.
+ *     `pendingMerges` holds skipped transition wakes: a merge's `post-merge` under its episode, each `unblocked` under its key, and each parent `closeout` under its key.
  * @param {Number} options.now Epoch milliseconds.
  * @param {Function} [options.routeOf] Native seat to reachable, unreachable or unknown; only unreachable skips.
  * @param {Array<String|Object>} [options.rotationSeats] Participating native seats (or pulse seat records) for rotation actions.
@@ -418,6 +420,36 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
 
                 pendingMerges[wake.key] ??= wake
             }
+        }
+    }
+
+    for (const [id, wake] of Object.entries(pendingMerges)) {
+        if (wake.kind === 'closeout' && state.snapshot.openSubs && Object.hasOwn(state.snapshot.openSubs, wake.pr)) {
+            delete pendingMerges[id]
+        }
+    }
+
+    for (const transition of state.transitions ?? []) {
+        const observed = Date.parse(transition.pulse);
+
+        if (baseline || transition.kind !== 'closeout' || !(observed > previousPulse && observed <= pulse) ||
+            typeof transition.repo !== 'string' || !transition.repo ||
+            !Number.isInteger(transition.number) || transition.number < 1 ||
+            transition.key !== `${transition.repo}#${transition.number}` ||
+            typeof transition.episode !== 'string' || !transition.episode ||
+            state.snapshot.openSubs && Object.hasOwn(state.snapshot.openSubs, transition.key)) continue;
+
+        const role = transition.role === 'author' ? 'author' : 'assignee';
+
+        for (const seat of (Array.isArray(transition.seats) ? transition.seats : []).filter(native)) {
+            for (const [id, prior] of Object.entries(pendingMerges)) {
+                if (prior.kind === 'closeout' && prior.pr === transition.key && prior.to === seat && prior.episode !== transition.episode) {
+                    delete pendingMerges[id]
+                }
+            }
+            const wake = wakeOf({key: transition.key, repo: transition.repo, number: transition.number, head: null}, seat, role, 'closeout', transition.episode);
+
+            pendingMerges[wake.key] ??= wake
         }
     }
 

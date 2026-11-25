@@ -126,6 +126,27 @@ test.describe('openWorkWakeIntake', () => {
         expect(stored.task).toMatchObject({kind: 'unblocked', episode: args.episode, observedBy: operator, assignee: seat})
     });
 
+    test('a closeout observation with head: null passes the strict schema and stores naming the parent issue without a Head line (#1919)', async () => {
+        const
+            args        = {repo: 'acme/app', number: 15, head: null, kind: 'closeout', episode: '2026-11-25T12:00:00.000Z', to: seat},
+            {messageId} = await as(operator, () => callTool('admit_open_work_wake', args));
+
+        owned.add(messageId);
+        await MailboxService.drainPendingMessageGraphProjections({ids: [messageId]});
+        const
+            stored  = GraphService.db.nodes.get(messageId).properties,
+            fetched = await as(seat, () => MailboxService.getMessage({messageId}));
+
+        expect(stored).toMatchObject({from: SYSTEM_SENDER.id, to: seat, senderPrincipalClass: 'system', priority: 'normal', wakeSuppressed: false});
+        expect(stored.subject).toBe('[open-work:closeout] acme/app#15: observed every sub of this issue is closed: close it, or file the missing subs');
+        expect(fetched.body.startsWith('https://github.com/acme/app/issues/15\n')).toBe(true);
+        expect(fetched.body).not.toContain('Head:');
+        expect(stored.task).toMatchObject({kind: 'closeout', head: null, episode: args.episode, observedBy: operator, assignee: seat});
+
+        await expect(as(operator, () => callTool('admit_open_work_wake', {...args, head: HEAD}))).rejects.toThrow(/head must be null for closeout/);
+        await expect(as(operator, () => callTool('admit_open_work_wake', {...observation(), head: null, failedChecks: null, kind: 'review'}))).rejects.toThrow(/head must be a full 40-character lowercase commit id/)
+    });
+
     test('a malformed token or a recipient that is not a registered agent or human is refused before anything is written', async () => {
         await expect(as(operator, () => admitOpenWorkWake(observation({episode: 'merge it now'})))).rejects.toThrow(/episode must be/);
         await expect(as(operator, () => admitOpenWorkWake(observation({repo: 'acme/app\nsecond line'})))).rejects.toThrow(/repo must be/);

@@ -26,6 +26,7 @@ export const OPEN_WORK_WAKE_REASONS = Object.freeze({
     'respond-comment'   : 'an outside comment on the pull request awaits a reply',
     'post-merge'        : 'your pull request was merged',
     unblocked           : 'a merge unblocked your ticket',
+    closeout            : 'every sub of this issue is closed: close it, or file the missing subs',
     unowned             : "no seat owns this pull request's next action",
     'holder-unreachable': "the seat holding this pull request's next action has no deliverable wake route",
     'holder-silent'     : "the seat holding this pull request's next action has not acted on its delivered wake"
@@ -151,7 +152,11 @@ export function validateOpenWorkObservation(args) {
 
     if (typeof repo !== 'string' || !REPO.test(repo)) errors.push('repo must be owner/name');
     if (!Number.isSafeInteger(number) || number < 1) errors.push('number must be a positive integer');
-    if (typeof head !== 'string' || !OID.test(head)) errors.push('head must be a full 40-character lowercase commit id');
+    if (kind === 'closeout') {
+        if (head !== null) errors.push('head must be null for closeout');
+    } else if (typeof head !== 'string' || !OID.test(head)) {
+        errors.push('head must be a full 40-character lowercase commit id');
+    }
     if (!Object.hasOwn(OPEN_WORK_WAKE_REASONS, kind)) errors.push(`kind must be one of ${Object.keys(OPEN_WORK_WAKE_REASONS).join(', ')}`);
     if (typeof to !== 'string' || !IDENTITY.test(to)) errors.push('to must be one @identity');
     if (kind === 'unblocked' && (typeof unblocks !== 'string' || !ISSUE.test(unblocks))) {
@@ -244,10 +249,13 @@ export function composeOpenWorkWake(observation) {
         reason                                                                         = ciRepair ? 'CI is red on an outside contributor head' : OPEN_WORK_WAKE_REASONS[kind],
         failing                                                                        = kind === 'repair-ci' ? failingOf(failedChecks, !!ciRepair) : null,
         issue                                                                          = kind === 'unblocked' ? unblocks.split('#') : null,
+        closeout                                                                       = kind === 'closeout',
         ask                                                                            = ESCALATION_ASKS[kind] ? `${ESCALATION_ASKS[kind]} ` : '',
         lead                                                                           = issue
             ? `https://github.com/${issue[0]}/issues/${issue[1]}\nUnblocked by: https://github.com/${repo}/pull/${number} at ${head}\n`
-            : `https://github.com/${repo}/pull/${number}\nHead: ${head}\n`;
+            : closeout
+                ? `https://github.com/${repo}/issues/${number}\n`
+                : `https://github.com/${repo}/pull/${number}\nHead: ${head}\n`;
 
     return {
         to,
@@ -257,7 +265,9 @@ export function composeOpenWorkWake(observation) {
             `${holder ? `Holder: ${holder}\n` : ''}Episode: ${episode}\n\n` + outsideRepairAsk(observation) + ask +
             (issue
                 ? 'Re-check the live issue and its remaining blockers before acting. '
-                : 'Re-check the live pull request, head, checks and review state before acting. ') +
+                : closeout
+                    ? 'Re-check the live issue and its sub-issues before acting. '
+                    : 'Re-check the live pull request, head, checks and review state before acting. ') +
             'This message describes a producer observation, not a guarantee of the current state.',
         relatedTickets: issue ? [unblocks, pr] : [pr],
         priority      : 'normal',

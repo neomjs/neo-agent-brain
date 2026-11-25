@@ -3,11 +3,12 @@ import {holderOf}            from '../../../../../../ai/services/fleet/openWorkH
 import {planOpenWorkWakes}   from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
 import {composeOpenWorkWake} from '../../../../../../ai/services/fleet/openWorkWakeMessage.mjs';
 import {
+    normalizeCloseout,
     normalizePullRequest,
     normalizeTerminal,
     reduceOpenWork
 } from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
-import {OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_SNAPSHOT, openWorkQueryCost} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
+import {OPEN_WORK_CLOSEOUT, OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_SNAPSHOT, openWorkQueryCost} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const identities = {
     byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt', 'neo-gpt-emmy': '@neo-gpt-emmy'})[login] ?? null,
@@ -1129,5 +1130,111 @@ test.describe('openWorkReducer — superseded same-SHA workflow suites deduplica
         }), identities);
         expect(truncated.ci).toBe('red');
         expect(truncated.partial).toBe(true);
+    });
+});
+
+test.describe('openWorkReducer — parent closeout selector, holder fallback, deduplication and open-sub clearing (#1919)', () => {
+    const subIssue = ({
+        number = 101,
+        closedAt = '2026-11-25T10:00:00Z',
+        parentNumber = 100,
+        parentState = 'OPEN',
+        repo = 'acme/app',
+        author = 'neo-opus-ada',
+        assignees = ['neo-opus-ada'],
+        total = 2,
+        completed = 2
+    } = {}) => ({
+        number,
+        closedAt,
+        parent: parentNumber === null ? null : {
+            number          : parentNumber,
+            state           : parentState,
+            repository      : {nameWithOwner: repo},
+            author          : author ? {login: author} : null,
+            assignees       : {nodes: assignees.map(login => ({login}))},
+            subIssuesSummary: {total, completed}
+        }
+    });
+
+    test('OPEN_WORK_CLOSEOUT prices at formulaCost 1 and qualifies only watched OPEN parents with total > 0 && completed === total', () => {
+        expect(openWorkQueryCost(OPEN_WORK_CLOSEOUT)).toMatchObject({formulaCost: 1});
+
+        const normalized = normalizeCloseout([
+            subIssue({number: 101, closedAt: '2026-11-25T10:01:00Z', parentNumber: 100}),
+            subIssue({number: 102, closedAt: '2026-11-25T10:02:30Z', parentNumber: 100}),
+            subIssue({number: 103, parentNumber: null}),
+            subIssue({number: 104, parentNumber: 105, repo: 'other/private'}),
+            subIssue({number: 106, parentNumber: 107, total: 0, completed: 0}),
+            subIssue({number: 108, parentNumber: 109, total: 3, completed: 2}),
+            subIssue({number: 110, parentNumber: 111, parentState: 'CLOSED', total: 2, completed: 2})
+        ], identities, ['acme/app']);
+
+        expect(normalized).toEqual([
+            {key: 'acme/app#100', repo: 'acme/app', number: 100, status: 'closeout', at: '2026-11-25T10:02:30Z', seats: ['@neo-opus-ada'], role: 'assignee'},
+            {key: 'acme/app#109', repo: 'acme/app', number: 109, status: 'open-sub'},
+            {key: 'acme/app#111', repo: 'acme/app', number: 111, status: 'open-sub'}
+        ]);
+    });
+
+    test('holder resolution wakes every agent assignee, falls back to author only when unassigned, and omits human/outsider holders', () => {
+        expect(normalizeCloseout([
+            // multiple agent assignees + human operator: only agent assignees receive wakes
+            subIssue({parentNumber: 10, assignees: ['tobiu', 'neo-opus-ada', 'neo-gpt', 'neo-opus-ada']}),
+            // unassigned parent with agent author: falls back to author
+            subIssue({parentNumber: 11, assignees: [], author: 'neo-gpt-emmy'}),
+            // assigned to human operator only (even with agent author): NOT unassigned, omitted
+            subIssue({parentNumber: 12, assignees: ['tobiu'], author: 'neo-opus-ada'}),
+            // unassigned parent with human/outsider author: omitted
+            subIssue({parentNumber: 13, assignees: [], author: 'tobiu'})
+        ], identities, ['acme/app'])).toEqual([
+            {key: 'acme/app#10', repo: 'acme/app', number: 10, status: 'closeout', at: '2026-11-25T10:00:00Z', seats: ['@neo-opus-ada', '@neo-gpt'], role: 'assignee'},
+            {key: 'acme/app#11', repo: 'acme/app', number: 11, status: 'closeout', at: '2026-11-25T10:00:00Z', seats: ['@neo-gpt-emmy'], role: 'author'}
+        ]);
+    });
+
+    test('reduceOpenWork baselines pulse 1, deduplicates overlap re-reads, clears on open-sub re-observation, and emits a new episode on re-close', () => {
+        const step = (previous, nodes, id, since = '2026-11-25T09:50:00Z') => reduceOpenWork({
+            previous,
+            observed: {rows: [], complete: true},
+            terminal: {rows: [], complete: true},
+            closeout: {rows: normalizeCloseout(nodes, identities, ['acme/app']), complete: true, since},
+            since,
+            id,
+            identities
+        });
+
+        // Baseline pulse emits nothing
+        const p0 = step(null, [subIssue({closedAt: '2026-11-25T10:00:00Z'})], '2026-11-25T10:00:10Z', null);
+        expect(p0.transitions).toEqual([]);
+
+        // First post-baseline observation emits one closeout transition
+        const p1 = step(p0, [subIssue({closedAt: '2026-11-25T10:01:00Z'})], '2026-11-25T10:01:10Z');
+        expect(p1.transitions).toEqual([expect.objectContaining({
+            key    : 'acme/app#100',
+            head   : null,
+            kind   : 'closeout',
+            episode: '2026-11-25T10:01:00Z',
+            seats  : ['@neo-opus-ada']
+        })]);
+
+        // Overlap re-read of the same closedAt emits nothing
+        const p2 = step(p1, [subIssue({closedAt: '2026-11-25T10:01:00Z'})], '2026-11-25T10:02:10Z');
+        expect(p2.transitions).toEqual([]);
+
+        // Re-observing the parent with an open sub retires closeouts and records openSubs
+        const p3 = step(p2, [subIssue({closedAt: '2026-11-25T10:01:00Z', total: 3, completed: 2})], '2026-11-25T10:03:10Z');
+        expect(p3.transitions).toEqual([]);
+        expect(p3.closeouts).toBeUndefined();
+        expect(p3.openSubs).toEqual({'acme/app#100': '2026-11-25T10:03:10Z'});
+
+        // Closing the new/reopened sub carries a new closedAt -> new episode, clearing openSubs
+        const p4 = step(p3, [subIssue({number: 103, closedAt: '2026-11-25T10:04:00Z', total: 3, completed: 3})], '2026-11-25T10:04:10Z');
+        expect(p4.openSubs).toBeUndefined();
+        expect(p4.transitions).toEqual([expect.objectContaining({
+            key    : 'acme/app#100',
+            kind   : 'closeout',
+            episode: '2026-11-25T10:04:00Z'
+        })]);
     });
 });

@@ -212,7 +212,7 @@ function validateLedger(ledger, now) {
             ? value.role === 'rotation' && text(value.holder) && value.holder.startsWith('@') && value.holder !== value.to
             : !Object.hasOwn(value, 'holder'),
         wake   = value => object(value) && text(value.repo) && Number.isInteger(value.number) && value.number > 0 &&
-            text(value.head) && text(value.to) && value.to.startsWith('@') && text(value.kind) &&
+            (value.kind === 'closeout' ? value.head === null : text(value.head)) && text(value.to) && value.to.startsWith('@') && text(value.kind) &&
             text(value.episode) && text(value.reason) && ['author', 'reviewer', 'rotation', 'assignee'].includes(value.role) &&
             (!Object.hasOwn(value, 'ciRepair') || value.role === 'rotation' && value.kind === 'repair-ci' && isOpenWorkCiRepair(value.ciRepair)) &&
             value.pr === `${value.repo}#${value.number}` && holder(value) &&
@@ -227,7 +227,7 @@ function validateLedger(ledger, now) {
             Object.hasOwn(ledger.activation, 'certification') &&
                 !validCertification(ledger.activation.certification, Date.parse(ledger.activation.at))) ||
         ledger.certificationRefusal != null && !REFUSAL_CODES.has(ledger.certificationRefusal) ||
-        Object.entries(ledger.holding).some(([slot, entry]) => !object(entry) || !wake(entry.wake) ||
+        Object.entries(ledger.holding).some(([slot, entry]) => !object(entry) || !wake(entry.wake) || entry.wake.kind === 'closeout' ||
             Object.hasOwn(entry, 'ciRepairEvidenceKey') && !(entry.wake.role === 'rotation' && entry.wake.kind === 'repair-ci' &&
                 isOpenWorkCiRepair({evidenceKey: entry.ciRepairEvidenceKey, kind: 'mechanical'})) ||
             Object.hasOwn(entry, 'ciRepairDisposition') && !(entry.wake.role === 'rotation' && entry.wake.kind === 'repair-ci' &&
@@ -243,7 +243,9 @@ function validateLedger(ledger, now) {
                 ...(entry.wake.holder ? [entry.wake.holder] : [])])) ||
         Object.entries(ledger.pendingMerges).some(([id, value]) => !wake(value) ||
             Object.hasOwn(value, 'attempts') && !validAttempts(value.attempts) ||
-            !(value.kind === 'post-merge' && id === value.episode || value.kind === 'unblocked' && id === value.key && text(value.unblocks))) ||
+            !(value.kind === 'post-merge' && id === value.episode ||
+                value.kind === 'unblocked' && id === value.key && text(value.unblocks) ||
+                value.kind === 'closeout' && id === value.key && !Object.hasOwn(value, 'unblocks'))) ||
         Object.values(ledger.baselines).some(value => !text(value))) {
         throw new Error('Malformed open-work wake ledger; existing history preserved')
     }
@@ -289,7 +291,7 @@ function freshObservation(state, now) {
  * @private
  */
 function freshWake(wake, state, now) {
-    return freshObservation(state, now) && (wake.kind === 'post-merge' || wake.kind === 'unblocked' ||
+    return freshObservation(state, now) && (wake.kind === 'post-merge' || wake.kind === 'unblocked' || wake.kind === 'closeout' ||
         openWorkFreshness(state.snapshot.rows[wake.pr]?.observedAt, {now}) === 'ok') &&
         (!Object.hasOwn(wake, 'ciRepair') || !repairSnapshotOf(wake, state).stale)
 }
