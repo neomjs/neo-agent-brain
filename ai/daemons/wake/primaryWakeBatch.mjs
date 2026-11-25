@@ -169,34 +169,39 @@ function toBatchMembers(records) {
     return records.map(({recordKey, sourceEventIds}) => ({recordKey, sourceEventIds: sourceEventIds.slice()}))
 }
 
-/** @summary Pairs an oldest prefix anchored at `vetted[0]` with a newest suffix ending at `vetted.at(-1)`. */
+/**
+ * @summary Pairs an oldest prefix anchored at `vetted[0]` with compatible newest tail records ending at `vetted.at(-1)`,
+ * skipping oversize middle records on the tail side so earlier small fresh arrivals are not stranded.
+ */
 function selectHeadTailUrgentRecords(vetted) {
     const head = [vetted[0]], tail = [vetted.at(-1)];
-    let   left = 1, right = vetted.length - 2, headOpen = true, tailOpen = true;
-    while (left <= right && (headOpen || tailOpen)) {
+    let   left = 1, right = vetted.length - 2, headOpen = true;
+    while (left <= right) {
         if (headOpen) {
             const candidate = [...head, vetted[left], ...tail];
             if (batchSubsetFits(candidate)) { head.push(vetted[left]); left++ }
             else headOpen = false
         }
-        if (tailOpen && left <= right) {
+        if (left <= right) {
             const candidate = [...head, vetted[right], ...tail];
-            if (batchSubsetFits(candidate)) { tail.unshift(vetted[right]); right-- }
-            else tailOpen = false
+            if (batchSubsetFits(candidate)) tail.unshift(vetted[right]);
+            right--
         }
     }
     return [...head, ...tail]
 }
 
-/** @summary Selects the contiguous newest urgent suffix ending at `vetted.at(-1)` that fits batch bounds. */
-function selectNewestUrgentSuffix(vetted) {
+/**
+ * @summary Selects `vetted.at(-1)` plus earlier compatible urgent records in chronological order, skipping oversize
+ * records that cannot share the batch so overtaken small fresh arrivals surface on the same fresh-tail turn.
+ */
+function selectNewestUrgentTail(vetted) {
     const last = vetted.at(-1);
     if (!batchSubsetFits([last])) return [last];
     const tail = [last];
     for (let index = vetted.length - 2; index >= 0; index--) {
         const candidate = [vetted[index], ...tail];
-        if (batchSubsetFits(candidate)) tail.unshift(vetted[index]);
-        else break
+        if (batchSubsetFits(candidate)) tail.unshift(vetted[index])
     }
     return tail
 }
@@ -205,7 +210,7 @@ function selectNewestUrgentSuffix(vetted) {
  * @summary Selects a bounded urgent catch-up batch keeping fresh tail arrivals visible alongside oldest progress.
  * When all vetted records fit within the event and byte budgets, returns the full sequence. Under overflow, pairs
  * a contiguous oldest prefix (anchored at `records[0]` so every turn retires older backlog without starvation)
- * with a contiguous newest suffix so recent urgent work surfaces on the first idle turn. If `records[0]` and the
+ * with compatible newest tail records so recent urgent work surfaces on the first idle turn. If `records[0]` and the
  * newest record cannot fit together, falls back to {@link selectPrimaryWakeBatch} for that anchor; cross-turn
  * bounded freshness across consecutive incompatible full records is enforced by {@link selectUrgentPrimaryWakeTurn}.
  * @param {Object[]} records Ordered, eligible urgent receiver records with the attempt anchor first.
@@ -224,16 +229,18 @@ export function selectUrgentPrimaryWakeBatch(records) {
 }
 
 /**
- * @summary Plans one idle urgent turn with a strict `<= 2`-turn fresh-work bound and guaranteed old-work progress.
+ * @summary Plans one idle urgent turn with 1:1 oldest/fresh-tail alternation and non-blocking tail packing.
  * - When all eligible urgent records fit (`<= 48` events, `<= 16 KiB`), or when `[oldest, newest]` fits under
- *   overflow, fresh urgent work at the tail surfaces on **Turn 1** alongside oldest-prefix retirement
- *   (`nextPreferFreshTail = false`).
+ *   overflow, the newest urgent record and any earlier compatible tail records surface on **Turn 1** alongside
+ *   oldest-prefix retirement (`nextPreferFreshTail = false`).
  * - When oversize records prevent `oldest` and `newest` from sharing one batch (e.g. consecutive 48-event full
  *   records), turns alternate 1:1 between retiring the oldest prefix/singleton (`preferFreshTail === false` →
- *   `nextPreferFreshTail = true`) and promoting the newest compatible suffix (`preferFreshTail === true` →
- *   `nextPreferFreshTail = false`). Fresh urgent work therefore surfaces within **at most 2 idle turns**
- *   regardless of backlog depth, while at least one oldest record retires in every 2-turn cycle even under
- *   continuing incompatible arrivals.
+ *   `nextPreferFreshTail = true`) and promoting the newest record plus any earlier compatible records that fit
+ *   alongside it (`preferFreshTail === true` → `nextPreferFreshTail = false`, skipping incompatible oversize
+ *   records rather than stopping at them). At each fresh-tail turn (at most 2 idle turns), the newest record
+ *   and every compatible fresh record fit within remaining capacity surface immediately, while at least one
+ *   oldest record retires per 2-turn cycle; an oversize arrival that cannot share a batch with a newer record
+ *   waits for its oldest-or-tail slot (`<= 2` turns per ahead incompatible batch).
  * @param {Object[]} records Chronologically ordered eligible urgent receiver records.
  * @param {Object} [options={}]
  * @param {Boolean} [options.preferFreshTail=false] Whether the previous urgent turn excluded newer work due to an incompatible head.
@@ -244,7 +251,7 @@ export function selectUrgentPrimaryWakeTurn(records, {preferFreshTail = false} =
     if (vetted.length === 0) return null;
     if (vetted.length === 1) return {anchorRecord: vetted[0], members: undefined, nextPreferFreshTail: false};
 
-    const full = selectPrimaryWakeBatch(vetted);
+    const full = selectPrimaryWakeBatch(records);
     if (full?.length === vetted.length) {
         return {anchorRecord: vetted[0], members: full, nextPreferFreshTail: false}
     }
@@ -259,7 +266,7 @@ export function selectUrgentPrimaryWakeTurn(records, {preferFreshTail = false} =
     }
 
     if (preferFreshTail) {
-        const tail = selectNewestUrgentSuffix(vetted);
+        const tail = selectNewestUrgentTail(vetted);
         return {
             anchorRecord       : tail[0],
             members            : tail.length > 1 ? toBatchMembers(tail) : undefined,

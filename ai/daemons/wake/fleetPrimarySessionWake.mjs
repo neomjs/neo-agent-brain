@@ -503,6 +503,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
             ...keys.slice(-(MAX_URGENT_SPOOL_CANDIDATES - MAX_PRIMARY_WAKE_BATCH_EVENTS + 1))
         ];
 
+    /** @summary Plans the next uncommitted urgent turn from chronologically sorted eligible candidates and persisted fairness state. */
     const planUncommittedUrgentTurn = async (pointer, anchor) => {
         if (!eligibleBatchRecord(anchor, subscriptionId, publicRoute, true) ||
             anchor.deferReason?.startsWith('context-gate:') ||
@@ -550,6 +551,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         return plan ? {...plan, eligible, allPoolKeys: [pointer.recordKey, ...poolKeys], effectivePreferFreshTail} : null
     };
 
+    /** @summary Re-anchors an uncommitted urgent spool pointer onto the planned turn's anchor record before dispatch. */
     const prepareUrgentPointer = () => withOutboxLock(normalPath, async () => {
         if (!isBatchCapablePrimaryFamily(config.family) || !await currentRoute()) return;
         const pointer = await readPrivate(urgentPath);
@@ -636,13 +638,12 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
             nextPreferFreshTail = Boolean(newestKey && !selectedKeys.has(newestKey) && !planned.effectivePreferFreshTail)
         }
 
-        const committed = await commit(members);
         await writeFileAtomic(urgentFairnessPath, JSON.stringify({
             anchorRecordKey        : recordKey,
             preferFreshTail        : nextPreferFreshTail,
             fallbackPreferFreshTail: planned.effectivePreferFreshTail
         }), {mode: 0o600, fsync: true});
-        return committed
+        return commit(members)
     });
 
     const drainPointer = async pointerPath => {

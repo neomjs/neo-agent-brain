@@ -1757,12 +1757,24 @@ test.describe('signed native wake receiver integration', () => {
             expect((await post(102, ['MESSAGE:cont-fresh-2'], urgentDecorate('continuing fresh 2'))).status).toBe(202);
             await receiver.drain();
 
-            // Turn 2: delivers fresh-2 (since arriving-full-4 + fresh-2 = 49 > 48, suffix is fresh-2; cont-fresh-1 sits before arriving-full-4)
+            // Abort-safety check on `fallbackPreferFreshTail`: an aborted send before delivery preserves `preferFreshTail === true`.
+            const origSend = transport.sendCodexSessionWake;
+            transport.sendCodexSessionWake = async () => ({status: 'not-sent'});
             activity = 'idle';
             await pump();
             await receiver.drain();
+            expect(sends).toBe(1);
+            transport.sendCodexSessionWake = origSend;
+
+            // Turn 2: skips incompatible `arriving-full-4` and delivers BOTH `continuing fresh 1` and `continuing fresh 2` together on Turn 2!
+            await pump();
+            await receiver.drain();
             expect(sends).toBe(2);
+            expect(consumed[1]).toContain('[WAKE][priority:high] 2 events for @fixture');
             expect(consumed[1]).toContain('continuing fresh 2');
+            const deliveredAfterTurn2 = (await state.list('delivered')).flatMap(r => r.sourceEventIds);
+            expect(deliveredAfterTurn2, 'overtaken continuing fresh 1 delivers on Turn 2 alongside fresh 2').toContain('MESSAGE:cont-fresh-1');
+            expect(deliveredAfterTurn2).toContain('MESSAGE:cont-fresh-2');
 
             // Continuing arrival before Turn 3: fresh-3 arrives alongside fresh-4
             activity = 'busy';
@@ -1784,11 +1796,12 @@ test.describe('signed native wake receiver integration', () => {
             expect(consumed[3]).toContain('[WAKE][priority:high] 2 events for @fixture');
             expect(consumed[3]).toContain('continuing fresh 4');
 
-            // Drain remaining backlog cleanly with zero lost events
+            // Remaining 3 full records (`old-full-2`, `arriving-full-4`, `old-full-3`) drain in 3 turns (7 total sends) with zero lost events
             while ((await state.list('pending')).length > 0) {
                 await pump();
                 await receiver.drain();
             }
+            expect(sends).toBe(7);
             const deliveredAll = await state.list('delivered');
             expect(deliveredAll).toHaveLength(9);
             expect(deliveredAll.flatMap(r => r.sourceEventIds)).toContain('MESSAGE:cont-fresh-1');
