@@ -24,7 +24,8 @@ import {
     MAX_PRIMARY_WAKE_BATCH_EVENTS,
     MAX_URGENT_SPOOL_CANDIDATES,
     selectPrimaryWakeBatch,
-    selectUrgentPrimaryWakeBatch
+    selectUrgentPrimaryWakeBatch,
+    selectUrgentPrimaryWakeTurn
 } from './primaryWakeBatch.mjs';
 import {
     bindPrimarySession,
@@ -475,9 +476,105 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         isDeepStrictEqual((await readPrivate(manifestPath))?.routes?.[subscriptionId],current) &&
         (await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family}))?.stateDir === stateDir;
 
-    const urgentPath = urgentPrimaryWakeSpoolPath(stateDir,route.agentIdentity),
-          normalPath = primaryWakeSpoolPath(stateDir,route.agentIdentity),
-          statePath  = statePathFor(stateDir,route.agentIdentity);
+    const urgentPath         = urgentPrimaryWakeSpoolPath(stateDir,route.agentIdentity),
+          urgentFairnessPath = urgentPath + '.fairness',
+          normalPath         = primaryWakeSpoolPath(stateDir,route.agentIdentity),
+          statePath          = statePathFor(stateDir,route.agentIdentity),
+          isRecorded         = async key => (await state.read(key))?.state === 'delivered',
+          urgentSlotReady    = async attempt => !attempt || (attempt.status === 'delivered' && await primaryWakeAttemptRecorded(attempt, isRecorded));
+
+    const isAdmittedUrgentCandidate = record =>
+        validReceiverRecord(record, subscriptionId, publicRoute.agentIdentity) &&
+        !TERMINAL_STATES.has(record.state) &&
+        !isIdleOnlyEnvelope(record.envelope) &&
+        eligibleBatchRecord(record, subscriptionId, publicRoute, true) &&
+        record.state === 'pending' &&
+        !record.deferReason?.startsWith('context-gate:') &&
+        !record.expectedRecipient &&
+        !record.nativeInitiatedAt &&
+        (record.deferReason === 'earlier urgent native wake outstanding' ||
+         record.deferReason === 'awaiting the native recipient' ||
+         NATIVE_DIAGNOSTIC_REASONS.includes(record.deferReason));
+
+    const boundUrgentCandidatePool = keys => keys.length <= MAX_URGENT_SPOOL_CANDIDATES
+        ? keys
+        : [
+            ...keys.slice(0, MAX_PRIMARY_WAKE_BATCH_EVENTS - 1),
+            ...keys.slice(-(MAX_URGENT_SPOOL_CANDIDATES - MAX_PRIMARY_WAKE_BATCH_EVENTS + 1))
+        ];
+
+    const planUncommittedUrgentTurn = async (pointer, anchor) => {
+        if (!eligibleBatchRecord(anchor, subscriptionId, publicRoute, true) ||
+            anchor.deferReason?.startsWith('context-gate:') ||
+            anchor.expectedRecipient || anchor.nativeInitiatedAt) {
+            return null
+        }
+        let rawKeys;
+        if (Array.isArray(pointer.candidates)) {
+            rawKeys = pointer.candidates
+        } else {
+            const pendingRecords = await state.list('pending');
+            rawKeys = pendingRecords
+                .filter(item => item.recordKey !== pointer.recordKey &&
+                    item.deferReason === 'earlier urgent native wake outstanding' &&
+                    validReceiverRecord(item, subscriptionId, publicRoute.agentIdentity))
+                .map(item => item.recordKey)
+        }
+        const poolKeys = [],
+              seenKeys = new Set([pointer.recordKey]);
+        for (const key of rawKeys) {
+            if (!isKey(key)) return null;
+            if (!seenKeys.has(key)) {
+                seenKeys.add(key);
+                poolKeys.push(key)
+            }
+        }
+        const boundedKeys = boundUrgentCandidatePool(poolKeys),
+              eligible    = [anchor];
+        for (const key of boundedKeys) {
+            const candidate = await state.read(key).catch(() => null);
+            if (!candidate || typeof candidate.acceptedAt !== 'string') continue;
+            if (isAdmittedUrgentCandidate(candidate)) eligible.push(candidate)
+        }
+        eligible.sort((left, right) =>
+            (left.acceptedAt || '').localeCompare(right.acceptedAt || '') ||
+            left.recordKey.localeCompare(right.recordKey)
+        );
+        const fairness        = await readPrivate(urgentFairnessPath),
+              anchorDelivered = isKey(fairness?.anchorRecordKey) &&
+                  (await state.read(fairness.anchorRecordKey).catch(() => null))?.state === 'delivered',
+              effectivePreferFreshTail = anchorDelivered
+                  ? fairness?.preferFreshTail === true
+                  : fairness?.fallbackPreferFreshTail === true,
+              plan = selectUrgentPrimaryWakeTurn(eligible, {preferFreshTail: effectivePreferFreshTail});
+        return plan ? {...plan, eligible, allPoolKeys: [pointer.recordKey, ...poolKeys], effectivePreferFreshTail} : null
+    };
+
+    const prepareUrgentPointer = () => withOutboxLock(normalPath, async () => {
+        if (!isBatchCapablePrimaryFamily(config.family) || !await currentRoute()) return;
+        const pointer = await readPrivate(urgentPath);
+        if (!pointer || !isKey(pointer.recordKey)) return;
+        const sessionState = await readPrimarySessionWake({statePath}).catch(() => null);
+        if (!await urgentSlotReady(sessionState?.urgentInflight)) return;
+        const anchor = await state.read(pointer.recordKey).catch(() => null);
+        if (!validReceiverRecord(anchor, subscriptionId, publicRoute.agentIdentity) ||
+            !['pending', 'dispatching'].includes(anchor.state)) return;
+        const planned = await planUncommittedUrgentTurn(pointer, anchor);
+        if (!planned) return;
+        const nextAnchorKey = planned.anchorRecord.recordKey,
+              nextPool      = boundUrgentCandidatePool(planned.allPoolKeys.filter(key => key !== nextAnchorKey));
+        if (nextAnchorKey !== pointer.recordKey || !Array.isArray(pointer.candidates) || !isDeepStrictEqual(pointer.candidates, nextPool)) {
+            if (nextAnchorKey !== pointer.recordKey) {
+                await fs.rm(urgentPath + '.status', {force: true})
+            }
+            await writeFileAtomic(urgentPath, JSON.stringify({
+                recordKey : nextAnchorKey,
+                urgent    : true,
+                candidates: nextPool
+            }), {mode: 0o600, fsync: true})
+        }
+    });
+
     const commitOrdinary = (recordKey, commit) => withOutboxLock(normalPath, async () => {
         const pointer = await readPrivate(normalPath);
         if (pointer?.recordKey !== recordKey || !await currentRoute()) return pending('ordinary pointer changed');
@@ -524,30 +621,28 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         if (!validReceiverRecord(anchor, subscriptionId, publicRoute.agentIdentity) ||
             !['pending','dispatching'].includes(anchor.state)) return pending('urgent record changed');
         if (anchor.deferReason?.startsWith('context-gate:')) return pending('urgent record deferred by context');
-        if (!eligibleBatchRecord(anchor, subscriptionId, publicRoute, true)) return commit();
-        const candidates = [],
-              keys       = Array.isArray(pointer.candidates) ? pointer.candidates.slice(0, MAX_URGENT_SPOOL_CANDIDATES) : [];
+        const planned = await planUncommittedUrgentTurn(pointer, anchor);
+        if (!planned) return commit();
 
-        for (const key of keys) {
-            if (!isKey(key)) return commit();
-            const record = await state.read(key).catch(() => null);
-            if (typeof record?.acceptedAt !== 'string') return commit();
-            candidates.push(record)
+        let members, nextPreferFreshTail;
+        if (planned.anchorRecord.recordKey === recordKey) {
+            members             = planned.members;
+            nextPreferFreshTail = planned.nextPreferFreshTail
+        } else {
+            const reanchored = [anchor, ...planned.eligible.filter(item => item.recordKey !== recordKey)];
+            members             = selectUrgentPrimaryWakeBatch(reanchored);
+            const newestKey    = planned.eligible.at(-1)?.recordKey,
+                  selectedKeys = new Set(members ? members.map(item => item.recordKey) : [recordKey]);
+            nextPreferFreshTail = Boolean(newestKey && !selectedKeys.has(newestKey) && !planned.effectivePreferFreshTail)
         }
 
-        const records = [anchor];
-        candidates.sort((left, right) => left.acceptedAt.localeCompare(right.acceptedAt));
-
-        for (const record of candidates) {
-            if (!validReceiverRecord(record, subscriptionId, publicRoute.agentIdentity)) break;
-            if (TERMINAL_STATES.has(record.state) || isIdleOnlyEnvelope(record.envelope)) continue;
-            if (record.acceptedAt < anchor.acceptedAt) return commit();
-            if (!eligibleBatchRecord(record, subscriptionId, publicRoute, true) || record.expectedRecipient || record.nativeInitiatedAt ||
-                record.state !== 'pending' || record.deferReason !== 'earlier urgent native wake outstanding') continue;
-            records.push(record)
-        }
-
-        return commit(selectUrgentPrimaryWakeBatch(records))
+        const committed = await commit(members);
+        await writeFileAtomic(urgentFairnessPath, JSON.stringify({
+            anchorRecordKey        : recordKey,
+            preferFreshTail        : nextPreferFreshTail,
+            fallbackPreferFreshTail: planned.effectivePreferFreshTail
+        }), {mode: 0o600, fsync: true});
+        return committed
     });
 
     const drainPointer = async pointerPath => {
@@ -585,6 +680,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         return {active:true}
     };
 
+    await prepareUrgentPointer();
     const urgentOutcome = await drainPointer(urgentPath);
     if (!urgentOutcome.active) {
         await drainPointer(normalPath);

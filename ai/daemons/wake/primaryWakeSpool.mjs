@@ -14,7 +14,11 @@ import {
 } from './primaryWakeBatch.mjs';
 import {primaryWakeAttemptRecorded, readPrimarySessionWake} from './primarySessionWake.mjs';
 import {TERMINAL_STATES}                                    from './receiverState.mjs';
-export {isBatchCapablePrimaryFamily}                                                         from './primaryWakeBatch.mjs';
+export {
+    isBatchCapablePrimaryFamily,
+    MAX_PRIMARY_WAKE_BATCH_EVENTS,
+    MAX_URGENT_SPOOL_CANDIDATES
+} from './primaryWakeBatch.mjs';
 import {readPrivateWakeJson}      from './nativeWakeEnrollment.mjs';
 import {writeFileAtomic}          from '../../services/shared/atomicFileWrite.mjs';
 import {deriveAgentInstanceHome}  from '../../services/fleet/deriveAgentInstanceHome.mjs';
@@ -156,7 +160,14 @@ export async function readPrimaryWakeBatchReceipt(record, stateDir, receipts) {
     const seat      = record.route?.agentIdentity,
           statePath = path.join(path.dirname(primaryWakeSpoolPath(stateDir, seat)), seat.slice(1) + '.json');
     if (!receipts.has(seat)) receipts.set(seat, readPrimarySessionWake({statePath}));
-    return batchReceipt(record, await receipts.get(seat))
+    const batched = batchReceipt(record, await receipts.get(seat));
+    if (batched) return batched;
+    if (!isUrgentWakeRecord(record)) return null;
+    const urgentPointer = urgentPrimaryWakeSpoolPath(stateDir, seat),
+          currentUrgent = await readPrivateWakeJson(urgentPointer);
+    if (currentUrgent?.recordKey !== record.recordKey) return null;
+    const outcome = await readSpoolOutcome(urgentPointer, record, seat, record.recordKey);
+    return outcome.status === 'delivered' ? outcome : null
 }
 
 /** @summary Projects one member from the exact completed native attempt and its immutable binding. */

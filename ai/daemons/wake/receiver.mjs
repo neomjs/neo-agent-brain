@@ -47,6 +47,8 @@ import {
     ACTIVE_TURN_UNAVAILABLE_REASON,
     hasPrimaryWakeRecipient,
     isBatchCapablePrimaryFamily,
+    MAX_PRIMARY_WAKE_BATCH_EVENTS,
+    MAX_URGENT_SPOOL_CANDIDATES,
     SPOOL_CONTENTION_REASONS,
     isUrgentWakeRecord,
     primaryWakeSpoolPath,
@@ -518,13 +520,13 @@ export function createWakeReceiver({
                       ...rawList.filter(item => !isUrgentWakeRecord(item))
                   ];
 
-            const batchReceipts          = new Map(),
-                  urgentBlockerBySeat    = new Map(),
-                  normalBlockerBySeat    = new Map(),
-                  stagedCandidatesBySeat = new Map(),
-                  isStagedBatchCandidate = async (seat, currentRoute, recordKey, isOrdinary) => {
-                      if (!isBatchCapablePrimaryFamily(currentRoute.adapterConfig?.primarySession?.family) ||
-                          !currentRoute.adapterConfig?.contextGate) {
+            const batchReceipts                   = new Map(),
+                  urgentBlockerBySeat             = new Map(),
+                  normalBlockerBySeat             = new Map(),
+                  stagedCandidatesBySeat          = new Map(),
+                  sessionStateBySeat              = new Map(),
+                  shouldReevaluateContendedWaiter = async (seat, currentRoute, record, isOrdinary) => {
+                      if (!isBatchCapablePrimaryFamily(currentRoute.adapterConfig?.primarySession?.family)) {
                           return false;
                       }
                       const cacheKey = `${seat}:${isOrdinary ? 'normal' : 'urgent'}`;
@@ -533,9 +535,31 @@ export function createWakeReceiver({
                               ? primaryWakeSpoolPath(state.stateDir, seat)
                               : urgentPrimaryWakeSpoolPath(state.stateDir, seat);
                           const pointer = await track('drain', readSpoolPointer(spoolPath)).catch(() => null);
-                          stagedCandidatesBySeat.set(cacheKey, new Set(Array.isArray(pointer?.candidates) ? pointer.candidates : []));
+                          stagedCandidatesBySeat.set(cacheKey, {
+                              pointer,
+                              candidates: new Set(Array.isArray(pointer?.candidates) ? pointer.candidates : [])
+                          });
                       }
-                      return stagedCandidatesBySeat.get(cacheKey).has(recordKey);
+                      const {pointer, candidates} = stagedCandidatesBySeat.get(cacheKey);
+                      if (candidates.has(record.recordKey)) {
+                          return Boolean(currentRoute.adapterConfig?.contextGate);
+                      }
+                      const cap = isOrdinary ? MAX_PRIMARY_WAKE_BATCH_EVENTS - 1 : MAX_URGENT_SPOOL_CANDIDATES;
+                      if (!pointer || pointer.recordKey !== record.blockedByWake || candidates.size >= cap ||
+                          record.expectedRecipient || record.nativeInitiatedAt) {
+                          return false;
+                      }
+                      if (!sessionStateBySeat.has(seat)) {
+                          const statePath = path.join(state.stateDir, 'primary-sessions', `${seat.slice(1)}.json`);
+                          sessionStateBySeat.set(seat, await track('drain', readPrimarySessionWake({statePath})).catch(() => null));
+                      }
+                      const sessionState  = sessionStateBySeat.get(seat),
+                            activeAttempt = isOrdinary ? sessionState?.inflight : sessionState?.urgentInflight;
+                      if (activeAttempt?.recordKey === pointer.recordKey) {
+                          return false;
+                      }
+                      candidates.add(record.recordKey);
+                      return true;
                   };
 
             // Receipt projection is not a new send. Finish every already-observed batch member first so
@@ -585,7 +609,7 @@ export function createWakeReceiver({
                               : urgentBlockerBySeat.get(seat);
 
                     if (blockerKey && record.blockedByWake === blockerKey &&
-                        !((isOrdinary || isUrgent) && await isStagedBatchCandidate(seat, current, record.recordKey, isOrdinary))) {
+                        !((isOrdinary || isUrgent) && await shouldReevaluateContendedWaiter(seat, current, record, isOrdinary))) {
                         continue;
                     }
                 }

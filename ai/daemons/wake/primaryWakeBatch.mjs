@@ -43,15 +43,47 @@ export function matchesPrimaryWakeMember(record, member) {
 }
 
 /**
- * @summary Renders one digest using the existing wake summaries, in the order records were accepted.
- * Counts accumulate across all members. Each category keeps the last summarized payload and the
+ * @summary Resolves the wire-contract recency timestamp for one digest bucket, matching
+ * `CoalescingEngineService._buildDigestEnvelope` (`latestTs`, then `sentAt` / `grantedAt` /
+ * `lastModifiedAt`, then `envelope.emittedAt`). Returns `null` when no timestamp is present so
+ * timestamp-less records retain acceptance-order last-write-wins.
+ * @param {Object} bucket
+ * @param {Object} envelope
+ * @returns {Number|null}
+ */
+function resolveBucketTimestamp(bucket, envelope) {
+    if (typeof bucket?.latestTs === 'number' && Number.isFinite(bucket.latestTs)) {
+        return bucket.latestTs
+    }
+    const latest = bucket?.latest;
+    for (const field of ['sentAt', 'grantedAt', 'lastModifiedAt']) {
+        const value = latest?.[field];
+        if (typeof value === 'string') {
+            const ts = Date.parse(value);
+            if (Number.isFinite(ts)) return ts
+        }
+    }
+    const emitted = envelope?.emittedAt;
+    if (typeof emitted === 'number' && Number.isFinite(emitted)) return emitted;
+    if (typeof emitted === 'string') {
+        const ts = Date.parse(emitted);
+        if (Number.isFinite(ts)) return ts
+    }
+    return null
+}
+
+/**
+ * @summary Renders one digest using the existing wake summaries across the selected batch.
+ * Counts accumulate across all members. Each category resolves `latest` by true wire-contract
+ * event recency (falling back to acceptance order only when timestamps are absent), and the
  * message category keeps the highest priority seen across the batch.
  * @param {Object[]} records Ordered accepted receiver records from one subscription.
  * @returns {String} The wake text before the native receipt marker is appended.
  */
 export function formatPrimaryWakeBatch(records) {
-    const breakdown   = {};
-    let   totalEvents = 0;
+    const breakdown        = {},
+          latestTsByBucket = {};
+    let totalEvents = 0;
     for (const {envelope, sourceEventIds} of records) {
         totalEvents += sourceEventIds.length;
         for (const key of BUCKETS) {
@@ -59,7 +91,14 @@ export function formatPrimaryWakeBatch(records) {
             if (!Number.isSafeInteger(bucket?.count) || bucket.count < 1) continue;
             const aggregate = breakdown[key] ??= {count: 0};
             aggregate.count += bucket.count;
-            if (bucket.latest) aggregate.latest = bucket.latest;
+            if (bucket.latest) {
+                const ts     = resolveBucketTimestamp(bucket, envelope),
+                      prevTs = latestTsByBucket[key] ?? null;
+                if (!aggregate.latest || (ts !== null ? (prevTs === null || ts >= prevTs) : prevTs === null)) {
+                    aggregate.latest      = bucket.latest;
+                    latestTsByBucket[key] = ts ?? prevTs
+                }
+            }
             if (key === 'sent_to_me') {
                 const priority   = bucket.highestPriority || bucket.latest?.priority,
                       normalized = PRIORITIES.includes(priority) ? priority : 'normal';
@@ -112,32 +151,27 @@ function batchSubsetFits(records) {
     return Buffer.byteLength(formatPrimaryWakeBatch(records), 'utf8') <= MAX_DIGEST_BYTES
 }
 
-/**
- * @summary Selects a bounded urgent catch-up batch keeping fresh tail arrivals visible alongside oldest progress.
- * When all vetted records fit within the event and byte budgets, returns the full sequence. Under overflow, pairs
- * a contiguous oldest prefix (anchored at `records[0]` so every turn retires older backlog without starvation)
- * with a contiguous newest suffix so recent urgent work surfaces on the first idle turn. If `records[0]` and the
- * newest record cannot fit together, falls back to {@link selectPrimaryWakeBatch} so the oversize head clears first.
- * @param {Object[]} records Ordered, eligible urgent receiver records with the spool anchor first.
- * @returns {Object[]|undefined} Ordered record keys and source event identities, or undefined for singleton delivery.
- */
-export function selectUrgentPrimaryWakeBatch(records) {
+/** @summary Vets an ordered urgent record sequence up to the first malformed or duplicate entry. */
+function vetUrgentRecords(records) {
     const vetted = [], seenKeys = new Set();
-    for (const record of records) {
+    for (const record of records ?? []) {
         const {recordKey, sourceEventIds, envelope} = record ?? {};
         if (!RECORD_KEY.test(recordKey ?? '') || !validSources(sourceEventIds) ||
             sourceEventIds.length !== envelope?.payload?.totalEvents || seenKeys.has(recordKey)) break;
         vetted.push(record);
         seenKeys.add(recordKey)
     }
-    if (vetted.length < 2) return undefined;
-    const full = selectPrimaryWakeBatch(vetted);
-    if (full?.length === vetted.length) return full;
+    return vetted
+}
 
-    const first = vetted[0], last = vetted.at(-1);
-    if (!batchSubsetFits([first, last])) return full;
+/** @summary Maps selected receiver records to frozen attempt membership entries. */
+function toBatchMembers(records) {
+    return records.map(({recordKey, sourceEventIds}) => ({recordKey, sourceEventIds: sourceEventIds.slice()}))
+}
 
-    const head = [first], tail = [last];
+/** @summary Pairs an oldest prefix anchored at `vetted[0]` with a newest suffix ending at `vetted.at(-1)`. */
+function selectHeadTailUrgentRecords(vetted) {
+    const head = [vetted[0]], tail = [vetted.at(-1)];
     let   left = 1, right = vetted.length - 2, headOpen = true, tailOpen = true;
     while (left <= right && (headOpen || tailOpen)) {
         if (headOpen) {
@@ -151,5 +185,91 @@ export function selectUrgentPrimaryWakeBatch(records) {
             else tailOpen = false
         }
     }
-    return [...head, ...tail].map(({recordKey, sourceEventIds}) => ({recordKey, sourceEventIds: sourceEventIds.slice()}))
+    return [...head, ...tail]
+}
+
+/** @summary Selects the contiguous newest urgent suffix ending at `vetted.at(-1)` that fits batch bounds. */
+function selectNewestUrgentSuffix(vetted) {
+    const last = vetted.at(-1);
+    if (!batchSubsetFits([last])) return [last];
+    const tail = [last];
+    for (let index = vetted.length - 2; index >= 0; index--) {
+        const candidate = [vetted[index], ...tail];
+        if (batchSubsetFits(candidate)) tail.unshift(vetted[index]);
+        else break
+    }
+    return tail
+}
+
+/**
+ * @summary Selects a bounded urgent catch-up batch keeping fresh tail arrivals visible alongside oldest progress.
+ * When all vetted records fit within the event and byte budgets, returns the full sequence. Under overflow, pairs
+ * a contiguous oldest prefix (anchored at `records[0]` so every turn retires older backlog without starvation)
+ * with a contiguous newest suffix so recent urgent work surfaces on the first idle turn. If `records[0]` and the
+ * newest record cannot fit together, falls back to {@link selectPrimaryWakeBatch} for that anchor; cross-turn
+ * bounded freshness across consecutive incompatible full records is enforced by {@link selectUrgentPrimaryWakeTurn}.
+ * @param {Object[]} records Ordered, eligible urgent receiver records with the attempt anchor first.
+ * @returns {Object[]|undefined} Ordered record keys and source event identities, or undefined for singleton delivery.
+ */
+export function selectUrgentPrimaryWakeBatch(records) {
+    const vetted = vetUrgentRecords(records);
+    if (vetted.length < 2) return undefined;
+    const full = selectPrimaryWakeBatch(vetted);
+    if (full?.length === vetted.length) return full;
+
+    const first = vetted[0], last = vetted.at(-1);
+    if (!batchSubsetFits([first, last])) return full;
+
+    return toBatchMembers(selectHeadTailUrgentRecords(vetted))
+}
+
+/**
+ * @summary Plans one idle urgent turn with a strict `<= 2`-turn fresh-work bound and guaranteed old-work progress.
+ * - When all eligible urgent records fit (`<= 48` events, `<= 16 KiB`), or when `[oldest, newest]` fits under
+ *   overflow, fresh urgent work at the tail surfaces on **Turn 1** alongside oldest-prefix retirement
+ *   (`nextPreferFreshTail = false`).
+ * - When oversize records prevent `oldest` and `newest` from sharing one batch (e.g. consecutive 48-event full
+ *   records), turns alternate 1:1 between retiring the oldest prefix/singleton (`preferFreshTail === false` →
+ *   `nextPreferFreshTail = true`) and promoting the newest compatible suffix (`preferFreshTail === true` →
+ *   `nextPreferFreshTail = false`). Fresh urgent work therefore surfaces within **at most 2 idle turns**
+ *   regardless of backlog depth, while at least one oldest record retires in every 2-turn cycle even under
+ *   continuing incompatible arrivals.
+ * @param {Object[]} records Chronologically ordered eligible urgent receiver records.
+ * @param {Object} [options={}]
+ * @param {Boolean} [options.preferFreshTail=false] Whether the previous urgent turn excluded newer work due to an incompatible head.
+ * @returns {{anchorRecord:Object,members:(Object[]|undefined),nextPreferFreshTail:Boolean}|null}
+ */
+export function selectUrgentPrimaryWakeTurn(records, {preferFreshTail = false} = {}) {
+    const vetted = vetUrgentRecords(records);
+    if (vetted.length === 0) return null;
+    if (vetted.length === 1) return {anchorRecord: vetted[0], members: undefined, nextPreferFreshTail: false};
+
+    const full = selectPrimaryWakeBatch(vetted);
+    if (full?.length === vetted.length) {
+        return {anchorRecord: vetted[0], members: full, nextPreferFreshTail: false}
+    }
+
+    const first = vetted[0], last = vetted.at(-1);
+    if (batchSubsetFits([first, last])) {
+        return {
+            anchorRecord       : first,
+            members            : toBatchMembers(selectHeadTailUrgentRecords(vetted)),
+            nextPreferFreshTail: false
+        }
+    }
+
+    if (preferFreshTail) {
+        const tail = selectNewestUrgentSuffix(vetted);
+        return {
+            anchorRecord       : tail[0],
+            members            : tail.length > 1 ? toBatchMembers(tail) : undefined,
+            nextPreferFreshTail: false
+        }
+    }
+
+    return {
+        anchorRecord       : first,
+        members            : full,
+        nextPreferFreshTail: true
+    }
 }
