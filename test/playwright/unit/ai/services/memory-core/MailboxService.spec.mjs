@@ -6663,6 +6663,296 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             });
         });
     });
+
+    test.describe('#1900 get_message default read stamp & session-end broadcast drain', () => {
+        const seedDirectMessage = async ({sender = '@alice', recipient = '@bob', subject = 'direct #1900'} = {}) => {
+            await RequestContextService.run({agentIdentityNodeId: recipient}, () =>
+                PermissionService.grantPermission({to: sender, scope: 'CAN_REPLY_TO'})
+            );
+
+            return RequestContextService.run({agentIdentityNodeId: sender}, () =>
+                MailboxService.addMessage({to: recipient, subject, body: `body:${subject}`})
+            );
+        };
+
+        const storedNodeReadAt = messageId => {
+            const row = GraphService.db.storage.db
+                .prepare('SELECT data FROM Nodes WHERE id = ?')
+                .get(messageId);
+            return row ? (JSON.parse(row.data).properties?.readAt ?? null) : null;
+        };
+
+        const storedDeliveryReadAt = (messageId, recipient) => {
+            const row = GraphService.db.storage.db
+                .prepare("SELECT data FROM Edges WHERE type = 'DELIVERED_TO' AND source = ? AND target = ?")
+                .get(messageId, recipient);
+            return row ? (JSON.parse(row.data).properties?.readAt ?? null) : null;
+        };
+
+        test('AC-1 (#1900): get_message through the MCP adapter by a direct recipient marks it read and removes it from unread list', async () => {
+            const {messageId} = await seedDirectMessage({subject: 'ac1-direct'});
+
+            const opened = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('get_message', {messageId})
+            );
+
+            expect(opened.readAt).toBeTruthy();
+            expect(opened.body).toBe('body:ac1-direct');
+            expect(opened.readReceipt).toEqual({status: 'read', durable: true, readAt: opened.readAt});
+            expect(storedNodeReadAt(messageId)).toBe(opened.readAt);
+
+            const unread = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('list_messages', {box: 'inbox', status: 'unread'})
+            );
+            expect(unread.messages.map(row => row.messageId)).not.toContain(messageId);
+
+            const reopened = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('get_message', {messageId})
+            );
+            expect(reopened.readAt).toBe(opened.readAt);
+            expect(reopened.readReceipt).toBeUndefined();
+        });
+
+        test('RA-1 (#1900): get_message through the MCP adapter preserves body and distinguishes in-memory-only and not_applied readReceipt outcomes', async () => {
+            const {messageId: missingRowId}   = await seedDirectMessage({subject: 'ra1-missing-row'});
+            const originalSetRecordProperty   = GraphService.db.storage.setRecordProperty;
+            GraphService.db.storage.setRecordProperty = () => false;
+            try {
+                const unapplied = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                    callMemoryCoreTool('get_message', {messageId: missingRowId})
+                );
+                expect(unapplied.body).toBe('body:ra1-missing-row');
+                expect(unapplied.readAt).toBeNull();
+                expect(unapplied.readReceipt).toEqual({
+                    status   : 'not_applied',
+                    durable  : false,
+                    retryable: true,
+                    warning  : expect.stringContaining('did NOT apply')
+                });
+            } finally {
+                GraphService.db.storage.setRecordProperty = originalSetRecordProperty;
+            }
+
+            const {messageId: inMemoryId} = await seedDirectMessage({subject: 'ra1-in-memory'});
+            const originalStorage         = GraphService.db.storage;
+            GraphService.db.storage       = null;
+            try {
+                const memoryOnly = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                    callMemoryCoreTool('get_message', {messageId: inMemoryId})
+                );
+                expect(memoryOnly.body).toBe('body:ra1-in-memory');
+                expect(memoryOnly.readAt).toBeTruthy();
+                expect(memoryOnly.readReceipt).toEqual({
+                    status : 'read',
+                    durable: false,
+                    readAt : memoryOnly.readAt,
+                    warning: expect.stringContaining('applied in memory but NOT persisted')
+                });
+            } finally {
+                GraphService.db.storage = originalStorage;
+            }
+        });
+
+        test('RA-2 (#1900): mark_read rejects includeUnseen: true combined with includeUnseenBroadcasts: true so unseen direct messages cannot be swept', async () => {
+            const {messageId: unseenDirect} = await seedDirectMessage({subject: 'ra2-unseen-direct'});
+
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                    callMemoryCoreTool('mark_read', {all: true, includeUnseen: true, includeUnseenBroadcasts: true})
+                )
+            ).rejects.toThrow(/accepts includeUnseen or includeUnseenBroadcasts, not both/);
+
+            expect(storedNodeReadAt(unseenDirect)).toBeNull();
+        });
+
+        test('AC-2 (#1900): get_message on a receipt-backed broadcast stamps only the caller delivery edge', async () => {
+            GraphService.upsertNode({id: '@charlie', type: 'AgentIdentity', name: 'Charlie', properties: {accountType: 'agent'}});
+
+            const {messageId} = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+                MailboxService.addMessage({to: 'AGENT:*', subject: 'ac2-broadcast', body: 'broadcast payload'})
+            );
+
+            const bobOpened = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('get_message', {messageId})
+            );
+
+            expect(bobOpened.readAt).toBeTruthy();
+            expect(storedDeliveryReadAt(messageId, '@bob')).toBe(bobOpened.readAt);
+            expect(storedDeliveryReadAt(messageId, '@charlie')).toBeNull();
+
+            const bobUnread = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('list_messages', {box: 'inbox', status: 'unread'})
+            );
+            const charlieUnread = await RequestContextService.run({agentIdentityNodeId: '@charlie'}, () =>
+                callMemoryCoreTool('list_messages', {box: 'inbox', status: 'unread'})
+            );
+
+            expect(bobUnread.messages.map(row => row.messageId)).not.toContain(messageId);
+            expect(charlieUnread.messages.map(row => row.messageId)).toContain(messageId);
+        });
+
+        test('AC-3 (#1900): keepUnread, observer read, direct service call, sender read, CAN_READ_INBOX_OF reader, and legacy broadcast leave read state unchanged', async () => {
+            GraphService.upsertNode({id: '@charlie', type: 'AgentIdentity', name: 'Charlie', properties: {accountType: 'agent'}});
+            await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                PermissionService.grantPermission({to: '@charlie', scope: 'CAN_READ_INBOX_OF'})
+            );
+
+            const {messageId} = await seedDirectMessage({subject: 'ac3-five-arms'});
+
+            // Arm 1: keepUnread: true via MCP adapter
+            const keptUnread = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('get_message', {messageId, keepUnread: true})
+            );
+            expect(keptUnread.readAt).toBeNull();
+            expect(storedNodeReadAt(messageId)).toBeNull();
+
+            // Arm 2: observer read via MCP adapter
+            const observed = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('get_message', {messageId, observer: {scope: 'own'}})
+            );
+            expect(observed.readAt).toBeNull();
+            expect(storedNodeReadAt(messageId)).toBeNull();
+
+            // Arm 3: direct service call under recipient identity
+            const serviceRead = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                MailboxService.getMessage({messageId})
+            );
+            expect(serviceRead.readAt).toBeNull();
+            expect(storedNodeReadAt(messageId)).toBeNull();
+
+            // Arm 4: sender reading own message via MCP adapter (direct + broadcast)
+            const senderDirectRead = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+                callMemoryCoreTool('get_message', {messageId})
+            );
+            expect(senderDirectRead.readAt).toBeNull();
+            expect(storedNodeReadAt(messageId)).toBeNull();
+
+            const {messageId: broadcastId} = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+                MailboxService.addMessage({to: 'AGENT:*', subject: 'ac3-sender-bcast', body: 'sender check'})
+            );
+            const senderBroadcastRead = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+                callMemoryCoreTool('get_message', {messageId: broadcastId})
+            );
+            expect(senderBroadcastRead.readAt).toBeNull();
+            expect(storedDeliveryReadAt(broadcastId, '@bob')).toBeNull();
+
+            // Arm 5: CAN_READ_INBOX_OF reader via MCP adapter
+            const delegatedRead = await RequestContextService.run({agentIdentityNodeId: '@charlie'}, () =>
+                callMemoryCoreTool('get_message', {messageId})
+            );
+            expect(delegatedRead.readAt).toBeNull();
+            expect(storedNodeReadAt(messageId)).toBeNull();
+
+            // Contract Ledger fallback: legacy broadcast without DELIVERED_TO edges + boolean validation
+            const legacyId = 'MESSAGE:legacy-bcast-1900';
+            GraphService.upsertNode({
+                id        : legacyId,
+                type      : 'MESSAGE',
+                name      : 'legacy',
+                properties: {subject: 'legacy', bodyText: 'legacy body', sentAt: '2026-11-25T00:00:00.000Z', readAt: null}
+            });
+            GraphService.linkNodes(legacyId, '@alice', 'SENT_BY');
+            GraphService.linkNodes(legacyId, 'AGENT:*', 'SENT_TO');
+
+            const legacyRead = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('get_message', {messageId: legacyId})
+            );
+            expect(legacyRead.readAt).toBeNull();
+            expect(storedNodeReadAt(legacyId)).toBeNull();
+
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                    MailboxService.getMessage({messageId, keepUnread: 'yes'})
+                )
+            ).rejects.toThrow(TypeError);
+        });
+
+        test('AC-4 (#1900): mark_read({all: true, includeUnseenBroadcasts: true}) drains seen and unseen broadcasts while withholding unseen direct messages', async () => {
+            const {messageId: seenDirect} = await seedDirectMessage({subject: 'seen-direct'});
+            const {messageId: seenBcast}  = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+                MailboxService.addMessage({to: 'AGENT:*', subject: 'seen-bcast', body: 'seen broadcast'})
+            );
+
+            await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('list_messages', {box: 'inbox', status: 'unread'})
+            );
+
+            const {messageId: unseenDirectOne} = await seedDirectMessage({subject: 'unseen-direct-1'});
+            const {messageId: unseenDirectTwo} = await seedDirectMessage({subject: 'unseen-direct-2'});
+            const {messageId: unseenBcastOne}  = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+                MailboxService.addMessage({to: 'AGENT:*', subject: 'unseen-bcast-1', body: 'unseen broadcast 1'})
+            );
+            const {messageId: unseenBcastTwo} = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+                MailboxService.addMessage({to: 'AGENT:*', subject: 'unseen-bcast-2', body: 'unseen broadcast 2'})
+            );
+
+            const receipt = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('mark_read', {all: true, includeUnseenBroadcasts: true})
+            );
+
+            expect(receipt).toMatchObject({
+                status             : 'read',
+                matchedCount       : 4,
+                readCount          : 4,
+                durableCount       : 4,
+                failureCount       : 0,
+                withheldUnseenCount: 2
+            });
+
+            expect(storedNodeReadAt(seenDirect)).toBeTruthy();
+            expect(storedDeliveryReadAt(seenBcast, '@bob')).toBeTruthy();
+            expect(storedDeliveryReadAt(unseenBcastOne, '@bob')).toBeTruthy();
+            expect(storedDeliveryReadAt(unseenBcastTwo, '@bob')).toBeTruthy();
+            expect(storedNodeReadAt(unseenDirectOne)).toBeNull();
+            expect(storedNodeReadAt(unseenDirectTwo)).toBeNull();
+        });
+
+        test('AC-5 (#1900): mark_read({all: true}) and mark_read({all: true, includeUnseen: true}) without includeUnseenBroadcasts behave identically to before', async () => {
+            const {messageId: seenDirect} = await seedDirectMessage({subject: 'ac5-seen-direct'});
+            const {messageId: seenBcast}  = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+                MailboxService.addMessage({to: 'AGENT:*', subject: 'ac5-seen-bcast', body: 'seen'})
+            );
+
+            await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('list_messages', {box: 'inbox', status: 'unread'})
+            );
+
+            const {messageId: unseenDirect} = await seedDirectMessage({subject: 'ac5-unseen-direct'});
+            const {messageId: unseenBcast}  = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+                MailboxService.addMessage({to: 'AGENT:*', subject: 'ac5-unseen-bcast', body: 'unseen'})
+            );
+
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                    MailboxService.markRead({messageId: seenDirect, includeUnseenBroadcasts: 'invalid'})
+                )
+            ).rejects.toThrow(TypeError);
+
+            const narrowReceipt = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('mark_read', {all: true})
+            );
+            expect(narrowReceipt).toMatchObject({
+                status             : 'read',
+                matchedCount       : 2,
+                readCount          : 2,
+                withheldUnseenCount: 2
+            });
+            expect(storedNodeReadAt(unseenDirect)).toBeNull();
+            expect(storedDeliveryReadAt(unseenBcast, '@bob')).toBeNull();
+
+            const wideReceipt = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                callMemoryCoreTool('mark_read', {all: true, includeUnseen: true})
+            );
+            expect(wideReceipt).toMatchObject({
+                status             : 'read',
+                matchedCount       : 2,
+                readCount          : 2,
+                withheldUnseenCount: 0
+            });
+            expect(storedNodeReadAt(unseenDirect)).toBeTruthy();
+            expect(storedDeliveryReadAt(unseenBcast, '@bob')).toBeTruthy();
+        });
+    });
 });
 
 /**
