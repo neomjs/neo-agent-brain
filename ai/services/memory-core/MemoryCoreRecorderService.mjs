@@ -1,11 +1,12 @@
-import crypto                from 'crypto';
-import fs                    from 'fs-extra';
-import path                  from 'path';
-import Base                  from 'neo.mjs/src/core/Base.mjs';
-import config                from '../../mcp/server/memory-core/config.mjs';
-import logger                from '../../mcp/server/memory-core/logger.mjs';
-import RequestContextService from '../../mcp/server/shared/services/RequestContextService.mjs';
-import {buildArgsShape}      from './helpers/toolArgsShape.mjs';
+import crypto                      from 'crypto';
+import fs                          from 'fs-extra';
+import path                        from 'path';
+import Base                        from 'neo.mjs/src/core/Base.mjs';
+import config                      from '../../mcp/server/memory-core/config.mjs';
+import logger                      from '../../mcp/server/memory-core/logger.mjs';
+import RequestContextService       from '../../mcp/server/shared/services/RequestContextService.mjs';
+import {buildArgsShape}            from './helpers/toolArgsShape.mjs';
+import {createEventLoopBlockProbe} from './helpers/eventLoopBlockProbe.mjs';
 import {
     ensureEmbeddingIdentitySchema,
     getEmbeddingIdentityWindow,
@@ -159,6 +160,13 @@ class MemoryCoreRecorderService extends Base {
          */
         singleton: true,
         /**
+         * @member {Object|null} blockProbe=null
+         * @summary Samples event-loop lag and names each block's calls and GC time
+         * ({@link module:ai/services/memory-core/helpers/eventLoopBlockProbe}).
+         * @protected
+         */
+        blockProbe: null,
+        /**
          * @member {Object|null} db=null
          * @summary SQLite connection to the Memory Core graph database.
          * @protected
@@ -243,6 +251,7 @@ class MemoryCoreRecorderService extends Base {
             }
 
             this.ensureSchema();
+            this.startBlockProbe();
             await this.providerActivityStatusWriter.publishSuccess(Date.now());
             logger.info('[MemoryCoreRecorderService] Connected to Memory Core mc_tool_call_log.');
         } catch (err) {
@@ -282,6 +291,15 @@ class MemoryCoreRecorderService extends Base {
             CREATE INDEX IF NOT EXISTS idx_mc_tool_call_log_tool      ON mc_tool_call_log(tool);
             CREATE INDEX IF NOT EXISTS idx_mc_tool_call_log_success   ON mc_tool_call_log(success);
             CREATE INDEX IF NOT EXISTS idx_mc_tool_call_log_session   ON mc_tool_call_log(session_id);
+
+            CREATE TABLE IF NOT EXISTS mc_event_loop_block (
+                id          TEXT PRIMARY KEY,
+                ended_at    INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                gc_ms       INTEGER NOT NULL,
+                call_ids    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mc_event_loop_block_ended_at ON mc_event_loop_block(ended_at);
         `);
 
         const columns = new Set(
@@ -457,6 +475,7 @@ class MemoryCoreRecorderService extends Base {
                 )
             `).run(record);
 
+            this.blockProbe?.callStarted(record.id);
             return record.id;
         } catch (err) {
             logger.warn('[MemoryCoreRecorderService] Failed to persist tool start telemetry:', err.message);
@@ -472,6 +491,8 @@ class MemoryCoreRecorderService extends Base {
      */
     logToolCall(entry = {}) {
         if (!config.toolTelemetry.enabled || !this.db) return;
+
+        entry.id && this.blockProbe?.callEnded(entry.id);
 
         try {
             const record = this.buildToolCallRecord(entry, Date.now());
@@ -499,6 +520,38 @@ class MemoryCoreRecorderService extends Base {
             `).run(record);
         } catch (err) {
             logger.warn('[MemoryCoreRecorderService] Failed to persist tool telemetry:', err.message);
+        }
+    }
+
+    /**
+     * @summary (Re)starts the event-loop block probe, which reports each block to
+     * {@link MemoryCoreRecorderService#recordEventLoopBlock}.
+     * @param {Object} [options] Probe timing; tests shorten it, production keeps the probe's constants.
+     * @returns {void}
+     */
+    startBlockProbe(options = {}) {
+        this.blockProbe?.stop();
+        this.blockProbe = createEventLoopBlockProbe({...options, onBlock: block => this.recordEventLoopBlock(block)})
+    }
+
+    /**
+     * @summary Persists one event-loop block after the loop freed: its duration, the GC time inside it,
+     * and the call ids in flight across it, each of which names a start row. Best-effort only.
+     * @param {{endedAt: Number, durationMs: Number, gcMs: Number, callIds: String[]}} block
+     * @returns {void}
+     */
+    recordEventLoopBlock({endedAt, durationMs, gcMs, callIds}) {
+        if (!config.toolTelemetry.enabled || !this.db) return;
+
+        logger.warn(`[MemoryCoreRecorderService] event loop blocked ${durationMs} ms (GC ${gcMs} ms) across ${callIds.length} call(s)`);
+
+        try {
+            this.db.prepare(`
+                INSERT INTO mc_event_loop_block (id, ended_at, duration_ms, gc_ms, call_ids)
+                VALUES (@id, @endedAt, @durationMs, @gcMs, @callIds)
+            `).run({id: crypto.randomUUID(), endedAt, durationMs, gcMs, callIds: JSON.stringify(callIds)});
+        } catch (err) {
+            logger.warn('[MemoryCoreRecorderService] Failed to persist event-loop block telemetry:', err.message);
         }
     }
 
@@ -654,6 +707,7 @@ class MemoryCoreRecorderService extends Base {
                 tools           : [],
                 unfinishedCalls : [],
                 recentSlowCalls : [],
+                eventLoopBlocks : [],
                 providerActivity: emptyProviderActivity('disabled'),
                 walDrain        : emptyWalDrain('disabled', 'tool-telemetry-disabled'),
                 reembedRatio    : emptyReembedRatio('disabled', 'tool-telemetry-disabled')
@@ -671,6 +725,7 @@ class MemoryCoreRecorderService extends Base {
                 tools           : [],
                 unfinishedCalls : [],
                 recentSlowCalls : [],
+                eventLoopBlocks : [],
                 providerActivity: emptyProviderActivity('unavailable'),
                 walDrain        : emptyWalDrain('unavailable', 'tool-telemetry-unavailable'),
                 reembedRatio    : emptyReembedRatio('unavailable', 'tool-telemetry-unavailable')
@@ -725,6 +780,13 @@ class MemoryCoreRecorderService extends Base {
                  ORDER BY completed_at DESC, id ASC
                  LIMIT @limit
             `).all({sinceTs, slowAfterMs: safeSlowAfterMs, limit: safeLimit}),
+            blockRows = this.db.prepare(`
+                SELECT ended_at, duration_ms, gc_ms, call_ids
+                  FROM mc_event_loop_block
+                 WHERE ended_at >= @sinceTs
+                 ORDER BY ended_at DESC, id ASC
+                 LIMIT @limit
+            `).all({sinceTs, limit: safeLimit}),
             now = Date.now();
 
         let providerActivity;
@@ -816,6 +878,12 @@ class MemoryCoreRecorderService extends Base {
                 durationMs  : row.duration_ms,
                 success     : row.success === 1,
                 failureStage: row.failure_stage ?? null
+            })),
+            eventLoopBlocks: blockRows.map(row => ({
+                endedAt   : new Date(row.ended_at).toISOString(),
+                durationMs: row.duration_ms,
+                gcMs      : row.gc_ms,
+                callIds   : JSON.parse(row.call_ids)
             })),
             providerActivity,
             walDrain,

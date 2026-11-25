@@ -4269,6 +4269,7 @@ components:
         - tools
         - unfinishedCalls
         - recentSlowCalls
+        - eventLoopBlocks
         - providerActivity
         - walDrain
         - reembedRatio
@@ -4417,6 +4418,35 @@ components:
                 type: string
                 nullable: true
                 description: Redacted recorder stage when the call failed, or null on success.
+        eventLoopBlocks:
+          type: array
+          description: Newest-first event-loop blocks of at least a second that ended inside sinceMs, each written once the loop freed. A block stops every call in the process, so these rows say whether the time went to garbage collection and which calls were in flight.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - endedAt
+              - durationMs
+              - gcMs
+              - callIds
+            properties:
+              endedAt:
+                type: string
+                format: date-time
+                description: When the loop freed.
+              durationMs:
+                type: integer
+                minimum: 0
+                description: How late the sampling timer ran, about the block's length.
+              gcMs:
+                type: integer
+                minimum: 0
+                description: Garbage-collection time inside the block's window.
+              callIds:
+                type: array
+                description: Opaque telemetry row ids (`callId`) of the calls in flight across the block.
+                items:
+                  type: string
         providerActivity:
           $ref: '#/components/schemas/ProviderActivityResponse'
         walDrain:
