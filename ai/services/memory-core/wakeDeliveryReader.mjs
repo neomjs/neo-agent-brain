@@ -45,9 +45,10 @@ import {
 const RECEIVER_UNKNOWN = Object.freeze({state: 'unknown'});
 
 /**
- * @summary Per records directory: the terminal records already read, by file name, and the read in
- * flight; the retired index's records by message id, and its read in flight.
- * @type {Map<String, {held: Map<String, Object>, reading: Promise<Object>|null, retired: {stamp: String|null, byId: Map<String, Object[]>}|null, retiredReading: Promise<Map|null>|null}>}
+ * @summary Per records directory: the terminal records already read, by file name, the read in flight
+ * and how many listings completed; the retired index's records by message id, and its read in flight
+ * with the listing count it started after.
+ * @type {Map<String, {held: Map<String, Object>, reading: Promise<Object>|null, listings: Number, retired: {stamp: String|null, byId: Map<String, Object[]>}|null, retiredReading: {after: Number, promise: Promise<Map|null>}|null}>}
  */
 const directories = new Map();
 
@@ -80,7 +81,9 @@ const directories = new Map();
  * call from the shared read; a directory that could not be read leaves every message `unknown`. A
  * message's verdict outlives its record's retention window: the receiver keeps each retired record's
  * fate in `RETIRED_INDEX_FILE`, which only a call with `messageIds` reads, re-reading it only after
- * the receiver rewrote it. An index that exists and cannot be read leaves every message `unknown`.
+ * the receiver rewrote it. A call never joins an index read that began before its own listing: the
+ * receiver writes a fate before it unlinks the record, so only a later read holds every record the
+ * listing misses. An index that exists and cannot be read leaves every message `unknown`.
  *
  * @param {Object} [options]
  * @param {String} [options.recordsDir] Records directory; tests isolate through it. Defaults to the
@@ -105,26 +108,31 @@ export async function readWakeDelivery({recordsDir, messageIds, includeStages = 
     let state = directories.get(directory);
 
     if (!state) {
-        state = {held: new Map(), reading: null, retired: null, retiredReading: null};
+        state = {held: new Map(), reading: null, listings: 0, retired: null, retiredReading: null};
         directories.set(directory, state)
     }
 
-    state.reading ??= readDirectory(directory, state.held).finally(() => {
+    state.reading ??= readDirectory(directory, state.held).then(read => ({...read, listing: ++state.listings})).finally(() => {
         state.reading = null
     });
 
-    const {result, records} = await state.reading;
+    const {result, records, listing} = await state.reading;
 
     if (!messageIds && !includeStages && !includePendingRecords) return result;
 
     let scoped = result.deliveryReadable ? records : null;
 
     if (scoped && messageIds) {
-        state.retiredReading ??= readRetired(directory, state).finally(() => {
-            state.retiredReading = null
-        });
+        if (!(state.retiredReading?.after >= listing)) {
+            const entry = {after: state.listings};
 
-        const retired = await state.retiredReading;
+            entry.promise = readRetired(directory, state).finally(() => {
+                if (state.retiredReading === entry) state.retiredReading = null
+            });
+            state.retiredReading = entry
+        }
+
+        const retired = await state.retiredReading.promise;
 
         scoped = retired && [...records, ...new Set(messageIds.flatMap(id => retired.get(id) ?? []))]
     }

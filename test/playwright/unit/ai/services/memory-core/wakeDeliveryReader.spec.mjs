@@ -242,6 +242,64 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
         await fs.rm(root, {recursive: true, force: true});
     });
 
+    test('a reader whose listing misses a retired record never joins an index read that began before it (#1931)', async () => {
+        const root     = await tmpRoot(),
+              state    = new WakeReceiverState({stateDir: root}),
+              now      = Date.now(),
+              first    = new Date(now - RECORD_RETENTION_MS - 60_000).toISOString(),
+              index    = path.join(state.recordsDir, RETIRED_INDEX_FILE),
+              readFile = fs.readFile;
+
+        await state.init();
+
+        // an earlier retirement, so the index exists without the held message
+        const earlier = await state.accept({subscriptionId: 'WAKE_SUB:earlier', eventId: 'e-earlier', envelope: {}, route: {},
+                  sourceEventIds: ['MESSAGE:earlier'], acceptedAt: new Date(now - RECORD_RETENTION_MS - 3 * 86_400_000).toISOString()}),
+              held    = await state.accept({subscriptionId: 'WAKE_SUB:holder', eventId: 'e-held', envelope: {}, route: {},
+                  sourceEventIds: ['MESSAGE:held'], acceptedAt: first});
+
+        await state.transition(earlier.record.recordKey, 'pending', 'delivered');
+        await state.transition(held.record.recordKey, 'pending', 'delivered', {dispatchFinishedAt: first});
+        expect(await state.pruneRecords({now: now - 120_000})).toBe(1);
+
+        let armed = true, reached, release;
+
+        const atRead = new Promise(resolve => {reached = resolve}),
+              gate   = new Promise(resolve => {release = resolve});
+
+        // the first index read takes its bytes before the retirement and hands them over only when released
+        fs.readFile = async (file, ...rest) => {
+            const bytes = await readFile(file, ...rest);
+
+            if (armed && file === index) {
+                armed = false;
+                reached();
+                await gate
+            }
+            return bytes
+        };
+
+        try {
+            const ask = () => readWakeDelivery({recordsDir: state.recordsDir, messageIds: ['MESSAGE:held']}),
+                  a   = ask();
+
+            await atRead;
+            expect(await state.pruneRecords({now})).toBe(1);
+
+            // b lists after the retirement, so only an index read that starts after its listing answers it
+            const b = await Promise.race([ask(), new Promise(resolve => setTimeout(() => resolve('joined the older index read'), 2_000))]);
+
+            release();
+
+            expect(b.messages?.['MESSAGE:held'] ?? b).toEqual({state: 'delivered', at: first});
+            expect((await a).messages['MESSAGE:held']).toEqual({state: 'delivered', at: first});
+        } finally {
+            fs.readFile = readFile;
+            release();
+            await fs.rm(root, {recursive: true, force: true});
+        }
+    });
+
     test('a retired index that exists and cannot be read leaves every message unknown, the roster readable (#1931)', async () => {
         const root    = await tmpRoot(),
               records = path.join(root, 'records');
