@@ -29,12 +29,17 @@ const uuid       = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
 export const ACTIVE_TURN_UNAVAILABLE_REASON = 'native-recipient:active-turn-adapter-unavailable';
 export const ACTIVE_TURN_ADAPTER_DEPENDENCY = '#1741';
+/** @summary Diagnostic reason emitted when a non-idle Antigravity root has zero transcript growth across `STALLED_ACTIVE_TURN_MS`. */
+export const STALLED_ACTIVE_TURN_REASON     = 'native-recipient:stalled-active-turn';
+/** @summary Default zero-transcript-growth duration (`15m`) before a busy Antigravity root is flagged as stalled. */
+export const STALLED_ACTIVE_TURN_MS         = 15 * 60 * 1000;
 export const ROOT_START_CHANGED             = 'selection-root-start-changed';
 export const NATIVE_DISPATCH_REASONS        = Object.freeze([
     'native-recipient:resident-unavailable',
     'native-recipient:selection-unavailable',
     `native-recipient:${ROOT_START_CHANGED}`,
-    ACTIVE_TURN_UNAVAILABLE_REASON
+    ACTIVE_TURN_UNAVAILABLE_REASON,
+    STALLED_ACTIVE_TURN_REASON
 ]);
 export const NATIVE_DIAGNOSTIC_REASONS      = Object.freeze([
     ...NATIVE_DISPATCH_REASONS,
@@ -123,6 +128,7 @@ export async function isSpoolPointerActive(entry, state, attempt) {
     }
 }
 
+/** @summary Projects `.result` delivery receipts or `.status` hold diagnostics (including continuous `holdStartedAt` age) for a staged pointer. */
 async function readSpoolOutcome(pointer, record, seat, key) {
     const outcome = await readPrivateWakeJson(pointer + '.result');
     if (outcome?.recordKey === key && outcome.subscriptionId === record.subscriptionId &&
@@ -137,10 +143,13 @@ async function readSpoolOutcome(pointer, record, seat, key) {
     const diagnostic = await readPrivateWakeJson(pointer + '.status');
     if (diagnostic?.recordKey === key && diagnostic.subscriptionId === record.subscriptionId &&
         NATIVE_DIAGNOSTIC_REASONS.includes(diagnostic.reason)) {
+        const validIso = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
         return {
             status: 'pending',
             reason: diagnostic.reason,
-            ...(diagnostic.dependency ? {dependency: diagnostic.dependency} : {})
+            ...(diagnostic.dependency ? {dependency: diagnostic.dependency} : {}),
+            ...(validIso(diagnostic.holdStartedAt) ? {holdStartedAt: diagnostic.holdStartedAt} : {}),
+            ...(validIso(diagnostic.lastTranscriptGrowthAt) ? {lastTranscriptGrowthAt: diagnostic.lastTranscriptGrowthAt} : {})
         }
     }
     return {status: 'pending', reason: 'awaiting the native recipient'}

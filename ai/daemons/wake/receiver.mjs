@@ -878,13 +878,21 @@ export function createWakeReceiver({
                                   ? 'waiting-for-receipt'
                                   : (spoolBlocked ? 'waiting-for-spool' : 'waiting-for-chat-boundary'),
                               namedDependency = result?.dependency || (deferReason === ACTIVE_TURN_UNAVAILABLE_REASON ? ACTIVE_TURN_ADAPTER_DEPENDENCY : null),
+                              holdStartedAt   = !awaitingReceipt && !spoolBlocked && typeof result?.holdStartedAt === 'string' && Number.isFinite(Date.parse(result.holdStartedAt))
+                                  ? result.holdStartedAt
+                                  : null,
+                              growthAt        = holdStartedAt && typeof result?.lastTranscriptGrowthAt === 'string' && Number.isFinite(Date.parse(result.lastTranscriptGrowthAt))
+                                  ? result.lastTranscriptGrowthAt
+                                  : null,
                               stagedAt        = spoolBlocked ? dispatching.hostStagedAt : (dispatching.hostStagedAt || attemptIso);
                         await watched.transition(record.recordKey, 'dispatching', 'pending', {
                             deferReason,
-                            nativeStatus   : outcome,
+                            nativeStatus          : outcome,
                             ...(stagedAt ? {hostStagedAt: stagedAt} : {}),
                             waitStage,
-                            namedDependency: namedDependency || null,
+                            namedDependency       : namedDependency || null,
+                            holdStartedAt,
+                            lastTranscriptGrowthAt: growthAt,
                             blockedByWake,
                             ...(awaitingReceipt ? {nativeInitiatedAt: dispatching.nativeInitiatedAt || attemptIso} : {}),
                             ...(expectedRecipient ? {expectedRecipient} : {}),
