@@ -1903,11 +1903,14 @@ export function getWakeDeliverySeries({since = null, until = null} = {}) {
 
     const where = clauses.join(' AND '),
 
+          // the message's own routing edge: the constant `AGENT:*` target would plan a walk of every broadcast
+          isBroadcast = "EXISTS (SELECT 1 FROM Edges s INDEXED BY idx_edges_source WHERE s.source = m.id AND s.type = 'SENT_TO' AND s.target = 'AGENT:*')",
+
           rows = sqlite.prepare(`
               SELECT d.target                                                     AS recipient,
                      COUNT(*)                                                     AS deliveries,
                      SUM(CASE WHEN json_extract(m.data, '$.properties.wakeSuppressed') = 1 THEN 1 ELSE 0 END) AS suppressed,
-                     SUM(CASE WHEN EXISTS (SELECT 1 FROM Edges s WHERE s.source = m.id AND s.type = 'SENT_TO' AND s.target = 'AGENT:*') THEN 1 ELSE 0 END) AS fromBroadcast
+                     SUM(CASE WHEN ${isBroadcast} THEN 1 ELSE 0 END) AS fromBroadcast
                 FROM Nodes m
                 JOIN Edges d ON d.source = m.id AND d.type = 'DELIVERED_TO'
                WHERE ${where}
@@ -1917,7 +1920,7 @@ export function getWakeDeliverySeries({since = null, until = null} = {}) {
 
           sendRow = sqlite.prepare(`
               SELECT COUNT(*) AS sends,
-                     SUM(CASE WHEN EXISTS (SELECT 1 FROM Edges s WHERE s.source = m.id AND s.type = 'SENT_TO' AND s.target = 'AGENT:*') THEN 1 ELSE 0 END) AS broadcasts
+                     SUM(CASE WHEN ${isBroadcast} THEN 1 ELSE 0 END) AS broadcasts
                 FROM Nodes m
                WHERE ${where}
           `).get(...params);
@@ -2254,8 +2257,9 @@ function stampBroadcastCohortEdge(id, cohort) {
     try {
         GraphService.linkNodes(id, 'AGENT:*', 'SENT_TO', 0, toBroadcastCohortEdgeProperties(cohort));
 
+        // by source, as getWakeDeliverySeries' isBroadcast
         return Boolean(GraphService.db.storage.db.prepare(
-            "SELECT json_extract(data, '$.properties.broadcastCohort') AS cohort FROM Edges WHERE source = ? AND type = 'SENT_TO' AND target = 'AGENT:*'"
+            "SELECT json_extract(data, '$.properties.broadcastCohort') AS cohort FROM Edges INDEXED BY idx_edges_source WHERE source = ? AND type = 'SENT_TO' AND target = 'AGENT:*'"
         ).get(id)?.cohort)
     } catch (error) {
         logger.warn(`[MailboxService] broadcast cohort stamp failed for ${id}: ${error.message}`);

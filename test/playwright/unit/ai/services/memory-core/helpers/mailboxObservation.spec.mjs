@@ -559,6 +559,39 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
         expect(() => observe(db, {directOnly: 'yes'})).toThrow(/directOnly/)
     });
 
+    test('#1935: each candidate\'s AGENT:* check reads its own edges, never every broadcast', () => {
+        addMessage(db, {id: 'MESSAGE:direct', from: '@alice', to: VIEWER});
+        addMessage(db, {id: 'MESSAGE:legacy', from: '@alice', to: 'AGENT:*', toProperties: {broadcastCohort: 'legacy-unknown'}});
+
+        const executed = [],
+              sqlite   = {
+                  prepare(sql) {
+                      executed.push(sql);
+                      return db.prepare(sql)
+                  },
+                  transaction: callback => db.transaction(callback)
+              },
+              countPlan = options => {
+                  executed.length = 0;
+                  observe(sqlite, options);
+
+                  return db.prepare(`EXPLAIN QUERY PLAN ${executed.find(sql => sql.includes('COUNT(*)'))}`)
+                      .all({viewerVariants: JSON.stringify(VIEWER_VARIANTS), inboxVariants: JSON.stringify(VIEWER_VARIANTS)})
+                      .map(row => row.detail)
+              };
+
+        expect(countPlan({scope: 'involves-me', policy: 'private', directOnly: true}))
+            .toContain('SEARCH observer_broadcast USING INDEX idx_edges_source (source=?)');
+
+        // the legacy candidate branch still drives from every broadcast; only the per-candidate check is pinned
+        for (const [scope, policy] of [['own', 'private'], ['all', 'private']]) {
+            const plan = countPlan({scope, policy});
+
+            expect(plan).toContain('SEARCH observer_legacy USING INDEX idx_edges_source (source=?)');
+            expect(plan).toContain('SEARCH observer_legacy USING INDEX idx_edges_target (target=?)')
+        }
+    });
+
     test('#1688 AC-3 & AC-4: compact observer projection returns exact 9 keys with 160-char subject cut under half the bytes of full, while default calls stay byte-identical', () => {
         const expectedKeys = ['messageId', 'from', 'to', 'sentAt', 'readAt', 'wakeSuppressed', 'priority', 'taskState', 'subject'];
 

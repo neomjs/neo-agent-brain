@@ -268,8 +268,10 @@ function buildObservationQuery({
         deliveredToViewer = viewer && routed('DELIVERED_TO', viewer, 'observer_delivered_to'),
         sentToInbox = inbox && routed('SENT_TO', inbox, 'observer_inbox_sent_to'),
         deliveredToInbox = inbox && routed('DELIVERED_TO', inbox, 'observer_inbox_delivered_to'),
+        // a candidate's own edges: the constant `AGENT:*` target would plan a walk of every broadcast
+        ownEdges = alias => `Edges ${alias} INDEXED BY idx_edges_source`,
         legacyBroadcast = `EXISTS (
-            SELECT 1 FROM Edges observer_legacy
+            SELECT 1 FROM ${ownEdges('observer_legacy')}
             WHERE observer_legacy.source = n.id
               AND ${legacyBroadcastPredicate('observer_legacy', 'n.id', 'observer_delivery')}
         )`,
@@ -285,7 +287,7 @@ function buildObservationQuery({
     if (directOnly) {
         eligibility.push(sentToViewer);
         eligibility.push(`NOT EXISTS (
-            SELECT 1 FROM Edges observer_broadcast
+            SELECT 1 FROM ${ownEdges('observer_broadcast')}
             WHERE observer_broadcast.source = n.id AND observer_broadcast.type = 'SENT_TO'
               AND observer_broadcast.target = 'AGENT:*'
         )`)
