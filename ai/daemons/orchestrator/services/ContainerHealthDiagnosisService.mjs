@@ -7,6 +7,7 @@ import {
     createRecoveryDiagnosisEvent,
     createRecoveryTargetIdentity
 } from '../../../services/memory-core/helpers/recoveryRunStateStore.mjs';
+import {RECOVERY_KNOBS} from '../../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
 
 // Re-exported from a Neo-free module so a PURE consumer can name a fact type without importing this
 // class. One definition, unchanged import paths.
@@ -1094,6 +1095,10 @@ export class ContainerHealthDiagnosisService extends Base {
         }
 
         if (memoryWindow.sustained) {
+            const containerMemoryLimitBytes = isHeapScope
+                ? null
+                : resolveContainerMemoryLimitBytes({inspect, proved, samples});
+
             facts.push(this.createFact({
                 type         : CONTAINER_HEALTH_FACT_TYPES.memorySaturation,
                 serviceKey,
@@ -1125,7 +1130,8 @@ export class ContainerHealthDiagnosisService extends Base {
                     // two different denominators, and a consumer comparing facts across services —
                     // or across this change — would be comparing unlike quantities while both read
                     // as "memory 91%".
-                    memoryScope         : heapScope.scope
+                    memoryScope         : heapScope.scope,
+                    ...(containerMemoryLimitBytes !== null ? {memoryLimitBytes: containerMemoryLimitBytes} : {})
                 }
             }));
         }
@@ -1785,6 +1791,25 @@ export class ContainerHealthDiagnosisService extends Base {
         );
 
         if (storeMemoryFacts.length > 0) {
+            const atCapFact = storeMemoryFacts.find(fact => {
+                const ceilingMaxBytes  = resolveStoreMemoryCeilingMaxBytes(fact.serviceKey),
+                      memoryLimitBytes = fact.details?.memoryLimitBytes;
+
+                return Number.isFinite(ceilingMaxBytes) &&
+                    Number.isFinite(memoryLimitBytes) &&
+                    memoryLimitBytes >= ceilingMaxBytes;
+            });
+
+            if (atCapFact) {
+                return {
+                    recoveryClass: 'exhaustion',
+                    actionClass  : CONTAINER_HEALTH_ACTION_CLASSES.record,
+                    confidence   : 0.8,
+                    evidenceFacts: this.selectEvidenceFacts(facts, [atCapFact]),
+                    reason       : 'store-ceiling-at-cap'
+                };
+            }
+
             return {
                 recoveryClass: 'exhaustion',
                 actionClass  : CONTAINER_HEALTH_ACTION_CLASSES.raiseCeiling,
@@ -2369,6 +2394,51 @@ export function calculateDockerMemoryPercent(stats) {
     }
 
     return (inUse / limit) * 100;
+}
+
+/**
+ * @summary Resolves a container's enforced cgroup memory limit in bytes (`null` when unlimited or unproved).
+ * @param {Object} [options]
+ * @param {Object|null} [options.inspect=null]
+ * @param {Boolean} [options.proved=false]
+ * @param {Object[]} [options.samples=[]]
+ * @returns {Number|null}
+ */
+export function resolveContainerMemoryLimitBytes({inspect = null, proved = false, samples = []} = {}) {
+    if (inspect?.HostConfig?.Memory !== undefined) {
+        const declared = Number(inspect.HostConfig.Memory);
+
+        return proved && Number.isFinite(declared) && declared > 0 ? declared : null;
+    }
+
+    if (inspect !== null && !proved) return null;
+
+    const limits = samples.map(sample => Number(sample?.memory_stats?.limit));
+
+    if (limits.length === 0 || !limits.every(limit => Number.isFinite(limit) && limit > 0 && limit === limits[0])) {
+        return null;
+    }
+
+    return limits[0];
+}
+
+/**
+ * @summary Returns the declared registry ceiling max in bytes for a store service, or `null` if none exists.
+ * @param {String} serviceKey
+ * @returns {Number|null}
+ */
+export function resolveStoreMemoryCeilingMaxBytes(serviceKey) {
+    for (const descriptor of Object.values(RECOVERY_KNOBS)) {
+        if (descriptor?.serviceKey !== serviceKey || descriptor.leaves?.length !== 1) continue;
+
+        const leaf = descriptor.leaves[0];
+
+        if (leaf.role === 'ceiling' && leaf.resource === 'container-memory' && Number.isFinite(leaf.max)) {
+            return leaf.max;
+        }
+    }
+
+    return null;
 }
 
 /**

@@ -165,10 +165,10 @@ test.describe('Neo.ai.daemons.services.ContainerHealthControllerService', () => 
     }
 
     /** `observedAtMs` is what the bridge stamps; the sustained window is MEASURED from it, not assumed. */
-    function statsSample({cpuPercent = 0, memoryPercent = 0, observedAtMs} = {}) {
+    function statsSample({cpuPercent = 0, memoryPercent = 0, memoryLimitBytes = 1000, observedAtMs} = {}) {
         const systemDelta = 1_000_000_000,
               cpuDelta    = (cpuPercent / 100) * systemDelta / 4,
-              memoryLimit = 1000;
+              memoryLimit = memoryLimitBytes;
 
         return {
             ...(Number.isFinite(observedAtMs) ? {observedAtMs} : {}),
@@ -653,6 +653,43 @@ test.describe('Neo.ai.daemons.services.ContainerHealthControllerService', () => 
             details      : {
                 action      : 'raise-ceiling',
                 ceilingRaise: {previousLimitBytes: 2 * GIB, memoryLimitBytes: 8 * GIB}
+            }
+        });
+    });
+
+    test('a store already at 16 GiB cap routes to recordDiagnosis without executor-failed retries', async () => {
+        const {controller, runtimeCalls, runtimeReads} = createStack({liveLimitBytes: 16 * GIB}),
+              decision                                 = diagnose({
+                  serviceKey  : 'chroma',
+                  nodeCommand : false,
+                  statsSamples: [
+                      statsSample({cpuPercent: 5, memoryPercent: 88, memoryLimitBytes: 16 * GIB, observedAtMs: 1_000_000}),
+                      statsSample({cpuPercent: 6, memoryPercent: 89, memoryLimitBytes: 16 * GIB, observedAtMs: 1_030_000})
+                  ]
+              });
+
+        expect(decision.status).toBe('diagnosed');
+        expect(decision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+        expect(decision.diagnosis.details.classificationReason).toBe('store-ceiling-at-cap');
+
+        const outcome = await controller.consume({decision});
+
+        expect(outcome.status).toBe('recorded');
+        expect(outcome.actuatorAction).toBeNull();
+        expect(outcome.reasonCode).toBe('diagnosis-record');
+        expect(runtimeReads).toEqual([]);
+        expect(runtimeCalls).toEqual([]);
+
+        const events = await readLedger();
+
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+            collection: 'chroma',
+            status    : 'recorded',
+            detail    : {
+                actionClass         : CONTAINER_HEALTH_ACTION_CLASSES.record,
+                classificationReason: 'store-ceiling-at-cap',
+                reasonCode          : 'diagnosis-record'
             }
         });
     });
