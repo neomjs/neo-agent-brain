@@ -1643,6 +1643,46 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(await inboxIds('@dave')).not.toContain(res.messageId);
     });
 
+    test('#1935: a message\'s own AGENT:* routing edge is read through its source, never by walking every broadcast', async () => {
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'}));
+
+        const res = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+            MailboxService.addMessage({to: 'AGENT:*', subject: 'own-edge plan', body: 'read by source'}));
+
+        const
+            sqlite   = GraphService.db.storage.db,
+            prepare  = sqlite.prepare,
+            executed = [],
+            planOf   = (sql, ...params) => prepare.call(sqlite, `EXPLAIN QUERY PLAN ${sql}`).all(...params).map(row => row.detail).join('\n');
+
+        // a routing edge projected before its cohort stamp, so the read path's gate stamps it and reads it back
+        prepare.call(sqlite, "UPDATE Edges SET data = json_remove(data, '$.properties.broadcastCohort', '$.properties.intendedRecipientCount') WHERE source = ? AND type = 'SENT_TO' AND target = 'AGENT:*'").run(res.messageId);
+        for (const edge of GraphService.db.edges.items.filter(candidate => candidate.source === res.messageId && candidate.type === 'SENT_TO')) {
+            delete edge.properties.broadcastCohort;
+            delete edge.properties.intendedRecipientCount;
+        }
+
+        sqlite.prepare = sql => {
+            executed.push(sql);
+            return prepare.call(sqlite, sql)
+        };
+
+        try {
+            getWakeDeliverySeries({});
+            MailboxService._resetBroadcastCohortStampGate();
+            await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => MailboxService.listMessages({box: 'inbox', status: 'all'}));
+        } finally {
+            delete sqlite.prepare
+        }
+
+        const seriesSql = executed.filter(sql => sql.includes("s.target = 'AGENT:*'")),
+              stampSql  = executed.find(sql => sql.includes('AS cohort FROM Edges'));
+
+        expect(seriesSql).toHaveLength(2);
+        for (const sql of seriesSql) expect(planOf(sql)).toContain('SEARCH s USING INDEX idx_edges_source (source=?)');
+        expect(planOf(stampSql, res.messageId)).toContain('USING INDEX idx_edges_source (source=?)');
+    });
+
     test('a broadcast whose cohort cannot be classified — no marker, no readable WAL record — stays unknown after the gate: served to nobody, never read as legacy', async () => {
         const unknownId = 'MESSAGE:broadcast-of-unknown-provenance';
 
@@ -6714,8 +6754,8 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         });
 
         test('RA-1 (#1900): get_message through the MCP adapter preserves body and distinguishes in-memory-only and not_applied readReceipt outcomes', async () => {
-            const {messageId: missingRowId}   = await seedDirectMessage({subject: 'ra1-missing-row'});
-            const originalSetRecordProperty   = GraphService.db.storage.setRecordProperty;
+            const {messageId: missingRowId} = await seedDirectMessage({subject: 'ra1-missing-row'});
+            const originalSetRecordProperty = GraphService.db.storage.setRecordProperty;
             GraphService.db.storage.setRecordProperty = () => false;
             try {
                 const unapplied = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
