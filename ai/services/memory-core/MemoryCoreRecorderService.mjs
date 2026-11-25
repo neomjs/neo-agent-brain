@@ -5,6 +5,7 @@ import Base                  from 'neo.mjs/src/core/Base.mjs';
 import config                from '../../mcp/server/memory-core/config.mjs';
 import logger                from '../../mcp/server/memory-core/logger.mjs';
 import RequestContextService from '../../mcp/server/shared/services/RequestContextService.mjs';
+import {buildArgsShape}      from './helpers/toolArgsShape.mjs';
 import {
     ensureEmbeddingIdentitySchema,
     getEmbeddingIdentityWindow,
@@ -23,6 +24,21 @@ import {
     createProviderActivityStatusWriter,
     inspectProviderActivityStatus
 }                            from '../shared/providerActivityStatusStore.mjs';
+
+/**
+ * @summary Reads a stored args shape back, or `null` for a row written before the column existed.
+ * @param {String|null} value The `args_shape` column.
+ * @returns {Object|null}
+ */
+function parseArgsShape(value) {
+    if (!value) return null;
+
+    try {
+        return JSON.parse(value)
+    } catch {
+        return null
+    }
+}
 
 const SENSITIVE_PAYLOAD_KEYS = new Set([
     'body',
@@ -259,7 +275,8 @@ class MemoryCoreRecorderService extends Base {
                 error_name    TEXT,
                 error_message TEXT,
                 args_bytes    INTEGER DEFAULT 0,
-                result_bytes  INTEGER DEFAULT 0
+                result_bytes  INTEGER DEFAULT 0,
+                args_shape    TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_mc_tool_call_log_timestamp ON mc_tool_call_log(timestamp);
             CREATE INDEX IF NOT EXISTS idx_mc_tool_call_log_tool      ON mc_tool_call_log(tool);
@@ -273,6 +290,10 @@ class MemoryCoreRecorderService extends Base {
 
         if (!columns.has('completed_at')) {
             this.db.exec('ALTER TABLE mc_tool_call_log ADD COLUMN completed_at INTEGER;');
+        }
+
+        if (!columns.has('args_shape')) {
+            this.db.exec('ALTER TABLE mc_tool_call_log ADD COLUMN args_shape TEXT;');
         }
 
         this.db.exec(`
@@ -380,7 +401,9 @@ class MemoryCoreRecorderService extends Base {
                     : Math.max(0, completedAt - (entry.t0 || timestamp))),
             error    = entry.error || null,
             id       = entry.id || crypto.randomUUID?.() || `${timestamp}-${Math.random()}`,
-            sequence = entry.sequence_id || `${agentId}_${timestamp}_${id}`;
+            sequence = entry.sequence_id || `${agentId}_${timestamp}_${id}`,
+            tool     = entry.toolName || entry.tool || 'unknown',
+            shape    = buildArgsShape(tool, entry.args);
 
         return {
             id,
@@ -389,7 +412,7 @@ class MemoryCoreRecorderService extends Base {
             session_id   : sessionId,
             sequence_id  : sequence,
             timestamp,
-            tool         : entry.toolName || entry.tool || 'unknown',
+            tool,
             success      : entry.success ? 1 : 0,
             duration_ms  : duration,
             completed_at : completedAt,
@@ -398,7 +421,8 @@ class MemoryCoreRecorderService extends Base {
             error_name   : error?.name || null,
             error_message: this.buildErrorMessage(error, entry.args),
             args_bytes   : this.measureBytes(entry.args),
-            result_bytes : this.measureBytes(entry.result)
+            result_bytes : this.measureBytes(entry.result),
+            args_shape   : shape ? JSON.stringify(shape) : null
         };
     }
 
@@ -406,8 +430,10 @@ class MemoryCoreRecorderService extends Base {
      * Persists the redacted start boundary before Memory Core begins tool dispatch.
      *
      * A call that wedges the process never reaches the existing completion-only recorder. The
-     * unfinished row is therefore the durable evidence: tool identity, start time, and opaque call
-     * id, with arguments measured but never stored. Best-effort failure keeps dispatch available.
+     * unfinished row is therefore the durable evidence: tool identity, start time, opaque call id, and
+     * the arguments' shape ({@link module:ai/services/memory-core/helpers/toolArgsShape}): the closed
+     * values of allow-listed arguments and the keys of the rest. Arguments themselves are measured,
+     * never stored. Best-effort failure keeps dispatch available.
      *
      * @param {Object} entry Tool-call metadata.
      * @returns {String|null} Opaque call id used to complete the same row.
@@ -422,12 +448,12 @@ class MemoryCoreRecorderService extends Base {
                 INSERT INTO mc_tool_call_log (
                     id, agent_id, user_id, session_id, sequence_id, timestamp,
                     tool, success, duration_ms, completed_at, failure_stage, error_code,
-                    error_name, error_message, args_bytes, result_bytes
+                    error_name, error_message, args_bytes, result_bytes, args_shape
                 )
                 VALUES (
                     @id, @agent_id, @user_id, @session_id, @sequence_id, @timestamp,
                     @tool, @success, @duration_ms, @completed_at, @failure_stage, @error_code,
-                    @error_name, @error_message, @args_bytes, @result_bytes
+                    @error_name, @error_message, @args_bytes, @result_bytes, @args_shape
                 )
             `).run(record);
 
@@ -454,12 +480,12 @@ class MemoryCoreRecorderService extends Base {
                 INSERT INTO mc_tool_call_log (
                     id, agent_id, user_id, session_id, sequence_id, timestamp,
                     tool, success, duration_ms, completed_at, failure_stage, error_code,
-                    error_name, error_message, args_bytes, result_bytes
+                    error_name, error_message, args_bytes, result_bytes, args_shape
                 )
                 VALUES (
                     @id, @agent_id, @user_id, @session_id, @sequence_id, @timestamp,
                     @tool, @success, @duration_ms, @completed_at, @failure_stage, @error_code,
-                    @error_name, @error_message, @args_bytes, @result_bytes
+                    @error_name, @error_message, @args_bytes, @result_bytes, @args_shape
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     success       = excluded.success,
@@ -683,7 +709,7 @@ class MemoryCoreRecorderService extends Base {
                    AND completed_at IS NULL
             `).get({sinceTs})?.total || 0,
             unfinishedRows = this.db.prepare(`
-                SELECT id, timestamp, tool
+                SELECT id, timestamp, tool, args_shape
                   FROM mc_tool_call_log
                  WHERE timestamp >= @sinceTs
                    AND completed_at IS NULL
@@ -691,7 +717,7 @@ class MemoryCoreRecorderService extends Base {
                  LIMIT @limit
             `).all({sinceTs, limit: safeLimit}),
             slowRows = this.db.prepare(`
-                SELECT id, timestamp, completed_at, duration_ms, tool, success, failure_stage
+                SELECT id, timestamp, completed_at, duration_ms, tool, success, failure_stage, args_shape
                   FROM mc_tool_call_log
                  WHERE completed_at >= @sinceTs
                    AND completed_at IS NOT NULL
@@ -777,12 +803,14 @@ class MemoryCoreRecorderService extends Base {
             unfinishedCalls: unfinishedRows.map(row => ({
                 callId   : row.id,
                 tool     : row.tool,
+                argsShape: parseArgsShape(row.args_shape),
                 startedAt: new Date(row.timestamp).toISOString(),
                 elapsedMs: Math.max(0, now - row.timestamp)
             })),
             recentSlowCalls: slowRows.map(row => ({
                 callId      : row.id,
                 tool        : row.tool,
+                argsShape   : parseArgsShape(row.args_shape),
                 startedAt   : new Date(row.timestamp).toISOString(),
                 completedAt : new Date(row.completed_at).toISOString(),
                 durationMs  : row.duration_ms,

@@ -279,6 +279,25 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
         expect(after.unfinishedCalls).toEqual([]);
     });
 
+    test('a start row keeps the arguments\' shape, never their values, and the metrics serve it (#1933)', () => {
+        const
+            values = ['@neo-gpt-sophie', 'lane-claim', '2026-11-25T16:00:00.000Z'],
+            id     = MemoryCoreRecorderService.beginToolCall({
+                toolName: 'list_messages',
+                args    : {box: 'all', status: 'unread', limit: 50, fromIdentity: values[0], taggedConcepts: [values[1]], since: values[2]},
+                t0      : Date.now()
+            }),
+            shape  = {values: {box: 'all', limit: 50, status: 'unread'}, keys: ['fromIdentity', 'since', 'taggedConcepts']},
+            row    = MemoryCoreRecorderService.db.prepare('SELECT * FROM mc_tool_call_log WHERE id = ?').get(id);
+
+        expect(JSON.parse(row.args_shape)).toEqual(shape);
+        values.forEach(value => expect(JSON.stringify(row)).not.toContain(value));
+
+        const metrics = MemoryCoreRecorderService.getMemoryCoreToolMetrics({sinceMs: 60_000, limit: 10});
+
+        expect(metrics.unfinishedCalls[0]).toMatchObject({callId: id, tool: 'list_messages', argsShape: shape});
+    });
+
     test('records bounded metadata without raw Memory Core payloads', () => {
         MemoryCoreRecorderService.logToolCall({
             toolName    : 'add_memory',
@@ -500,6 +519,7 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
         expect(metrics.recentSlowCalls[1]).toEqual({
             callId      : 'slow-newer-a',
             tool        : 'add_message',
+            argsShape   : null,
             startedAt   : new Date(now - 2_500).toISOString(),
             completedAt : new Date(now - 1_000).toISOString(),
             durationMs  : 1_500,
@@ -509,6 +529,8 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
         expect(Object.keys(metrics.recentSlowCalls[0])).toEqual([
             'callId',
             'tool',
+            // the shape names the query without its content; a row written before shapes reads null
+            'argsShape',
             'startedAt',
             'completedAt',
             'durationMs',
