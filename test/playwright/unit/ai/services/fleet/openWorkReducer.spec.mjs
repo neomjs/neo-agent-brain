@@ -961,3 +961,173 @@ test.describe('openWorkReducer — review-admission/mergeability status is disti
         }]);
     });
 });
+
+test.describe('openWorkReducer — superseded same-SHA workflow suites deduplicate without review or admission contexts (#1923)', () => {
+    const HEAD = 'fe6d3164af0eae2881150b74cb60a326f687ae9f';
+
+    function outsideRerunNode({
+        rollup = 'FAILURE',
+        status = null,
+        hasPreviousPage = false,
+        suites,
+        rollupContexts
+    }) {
+        return {
+            ...node({
+                number   : 1917,
+                head     : HEAD,
+                rollup,
+                verdict  : 'APPROVED',
+                reviewers: [],
+                login    : 'Raghav-dot113',
+                body     : 'Resolves #1624\n\nAuthored by @Raghav-dot113 (GPT-6, reasoning: default, ChatGPT).',
+                reviews  : [{state: 'APPROVED', author: {__typename: 'User', login: 'neo-opus-ada'}, commit: {oid: HEAD}}]
+            }),
+            id                     : 'PR_1917',
+            authorAssociation      : 'FIRST_TIME_CONTRIBUTOR',
+            author                 : {__typename: 'User', login: 'Raghav-dot113'},
+            mergeStateStatus       : 'CLEAN',
+            closingIssuesReferences: {pageInfo: {hasNextPage: false}, nodes: []},
+            commitMessages         : {pageInfo: {hasNextPage: false}, nodes: [{commit: {message: 'fix: handle GraphQL nullIfNotFound errors (#1624)'}}]},
+            comments               : {pageInfo: {hasPreviousPage: false}, nodes: []},
+            commits                : {
+                nodes: [{
+                    commit: {
+                        oid              : HEAD,
+                        status,
+                        statusCheckRollup: {
+                            state: rollup,
+                            ...(rollupContexts ? {contexts: {pageInfo: {hasNextPage: false}, nodes: rollupContexts}} : {})
+                        },
+                        checkSuites: {
+                            pageInfo: {hasPreviousPage},
+                            nodes   : suites
+                        }
+                    }
+                }]
+            }
+        };
+    }
+
+    test('pull_request:edited green rerun superseding a synchronize failure resolves ci: green, awaitingMerge, and zero repair-ci wakes (AC-1, AC-3)', () => {
+        const raw = outsideRerunNode({
+            rollup: 'FAILURE',
+            status: null,
+            suites: [
+                {status: 'COMPLETED', conclusion: 'FAILURE', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}},
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_UNIT'}}},
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_INTEGRATION'}}},
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: null},
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}}
+            ],
+            rollupContexts: [
+                {
+                    __typename : 'CheckRun',
+                    id         : 'CR_BASE_FAIL',
+                    name       : 'Shared PR Baseline / PR baseline',
+                    status     : 'COMPLETED',
+                    conclusion : 'FAILURE',
+                    startedAt  : '2026-11-24T15:48:00Z',
+                    completedAt: '2026-11-24T15:48:48Z',
+                    checkSuite : {app: {id: 'APP_GHA', slug: 'github-actions'}, workflowRun: {workflow: {id: 'WF_BASELINE', name: 'Shared PR Baseline'}}}
+                },
+                {
+                    __typename : 'CheckRun',
+                    id         : 'CR_BASE_PASS',
+                    name       : 'Shared PR Baseline / PR baseline',
+                    status     : 'COMPLETED',
+                    conclusion : 'SUCCESS',
+                    startedAt  : '2026-11-25T00:29:10Z',
+                    completedAt: '2026-11-25T00:29:55Z',
+                    checkSuite : {app: {id: 'APP_GHA', slug: 'github-actions'}, workflowRun: {workflow: {id: 'WF_BASELINE', name: 'Shared PR Baseline'}}}
+                }
+            ]
+        });
+
+        const
+            at           = '2026-11-25T08:04:00Z',
+            row          = normalizePullRequest(raw, identities, {apiBase: 'https://api.github.com'}),
+            seatFamilies = {'@neo-opus-ada': 'claude'},
+            reduced      = reduceOpenWork({
+                previous: {rows: {}, closed: {}, complete: true, missed: []},
+                observed: {rows: [row], complete: true, missed: []},
+                terminal: {rows: [], complete: true},
+                since   : null,
+                id      : at,
+                identities
+            }),
+            planned     = planOpenWorkWakes({
+                state        : {observedAt: at, coverage: 'complete', snapshot: reduced, transitions: []},
+                ledger       : {pulse: '2026-11-25T08:03:00Z', holding: {}, pendingMerges: {}, baselines: {}},
+                now          : Date.parse(at),
+                rotationSeats: ['@neo-opus-ada'],
+                seatFamilies,
+                routeOf      : () => 'reachable'
+            });
+
+        expect(row.ciRepairEvidence?.failedChecks).toEqual([]);
+        expect(row.ci).toBe('green');
+        expect(holderOf(row, {seatFamilies})).toEqual({role: 'operator', kind: 'merge', ids: []});
+        expect(planned.wakes).toEqual([]);
+    });
+
+    test('preserves fail-closed red or pending when newest rerun fails/runs, sibling suite or status fails/pends, or checkSuites is truncated (AC-2)', () => {
+        const seatFamilies = {'@neo-opus-ada': 'claude'};
+
+        // Newest suite for WF_BASELINE failed after an earlier pass -> 'red'
+        const newestFailed = normalizePullRequest(outsideRerunNode({
+            rollup: 'FAILURE',
+            suites: [
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}},
+                {status: 'COMPLETED', conclusion: 'FAILURE', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}}
+            ]
+        }), identities);
+        expect(newestFailed.ci).toBe('red');
+        expect(holderOf(newestFailed, {seatFamilies})).toEqual({role: 'rotation', kind: 'repair-ci', ids: []});
+
+        // Newest suite for WF_BASELINE still running -> 'pending'
+        const newestPending = normalizePullRequest(outsideRerunNode({
+            rollup: 'FAILURE',
+            suites: [
+                {status: 'COMPLETED',  conclusion: 'FAILURE', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}},
+                {status: 'IN_PROGRESS', conclusion: null,     workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}}
+            ]
+        }), identities);
+        expect(newestPending.ci).toBe('pending');
+        expect(holderOf(newestPending, {seatFamilies})).toEqual({role: 'none', kind: null, ids: []});
+
+        // WF_BASELINE rerun passed, but WF_UNIT is failing -> 'red'
+        const siblingFailed = normalizePullRequest(outsideRerunNode({
+            rollup: 'FAILURE',
+            suites: [
+                {status: 'COMPLETED', conclusion: 'FAILURE', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}},
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}},
+                {status: 'COMPLETED', conclusion: 'FAILURE', workflowRun: {event: 'pull_request', workflow: {id: 'WF_UNIT'}}}
+            ]
+        }), identities);
+        expect(siblingFailed.ci).toBe('red');
+
+        // Non-admission StatusContext failing -> 'red'
+        const statusFailed = normalizePullRequest(outsideRerunNode({
+            rollup: 'FAILURE',
+            status: {state: 'FAILURE', contexts: [{context: 'external/cla', state: 'FAILURE'}]},
+            suites: [
+                {status: 'COMPLETED', conclusion: 'FAILURE', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}},
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}}
+            ]
+        }), identities);
+        expect(statusFailed.ci).toBe('red');
+
+        // Truncated checkSuites page -> falls back to statusCheckRollup.state ('red') and marks partial
+        const truncated = normalizePullRequest(outsideRerunNode({
+            rollup         : 'FAILURE',
+            hasPreviousPage: true,
+            suites         : [
+                {status: 'COMPLETED', conclusion: 'FAILURE', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}},
+                {status: 'COMPLETED', conclusion: 'SUCCESS', workflowRun: {event: 'pull_request', workflow: {id: 'WF_BASELINE'}}}
+            ]
+        }), identities);
+        expect(truncated.ci).toBe('red');
+        expect(truncated.partial).toBe(true);
+    });
+});
