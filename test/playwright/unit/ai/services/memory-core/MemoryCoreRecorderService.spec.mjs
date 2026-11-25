@@ -106,6 +106,7 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
 
     test.beforeEach(() => {
         MemoryCoreRecorderService.db.exec('DELETE FROM mc_tool_call_log;');
+        MemoryCoreRecorderService.db.exec('DELETE FROM mc_event_loop_block;');
         MemoryCoreRecorderService.db.exec('DELETE FROM provider_activity_log;');
         MemoryCoreRecorderService.db.exec('DELETE FROM embedding_identity_log;');
         MemoryCoreRecorderService.db.exec('DELETE FROM embedding_identity_state;');
@@ -279,6 +280,54 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
         expect(after.unfinishedCalls).toEqual([]);
     });
 
+    test('a start row keeps the arguments\' shape, never their values, and the metrics serve it (#1933)', () => {
+        const
+            values = ['@neo-gpt-sophie', 'lane-claim', '2026-11-25T16:00:00.000Z'],
+            id     = MemoryCoreRecorderService.beginToolCall({
+                toolName: 'list_messages',
+                args    : {box: 'all', status: 'unread', limit: 50, fromIdentity: values[0], taggedConcepts: [values[1]], since: values[2]},
+                t0      : Date.now()
+            }),
+            shape  = {values: {box: 'all', limit: 50, status: 'unread'}, keys: ['fromIdentity', 'since', 'taggedConcepts']},
+            row    = MemoryCoreRecorderService.db.prepare('SELECT * FROM mc_tool_call_log WHERE id = ?').get(id);
+
+        expect(JSON.parse(row.args_shape)).toEqual(shape);
+        values.forEach(value => expect(JSON.stringify(row)).not.toContain(value));
+
+        const metrics = MemoryCoreRecorderService.getMemoryCoreToolMetrics({sinceMs: 60_000, limit: 10});
+
+        expect(metrics.unfinishedCalls[0]).toMatchObject({callId: id, tool: 'list_messages', argsShape: shape});
+    });
+
+    test('a synchronous block writes one row with its duration, GC time and the call in flight, and the metrics list it (#1933)', async () => {
+        const args = {box: 'inbox', directOnly: true};
+
+        // initAsync started the production probe; this test only shortens its timing
+        expect(MemoryCoreRecorderService.blockProbe).not.toBeNull();
+        MemoryCoreRecorderService.startBlockProbe({thresholdMs: 150, intervalMs: 20});
+
+        try {
+            const id  = MemoryCoreRecorderService.beginToolCall({toolName: 'list_messages', args, t0: Date.now()}),
+                  end = performance.now() + 400;
+
+            MemoryCoreRecorderService.blockProbe.noteGc(performance.now(), 30);
+            while (performance.now() < end) { /* a synchronous query */ }
+            // the culprit completes before the late tick runs
+            MemoryCoreRecorderService.logToolCall({id, toolName: 'list_messages', args, success: true, t0: Date.now() - 400});
+
+            await expect.poll(() => MemoryCoreRecorderService.db.prepare('SELECT COUNT(*) AS c FROM mc_event_loop_block').get().c, {timeout: 2_000}).toBe(1);
+
+            const [block] = MemoryCoreRecorderService.getMemoryCoreToolMetrics({sinceMs: 60_000, limit: 10}).eventLoopBlocks;
+
+            expect(block.durationMs).toBeGreaterThanOrEqual(350);
+            expect(block.gcMs).toBeGreaterThanOrEqual(30);
+            expect(block.callIds).toEqual([id]);
+            expect(Date.parse(block.endedAt)).toBeLessThanOrEqual(Date.now());
+        } finally {
+            MemoryCoreRecorderService.startBlockProbe()
+        }
+    });
+
     test('records bounded metadata without raw Memory Core payloads', () => {
         MemoryCoreRecorderService.logToolCall({
             toolName    : 'add_memory',
@@ -398,6 +447,8 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
             'tools',
             'unfinishedCalls',
             'recentSlowCalls',
+            // which calls were in flight when the loop stopped, and whether GC stopped it
+            'eventLoopBlocks',
             'providerActivity',
             // The denominator. `providerActivity` alone cannot distinguish a busy ingestion from a
             // lane burning against an empty backlog, and this key set is the declared surface — so
@@ -500,6 +551,7 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
         expect(metrics.recentSlowCalls[1]).toEqual({
             callId      : 'slow-newer-a',
             tool        : 'add_message',
+            argsShape   : null,
             startedAt   : new Date(now - 2_500).toISOString(),
             completedAt : new Date(now - 1_000).toISOString(),
             durationMs  : 1_500,
@@ -509,6 +561,8 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
         expect(Object.keys(metrics.recentSlowCalls[0])).toEqual([
             'callId',
             'tool',
+            // the shape names the query without its content; a row written before shapes reads null
+            'argsShape',
             'startedAt',
             'completedAt',
             'durationMs',
