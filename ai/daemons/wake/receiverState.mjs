@@ -11,11 +11,13 @@
  * Terminal records retire into a sibling `archive/` after {@link RECORD_RETENTION_MS}, so `records/`
  * holds what can still change plus the recent attempts a delivery verdict reads. Retirement moves a
  * record instead of deleting it: the file is the acceptance dedupe, and a retired key still answers
- * `duplicate`.
+ * `duplicate`. Its fate stays in `records/` as one line of {@link RETIRED_INDEX_FILE}, so a
+ * per-message delivery verdict outlives the window.
  */
-import crypto from 'node:crypto';
-import fs     from 'node:fs/promises';
-import path   from 'node:path';
+import crypto            from 'node:crypto';
+import fs                from 'node:fs/promises';
+import path              from 'node:path';
+import {writeFileAtomic} from '../../services/shared/atomicFileWrite.mjs';
 
 const RECORD_FILE_NAME   = /^[a-f0-9]{64}\.json$/;
 const RECORD_FILE_SUFFIX = '.json';
@@ -28,6 +30,15 @@ const REPLAYABLE_STATE   = 'pending';
  * @type {Number}
  */
 export const RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * @summary The file in `records/` that keeps each retired record's fate: one JSON line per record that
+ * carried source events, holding its `state`, `sourceEventIds` and attempt times, never its envelope or
+ * route. A per-message delivery verdict reads it; a roster or health read never does. It does not end in
+ * `.json`, so no reader lists it as a record.
+ * @type {String}
+ */
+export const RETIRED_INDEX_FILE = 'retired.ndjson';
 
 /**
  * @summary The states a record never leaves. `transition()` refuses a terminal expected state, so a
@@ -99,8 +110,9 @@ export class WakeReceiverState {
      *
      * A fully-synced temp file is atomically linked into the record namespace. `link()` never
      * overwrites an existing stable key, so concurrent webhook retries converge on one record. A key
-     * retired by {@link WakeReceiverState#pruneRecords} answers `duplicate` too. The archive check and
-     * the link hold the key lock that every retirement step takes, so no retry slips between them.
+     * retired by {@link WakeReceiverState#pruneRecords} answers `duplicate` before anything is staged,
+     * so its replay writes nothing to `records/`. The archive check, the staging and the link hold the
+     * key lock that every retirement step takes, so no retry slips between them.
      *
      * @param {Object} options
      * @param {String} options.subscriptionId
@@ -128,15 +140,16 @@ export class WakeReceiverState {
             envelope,
             route
         };
-        const tempPath = `${recordPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
 
-        await this._writeSynced(tempPath, record);
+        return this._withKeyLock(async () => {
+            const retired = await this._readRetired(recordKey);
 
-        try {
-            return await this._withKeyLock(async () => {
-                const retired = await this._readRetired(recordKey);
+            if (retired) return {status: 'duplicate', record: retired};
 
-                if (retired) return {status: 'duplicate', record: retired};
+            const tempPath = `${recordPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+
+            try {
+                await this._writeSynced(tempPath, JSON.stringify(record) + '\n');
 
                 try {
                     await fs.link(tempPath, recordPath);
@@ -144,23 +157,24 @@ export class WakeReceiverState {
                     if (error.code !== 'EEXIST') throw error;
                     return {status: 'duplicate', record: await this.read(recordKey)};
                 }
+            } finally {
+                await fs.unlink(tempPath).catch(() => {});
+            }
 
-                await fs.chmod(recordPath, 0o600);
-                await this._syncDirectory();
-                return {status: 'accepted', record};
-            });
-        } finally {
-            await fs.unlink(tempPath).catch(() => {});
-        }
+            await fs.chmod(recordPath, 0o600);
+            await this._syncDirectory();
+            return {status: 'accepted', record};
+        });
     }
 
     /**
      * @summary Retires every terminal record accepted before the retention window into `archive/`.
      *
-     * Every expired record is linked into the archive and the archive is synced before any of them
-     * leaves `records/`, so a crash at any point leaves each key durable in at least one place. A
-     * record an interrupted pass already archived just finishes its move. Non-terminal and unparsable
-     * records stay at any age.
+     * No expired record leaves `records/` before every one of them is durable in the archive, with
+     * every directory on its path synced, and its fate is in {@link RETIRED_INDEX_FILE}. Those syncs
+     * are strict: a failed or unsupported one fails the pass with every live file in place, so a crash
+     * at any point leaves each key in at least one place. A record an interrupted pass already archived
+     * just finishes its move. Non-terminal and unparsable records stay at any age.
      *
      * @param {Object} [options]
      * @param {Number} [options.now=Date.now()] Clock epoch ms.
@@ -180,12 +194,14 @@ export class WakeReceiverState {
                 continue
             }
 
-            if (TERMINAL_STATES.has(record?.state) && Date.parse(record.acceptedAt) < cutoff) expired.push(recordKey);
+            if (TERMINAL_STATES.has(record?.state) && Date.parse(record.acceptedAt) < cutoff) expired.push({recordKey, record});
         }
+
+        if (expired.length === 0) return 0;
 
         const shards = new Set();
 
-        for (const recordKey of expired) {
+        for (const {recordKey} of expired) {
             const archivePath = this.getArchivePath(recordKey);
 
             shards.add(path.dirname(archivePath));
@@ -195,13 +211,18 @@ export class WakeReceiverState {
             }));
         }
 
-        for (const shard of shards) await this._syncDirectory(shard);
+        // A shard this pass created and the `archive/` that init() created are entries in their parents.
+        for (const directory of [...shards, this.archiveDir, this.stateDir]) {
+            await this._syncDirectory(directory, {strict: true});
+        }
 
-        for (const recordKey of expired) {
+        await this._appendRetired(expired.map(({record}) => record));
+
+        for (const {recordKey} of expired) {
             await this._withKeyLock(() => fs.unlink(this.getRecordPath(recordKey)));
         }
 
-        expired.length > 0 && await this._syncDirectory();
+        await this._syncDirectory();
 
         return expired.length
     }
@@ -317,8 +338,33 @@ export class WakeReceiverState {
     }
 
     /**
-     * @summary Lists the record file names in `records/`: temp files and the receiver's liveness file
-     * are not records.
+     * @summary Appends the fates of retiring records to {@link RETIRED_INDEX_FILE} through the strict
+     * atomic write, so a reader never sees a partial line. A pass that dies before its unlinks appends
+     * the same lines again next time, which changes no verdict.
+     * @param {Object[]} records
+     * @returns {Promise<void>}
+     * @private
+     */
+    async _appendRetired(records) {
+        const lines = records
+            .filter(record => Array.isArray(record.sourceEventIds) && record.sourceEventIds.length > 0)
+            .map(({state, sourceEventIds, acceptedAt, updatedAt, dispatchFinishedAt}) =>
+                JSON.stringify({state, sourceEventIds, acceptedAt, updatedAt, dispatchFinishedAt}) + '\n');
+
+        if (lines.length === 0) return;
+
+        const indexPath = path.join(this.recordsDir, RETIRED_INDEX_FILE),
+              current   = await fs.readFile(indexPath, 'utf8').catch(error => {
+                  if (error.code === 'ENOENT') return '';
+                  throw error
+              });
+
+        await writeFileAtomic(indexPath, current + lines.join(''), {fsync: true});
+    }
+
+    /**
+     * @summary Lists the record file names in `records/`: temp files, the retired index and the
+     * receiver's liveness file are not records.
      * @returns {Promise<String[]>}
      * @private
      */
@@ -370,7 +416,7 @@ export class WakeReceiverState {
         const recordPath = this.getRecordPath(recordKey);
         const tempPath   = `${recordPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
 
-        await this._writeSynced(tempPath, record);
+        await this._writeSynced(tempPath, JSON.stringify(record) + '\n');
         // _syncDirectory() below deliberately tolerates EINVAL/ENOTSUP/EPERM. The shared primitive's
         // fsync is STRICT by contract, so migrating would turn a tolerated platform degradation into a
         // hard failure on exactly the platforms that cannot fsync a directory.
@@ -380,17 +426,17 @@ export class WakeReceiverState {
     }
 
     /**
-     * @summary Writes and fsyncs one 0600 JSON file.
+     * @summary Writes and fsyncs one new 0600 file.
      * @param {String} filePath
-     * @param {Object} value
+     * @param {String} text
      * @returns {Promise<void>}
      * @private
      */
-    async _writeSynced(filePath, value) {
+    async _writeSynced(filePath, text) {
         const handle = await fs.open(filePath, 'wx', 0o600);
 
         try {
-            await handle.writeFile(JSON.stringify(value) + '\n', 'utf8');
+            await handle.writeFile(text, 'utf8');
             await handle.sync();
         } finally {
             await handle.close();
@@ -398,19 +444,22 @@ export class WakeReceiverState {
     }
 
     /**
-     * @summary Best-effort directory fsync for durable link/rename metadata.
+     * @summary Directory fsync for durable link/rename metadata. A platform that cannot sync a
+     * directory is tolerated unless `strict`, which a step whose durability gates a removal sets.
      * @param {String} [directory=this.recordsDir]
+     * @param {Object} [options]
+     * @param {Boolean} [options.strict=false] Rethrow every failure, unsupported ones included.
      * @returns {Promise<void>}
      * @private
      */
-    async _syncDirectory(directory = this.recordsDir) {
+    async _syncDirectory(directory = this.recordsDir, {strict = false} = {}) {
         let handle;
 
         try {
             handle = await fs.open(directory, 'r');
             await handle.sync();
         } catch (error) {
-            if (!['EINVAL', 'ENOTSUP', 'EPERM'].includes(error.code)) throw error;
+            if (strict || !['EINVAL', 'ENOTSUP', 'EPERM'].includes(error.code)) throw error;
         } finally {
             await handle?.close();
         }

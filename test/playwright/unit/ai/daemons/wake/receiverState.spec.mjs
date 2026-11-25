@@ -6,6 +6,7 @@ import path           from 'node:path';
 import {
     getWakeRecordKey,
     RECORD_RETENTION_MS,
+    RETIRED_INDEX_FILE,
     WakeReceiverState
 } from '../../../../../../ai/daemons/wake/receiverState.mjs';
 
@@ -167,18 +168,89 @@ test.describe('ai/daemons/wake/receiverState', () => {
             expect((await fs.stat(state.archiveDir)).mode & 0o777).toBe(0o700);
         });
 
-        test('a retired key still answers duplicate for an event-id key and a source-set key, and writes nothing', async () => {
-            const byEvent  = await acceptDelivered({acceptedAt: expired, eventId: 'wake:event-only', sourceEventIds: []}),
-                  bySource = await acceptDelivered({acceptedAt: expired});
+        test('keeps each retired fate in the retired index, never its envelope or route, and never as a record', async () => {
+            await acceptDelivered({acceptedAt: expired, sourceEventIds: ['MESSAGE:a', 'MESSAGE:b']});
+            await acceptDelivered({acceptedAt: expired, eventId: 'wake:event-only', sourceEventIds: []});
 
             expect(await state.pruneRecords({now})).toBe(2);
+
+            const indexPath = path.join(state.recordsDir, RETIRED_INDEX_FILE),
+                  lines     = (await fs.readFile(indexPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+
+            // the event-only record names no message, so no verdict could read a line for it
+            expect(lines).toEqual([{state: 'delivered', sourceEventIds: ['MESSAGE:a', 'MESSAGE:b'], acceptedAt: expired, updatedAt: expect.any(String)}]);
+            expect((await fs.stat(indexPath)).mode & 0o777).toBe(0o600);
+            expect(await state.list()).toHaveLength(0);
+        });
+
+        test('a retired key answers duplicate for an event-id key and a source-set key before staging anything', async () => {
+            const byEvent     = await acceptDelivered({acceptedAt: expired, eventId: 'wake:event-only', sourceEventIds: []}),
+                  bySource    = await acceptDelivered({acceptedAt: expired}),
+                  writeSynced = state._writeSynced.bind(state),
+                  staged      = [];
+
+            expect(await state.pruneRecords({now})).toBe(2);
+
+            state._writeSynced = (filePath, text) => {
+                staged.push(filePath);
+                return writeSynced(filePath, text)
+            };
 
             const replayedEvent  = await accept({eventId: 'wake:event-only', sourceEventIds: []}),
                   replayedSource = await accept({eventId: 'wake-digest:re-derived'});
 
             expect(replayedEvent).toMatchObject({status: 'duplicate', record: {recordKey: byEvent, state: 'delivered'}});
             expect(replayedSource).toMatchObject({status: 'duplicate', record: {recordKey: bySource, state: 'delivered'}});
+            expect(staged).toEqual([]);
             expect(await state.list()).toHaveLength(0);
+        });
+
+        test('every directory on the archive path and the index are durable before the live file goes', async () => {
+            const key           = await acceptDelivered({acceptedAt: expired}),
+                  live          = state.getRecordPath(key),
+                  syncDirectory = state._syncDirectory.bind(state),
+                  appendRetired = state._appendRetired.bind(state),
+                  steps         = [];
+
+            state._syncDirectory = async (directory = state.recordsDir, options = {}) => {
+                steps.push({sync: directory, strict: Boolean(options.strict), live: await exists(live)});
+                return syncDirectory(directory, options)
+            };
+            state._appendRetired = async records => {
+                steps.push({index: records.length, live: await exists(live)});
+                return appendRetired(records)
+            };
+
+            expect(await state.pruneRecords({now})).toBe(1);
+            expect(steps).toEqual([
+                {sync: path.dirname(state.getArchivePath(key)), strict: true, live: true},
+                {sync: state.archiveDir,                        strict: true, live: true},
+                {sync: stateDir,                                strict: true, live: true},
+                {index: 1,                                                    live: true},
+                {sync: state.recordsDir,                        strict: false, live: false}
+            ]);
+        });
+
+        test('a strict sync that fails or is unsupported keeps the live file, and the next pass finishes', async () => {
+            const key           = await acceptDelivered({acceptedAt: expired}),
+                  syncDirectory = state._syncDirectory.bind(state);
+
+            state._syncDirectory = async (directory = state.recordsDir, options = {}) => {
+                if (options.strict && directory === state.archiveDir) {
+                    throw Object.assign(new Error('directory fsync unsupported'), {code: 'ENOTSUP'})
+                }
+                return syncDirectory(directory, options)
+            };
+
+            await expect(state.pruneRecords({now})).rejects.toThrow('directory fsync unsupported');
+            expect(await exists(state.getRecordPath(key))).toBe(true);
+            expect(await exists(path.join(state.recordsDir, RETIRED_INDEX_FILE))).toBe(false);
+
+            state._syncDirectory = syncDirectory;
+
+            expect(await state.pruneRecords({now})).toBe(1);
+            expect(await exists(state.getRecordPath(key))).toBe(false);
+            expect(await exists(state.getArchivePath(key))).toBe(true);
         });
 
         test('an accept racing a retirement answers duplicate: the archive check and the link hold one lock', async () => {

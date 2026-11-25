@@ -21,10 +21,13 @@
  * @module ai/services/memory-core/wakeDeliveryReader
  */
 
-import fs                from 'fs/promises';
-import path              from 'path';
-import aiConfig          from '../../mcp/server/memory-core/config.mjs';
-import {TERMINAL_STATES} from '../../daemons/wake/receiverState.mjs';
+import fs       from 'fs/promises';
+import path     from 'path';
+import aiConfig from '../../mcp/server/memory-core/config.mjs';
+import {
+    RETIRED_INDEX_FILE,
+    TERMINAL_STATES
+} from '../../daemons/wake/receiverState.mjs';
 import {
     projectMessageDelivery,
     projectWakeDelivery,
@@ -43,8 +46,8 @@ const RECEIVER_UNKNOWN = Object.freeze({state: 'unknown'});
 
 /**
  * @summary Per records directory: the terminal records already read, by file name, and the read in
- * flight.
- * @type {Map<String, {held: Map<String, Object>, reading: Promise<Object>|null}>}
+ * flight; the retired index's records by message id, and its read in flight.
+ * @type {Map<String, {held: Map<String, Object>, reading: Promise<Object>|null, retired: {stamp: String|null, byId: Map<String, Object[]>}|null, retiredReading: Promise<Map|null>|null}>}
  */
 const directories = new Map();
 
@@ -74,7 +77,10 @@ const directories = new Map();
  * exited stuck in the last hour. It is read on every call and is `unknown` whenever it cannot be read.
  *
  * `messageIds` adds `messages`, one verdict per wake message (`projectMessageDelivery`), projected per
- * call from the shared read; a directory that could not be read leaves every message `unknown`.
+ * call from the shared read; a directory that could not be read leaves every message `unknown`. A
+ * message's verdict outlives its record's retention window: the receiver keeps each retired record's
+ * fate in `RETIRED_INDEX_FILE`, which only a call with `messageIds` reads, re-reading it only after
+ * the receiver rewrote it. An index that exists and cannot be read leaves every message `unknown`.
  *
  * @param {Object} [options]
  * @param {String} [options.recordsDir] Records directory; tests isolate through it. Defaults to the
@@ -99,7 +105,7 @@ export async function readWakeDelivery({recordsDir, messageIds, includeStages = 
     let state = directories.get(directory);
 
     if (!state) {
-        state = {held: new Map(), reading: null};
+        state = {held: new Map(), reading: null, retired: null, retiredReading: null};
         directories.set(directory, state)
     }
 
@@ -111,12 +117,78 @@ export async function readWakeDelivery({recordsDir, messageIds, includeStages = 
 
     if (!messageIds && !includeStages && !includePendingRecords) return result;
 
+    let scoped = result.deliveryReadable ? records : null;
+
+    if (scoped && messageIds) {
+        state.retiredReading ??= readRetired(directory, state).finally(() => {
+            state.retiredReading = null
+        });
+
+        const retired = await state.retiredReading;
+
+        scoped = retired && [...records, ...new Set(messageIds.flatMap(id => retired.get(id) ?? []))]
+    }
+
     return {
         ...result,
-        ...(messageIds ? {messages: projectMessageDelivery(result.deliveryReadable ? records : null, messageIds)} : {}),
-        ...(includeStages ? {messageStages: projectWakeDeliveryStages(result.deliveryReadable ? records : null, {messageIds, policyQueue, now})} : {}),
+        ...(messageIds ? {messages: projectMessageDelivery(scoped, messageIds)} : {}),
+        ...(includeStages ? {messageStages: projectWakeDeliveryStages(scoped, {messageIds, policyQueue, now})} : {}),
         ...(includePendingRecords ? {pendingRecords: result.deliveryReadable ? records.filter(record => record?.state === 'pending') : []} : {})
     }
+}
+
+/**
+ * @summary The retired index's records by message id. The receiver rewrites the index whole, so a
+ * changed size or modification time is a new index and an unchanged one is the index already read.
+ * @param {String} directory
+ * @param {Object} state The directory's reader state, which holds the parsed index.
+ * @returns {Promise<Map<String, Object[]>|null>} `null` when the index exists and cannot be read.
+ */
+async function readRetired(directory, state) {
+    const file = path.join(directory, RETIRED_INDEX_FILE);
+    let stat;
+
+    try {
+        stat = await fs.stat(file);
+    } catch (error) {
+        if (error?.code !== 'ENOENT') return null;
+
+        // nothing has retired yet
+        state.retired = null;
+        return new Map()
+    }
+
+    const stamp = `${stat.size}:${stat.mtimeMs}`;
+
+    if (state.retired?.stamp !== stamp) {
+        let text;
+
+        try {
+            text = await fs.readFile(file, 'utf8')
+        } catch {
+            return null
+        }
+
+        const byId = new Map();
+
+        for (const line of text.split('\n')) {
+            let record;
+
+            try {
+                record = JSON.parse(line)
+            } catch {
+                continue
+            }
+
+            for (const id of Array.isArray(record?.sourceEventIds) ? record.sourceEventIds : []) {
+                byId.has(id) ? byId.get(id).push(record) : byId.set(id, [record])
+            }
+        }
+
+        state.retired = {stamp, byId}
+    }
+
+    return state.retired.byId
 }
 
 /**
