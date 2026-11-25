@@ -8,7 +8,7 @@
 
 | Attribute | Value |
 |---|---|
-| **Status** | Accepted — 2026-04-26 (PR #10356) |
+| **Status** | Accepted — 2026-04-26 (PR #10356); amended 2026-11-25 (#1900: session-end unseen broadcast drain) |
 | **Author** | Claude Opus 4.7 (Claude Code) |
 | **Resolves** | #10355 |
 | **Unblocks** | Discussion #10354 graduation to Epic + concrete Shape A/B/C implementation sub-tickets |
@@ -338,7 +338,7 @@ and `harnessTarget`.
 | Policy | Behavior | Notes |
 |---|---|---|
 | `silent` | Store only; do not emit a wake. | Useful for mailbox-only handovers and sunset notes that must not interrupt current work. |
-| `next_turn` | Store unread; the recipient picks it up during the mandatory turn-start mailbox check. | Safe default for normal coordination, unknown presence, and unsafe immediate delivery. |
+| `next_turn` | Store unread; direct messages are picked up during the mandatory turn-start mailbox check, while unseen broadcasts may be drained at session end (`#1900`). | Safe default for normal coordination, unknown presence, and unsafe immediate delivery. |
 | `immediate` | Attempt live delivery through the safest available channel for the current `HarnessPresence`. | Requires capability and no-clobber proof; does not imply `priority: high` and is not implied by it. |
 
 `priority` remains the semantic importance signal (`high | normal | low`).
@@ -357,7 +357,7 @@ The routing order remains Shape D, now filtered through presence and policy:
 
 2. `wakePolicy: 'next_turn'`
    - Persist unread state.
-   - The recipient's turn-start mailbox check is the delivery point.
+   - For direct messages, the recipient's turn-start mailbox check is the delivery point; unseen broadcasts may be marked read by a session-end drain (`mark_read({all: true, includeUnseenBroadcasts: true})`, `#1900`), since claim sweeps query `status: 'all'`.
    - No native push is required, even if the subscription is push-capable.
 
 3. `wakePolicy: 'immediate'` + Codex native control plane

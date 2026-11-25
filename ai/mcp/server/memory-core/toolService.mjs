@@ -573,6 +573,13 @@ const addMessageTool = args => MailboxService.addMessage(args, {deferProjection:
 const listMessagesTool = args => MailboxService.listMessages(args, {recordSeen: true});
 
 /**
+ * @summary The model-visible message-detail boundary — stamps recipient `readAt` unless `keepUnread: true` or `observer` is set.
+ * @param {Object} args
+ * @returns {Promise<Object>}
+ */
+const getMessageTool = args => MailboxService.getMessage(args, {recordRead: true});
+
+/**
  * @summary Read the authenticated process identity without probing dependencies, or run the full health check.
  * @param {Object} [args] `scope: 'plane'` selects identity only; it makes no health assertion.
  * @returns {Promise<Object>}
@@ -654,7 +661,7 @@ const serviceMapping = {
     get_community_activity_attention_counts: getCommunityActivityAttentionCounts,
     get_community_activity_content         : getCommunityActivityContent,
     list_messages                          : listMessagesTool,
-    get_message                            : MailboxService         .getMessage              .bind(MailboxService),
+    get_message                            : getMessageTool,
     query_messages                         : MailboxService         .queryMessages           .bind(MailboxService),
     get_rem_pipeline_state                 : HealthService          .getRemPipelineState     .bind(HealthService),
     get_sqlite_holder_diagnostics:
