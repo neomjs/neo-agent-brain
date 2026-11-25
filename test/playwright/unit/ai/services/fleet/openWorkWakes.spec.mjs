@@ -1814,10 +1814,10 @@ test.describe('openWorkWakes — a parent\'s last sub closing wakes each steward
         expect(reclosed.wakes).toEqual([expect.objectContaining({to: ADA, kind: 'closeout', head: null, episode: iso(4)})]);
     });
 
-    test('AC-3: baseline and quiet rounds admit zero closeout wakes so parents already all-closed at deploy never burst', () => {
-        const atDeploy = journey().step(0, [], {transitions: [closeout(0)]});
-        expect(atDeploy.wakes).toEqual([]);
-        expect(atDeploy.ledger.pendingMerges).toEqual({});
+    test('AC-3: baseline and quiet rounds admit zero closeout wakes', () => {
+        const initialBaseline = journey().step(0, [], {transitions: [closeout(0)]});
+        expect(initialBaseline.wakes).toEqual([]);
+        expect(initialBaseline.ledger.pendingMerges).toEqual({});
 
         const quietRun = journey();
         quietRun.step(0, []);

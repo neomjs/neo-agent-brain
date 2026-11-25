@@ -678,20 +678,23 @@ function missedBy(row, {searches = null, missed = []} = {}) {
  *
  * The first pulse (no previous snapshot) is the baseline and records no transition. `closed` maps a
  * PR to the close it last recorded, so a re-read of that close records nothing, while a PR observed
- * open again retires its marker and its next close is a new episode. A PR absent from an open read
+ * open again retires its marker and its next close is a new episode. `closeouts` deduplicates parent
+ * closeouts across the closeout overlap window, and `openSubs` records parents re-observed with an open
+ * sub so held closeouts clear. A PR absent from an open read
  * that covered every page leaves the snapshot when the terminal read was complete too, as `vanished`
  * unless that read closed it; while either was partial, or a search that could have read it missed, it is
  * carried forward with its own `observedAt`, because missing evidence is not a close.
  * @param {Object} pulse
- * @param {Object|null} pulse.previous `{rows: {[key]: row}, closed: {[key]: at}, complete, missed, searches?}`, or null on the first pulse.
+ * @param {Object|null} pulse.previous `{rows: {[key]: row}, closed: {[key]: at}, closeouts?: {[key]: at}, openSubs?: {[key]: pulseId}, complete, missed, searches?}`, or null on the first pulse.
  * @param {{rows: Object[], complete: Boolean, missed?: String[], searches?: Object}} pulse.observed The open rows this pulse read;
  *     `complete` when the seats that owe coverage read every page, `missed` the other seats whose read did not,
  *     `searches` the actual GitHub author-login and held-reviewer search coverage.
  * @param {{rows: Object[], complete: Boolean}} pulse.terminal Terminal rows ({@link normalizeTerminal}) read since `since`.
+ * @param {{rows: Object[], complete: Boolean, since?: String|null}|null} [pulse.closeout=null] Parent closeout and open-sub rows ({@link normalizeCloseout}) read since `closeout.since`.
  * @param {String|null} pulse.since The watermark: where the terminal read began, ISO.
  * @param {String} pulse.id This pulse's identity, its time.
  * @param {{byLogin: Function}} [pulse.identities] Current identity resolver for retained maintainer decisions.
- * @returns {{rows: Object, closed: Object, complete: Boolean, missed: String[], searches?: Object, transitions: Object[], vanished: String[]}}
+ * @returns {{rows: Object, closed: Object, closeouts?: Object, openSubs?: Object, complete: Boolean, missed: String[], searches?: Object, transitions: Object[], vanished: String[]}}
  */
 export function reduceOpenWork({previous, observed, terminal, closeout = null, since, id, identities}) {
     const

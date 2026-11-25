@@ -18,7 +18,10 @@
  * - a failed read keeps the snapshot under `stale` (`unavailable` without one), under a constant
  *   reason and a `redactReadFailure` detail, and its pulse records what the answered requests cost;
  * - a merge observed in the last few pulses also reads what it unblocked, and its transition keeps the
- *   answer as `unblock`, so the planner can wake those issues' assignees.
+ *   answer as `unblock`, so the planner can wake those issues' assignees;
+ * - the closeout read searches closed issues in its own window, seeded at the first pulse that runs it
+ *   rather than an older watermark, to observe watched open parents whose sub-issues are all closed or
+ *   that still show an open sub.
  *
  * Saved state that exists but cannot be read leaves the producer `unavailable`, and nothing is saved
  * over it until it reads again.
@@ -539,7 +542,7 @@ export function createOpenWorkProducer({
             excluded       = seatLogins.map(login => `-author:${login}`).join(' '),
             outside        = {complete: false, rows: 0},
             outsideNodes   = [],
-            closeoutMark   = state.closeout ?? (state.watermark ? {watermark: state.watermark, window: null} : null),
+            closeoutMark   = state.closeout ?? null,
             closeoutResume = closeoutMark?.window?.scope === scope && closeoutMark.window.since === closeoutMark.watermark,
             closeoutWindow = state.snapshot && closeoutMark?.watermark
                 ? (closeoutResume ? closeoutMark.window : {scope, since: closeoutMark.watermark, until: at, cursor: null})

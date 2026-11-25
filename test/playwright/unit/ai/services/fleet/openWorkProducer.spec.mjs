@@ -1590,4 +1590,58 @@ test.describe('openWorkProducer — parent closeout transition read, cursor pagi
         planned = planOpenWorkWakes({state: overlap, ledger: planned.ledger, now: Date.parse(overlap.observedAt)});
         expect(planned.wakes).toEqual([]);
     });
+
+    test('upgrade deploy with saved snapshot and old watermark but no closeout seeds at the deploy pulse so parents already all-closed at deploy never burst', async () => {
+        const
+            store = memoryStore(),
+            stub  = github({
+                open    : [[]],
+                terminal: [[]],
+                closeout: [[
+                    closedSub(810, '2026-10-01T12:00:00Z', {parentNumber: 770, assignees: ['neo-opus-ada']}),
+                    closedSub(811, '2026-10-02T10:01:30Z', {parentNumber: 771, assignees: ['neo-opus-ada']})
+                ]]
+            }),
+            make  = start => createOpenWorkProducer({readers: ada(stub.query), repos: async () => ['acme/app'], identities, now: clock(start), store});
+
+        store.saved = {
+            snapshot   : {rows: {}, closed: {}, complete: true, missed: []},
+            observedAt : '2026-10-02T10:00:00.000Z',
+            coverage   : 'complete',
+            readers    : {
+                'neo-opus-ada': {watermark: '2026-10-02T09:50:00.000Z', window: null},
+                'stale-seat'  : {watermark: '2026-09-25T00:00:00.000Z', window: null}
+            },
+            watermark  : '2026-09-25T00:00:00.000Z',
+            window     : null,
+            reason     : null,
+            detail     : null,
+            seatReads  : {},
+            transitions: [],
+            pulses     : []
+        };
+
+        let ledger = {
+            pulse        : '2026-10-02T10:00:00.000Z',
+            holding      : {},
+            pendingMerges: {},
+            baselines    : {}
+        };
+
+        const deployPulse = await make('2026-10-02T10:00:00Z').pulse();
+        expect(stub.calls.filter(call => call.kind === 'closeout')).toEqual([]);
+        expect(deployPulse.closeout).toEqual({watermark: '2026-10-02T09:51:00.000Z', window: null});
+        let planned = planOpenWorkWakes({state: deployPulse, ledger, now: Date.parse(deployPulse.observedAt)});
+        expect(planned.wakes).toEqual([]);
+        ledger = planned.ledger;
+
+        const nextPulse = await make('2026-10-02T10:01:00Z').pulse();
+        const closeoutCalls = stub.calls.filter(call => call.kind === 'closeout');
+        expect(closeoutCalls).toHaveLength(1);
+        expect(closeoutCalls[0].search).toContain('closed:2026-10-02T09:51:00Z..2026-10-02T10:02:00Z');
+        planned = planOpenWorkWakes({state: nextPulse, ledger, now: Date.parse(nextPulse.observedAt)});
+        expect(planned.wakes.map(({to, number, kind, episode}) => ({to, number, kind, episode}))).toEqual([
+            {to: '@neo-opus-ada', number: 771, kind: 'closeout', episode: '2026-10-02T10:01:30Z'}
+        ]);
+    });
 });
