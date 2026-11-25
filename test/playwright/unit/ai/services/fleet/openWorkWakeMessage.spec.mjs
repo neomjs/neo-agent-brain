@@ -18,9 +18,10 @@ const
     open      = (overrides = {}) => ({repo: 'acme/app', number: 7, head: HEAD, kind: 'route-review', episode: INSTANT, to: SEAT, ...overrides}),
     merge     = (overrides = {}) => open({kind: 'post-merge', episode: MERGE, ...overrides}),
     unblocked = (overrides = {}) => open({kind: 'unblocked', unblocks: 'acme/app#12', episode: unblockedEpisodeOf(MERGE, 'acme/app#12'), ...overrides}),
+    closeout  = (overrides = {}) => open({head: null, kind: 'closeout', ...overrides}),
     stranded  = (overrides = {}) => open({kind: 'holder-unreachable', holder: HOLDER, ...overrides}),
     ESCALATED = ['holder-unreachable', 'holder-silent'],
-    valid     = kind => kind === 'post-merge' ? merge() : kind === 'unblocked' ? unblocked() : ESCALATED.includes(kind) ? stranded({kind}) : open({kind}),
+    valid     = kind => kind === 'post-merge' ? merge() : kind === 'unblocked' ? unblocked() : kind === 'closeout' ? closeout() : ESCALATED.includes(kind) ? stranded({kind}) : open({kind}),
     refusals  = args => validateOpenWorkObservation(args).errors;
 
 test.describe('openWorkWakeMessage — the plane admits tokens, never text (#1607)', () => {
@@ -151,6 +152,19 @@ test.describe('openWorkWakeMessage — the plane admits tokens, never text (#160
         }
         expect(validateOpenWorkObservation(open({kind: 'unowned'})).observation).not.toHaveProperty('holder')
     });
+
+    test('head is null if and only if kind is closeout; every other kind requires a 40-character OID (#1919)', () => {
+        expect(validateOpenWorkObservation(closeout())).toEqual({
+            observation: {repo: 'acme/app', number: 7, head: null, kind: 'closeout', episode: INSTANT, to: SEAT, failedChecks: null},
+            errors     : []
+        });
+        for (const head of [HEAD, 'a1', '', undefined]) {
+            expect(refusals(closeout({head})), String(head)).toEqual(['head must be null for closeout'])
+        }
+        for (const kind of Object.keys(OPEN_WORK_WAKE_REASONS).filter(item => item !== 'closeout')) {
+            expect(refusals({...valid(kind), head: null})[0], kind).toBe('head must be a full 40-character lowercase commit id')
+        }
+    });
 });
 
 test.describe('openWorkWakeMessage — the composed wake (#1536, #1607, #1609)', () => {
@@ -276,5 +290,24 @@ test.describe('openWorkWakeMessage — the composed wake (#1536, #1607, #1609)',
         expect(silent.body).toContain(`Holder: ${HOLDER}\nEpisode: ${INSTANT}\n`);
         expect(silent.body).toContain("The holder's wake arrived hours ago: reach the holder another way, or take the action yourself.");
         expect(silent.task.id).toBe('open-work:' + JSON.stringify(['acme/app', 7, HEAD, SEAT, 'holder-silent', INSTANT, HOLDER]))
+    });
+
+    test('a closeout wake leads with the parent issue URL without a Head line and asks to re-check the live issue and sub-issues (#1919)', () => {
+        const wake = composeOpenWorkWake(validateOpenWorkObservation(closeout({number: 42})).observation);
+
+        expect(wake.subject).toBe('[open-work:closeout] acme/app#42: observed every sub of this issue is closed: close it, or file the missing subs');
+        expect(wake.body.startsWith('https://github.com/acme/app/issues/42\nObserved action: closeout — every sub of this issue is closed: close it, or file the missing subs.\n')).toBe(true);
+        expect(wake.body).not.toContain('Head:');
+        expect(wake.body).not.toContain('/pull/');
+        expect(wake.body).toContain('Re-check the live issue and its sub-issues before acting.');
+        expect(wake.relatedTickets).toEqual(['acme/app#42']);
+        expect(wake.task).toEqual({
+            id          : 'open-work:' + JSON.stringify(['acme/app', 42, null, SEAT, 'closeout', INSTANT]),
+            state       : 'Submitted',
+            producerRole: 'fleet-open-work',
+            kind        : 'closeout',
+            head        : null,
+            episode     : INSTANT
+        })
     })
 });

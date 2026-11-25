@@ -3624,19 +3624,20 @@ paths:
                   description: "`owner/name`."
                 number:
                   type: integer
-                  description: The pull request number.
+                  description: "The pull request number, or for `closeout` the parent issue number."
                 head:
                   type: string
-                  description: The full 40-character head commit id.
+                  nullable: true
+                  description: "The full 40-character head commit id, or `null` for `closeout`."
                 kind:
                   type: string
-                  description: "The producer's action kind, such as `repair-ci` or `post-merge`; `openWorkWakeMessage.mjs` lists them."
+                  description: "The producer's action kind, such as `repair-ci`, `post-merge` or `closeout`; `openWorkWakeMessage.mjs` lists them."
                 to:
                   type: string
                   description: The recipient `@identity`.
                 episode:
                   type: string
-                  description: "The ISO instant the action was first observed; for `post-merge`, the producer's merge transition id of this pull request and head; for `unblocked`, that id, then `|` and the unblocked issue."
+                  description: "The ISO instant the action was first observed (for `closeout`, the completing sub-issue's `closedAt`); for `post-merge`, the producer's merge transition id of this pull request and head; for `unblocked`, that id, then `|` and the unblocked issue."
                 failedChecks:
                   type: array
                   nullable: true

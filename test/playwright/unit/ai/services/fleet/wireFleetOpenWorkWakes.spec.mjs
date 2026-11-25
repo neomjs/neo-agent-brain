@@ -1275,3 +1275,83 @@ test.describe('wireFleetOpenWorkWakes — a holder is certified silent only from
             .rejects.toThrow(/Malformed open-work wake ledger/)
     });
 });
+
+test.describe('wireFleetOpenWorkWakes — closeout wakes persist head: null in pendingMerges and survive restarts (#1919)', () => {
+    const closeoutTransition = minute => ({
+        id     : `acme/app#759:closeout:${iso(minute)}#${iso(minute)}`,
+        key    : 'acme/app#759',
+        repo   : 'acme/app',
+        number : 759,
+        head   : null,
+        seats  : ['@neo-gpt'],
+        role   : 'author',
+        episode: iso(minute),
+        kind   : 'closeout',
+        pulse  : iso(minute)
+    });
+
+    test('a held closeout wake with head: null survives restart validation, clears on open-sub re-observation, and submits when reachable', async () => {
+        let   minute = 0, routes = {'@neo-gpt': 'unreachable'};
+        const store  = memoryStore(), sends = [],
+            options  = {store, gateOf: openGate, now: () => at(minute), readUndeliverable: async () => routes, admitWake: async message => sends.push(message)},
+            round    = createOpenWorkWakeRound(options);
+
+        await round(state(0));
+        minute = 1;
+        await round(state(1, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [closeoutTransition(1)]}));
+        expect(sends).toEqual([]);
+        expect(Object.values(store.read().pendingMerges)).toMatchObject([{
+            repo   : 'acme/app',
+            number : 759,
+            head   : null,
+            kind   : 'closeout',
+            role   : 'author',
+            to     : '@neo-gpt',
+            episode: iso(1)
+        }]);
+
+        // Restart while reachable: submits head: null without requiring an open PR row in snapshot.rows
+        await round.stop();
+        routes = {};
+        minute = 2;
+        await createOpenWorkWakeRound(options)(state(2, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: []}));
+        expect(sends).toEqual([{
+            repo        : 'acme/app',
+            number      : 759,
+            head        : null,
+            kind        : 'closeout',
+            episode     : iso(1),
+            to          : '@neo-gpt',
+            failedChecks: null
+        }]);
+        expect(store.read().pendingMerges).toEqual({});
+    });
+
+    test('validateLedger refuses non-null head on closeout, null head on non-closeout, and closeout inside holding', async () => {
+        const baseWake = {
+            repo   : 'acme/app',
+            number : 759,
+            pr     : 'acme/app#759',
+            head   : null,
+            to     : SEAT,
+            role   : 'assignee',
+            kind   : 'closeout',
+            episode: iso(1),
+            reason : 'every sub of this issue is closed: close it, or file the missing subs'
+        };
+        baseWake.key = JSON.stringify([baseWake.repo, baseWake.number, baseWake.head, baseWake.to, baseWake.kind, baseWake.episode]);
+
+        const nonNullCloseout = {...baseWake, head: HEAD, key: JSON.stringify(['acme/app', 759, HEAD, SEAT, 'closeout', iso(1)])};
+        const nullMerge       = {...baseWake, kind: 'post-merge', reason: 'merged', key: JSON.stringify(['acme/app', 759, null, SEAT, 'post-merge', iso(1)])};
+        const inHoldingSlot   = JSON.stringify(['acme/app', 759, null, SEAT, 'closeout']);
+
+        for (const malformed of [
+            {pulse: iso(1), holding: {}, pendingMerges: {[nonNullCloseout.key]: nonNullCloseout}, baselines: {}},
+            {pulse: iso(1), holding: {}, pendingMerges: {[iso(1)]: nullMerge}, baselines: {}},
+            {pulse: iso(1), holding: {[inHoldingSlot]: {wake: baseWake, status: 'pending'}}, pendingMerges: {}, baselines: {}}
+        ]) {
+            await expect(createOpenWorkWakeRound({store: memoryStore(malformed), gateOf: openGate, now: () => at(2), admitWake: async () => {}, log: {}})(state(2, 'pending', {coverage: 'stale'})))
+                .rejects.toThrow('Malformed open-work wake ledger')
+        }
+    });
+});

@@ -326,6 +326,56 @@ export const OPEN_WORK_TERMINAL = `
 `;
 
 /**
+ * Closed issues whose close falls in the producer's catch-up window, with each issue's parent and that parent's
+ * sub-issue summary, author and assignees, so the transition where an open parent's last sub closes is observed
+ * without scanning open issues.
+ * Variables: `$query` (a search string with `is:issue is:closed` and the `repo:` qualifiers), `$cursor`.
+ * @type {String}
+ */
+export const OPEN_WORK_CLOSEOUT = `
+  query OpenWorkCloseout($query: String!, $cursor: String) {
+    viewer { id }
+    rateLimit {
+      cost
+      limit
+      remaining
+      resetAt
+    }
+    search(query: $query, type: ISSUE, first: 50, after: $cursor) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        ... on Issue {
+          number
+          closedAt
+          parent {
+            number
+            state
+            repository {
+              nameWithOwner
+            }
+            author {
+              login
+            }
+            assignees(first: 10) {
+              nodes {
+                login
+              }
+            }
+            subIssuesSummary {
+              total
+              completed
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
  * A merged pull request's unblock read: the issues it closes, the open issues each one blocks, and for those
  * their assignees and every issue still blocking them. Each dependency list carries `totalCount`, so a list
  * past its page is visible: an unread dependent would never be woken, and an unread blocker may still be open.
@@ -447,7 +497,8 @@ export const OPEN_WORK_QUERY_COSTS = Object.freeze([
     Object.freeze({queryHash: 'b5ff22d235e6f55be3d305f2684aeb8102789e434bd2f5f739b407614f68b4f0', formulaCost: 5}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_UNBLOCKED).digest('hex'), formulaCost: 10}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_OUTSIDE_SNAPSHOT).digest('hex'), formulaCost: 6}),
-    Object.freeze({queryHash: 'cc48d6f109037e45aee1f032e624114d81cdd1ce944eaa50ad89d357262a16f2', formulaCost: 6})
+    Object.freeze({queryHash: 'cc48d6f109037e45aee1f032e624114d81cdd1ce944eaa50ad89d357262a16f2', formulaCost: 6}),
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_CLOSEOUT).digest('hex'), formulaCost: 1})
 ]);
 
 /**
@@ -459,5 +510,6 @@ export function openWorkQueryCost(query) {
     return query === OPEN_WORK_SNAPSHOT ? OPEN_WORK_QUERY_COSTS[0]
         : query === OPEN_WORK_TERMINAL ? OPEN_WORK_QUERY_COSTS[1]
         : query === OPEN_WORK_UNBLOCKED ? OPEN_WORK_QUERY_COSTS[3]
-        : query === OPEN_WORK_OUTSIDE_SNAPSHOT ? OPEN_WORK_QUERY_COSTS[4] : null
+        : query === OPEN_WORK_OUTSIDE_SNAPSHOT ? OPEN_WORK_QUERY_COSTS[4]
+        : query === OPEN_WORK_CLOSEOUT ? OPEN_WORK_QUERY_COSTS[6] : null
 }

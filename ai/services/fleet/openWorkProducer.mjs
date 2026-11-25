@@ -25,10 +25,10 @@
  */
 
 import {
-    OPEN_WORK_SNAPSHOT, OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_UNBLOCKED, openWorkQueryCost
+    OPEN_WORK_SNAPSHOT, OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_TERMINAL, OPEN_WORK_CLOSEOUT, OPEN_WORK_UNBLOCKED, openWorkQueryCost
 } from '../github-workflow/queries/openWorkQueries.mjs';
 import {
-    normalizePullRequest, normalizeTerminal, normalizeUnblocked, reduceOpenWork
+    normalizePullRequest, normalizeTerminal, normalizeCloseout, normalizeUnblocked, reduceOpenWork
 } from './openWorkReducer.mjs';
 import {redactReadFailure}                                  from './redactReadFailure.mjs';
 import {classifyHttpCredentialRefusal, credentialRefusalOf} from './seatGitIdentity.mjs';
@@ -53,7 +53,7 @@ const
     SEAT_CONCURRENCY  = 16,
     /** @summary A producer that has never pulsed. */
     FRESH             = Object.freeze({
-        snapshot: null, observedAt: null, coverage: 'unavailable', watermark: null, window: null, reason: null, detail: null, seatReads: {}, transitions: [], pulses: []
+        snapshot: null, observedAt: null, coverage: 'unavailable', watermark: null, window: null, closeout: null, reason: null, detail: null, seatReads: {}, transitions: [], pulses: []
     });
 
 /**
@@ -535,10 +535,17 @@ export function createOpenWorkProducer({
             owes          = seat => !benched.has(seat),
             outsideReader = seats.find(seat => owes(seat.seat) && answered.some(read => read.seat === seat.seat))
                 ?? seats.find(seat => answered.some(read => read.seat === seat.seat)),
-            seatLogins    = [...new Set(seats.map(seat => seat.login).filter(Boolean))],
-            excluded      = seatLogins.map(login => `-author:${login}`).join(' '),
-            outside       = {complete: false, rows: 0},
-            outsideNodes  = [];
+            seatLogins     = [...new Set(seats.map(seat => seat.login).filter(Boolean))],
+            excluded       = seatLogins.map(login => `-author:${login}`).join(' '),
+            outside        = {complete: false, rows: 0},
+            outsideNodes   = [],
+            closeoutMark   = state.closeout ?? (state.watermark ? {watermark: state.watermark, window: null} : null),
+            closeoutResume = closeoutMark?.window?.scope === scope && closeoutMark.window.since === closeoutMark.watermark,
+            closeoutWindow = state.snapshot && closeoutMark?.watermark
+                ? (closeoutResume ? closeoutMark.window : {scope, since: closeoutMark.watermark, until: at, cursor: null})
+                : null,
+            closeoutProgress = {required: !!closeoutWindow, complete: !closeoutWindow, rows: 0};
+        let closeoutRead     = {nodes: [], complete: !closeoutWindow, cursor: closeoutWindow?.cursor ?? null};
 
         // one search across every repository, so the reading PAT pays one search a pulse, not one per repository
         if (outsideReader?.query) {
@@ -548,6 +555,22 @@ export function createOpenWorkProducer({
                     pageBudget, tally, apiBase: outsideReader.apiBase, stamp, progress: outside
                 })).nodes)
             } catch {}
+
+            if (closeoutWindow) {
+                try {
+                    closeoutRead = await readSearch({
+                        query   : outsideReader.query,
+                        text    : OPEN_WORK_CLOSEOUT,
+                        search  : `is:issue is:closed closed:${searchTime(closeoutWindow.since)}..${searchTime(closeoutWindow.until)} ${scope}`,
+                        cursor  : closeoutWindow.cursor,
+                        pageBudget,
+                        tally,
+                        apiBase : outsideReader.apiBase,
+                        stamp,
+                        progress: closeoutProgress
+                    })
+                } catch {}
+            }
         }
 
         const
@@ -585,10 +608,22 @@ export function createOpenWorkProducer({
         }
 
         const
+            closeoutReached = closeoutWindow && shift(closeoutWindow.until, -overlapMs),
+            nextCloseout    = closeoutWindow
+                ? {
+                    watermark: closeoutRead.complete && closeoutReached > closeoutMark.watermark ? closeoutReached : closeoutMark.watermark,
+                    window   : !closeoutRead.complete ? {...closeoutWindow, cursor: closeoutRead.cursor} : null
+                }
+                : (closeoutMark ?? {watermark: shift(at, -overlapMs), window: null}),
+            closeout        = {
+                rows    : normalizeCloseout(closeoutRead.nodes, identities, slugs),
+                complete: closeoutRead.complete,
+                since   : closeoutWindow?.since ?? closeoutMark?.watermark ?? null
+            },
             // the earliest seat's watermark bounds what is still closing, and seeds a seat that joins later
             watermark = Object.values(marks).map(mark => mark.watermark).filter(Boolean).sort()[0] ?? null,
-            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed, searches}, terminal, since: state.watermark ?? null, id: at, identities}),
-            coverage  = complete && outside.complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial',
+            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed, searches}, terminal, closeout, since: state.watermark ?? null, id: at, identities}),
+            coverage  = complete && outside.complete && closeoutRead.complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial',
             readerOf  = new Map(seats.filter(seat => seat.query && answered.some(read => read.seat === seat.seat)).map(seat => [seat.seat, seat])),
             retained  = await readUnblocked({
                 transitions: [...state.transitions, ...next.transitions].slice(-transitionWindow),
@@ -596,17 +631,26 @@ export function createOpenWorkProducer({
             });
 
         return finish({
-            snapshot   : {rows: next.rows, closed: next.closed, complete: next.complete, missed: next.missed, ...(next.searches ? {searches: next.searches} : {})},
+            snapshot   : {
+                rows    : next.rows,
+                closed  : next.closed,
+                ...(next.closeouts ? {closeouts: next.closeouts} : {}),
+                ...(next.openSubs ? {openSubs: next.openSubs} : {}),
+                complete: next.complete,
+                missed  : next.missed,
+                ...(next.searches ? {searches: next.searches} : {})
+            },
             observedAt : at,
             coverage,
             readers    : marks,
             seatReads,
             watermark,
             window     : null,
+            closeout   : nextCloseout,
             reason     : unreadReason(unread.filter(owes), failed.filter(read => owes(read.seat))),
             detail     : failed[0]?.failure ?? null,
             transitions: retained
-        }, {at, ...tally, seats: coverageSeats, outside, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
+        }, {at, ...tally, seats: coverageSeats, outside, closeout: closeoutProgress, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
     }
 
     return {

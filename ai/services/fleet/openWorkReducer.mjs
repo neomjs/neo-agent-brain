@@ -467,6 +467,74 @@ export function normalizeUnblocked(pullRequest, identities) {
 }
 
 /**
+ * @summary Group closed issue search nodes by watched parent issue to observe parent closeouts and open-sub clearings.
+ * An `OPEN` watched parent with `total > 0 && completed === total` resolves each agent seat among its assignees (or
+ * its author when unassigned) and takes the latest completing sub's `closedAt` as the episode; with no agent seat it is
+ * omitted. A watched parent observed with `completed < total` (or non-`OPEN`) records `'open-sub'` so held closeouts clear.
+ * @param {Object[]} nodes `Issue` nodes from `OPEN_WORK_CLOSEOUT`.
+ * @param {{byLogin: Function}} identities
+ * @param {Iterable<String>|null} [watchedRepos=null] Watched `owner/name` slugs; null accepts every repository.
+ * @returns {Object[]} Normalized parent observations `{key, repo, number, status: 'closeout'|'open-sub', at?, seats?, role?}`.
+ */
+export function normalizeCloseout(nodes, identities, watchedRepos = null) {
+    const
+        watched = watchedRepos ? new Set(watchedRepos) : null,
+        parents = new Map(),
+        later   = (left, right) => {
+            if (!left) return right;
+            const l = Date.parse(left), r = Date.parse(right);
+            return r > l || r === l && right > left ? right : left
+        };
+
+    for (const node of Array.isArray(nodes) ? nodes : []) {
+        const
+            parent    = node?.parent,
+            repo      = parent?.repository?.nameWithOwner ?? null,
+            number    = parent?.number,
+            total     = parent?.subIssuesSummary?.total,
+            completed = parent?.subIssuesSummary?.completed;
+
+        if (typeof repo !== 'string' || !repo || watched && !watched.has(repo) ||
+            !Number.isInteger(number) || number < 1 ||
+            !Number.isInteger(total) || total < 1 || !Number.isInteger(completed) || completed < 0) continue;
+
+        const key = `${repo}#${number}`;
+
+        if (parent.state !== 'OPEN' || completed < total) {
+            parents.set(key, {key, repo, number, status: 'open-sub'});
+            continue
+        }
+
+        if (completed !== total || typeof node.closedAt !== 'string' || !node.closedAt || !Number.isFinite(Date.parse(node.closedAt))) continue;
+
+        const prior = parents.get(key);
+        if (prior?.status === 'open-sub') continue;
+
+        const
+            assigned   = (parent.assignees?.nodes ?? []).filter(user => typeof user?.login === 'string' && user.login),
+            candidates = assigned.length ? assigned.map(user => user.login)
+                : typeof parent.author?.login === 'string' && parent.author.login ? [parent.author.login] : [],
+            seats      = [...new Set(candidates
+                .map(login => identities.byLogin(login))
+                .filter(seat => typeof seat === 'string' && seat.startsWith('@')))];
+
+        if (!seats.length) continue;
+
+        parents.set(key, {
+            key,
+            repo,
+            number,
+            status: 'closeout',
+            at    : later(prior?.at ?? null, node.closedAt),
+            seats,
+            role  : assigned.length ? 'assignee' : 'author'
+        })
+    }
+
+    return [...parents.values()]
+}
+
+/**
  * @summary One observed change, identified by the observation itself.
  * @param {Object} row The row after the change (its head names the episode's commit).
  * @param {String} kind
@@ -625,10 +693,13 @@ function missedBy(row, {searches = null, missed = []} = {}) {
  * @param {{byLogin: Function}} [pulse.identities] Current identity resolver for retained maintainer decisions.
  * @returns {{rows: Object, closed: Object, complete: Boolean, missed: String[], searches?: Object, transitions: Object[], vanished: String[]}}
  */
-export function reduceOpenWork({previous, observed, terminal, since, id, identities}) {
+export function reduceOpenWork({previous, observed, terminal, closeout = null, since, id, identities}) {
     const
         rows                = {},
         closed              = Object.fromEntries(Object.entries(previous?.closed ?? {}).filter(([, at]) => !since || at >= since)),
+        closeoutSince       = closeout?.since !== undefined ? closeout.since : since,
+        closeouts           = Object.fromEntries(Object.entries(previous?.closeouts ?? {}).filter(([, at]) => !closeoutSince || at >= closeoutSince)),
+        openSubs            = {...(previous?.openSubs ?? {})},
         complete            = observed.complete,
         missed              = observed.missed ?? [],
         searches            = observed.searches ?? null,
@@ -667,6 +738,34 @@ export function reduceOpenWork({previous, observed, terminal, since, id, identit
         }
     }
 
+    for (const row of closeout?.rows ?? []) {
+        if (row.status === 'open-sub') {
+            delete closeouts[row.key];
+            openSubs[row.key] = id;
+            continue
+        }
+
+        if (row.status === 'closeout' && closeouts[row.key] !== row.at && (!closeoutSince || row.at >= closeoutSince)) {
+            delete openSubs[row.key];
+            closeouts[row.key] = row.at;
+            transitions.push({
+                id     : `${row.key}:closeout:${row.at}#${id}`,
+                key    : row.key,
+                repo   : row.repo,
+                number : row.number,
+                head   : null,
+                owner  : {kind: 'seat', seat: row.seats[0], login: null},
+                seats  : row.seats,
+                role   : row.role ?? 'assignee',
+                episode: row.at,
+                kind   : 'closeout',
+                from   : 'open-subs',
+                to     : 'all-subs-closed',
+                pulse  : id
+            })
+        }
+    }
+
     for (const [key, before] of Object.entries(previous.rows)) {
         if (!rows[key] && !closed[key]) {
             const terminalIncomplete = Boolean(searches?.terminalIncompleteLogins?.some(login => loginKey(login) === loginKey(before.owner?.login)));
@@ -674,5 +773,15 @@ export function reduceOpenWork({previous, observed, terminal, since, id, identit
         }
     }
 
-    return {rows, closed, complete, missed, ...(searches ? {searches} : {}), transitions, vanished}
+    return {
+        rows,
+        closed,
+        ...(Object.keys(closeouts).length ? {closeouts} : {}),
+        ...(Object.keys(openSubs).length ? {openSubs} : {}),
+        complete,
+        missed,
+        ...(searches ? {searches} : {}),
+        transitions,
+        vanished
+    }
 }

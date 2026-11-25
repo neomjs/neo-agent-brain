@@ -421,6 +421,36 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         }
     }
 
+    for (const [id, wake] of Object.entries(pendingMerges)) {
+        if (wake.kind === 'closeout' && state.snapshot.openSubs && Object.hasOwn(state.snapshot.openSubs, wake.pr)) {
+            delete pendingMerges[id]
+        }
+    }
+
+    for (const transition of state.transitions ?? []) {
+        const observed = Date.parse(transition.pulse);
+
+        if (baseline || transition.kind !== 'closeout' || !(observed > previousPulse && observed <= pulse) ||
+            typeof transition.repo !== 'string' || !transition.repo ||
+            !Number.isInteger(transition.number) || transition.number < 1 ||
+            transition.key !== `${transition.repo}#${transition.number}` ||
+            typeof transition.episode !== 'string' || !transition.episode ||
+            state.snapshot.openSubs && Object.hasOwn(state.snapshot.openSubs, transition.key)) continue;
+
+        const role = transition.role === 'author' ? 'author' : 'assignee';
+
+        for (const seat of (Array.isArray(transition.seats) ? transition.seats : []).filter(native)) {
+            for (const [id, prior] of Object.entries(pendingMerges)) {
+                if (prior.kind === 'closeout' && prior.pr === transition.key && prior.to === seat && prior.episode !== transition.episode) {
+                    delete pendingMerges[id]
+                }
+            }
+            const wake = wakeOf({key: transition.key, repo: transition.repo, number: transition.number, head: null}, seat, role, 'closeout', transition.episode);
+
+            pendingMerges[wake.key] ??= wake
+        }
+    }
+
     for (const [slot, entry] of Object.entries(holding)) {
         const pr = entry.wake.pr;
 
