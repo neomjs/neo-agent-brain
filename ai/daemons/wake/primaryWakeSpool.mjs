@@ -3,13 +3,22 @@
  * @summary Exchanges record keys and receipted outcomes across the receiver/Fleet boundary.
  * The graphless receiver persists the signed envelope. Fleet alone inspects harness databases.
  */
-import fs                                                                                     from 'node:fs/promises';
-import path                                                                                   from 'node:path';
-import {withOutboxLock}                                                                       from './outboxLock.mjs';
-import {isBatchCapablePrimaryFamily, matchesPrimaryWakeMember, MAX_PRIMARY_WAKE_BATCH_EVENTS} from './primaryWakeBatch.mjs';
-import {primaryWakeAttemptRecorded, readPrimarySessionWake}                                   from './primarySessionWake.mjs';
-import {TERMINAL_STATES}                                                                      from './receiverState.mjs';
-export {isBatchCapablePrimaryFamily}                                                         from './primaryWakeBatch.mjs';
+import fs               from 'node:fs/promises';
+import path             from 'node:path';
+import {withOutboxLock} from './outboxLock.mjs';
+import {
+    isBatchCapablePrimaryFamily,
+    matchesPrimaryWakeMember,
+    MAX_PRIMARY_WAKE_BATCH_EVENTS,
+    MAX_URGENT_SPOOL_CANDIDATES
+} from './primaryWakeBatch.mjs';
+import {primaryWakeAttemptRecorded, readPrimarySessionWake} from './primarySessionWake.mjs';
+import {TERMINAL_STATES}                                    from './receiverState.mjs';
+export {
+    isBatchCapablePrimaryFamily,
+    MAX_PRIMARY_WAKE_BATCH_EVENTS,
+    MAX_URGENT_SPOOL_CANDIDATES
+} from './primaryWakeBatch.mjs';
 import {readPrivateWakeJson}      from './nativeWakeEnrollment.mjs';
 import {writeFileAtomic}          from '../../services/shared/atomicFileWrite.mjs';
 import {deriveAgentInstanceHome}  from '../../services/fleet/deriveAgentInstanceHome.mjs';
@@ -147,29 +156,37 @@ async function readSpoolOutcome(pointer, record, seat, key) {
  * @returns {Promise<Object|null>}
  */
 export async function readPrimaryWakeBatchReceipt(record, stateDir, receipts) {
-    if (!record.nativeStatus || isUrgentWakeRecord(record)) return null;
+    if (!record.nativeStatus) return null;
     const seat      = record.route?.agentIdentity,
           statePath = path.join(path.dirname(primaryWakeSpoolPath(stateDir, seat)), seat.slice(1) + '.json');
     if (!receipts.has(seat)) receipts.set(seat, readPrimarySessionWake({statePath}));
-    return batchReceipt(record, await receipts.get(seat))
+    const batched = batchReceipt(record, await receipts.get(seat));
+    if (batched) return batched;
+    if (!isUrgentWakeRecord(record)) return null;
+    const urgentPointer = urgentPrimaryWakeSpoolPath(stateDir, seat),
+          currentUrgent = await readPrivateWakeJson(urgentPointer);
+    if (currentUrgent?.recordKey !== record.recordKey) return null;
+    const outcome = await readSpoolOutcome(urgentPointer, record, seat, record.recordKey);
+    return outcome.status === 'delivered' ? outcome : null
 }
 
 /** @summary Projects one member from the exact completed native attempt and its immutable binding. */
 function batchReceipt(record, sessionState) {
-    const {binding, inflight} = sessionState ?? {};
-    if (inflight?.status !== 'delivered' || !Array.isArray(inflight.members) ||
-        !inflight.members.some(member => matchesPrimaryWakeMember(record, member)) ||
+    const {binding} = sessionState ?? {},
+          attempt   = isUrgentWakeRecord(record) ? sessionState?.urgentInflight : sessionState?.inflight;
+    if (attempt?.status !== 'delivered' || !Array.isArray(attempt.members) ||
+        !attempt.members.some(member => matchesPrimaryWakeMember(record, member)) ||
         !isBatchCapablePrimaryFamily(binding?.family) || binding.seat !== record.route?.agentIdentity ||
         binding.seat !== record.envelope?.agentIdentity) return null;
 
     const recipient = {seat:binding.seat, generation:binding.generation, threadId:binding.threadId,
-        recordKey:record.recordKey, nonce:inflight.nonce};
+        recordKey:record.recordKey, nonce:attempt.nonce};
     if (!hasPrimaryWakeRecipient(recipient, {seat:binding.seat, recordKey:record.recordKey})) return null;
     return {
         status: 'delivered',
         recipient,
-        ...(typeof inflight.recipientObservedAt === 'string' ? {recipientObservedAt:inflight.recipientObservedAt} : {}),
-        ...(inflight.acknowledged === false ? {acknowledged:false} : {})
+        ...(typeof attempt.recipientObservedAt === 'string' ? {recipientObservedAt:attempt.recipientObservedAt} : {}),
+        ...(attempt.acknowledged === false ? {acknowledged:false} : {})
     }
 }
 
@@ -190,11 +207,29 @@ export async function stagePrimaryWake(record, {state, stateDir}) {
             currentNormal = await readPrivateWakeJson(normalPointer),
             currentUrgent = await readPrivateWakeJson(urgentPointer),
             sessionState  = await readPrivateWakeJson(sessionStatePath),
-            urgent        = isUrgentWakeRecord(record) || currentUrgent?.recordKey === key || sessionState?.urgentInflight?.recordKey === key;
+            urgentAttempt = sessionState?.urgentInflight,
+            urgent        = isUrgentWakeRecord(record) || currentUrgent?.recordKey === key || urgentAttempt?.recordKey === key;
 
         if (urgent) {
+            const receipt = batchReceipt(record, sessionState);
+            if (receipt) return receipt;
             if (currentUrgent?.recordKey !== key) {
-                if (await isSpoolPointerActive(currentUrgent, state)) {
+                if (await isSpoolPointerActive(currentUrgent, state, urgentAttempt)) {
+                    if (isBatchCapablePrimaryFamily(record.route?.adapterConfig?.primarySession?.family) &&
+                        urgentAttempt?.recordKey !== currentUrgent.recordKey && !record.expectedRecipient && !record.nativeInitiatedAt) {
+                        const candidates = Array.isArray(currentUrgent.candidates) ? currentUrgent.candidates : [];
+                        if (!candidates.includes(key)) {
+                            const anchor = await state.read(currentUrgent.recordKey).catch(() => null);
+                            if (anchor?.subscriptionId === record.subscriptionId) {
+                                const nextCandidates = candidates.length < MAX_URGENT_SPOOL_CANDIDATES
+                                    ? [...candidates, key]
+                                    : [...candidates.slice(0, MAX_PRIMARY_WAKE_BATCH_EVENTS - 1),
+                                        ...candidates.slice(-(MAX_URGENT_SPOOL_CANDIDATES - MAX_PRIMARY_WAKE_BATCH_EVENTS)), key];
+                                await writeFileAtomic(urgentPointer, JSON.stringify({...currentUrgent, candidates: nextCandidates}),
+                                    {mode: 0o600, fsync: true})
+                            }
+                        }
+                    }
                     return {status: 'pending', reason: 'earlier urgent native wake outstanding'}
                 }
                 if (currentNormal?.recordKey && currentNormal.recordKey !== key &&
@@ -212,7 +247,8 @@ export async function stagePrimaryWake(record, {state, stateDir}) {
         if (currentNormal?.recordKey === key) return readSpoolOutcome(normalPointer, record, seat, key);
         const attempt = sessionState?.inflight;
 
-        if (sessionState?.inflight?.recordKey !== key && currentUrgent?.recordKey !== key && await isSpoolPointerActive(currentUrgent, state)) {
+        if (sessionState?.inflight?.recordKey !== key && currentUrgent?.recordKey !== key &&
+            await isSpoolPointerActive(currentUrgent, state, urgentAttempt)) {
             return {status: 'pending', reason: 'urgent native wake outstanding'}
         }
 
