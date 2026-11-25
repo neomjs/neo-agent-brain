@@ -1376,14 +1376,31 @@ test.describe('restart churn', () => {
             recoveryClass: 'exhaustion',
             details      : {classificationReason: 'store-ceiling-at-cap'}
         });
-        expect(atCap.diagnosis.evidenceFacts[0].details.memoryLimitBytes).toBe(maxBytes);
+        expect(atCap.diagnosis.evidenceFacts[0].details).toMatchObject({
+            memoryLimitBytes: maxBytes,
+            ceilingMaxBytes : maxBytes
+        });
 
         expect(belowCap.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.raiseCeiling);
         expect(belowCap.diagnosis.details.classificationReason).toBe('store-ceiling-exhaustion');
+        expect(belowCap.diagnosis.evidenceFacts[0].details).toMatchObject({
+            memoryLimitBytes: 8 * 1024 ** 3,
+            ceilingMaxBytes : maxBytes
+        });
     });
 
-    test('unlimited HostConfig.Memory (0) or unproved inspect incarnation omits memoryLimitBytes rather than misreading host RAM', () => {
+    test('missing inspect, unlimited HostConfig.Memory (0), or unproved inspect incarnation leaves memoryLimitBytes unknown so raise-ceiling lets actuator inspect decide', () => {
         const service   = createService(),
+              noInspect = service.diagnose({
+                  serviceKey        : 'chroma',
+                  nodeCommand       : false,
+                  runtimeContainerId: 'c-chroma',
+                  inspect           : null,
+                  statsSamples      : [
+                      statsSample({containerId: 'c-chroma', cpuPercent: 2, memoryPercent: 85, memoryLimitBytes: 47 * 1024 ** 3, observedAtMs: 1_000_000}),
+                      statsSample({containerId: 'c-chroma', cpuPercent: 1, memoryPercent: 86, memoryLimitBytes: 47 * 1024 ** 3, observedAtMs: 1_030_000})
+                  ]
+              }),
               unlimited = service.diagnose({
                   serviceKey        : 'chroma',
                   nodeCommand       : false,
@@ -1405,10 +1422,11 @@ test.describe('restart churn', () => {
                   ]
               });
 
-        expect(unlimited.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.raiseCeiling);
-        expect(unlimited.diagnosis.evidenceFacts[0].details.memoryLimitBytes).toBeUndefined();
-        expect(unproved.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.raiseCeiling);
-        expect(unproved.diagnosis.evidenceFacts[0].details.memoryLimitBytes).toBeUndefined();
+        for (const decision of [noInspect, unlimited, unproved]) {
+            expect(decision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.raiseCeiling);
+            expect(decision.diagnosis.evidenceFacts[0].details.memoryLimitBytes).toBeUndefined();
+            expect(decision.diagnosis.evidenceFacts[0].details.ceilingMaxBytes).toBe(16 * 1024 ** 3);
+        }
     });
 
     test('the earlier store threshold is store-scoped: a transient service at the same load stays healthy (#16596)', () => {
