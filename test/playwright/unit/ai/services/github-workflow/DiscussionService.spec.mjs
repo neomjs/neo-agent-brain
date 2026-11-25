@@ -87,6 +87,31 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — manageDiscu
             expect(callCount).toBe(2);
         });
 
+        test('returns NOT_FOUND when the discussion lookup throws typed NOT_FOUND (#1624)', async () => {
+            const notFoundError = new Error('Could not resolve to a Discussion');
+
+            notFoundError.graphqlErrors = [{
+                type   : 'NOT_FOUND',
+                message: 'Could not resolve to a Discussion'
+            }];
+
+            let callCount = 0;
+
+            GraphqlService.query = async () => {
+                callCount++;
+                throw notFoundError;
+            };
+
+            const result = await DiscussionService.manageDiscussionComment({
+                discussion_number: 999999,
+                body             : 'Test comment',
+                action           : 'create'
+            });
+
+            expect(result.code).toBe('NOT_FOUND');
+            expect(callCount).toBe(1);
+        });
+
         test('propagates GraphQL error shape on API failure', async () => {
             GraphqlService.query = async () => {
                 throw new Error('GitHub API rate limit exceeded');
@@ -247,6 +272,31 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — manageDiscu
                 actualRepo  : 'neomjs/neo',
                 selectedRepo: 'neomjs/devindex'
             });
+            expect(callCount).toBe(1);
+        });
+
+        test('returns COMMENT_NOT_FOUND when the comment lookup throws typed NOT_FOUND (#1624)', async () => {
+            const notFoundError = new Error('Could not resolve to a DiscussionComment');
+
+            notFoundError.graphqlErrors = [{
+                type   : 'NOT_FOUND',
+                message: 'Could not resolve to a DiscussionComment'
+            }];
+
+            let callCount = 0;
+
+            GraphqlService.query = async () => {
+                callCount++;
+                throw notFoundError;
+            };
+
+            const result = await DiscussionService.manageDiscussionComment({
+                comment_id: 'DC_missing',
+                body      : 'Updated body',
+                action    : 'update'
+            });
+
+            expect(result.code).toBe('COMMENT_NOT_FOUND');
             expect(callCount).toBe(1);
         });
 
@@ -508,7 +558,7 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — getConversa
 
         expect(result.comments.nodes.map(c => c.id)).toEqual(['DC_first']);
     });
-
+    
     test('returns NOT_FOUND when the discussion does not exist', async () => {
         let callCount = 0;
         GraphqlService.query = async () => {
@@ -523,9 +573,39 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — getConversa
         expect(callCount).toBe(1);
     });
 
-    test('propagates GraphQL error shape on auth/API failure', async () => {
+    test('maps typed GraphQL NOT_FOUND to NOT_FOUND (#1624)', async () => {
+        const notFoundError = new Error('Could not resolve to a Discussion');
+
+        notFoundError.graphqlErrors = [{
+            type   : 'NOT_FOUND',
+            message: 'Could not resolve to a Discussion'
+        }];
+
+        let callCount = 0;
+
         GraphqlService.query = async () => {
-            throw new Error('Resource not accessible by integration');
+            callCount++;
+            throw notFoundError;
+        };
+
+        const result = await DiscussionService.getConversation({
+            discussion_number: 999999
+        });
+
+        expect(result.code).toBe('NOT_FOUND');
+        expect(callCount).toBe(1);
+    });
+
+    test('preserves typed FORBIDDEN GraphQL errors as GRAPHQL_API_ERROR (#1624)', async () => {
+        const forbiddenError = new Error('Resource not accessible by integration');
+
+        forbiddenError.graphqlErrors = [{
+            type   : 'FORBIDDEN',
+            message: 'Resource not accessible by integration'
+        }];
+
+        GraphqlService.query = async () => {
+            throw forbiddenError;
         };
 
         const result = await DiscussionService.getConversation({discussion_number: 10137});
@@ -663,6 +743,31 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — manageDiscu
         });
 
         expect(result.error).toBe('Not Found');
+        expect(result.code).toBe('NOT_FOUND');
+        expect(callCount).toBe(1);
+    });
+
+    test('maps typed GraphQL NOT_FOUND to NOT_FOUND for update_body (#1624)', async () => {
+        const notFoundError = new Error('Could not resolve to a Discussion');
+
+        notFoundError.graphqlErrors = [{
+            type   : 'NOT_FOUND',
+            message: 'Could not resolve to a Discussion'
+        }];
+
+        let callCount = 0;
+
+        GraphqlService.query = async () => {
+            callCount++;
+            throw notFoundError;
+        };
+
+        const result = await DiscussionService.manageDiscussion({
+            action           : 'update_body',
+            discussion_number: 999999,
+            body             : 'Updated body'
+        });
+
         expect(result.code).toBe('NOT_FOUND');
         expect(callCount).toBe(1);
     });
@@ -822,6 +927,31 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — manageDiscu
             const result = await DiscussionService.manageDiscussion({action: 'close', discussion_number: 999999, reason: 'RESOLVED'});
 
             expect(result.code).toBe('NOT_FOUND');
+        });
+
+        test('maps typed GraphQL NOT_FOUND to NOT_FOUND when closing (#1624)', async () => {
+            const notFoundError = new Error('Could not resolve to a Discussion');
+
+            notFoundError.graphqlErrors = [{
+                type   : 'NOT_FOUND',
+                message: 'Could not resolve to a Discussion'
+            }];
+
+            let callCount = 0;
+
+            GraphqlService.query = async () => {
+                callCount++;
+                throw notFoundError;
+            };
+
+            const result = await DiscussionService.manageDiscussion({
+                action           : 'close',
+                discussion_number: 999999,
+                reason           : 'RESOLVED'
+            });
+
+            expect(result.code).toBe('NOT_FOUND');
+            expect(callCount).toBe(1);
         });
     });
 });

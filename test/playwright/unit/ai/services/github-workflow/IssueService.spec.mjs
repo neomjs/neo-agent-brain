@@ -712,6 +712,31 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueComme
             expect(result.code).toBe('MISSING_ARGUMENTS');
             expect(callCount).toBe(0);
         });
+
+        test('returns COMMENT_NOT_FOUND when comment lookup throws typed NOT_FOUND (#1624)', async () => {
+            const notFoundError = new Error('Could not resolve to an IssueComment');
+
+            notFoundError.graphqlErrors = [{
+                type   : 'NOT_FOUND',
+                message: 'Could not resolve to an IssueComment'
+            }];
+
+            let callCount = 0;
+
+            GraphqlService.query = async () => {
+                callCount++;
+                throw notFoundError;
+            };
+
+            const result = await IssueService.manageIssueComment({
+                comment_id: 'IC_missing',
+                body      : 'Updated body',
+                action    : 'update'
+            });
+
+            expect(callCount).toBe(1);
+            expect(result.code).toBe('COMMENT_NOT_FOUND');
+        });
     });
 
     test.describe('dispatcher validation', () => {
@@ -2260,6 +2285,56 @@ test.describe('Neo.ai.services.github-workflow.IssueService — updateIssueBody 
         expect(callCount).toBe(0);
     });
 
+    test('returns NOT_FOUND when the target issue does not exist (#1624)', async () => {
+    const notFoundError = new Error('Could not resolve to an Issue');
+
+    notFoundError.graphqlErrors = [{
+        type   : 'NOT_FOUND',
+        message: 'Could not resolve to an Issue'
+    }];
+
+    let callCount = 0;
+
+    GraphqlService.query = async () => {
+        callCount++;
+        throw notFoundError;
+    };
+
+    const result = await IssueService.updateIssueBody({
+        issue_number: 1425,
+        body        : 'Updated issue body'
+    });
+
+    expect(callCount).toBe(1);
+    expect(result.code).toBe('NOT_FOUND');
+
+    });
+
+    test('preserves FORBIDDEN GraphQL errors as GRAPHQL_API_ERROR (#1624)', async () => {
+    const forbiddenError = new Error('GitHub API permission denied');
+
+    forbiddenError.graphqlErrors = [{
+        type   : 'FORBIDDEN',
+        message: 'Resource access denied'
+    }];
+
+    let callCount = 0;
+
+    GraphqlService.query = async () => {
+        callCount++;
+        throw forbiddenError;
+    };
+
+    const result = await IssueService.updateIssueBody({
+        issue_number: 1425,
+        body        : 'Updated issue body'
+    });
+
+    expect(callCount).toBe(1);
+    expect(result.code).toBe('GRAPHQL_API_ERROR');
+    
+    });
+
     test('refuses a caller who is neither author nor assignee with FOREIGN_BODY_FORBIDDEN and the authorship rule', async () => {
         let callCount = 0;
 
@@ -2470,5 +2545,46 @@ test.describe('Neo.ai.services.github-workflow.IssueService — updateIssueBody 
             expect(freshCalls).toHaveLength(2);
             expect(fresh.bodySha256).toBe(sha256(NEXT_BODY));
         });
+    });
+});
+
+/**
+ * @summary Contract coverage for `IssueService.getProjectV2Metadata` ProjectV2 lookup.
+ */
+test.describe('Neo.ai.services.github-workflow.IssueService — getProjectV2Metadata (#1624)', () => {
+    let IssueService;
+    let GraphqlService;
+    let originalQuery;
+
+    test.beforeAll(async () => {
+        GraphqlService = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+        IssueService   = (await import('../../../../../../ai/services/github-workflow/IssueService.mjs')).default;
+
+        originalQuery = GraphqlService.query.bind(GraphqlService);
+    });
+
+    test.afterAll(() => {
+        GraphqlService.query = originalQuery;
+    });
+
+    test('returns PROJECT_NOT_FOUND when ProjectV2 lookup throws typed NOT_FOUND (#1624)', async () => {
+        const notFoundError = new Error('Could not resolve to a ProjectV2');
+
+        notFoundError.graphqlErrors = [{
+            type   : 'NOT_FOUND',
+            message: 'Could not resolve to a ProjectV2'
+        }];
+
+        let callCount = 0;
+
+        GraphqlService.query = async () => {
+            callCount++;
+            throw notFoundError;
+        };
+
+        const result = await IssueService.getProjectV2Metadata(99999);
+
+        expect(callCount).toBe(1);
+        expect(result.code).toBe('PROJECT_NOT_FOUND');
     });
 });

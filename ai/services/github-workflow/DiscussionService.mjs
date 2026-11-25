@@ -21,6 +21,8 @@ import {
     GET_DISCUSSION_COMMENT_TARGET
 } from './queries/mutations.mjs';
 
+import nullIfNotFound from './shared/nullIfNotFound.mjs';
+
 /**
  * The reasons GitHub's `closeDiscussion` accepts (`DiscussionCloseReason`).
  * @type {String[]}
@@ -107,12 +109,12 @@ class DiscussionService extends Base {
         };
 
         try {
-            const data = await GraphqlService.query(GET_DISCUSSION_CONVERSATION, variables);
+            const data = await GraphqlService.query(GET_DISCUSSION_CONVERSATION, variables).catch(nullIfNotFound);
             // Trust-project at the read boundary (root body + comments + nested replies gain
             // `authorTrust`; untrusted-author bodies are defanged; root carries `contentTrust`).
             // A null resource passes through the projection untouched, preserving the
             // not-found contract below.
-            const discussion = projectConversationTrust(data.repository.discussion);
+            const discussion = projectConversationTrust(data?.repository?.discussion);
 
             if (!discussion) {
                 return {
@@ -257,9 +259,9 @@ class DiscussionService extends Base {
                 owner : target.owner,
                 repo  : target.repo,
                 number: discussion_number
-            });
+            }).catch(nullIfNotFound);
 
-            if (!idData.repository.discussion) {
+            if (!idData?.repository?.discussion) {
                  return {
                     error  : 'Not Found',
                     message: `Could not find discussion #${discussion_number}.`,
@@ -342,7 +344,7 @@ class DiscussionService extends Base {
      */
     async #getDiscussionCommentTargetFailure(commentId, repositoryTarget, discussionNumber) {
         try {
-            const data       = await GraphqlService.query(GET_DISCUSSION_COMMENT_TARGET, {commentId}),
+            const data       = await GraphqlService.query(GET_DISCUSSION_COMMENT_TARGET, {commentId}).catch(nullIfNotFound),
                   comment    = data?.node,
                   discussion = comment?.discussion,
                   actual     = discussion?.repository?.nameWithOwner;
@@ -475,9 +477,9 @@ class DiscussionService extends Base {
                 owner : target.owner,
                 repo  : target.repo,
                 number: discussion_number
-            });
+            }).catch(nullIfNotFound);
 
-            if (!idData.repository.discussion) {
+            if (!idData?.repository?.discussion) {
                 return {
                     error  : 'Not Found',
                     message: `Could not find discussion #${discussion_number}.`,
@@ -547,7 +549,7 @@ class DiscussionService extends Base {
                       owner : target.owner,
                       repo  : target.repo,
                       number: discussion_number
-                  }),
+                  }).catch(nullIfNotFound),
                   discussion  = lookupData?.repository?.discussion,
                   viewerLogin = lookupData?.viewer?.login || null;
 

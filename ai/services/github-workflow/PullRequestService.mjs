@@ -35,6 +35,7 @@ import {commentMatches, isSelectorPresent, malformedCommentIdError, omitScopedBo
                                               from './shared/commentSelector.mjs';
 import {projectConversationTrust} from './shared/conversationTrust.mjs';
 import {resolveRepositoryTarget}  from './shared/repositoryTarget.mjs';
+import nullIfNotFound from './shared/nullIfNotFound.mjs';
 
 const execAsync                           = promisify(exec);
 const execFileAsync                       = promisify(execFile);
@@ -4214,7 +4215,7 @@ class PullRequestService extends Base {
                       owner                : target.owner,
                       repo                 : target.repo,
                       prNumber             : pr_number
-                  }),
+                  }).catch(nullIfNotFound),
                   pullRequest = idData?.targetRepository?.pullRequest ?? idData?.repository?.pullRequest;
 
             if (!pullRequest?.id) {
@@ -4388,7 +4389,7 @@ class PullRequestService extends Base {
                     owner                : target.owner,
                     repo                 : target.repo,
                     prNumber             : pr_number
-                });
+                }).catch(nullIfNotFound);
                 // `repository` fallback keeps injected legacy fixtures readable while production
                 // queries split home-policy activation from selected-target PR history.
                 const activationIssue = idData?.homeRepository?.activationIssue ?? idData?.repository?.activationIssue;
@@ -4687,7 +4688,7 @@ class PullRequestService extends Base {
         }
 
         try {
-            const currentData   = await GraphqlService.query(GET_PULL_REQUEST_REVIEW, {reviewId: review_id});
+            const currentData   = await GraphqlService.query(GET_PULL_REQUEST_REVIEW, {reviewId: review_id}).catch(nullIfNotFound);
             const currentReview = currentData?.node;
 
             if (!currentReview?.id) {
