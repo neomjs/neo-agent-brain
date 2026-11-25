@@ -5253,12 +5253,22 @@ class MailboxService extends Base {
             deliveryEdge,
             me,
             Boolean(deliveryEdge) || sentTo === 'AGENT:*'
-        );
+        ),
+              readReceipt       = null;
 
         if (recordRead && !keepUnread && !readAt && (isDirectRecipient || Boolean(deliveryEdge))) {
             const receipt = await this.markRead({messageId});
             if (receipt?.status === 'read' && receipt.readAt) {
                 readAt = receipt.readAt;
+            }
+            if (receipt) {
+                readReceipt = {
+                    status : receipt.status,
+                    durable: receipt.durable !== false,
+                    ...(receipt.status === 'read' && receipt.readAt ? {readAt: receipt.readAt} : {}),
+                    ...(receipt.retryable !== undefined ? {retryable: receipt.retryable} : {}),
+                    ...(receipt.warning !== undefined ? {warning: receipt.warning} : {})
+                };
             }
         }
 
@@ -5273,6 +5283,7 @@ class MailboxService extends Base {
             senderPrincipalClass: messageNode.properties.senderPrincipalClass ?? 'unclassified',
             to                  : sentTo
         };
+        if (readReceipt !== null) result.readReceipt = readReceipt;
         if (messageNode.properties.task !== undefined) result.task = messageNode.properties.task;
         if (messageNode.properties.requestPublish !== undefined) result.requestPublish = messageNode.properties.requestPublish;
         if (messageNode.properties.revision !== undefined) result.revision = messageNode.properties.revision;
@@ -5575,6 +5586,9 @@ class MailboxService extends Base {
         if (includeUnseenBroadcasts !== true && includeUnseenBroadcasts !== false) {
             throw new TypeError('mark_read includeUnseenBroadcasts must be a boolean.');
         }
+        if (includeUnseen === true && includeUnseenBroadcasts === true) {
+            throw new TypeError('mark_read accepts includeUnseen or includeUnseenBroadcasts, not both: includeUnseen sweeps unseen direct messages while includeUnseenBroadcasts withholds them.');
+        }
         if (all === true) {
             if (messageId !== undefined) {
                 throw new TypeError('mark_read accepts either messageId or all: true, not both.');
@@ -5823,6 +5837,9 @@ class MailboxService extends Base {
      * @private
      */
     async _markUnreadSnapshotRead({includeUnseen = false, includeUnseenBroadcasts = false} = {}) {
+        if (includeUnseen === true && includeUnseenBroadcasts === true) {
+            throw new TypeError('mark_read accepts includeUnseen or includeUnseenBroadcasts, not both: includeUnseen sweeps unseen direct messages while includeUnseenBroadcasts withholds them.');
+        }
         const boundIdentity = RequestContextService.getAgentIdentityNodeId();
         if (!boundIdentity) {
             throw RequestContextService.unboundIdentityError('mark all messages read');

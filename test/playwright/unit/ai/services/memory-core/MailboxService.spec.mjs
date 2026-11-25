@@ -6697,6 +6697,8 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             );
 
             expect(opened.readAt).toBeTruthy();
+            expect(opened.body).toBe('body:ac1-direct');
+            expect(opened.readReceipt).toEqual({status: 'read', durable: true, readAt: opened.readAt});
             expect(storedNodeReadAt(messageId)).toBe(opened.readAt);
 
             const unread = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
@@ -6708,6 +6710,59 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                 callMemoryCoreTool('get_message', {messageId})
             );
             expect(reopened.readAt).toBe(opened.readAt);
+            expect(reopened.readReceipt).toBeUndefined();
+        });
+
+        test('RA-1 (#1900): get_message through the MCP adapter preserves body and distinguishes in-memory-only and not_applied readReceipt outcomes', async () => {
+            const {messageId: missingRowId}   = await seedDirectMessage({subject: 'ra1-missing-row'});
+            const originalSetRecordProperty   = GraphService.db.storage.setRecordProperty;
+            GraphService.db.storage.setRecordProperty = () => false;
+            try {
+                const unapplied = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                    callMemoryCoreTool('get_message', {messageId: missingRowId})
+                );
+                expect(unapplied.body).toBe('body:ra1-missing-row');
+                expect(unapplied.readAt).toBeNull();
+                expect(unapplied.readReceipt).toEqual({
+                    status   : 'not_applied',
+                    durable  : false,
+                    retryable: true,
+                    warning  : expect.stringContaining('did NOT apply')
+                });
+            } finally {
+                GraphService.db.storage.setRecordProperty = originalSetRecordProperty;
+            }
+
+            const {messageId: inMemoryId} = await seedDirectMessage({subject: 'ra1-in-memory'});
+            const originalStorage         = GraphService.db.storage;
+            GraphService.db.storage       = null;
+            try {
+                const memoryOnly = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                    callMemoryCoreTool('get_message', {messageId: inMemoryId})
+                );
+                expect(memoryOnly.body).toBe('body:ra1-in-memory');
+                expect(memoryOnly.readAt).toBeTruthy();
+                expect(memoryOnly.readReceipt).toEqual({
+                    status : 'read',
+                    durable: false,
+                    readAt : memoryOnly.readAt,
+                    warning: expect.stringContaining('applied in memory but NOT persisted')
+                });
+            } finally {
+                GraphService.db.storage = originalStorage;
+            }
+        });
+
+        test('RA-2 (#1900): mark_read rejects includeUnseen: true combined with includeUnseenBroadcasts: true so unseen direct messages cannot be swept', async () => {
+            const {messageId: unseenDirect} = await seedDirectMessage({subject: 'ra2-unseen-direct'});
+
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                    callMemoryCoreTool('mark_read', {all: true, includeUnseen: true, includeUnseenBroadcasts: true})
+                )
+            ).rejects.toThrow(/accepts includeUnseen or includeUnseenBroadcasts, not both/);
+
+            expect(storedNodeReadAt(unseenDirect)).toBeNull();
         });
 
         test('AC-2 (#1900): get_message on a receipt-backed broadcast stamps only the caller delivery edge', async () => {

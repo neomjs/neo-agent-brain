@@ -3269,8 +3269,10 @@ paths:
       x-pass-as-object: true
       description: |
         Retrieves a specific message. Subject to read-path permission checks. When called by a direct or receipt-backed
-        broadcast recipient without `observer`, stamps that recipient's `readAt` and returns it unless `keepUnread: true`.
-        Sender reads, `CAN_READ_INBOX_OF` reads, legacy broadcasts without delivery edges, and `observer` reads do not stamp.
+        broadcast recipient without `observer`, stamps that recipient's `readAt` unless `keepUnread: true` and returns
+        `readReceipt` (`{status: 'read'|'not_applied', durable, readAt?, retryable?, warning?}`) alongside `body` so
+        durable, in-memory-only, and unapplied stamps remain distinguishable. Sender reads, `CAN_READ_INBOX_OF` reads,
+        legacy broadcasts without delivery edges, and `observer` reads do not stamp.
       tags: [Mailbox]
       parameters:
         - name: messageId
@@ -3331,6 +3333,22 @@ paths:
                       clamped:
                         type: boolean
                       admissionKey:
+                        type: string
+                  readReceipt:
+                    type: object
+                    description: "Present when this call attempted an automatic recipient read stamp: distinguishes durable (`status: 'read', durable: true`), in-memory-only (`status: 'read', durable: false, warning`), and unapplied (`status: 'not_applied', durable: false, retryable: true, warning`) outcomes while returning `body`."
+                    required: [status, durable]
+                    properties:
+                      status:
+                        type: string
+                        enum: [read, not_applied]
+                      durable:
+                        type: boolean
+                      readAt:
+                        type: string
+                      retryable:
+                        type: boolean
+                      warning:
                         type: string
         '403':
           description: Unauthorized
@@ -3436,7 +3454,7 @@ paths:
       description: |
         Marks selected messages read, or drains a snapshot of the caller's unread inbox. Pass exactly one of `messageId` (a string or array) and `all: true`. Array mode returns per-id results and one stale or unauthorized id never fails the batch.
 
-        All mode drains only messages you have SEEN by default, counting withheld rows in `withheldUnseenCount`. Pass `includeUnseenBroadcasts: true` at session end to drain every unread broadcast delivered to you (seen or not) while still withholding unseen direct messages; pass `includeUnseen: true` to sweep every unread row.
+        All mode drains only messages you have SEEN by default, counting withheld rows in `withheldUnseenCount`. Pass `includeUnseenBroadcasts: true` at session end to drain every unread broadcast delivered to you (seen or not) while still withholding unseen direct messages; pass `includeUnseen: true` to sweep every unread row. `includeUnseen: true` and `includeUnseenBroadcasts: true` are mutually exclusive and passing both throws a `TypeError` so a session-end broadcast drain can never sweep unseen direct messages.
       tags: [Mailbox]
       requestBody:
         required: true
@@ -3457,11 +3475,11 @@ paths:
                 includeUnseen:
                   type: boolean
                   default: false
-                  description: Used with `all`, also sweeps messages you were never shown. For clearing a backlog you do not intend to read; it can discard a directed message you have never seen. The receipt's `withheldUnseenCount` reports what the default drain held back.
+                  description: "Used with `all`, also sweeps messages you were never shown. Mutually exclusive with `includeUnseenBroadcasts: true` (passing both throws a `TypeError`). For clearing a backlog you do not intend to read; it can discard a directed message you have never seen. The receipt's `withheldUnseenCount` reports what the default drain held back."
                 includeUnseenBroadcasts:
                   type: boolean
                   default: false
-                  description: Used with `all`, marks every unread broadcast delivered to you (seen or not) while still withholding unseen direct messages in `withheldUnseenCount`.
+                  description: "Used with `all`, marks every unread broadcast delivered to you (seen or not) while still withholding unseen direct messages in `withheldUnseenCount`. Mutually exclusive with `includeUnseen: true` (passing both throws a `TypeError`)."
       responses:
         '200':
           description: OK
