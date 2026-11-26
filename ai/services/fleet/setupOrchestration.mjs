@@ -16,18 +16,20 @@
  * preset is checked against arrives as `configSourcePath`, from the entrypoint.
  */
 
-import path                                                                     from 'node:path';
-import {composeCredentialEffects, presetEnvRefusals}                            from './credentialStep.mjs';
-import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}                                from './firstRunRecipe.mjs';
-import {EFFECT_IDS, applyEffect, readForgeStatus, renderEnvFile, settleReceipt} from './hostEffects.mjs';
-import {presets}                                                                from './placementPresets.mjs';
-import {createPlaneWitnessClient}                                               from './planeWitnessClient.mjs';
-import {RECEIPT_OUTCOMES, contentDigest, findReceipt}                           from './setupRunRecord.mjs';
-import {performVerify, verifyExits}                                             from './verifyEffect.mjs';
+import path                                                                                     from 'node:path';
+import {composeCredentialEffects, credentialEnvEntries, presetEnvRefusals, secretFileNames}     from './credentialStep.mjs';
+import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}                                                from './firstRunRecipe.mjs';
+import {EFFECT_IDS, applyEffect, effectInputKey, readForgeStatus, renderEnvFile, settleReceipt} from './hostEffects.mjs';
+import {presets}                                                                                from './placementPresets.mjs';
+import {createPlaneWitnessClient}                                                               from './planeWitnessClient.mjs';
+import {RECEIPT_OUTCOMES, compositionKey, contentDigest, findConsent, findReceipt}              from './setupRunRecord.mjs';
+import {performVerify, verifyExits}                                                             from './verifyEffect.mjs';
 import {
     resolveWakeSetupPaths,
     selectWakeRecordsStateDir
 } from './wakeReceiverSetup.mjs';
+
+export {compositionKey};
 
 /**
  * The order the effects run in, whichever renderer runs them: the recipe's effect steps as it lists them,
@@ -60,6 +62,82 @@ const HOST_FILE_EFFECTS = Object.freeze(EFFECT_ORDER.slice(0, EFFECT_ORDER.index
  */
 export function composeContextOf(layout) {
     return {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles, profiles: layout.composeProfiles ?? []};
+}
+
+/**
+ * @summary Computes the current consent-rendered carrier, compose context, and input keys without reading secret values.
+ * @param {Object} options
+ * @param {Object|null} options.record
+ * @param {Object}      options.layout
+ * @param {Object}      options.target
+ * @param {Boolean}     [options.supported=true]
+ * @returns {{carrier: Object, composition: Object, keys: Object}|null}
+ */
+export function consentedInputs({record, layout, target, supported = true}) {
+    const preset = presets.find(row => row.id === (record ? findConsent(record, 'preset')?.answer : null));
+
+    if (!preset || !layout?.envFile || !layout?.secretsDir) {
+        return null;
+    }
+
+    let recordsStateDir = null;
+
+    try {
+        recordsStateDir = selectWakeRecordsStateDir(layout, {
+            consentAnswer: record ? findConsent(record, 'desktop-wake')?.answer ?? null : null,
+            supported
+        });
+    } catch {
+        recordsStateDir = null;
+    }
+
+    const
+        needsProviderKey = Array.isArray(preset.requires) && preset.requires.includes('providerKey'),
+        secretSources    = {
+            planeCredential: record ? findConsent(record, 'plane-credential')?.answer ?? null : null,
+            providerKey    : needsProviderKey ? (record ? findConsent(record, 'provider-key')?.answer ?? null : null) : null
+        },
+        carrier          = {
+            path   : layout.envFile,
+            entries: {
+                ...preset.env,
+                ...credentialEnvEntries({preset, secretsDir: layout.secretsDir}),
+                NEO_PLANE_ID       : target?.planeId ?? null,
+                NEO_PLANE_DATA_ROOT: target?.dataRoot ?? null,
+                ...(recordsStateDir ? {NEO_WAKE_RECEIVER_RECORDS_HOST_DIR: path.join(recordsStateDir, 'records')} : {})
+            },
+            ...(recordsStateDir ? {recordsStateDir} : {})
+        },
+        secretsKey       = effectInputKey(EFFECT_IDS.writeSecrets, {
+            files  : secretFileNames(preset).map(name => ({path: path.join(layout.secretsDir, name)})),
+            sources: secretSources
+        }),
+        carrierKey       = effectInputKey(EFFECT_IDS.writeEnv, carrier);
+
+    let envDigest      = null,
+        carrierProblem = null;
+
+    try {
+        envDigest = contentDigest(renderEnvFile(carrier.entries));
+    } catch (error) {
+        carrierProblem = error?.message ?? String(error);
+    }
+
+    const
+        composition = {...composeContextOf(layout), ...(envDigest ? {envDigest} : {})},
+        canCompose  = Boolean(envDigest && layout.composeProject && layout.composeDir && Array.isArray(layout.composeFiles) && layout.composeFiles.length > 0);
+
+    return {
+        carrier,
+        carrierProblem,
+        composition,
+        secretSources,
+        keys: {
+            [EFFECT_IDS.writeSecrets]: secretsKey,
+            [EFFECT_IDS.writeEnv]    : carrierKey,
+            [EFFECT_IDS.composeUp]   : canCompose ? effectInputKey(EFFECT_IDS.composeUp, composition) : null
+        }
+    };
 }
 
 /**
@@ -191,21 +269,19 @@ export async function performEffects({record, recordPath, host, layout, target, 
     }
 
     const
-        writeEnvInput = {
-            path   : layout.envFile,
-            entries: {
-                ...preset.env,
-                ...credentials.envEntries,
-                NEO_PLANE_ID       : target.planeId,
-                NEO_PLANE_DATA_ROOT: target.dataRoot,
-                ...(recordsStateDir ? {NEO_WAKE_RECEIVER_RECORDS_HOST_DIR: path.join(recordsStateDir, 'records')} : {})
+        consented = consentedInputs({
+            record   : current,
+            layout,
+            target,
+            supported: desktopWakeStep?.capability?.supported !== false
+        }),
+        inputs    = {
+            [EFFECT_IDS.writeSecrets]: {
+                files  : credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content})),
+                sources: consented.secretSources
             },
-            ...(recordsStateDir ? {recordsStateDir} : {})
-        },
-        inputs        = {
-            [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
-            [EFFECT_IDS.writeEnv]    : writeEnvInput,
-            [EFFECT_IDS.composeUp]   : {...composeContextOf(layout), envDigest: contentDigest(renderEnvFile(writeEnvInput.entries))}
+            [EFFECT_IDS.writeEnv] : consented.carrier,
+            [EFFECT_IDS.composeUp]: consented.composition
         };
 
     let envMutated = false;
@@ -450,7 +526,9 @@ function unsettledReason({effectId, observed, expectedDigest, planeMatches}) {
  * @private
  */
 async function runVerify({record, recordPath, host, target, evaluation, report, patPath, newAttempt, createPlaneClient}) {
-    if (newAttempt && verifyExits({receipt: findReceipt(record, EFFECT_IDS.verify), section: record.verification}).exits.length === 0) {
+    const composition = compositionKey(record);
+
+    if (newAttempt && verifyExits({receipt: findReceipt(record, EFFECT_IDS.verify), section: record.verification, composition}).exits.length === 0) {
         report('\'verify\' is accepted: no new attempt is made, the witness is complete; a new run witnesses a plane again');
 
         return record;
@@ -473,7 +551,7 @@ async function runVerify({record, recordPath, host, target, evaluation, report, 
     const plane = createPlaneClient({endpoint: target.endpoint, credential: (await host.fsModule.readFile(patPath, 'utf8')).trim()});
 
     try {
-        const result = await performVerify({record, recordPath, host, target, plane, newAttempt});
+        const result = await performVerify({record, recordPath, host, target, plane, newAttempt, composition});
 
         if (result.receipt && result.receipt.outcome !== RECEIPT_OUTCOMES.accepted) {
             report(`'verify' is ${result.receipt.outcome}: ${result.receipt.reason}`);

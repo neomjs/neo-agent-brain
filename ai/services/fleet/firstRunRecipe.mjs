@@ -20,10 +20,17 @@
  * floor) is never recommended by default.
  */
 
-import {ANY_FORGE_NAME}                                              from './forgeProviders.mjs';
-import {GiB, fitsPreset}                                             from './probePlacement.mjs';
-import {presetStatus}                                                from './placementPresets.mjs';
-import {RECEIPT_OUTCOMES, describeBinding, findConsent, findReceipt} from './setupRunRecord.mjs';
+import {ANY_FORGE_NAME}  from './forgeProviders.mjs';
+import {GiB, fitsPreset} from './probePlacement.mjs';
+import {presetStatus}    from './placementPresets.mjs';
+import {
+    RECEIPT_OUTCOMES,
+    compositionKey,
+    describeBinding,
+    findConsent,
+    findReceipt,
+    hasReplacedReceipt
+} from './setupRunRecord.mjs';
 import {verifyExits}                                                 from './verifyEffect.mjs';
 
 /**
@@ -249,6 +256,22 @@ function evaluateQuestion(step, {record, bound, bindingReason, presets, desktopW
     return status(step, STEP_STATUSES.pending, bound ? 'unanswered' : `unanswered (${bindingReason})`, {answer: null});
 }
 
+const EARLIER_INPUT_REASONS = Object.freeze({
+    'write-env'    : 'accepted for an earlier input: the consents now render another carrier',
+    'write-secrets': 'accepted for an earlier input: the consents now render another secret set',
+    'compose-up'   : 'accepted for an earlier input: the carrier changed since the plane was composed — running it again restarts the plane',
+    'verify'       : 'accepted for an earlier input: the witness followed an earlier composition; a new attempt follows this one'
+});
+
+/**
+ * Effects whose `receipt.inputDigest` is NOT their consent-rendered `inputKey` (`write-secrets` hashes minted
+ * secret content; `verify` hashes the witness attempt marker). Every other keyed effect (`write-env`,
+ * `compose-up`) uses `effectInputDigest(input)` as `inputKey`, so a pre-merge receipt's `inputDigest` is
+ * byte-identical to its `inputKey`.
+ * @type {Set<String>}
+ */
+const EFFECTS_WITH_SEPARATE_INPUT_KEY = Object.freeze(new Set(['write-secrets', 'verify']));
+
 async function evaluateEffect(step, {record, bound, observers, target, context, observedAt, steps}) {
     const
         receipt = bound ? findReceipt(record, step.effectId) : null,
@@ -286,7 +309,18 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
         return status(step, STEP_STATUSES.unknown, read.reason, extra);
     }
 
-    const observed = read.value ?? {};
+    const
+        observed         = read.value ?? {},
+        recordedInputKey = receipt?.inputKey ?? (EFFECTS_WITH_SEPARATE_INPUT_KEY.has(step.effectId) ? null : receipt?.inputDigest ?? null);
+
+    if (receipt?.outcome === RECEIPT_OUTCOMES.accepted && recordedInputKey && observed.inputKey && recordedInputKey !== observed.inputKey) {
+        return status(
+            step,
+            STEP_STATUSES.pending,
+            EARLIER_INPUT_REASONS[step.effectId] ?? 'accepted for an earlier input: the consents changed',
+            {...extra, earlierInput: true}
+        );
+    }
 
     if (observed.present !== true) {
         if (receipt?.outcome === RECEIPT_OUTCOMES.accepted) {
@@ -305,6 +339,13 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
         return status(step, STEP_STATUSES.failed, observed.problem, extra);
     }
 
+    if (
+        receipt?.outcome === RECEIPT_OUTCOMES.failed &&
+        (hasReplacedReceipt(record, step.effectId) || Boolean(receipt.expectedDigest && observed.digest && receipt.expectedDigest !== observed.digest))
+    ) {
+        return status(step, STEP_STATUSES.failed, receipt.reason ?? 'the last attempt failed', extra);
+    }
+
     if (observed.upgradePending === true || observed.inputMismatch === true) {
         return status(step, STEP_STATUSES.pending, observed.reason ?? 'the host declaration requires an update for this run', {...extra, observed});
     }
@@ -317,7 +358,16 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
         return status(step, STEP_STATUSES.failed, 'the host content changed after the effect was accepted', extra);
     }
 
-    return status(step, STEP_STATUSES.ok, receipt?.outcome === RECEIPT_OUTCOMES.accepted ? 'observed; matches the accepted receipt' : 'observed; not performed by this run', extra);
+    const keyless = receipt?.outcome === RECEIPT_OUTCOMES.accepted && !recordedInputKey && Boolean(observed.inputKey);
+
+    return status(
+        step,
+        STEP_STATUSES.ok,
+        receipt?.outcome === RECEIPT_OUTCOMES.accepted
+            ? `observed; matches the accepted receipt${keyless ? ' (input not recorded)' : ''}`
+            : 'observed; not performed by this run',
+        extra
+    );
 }
 
 /**
@@ -465,6 +515,12 @@ function evaluateDone(step, read, {steps, record, bound, observers, observedAt})
         return status(step, STEP_STATUSES.pending, `${at}; the witness was not recalled yet`, {observedAt, witnessedAt: value.at});
     }
 
+    const earlier = steps.find(row => row.earlierInput);
+
+    if (earlier) {
+        return status(step, STEP_STATUSES.pending, `${at}; ${earlier.id} was accepted for an earlier input`, {observedAt, witnessedAt: value.at});
+    }
+
     // completion requires fresh served-plane & validation plus active wake posture & host env/compose bind
     const
         hasDesktopWakeConsent = Boolean(bound && findConsent(record, 'desktop-wake')),
@@ -527,7 +583,13 @@ export async function evaluateRecipe({target, record = null, observers = {}, pre
             steps.push({
                 ...row,
                 waitsFor: row.status === STEP_STATUSES.ok ? null : waitOf(step, steps),
-                ...(step.id === 'verify' ? verifyExits({receipt: bound ? findReceipt(record, step.effectId) : null, section: bound ? record.verification : null}) : {})
+                ...(step.id === 'verify'
+                    ? verifyExits({
+                        receipt    : bound ? findReceipt(record, step.effectId) : null,
+                        section    : bound ? record.verification : null,
+                        composition: bound ? compositionKey(record) : null
+                    })
+                    : {})
             });
             continue;
         }

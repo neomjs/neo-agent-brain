@@ -273,7 +273,9 @@ test.describe('firstRun CLI', () => {
             park       = async effectId => {
                 const record = JSON.parse(await fs.readFile(recordPath, 'utf8'));
 
-                record.receipts = record.receipts.map(receipt => receipt.effectId === effectId ? {effectId, outcome: 'pending', inputDigest: receipt.inputDigest, startedAt: receipt.acceptedAt} : receipt);
+                record.receipts = record.receipts.map(receipt => receipt.effectId === effectId
+                    ? {effectId, outcome: 'pending', inputDigest: receipt.inputDigest, ...(receipt.inputKey ? {inputKey: receipt.inputKey} : {}), startedAt: receipt.acceptedAt}
+                    : receipt);
                 await fs.writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
             };
 
@@ -337,7 +339,9 @@ test.describe('firstRun CLI', () => {
             record = JSON.parse(await fs.readFile(recordPath, 'utf8')),
             held   = await Promise.all(['fleet-plane-token', 'gemini-api-key'].map(async name => [name, await fs.readFile(path.join(layout.secretsDir, name), 'utf8')]));
 
-        record.receipts = record.receipts.map(receipt => receipt.effectId === 'write-secrets' ? {effectId: 'write-secrets', outcome: 'pending', inputDigest: receipt.inputDigest, startedAt: receipt.acceptedAt} : receipt);
+        record.receipts = record.receipts.map(receipt => receipt.effectId === 'write-secrets'
+            ? {effectId: 'write-secrets', outcome: 'pending', inputDigest: receipt.inputDigest, ...(receipt.inputKey ? {inputKey: receipt.inputKey} : {}), startedAt: receipt.acceptedAt}
+            : receipt);
         await fs.writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
         await Promise.all(held.map(([name]) => fs.rm(path.join(layout.secretsDir, name))));
 
@@ -362,26 +366,31 @@ test.describe('firstRun CLI', () => {
             {stateRoot} = await scratch(),
             layout      = hostLayout({stateRoot}),
             observe     = preset => productionObservers({layout, host: createHost()}).secretFiles({}, {record: preset ? {consents: [{stepId: 'preset', answer: preset}]} : null}),
-            write       = async (name, mode = 0o600) => { await fs.writeFile(path.join(layout.secretsDir, name), 'x'); await fs.chmod(path.join(layout.secretsDir, name), mode) };
+            write       = async (name, mode = 0o600) => { await fs.writeFile(path.join(layout.secretsDir, name), 'x'); await fs.chmod(path.join(layout.secretsDir, name), mode) },
+            hostedKey   = (await observe('hosted')).inputKey,
+            localKey    = (await observe('local-small')).inputKey;
 
-        expect(await observe('hosted')).toEqual({present: false, reason: `no secret files under ${layout.secretsDir}`});
+        expect([hostedKey, localKey].every(key => /^[0-9a-f]{64}$/.test(key)) && hostedKey !== localKey).toBe(true);
+        expect((await observe('local-full')).inputKey).toBe(localKey);
+
+        expect(await observe('hosted')).toEqual({present: false, reason: `no secret files under ${layout.secretsDir}`, inputKey: hostedKey});
 
         await fs.mkdir(layout.secretsDir, {recursive: true});
         await write('mcp-auth-token');
 
-        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token, gemini-api-key`});
-        expect(await observe('local-small')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token`});
+        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token, gemini-api-key`, inputKey: hostedKey});
+        expect(await observe('local-small')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token`, inputKey: localKey});
 
         await write('fleet-plane-token');
 
         // a local preset's set is complete; the hosted one still lacks its provider key; without a consent the base set is read
-        expect(await observe('local-small')).toEqual({present: true, digest: null, problem: null});
-        expect(await observe(null)).toEqual({present: true, digest: null, problem: null});
-        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: gemini-api-key`});
+        expect(await observe('local-small')).toEqual({present: true, digest: null, problem: null, inputKey: localKey});
+        expect(await observe(null)).toEqual({present: true, digest: null, problem: null, inputKey: null});
+        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: gemini-api-key`, inputKey: hostedKey});
 
         await write('gemini-api-key', 0o644);
 
-        expect(await observe('hosted')).toEqual({present: true, digest: null, problem: 'gemini-api-key is readable beyond its owner'})
+        expect(await observe('hosted')).toEqual({present: true, digest: null, problem: 'gemini-api-key is readable beyond its owner', inputKey: hostedKey})
     });
 
     test('a record the CLI cannot read is refused by name and left as it is; nothing runs over it', async () => {
@@ -596,13 +605,18 @@ test.describe('firstRun CLI', () => {
         // done + verification read the section, never a counter
         await expect(observers.done(target, {record: hosted})).rejects.toThrow('no witness for this run yet');
         expect(await observers.done(target, {record: witnessed})).toEqual({persisted: true, queryAnswered: true, at: 't1', reason: null});
-        expect(await observers.verification(target, {record: witnessed})).toEqual({present: true, digest: null, problem: null, reason: 'the witness has not been written and recalled yet'});
-        expect(await observers.verification(target, {record: hosted})).toEqual({present: false, digest: null, problem: null, reason: 'the verify effect has not run'});
+        expect(await observers.verification(target, {record: witnessed})).toEqual({present: true, digest: null, problem: null, inputKey: null, reason: 'the witness has not been written and recalled yet'});
+        expect(await observers.verification(target, {record: hosted})).toEqual({present: false, digest: null, problem: null, inputKey: null, reason: 'the verify effect has not run'});
+
+        const composed = outcome => ({...witnessed, receipts: [{effectId: 'compose-up', outcome, inputKey: 'composition-key'}]});
+
+        expect((await observers.verification(target, {record: composed('accepted')})).inputKey).toBe('composition-key');
+        expect((await observers.verification(target, {record: composed('pending')})).inputKey).toBeNull();
 
         const refused = {...witnessed, verification: {...witnessed.verification, memory: null, readback: null, recall: null, attempt: {marker: 'mk', dispatchedAt: 't0', refused: {at: 't1', reason: 'no grant'}}}};
 
         expect(await observers.done(target, {record: refused})).toEqual({persisted: false, queryAnswered: false, at: null, reason: 'the plane refused the witness write at t1: no grant'});
-        expect(await observers.verification(target, {record: refused})).toEqual({present: true, digest: null, problem: 'the plane refused the witness write at t1: no grant'});
+        expect(await observers.verification(target, {record: refused})).toEqual({present: true, digest: null, problem: 'the plane refused the witness write at t1: no grant', inputKey: null});
 
         // through the recipe: the witnessed record completes only with the fresh steps ok in the same evaluation
         const step = (await evaluateRecipe({target, record: witnessed, observers: {servedPlane: observers.servedPlane, validation: observers.validation, verification: observers.verification, done: observers.done}, presets, now: host.now})).steps.find(row => row.id === 'done');
@@ -624,7 +638,7 @@ test.describe('firstRun CLI', () => {
         // a refused read-only sub-step the section recorded projects as failed with the plane's reason, on the effect row and on done
         const readbackRefused = {...witnessed, verification: {...witnessed.verification, readback: null, recall: null, failure: {step: 'readback', at: 't2', reason: 'viewer lacks READ'}}};
 
-        expect(await observers.verification(target, {record: readbackRefused})).toEqual({present: true, digest: null, problem: 'the plane refused the readback at t2: viewer lacks READ'});
+        expect(await observers.verification(target, {record: readbackRefused})).toEqual({present: true, digest: null, problem: 'the plane refused the readback at t2: viewer lacks READ', inputKey: null});
         expect(await observers.done(target, {record: readbackRefused})).toEqual({persisted: true, queryAnswered: false, at: 't1', reason: 'the plane refused the readback at t2: viewer lacks READ'});
 
         const projected = byId((await evaluateRecipe({target, record: {...readbackRefused, receipts: [{effectId: 'verify', outcome: 'failed', inputDigest: 'x', startedAt: 't0', failedAt: 't2', reason: 'the plane refused the readback: viewer lacks READ'}]}, observers: {servedPlane: observers.servedPlane, validation: observers.validation, verification: observers.verification, done: observers.done}, presets, now: host.now})).steps);
@@ -1106,7 +1120,7 @@ test.describe('firstRun CLI', () => {
                 pendingComposeRecord  = withReceipt(afterReplay1Record, {
                     effectId      : 'compose-up',
                     outcome       : RECEIPT_OUTCOMES.pending,
-                    inputDigest   : 'pending-compose-input',
+                    inputDigest   : findReceipt(afterReplay1Record, 'compose-up').inputDigest,
                     expectedDigest: expectedComposeDigest,
                     startedAt     : '2026-11-16T01:05:00.000Z'
                 });
@@ -1218,6 +1232,98 @@ test.describe('firstRun CLI', () => {
             }
         } finally {
             await fs.rm(path.dirname(stateRoot), {recursive: true, force: true});
+        }
+    });
+
+    test('CLI --preset and --provider-key re-apply changed consents over an accepted run while keeping untouched secret files intact and archiving replaced receipts', async () => {
+        const
+            {root, homeDir, setupRoot, stateRoot, patPath} = await scratch(),
+            layout                                         = hostLayout({stateRoot, homeDir}),
+            recordPath                                     = path.join(setupRoot, `${RUN_ID}.json`),
+            callsPath                                      = path.join(setupRoot, 'fake-run.json'),
+            keyPath                                        = path.join(root, 'operator', 'gemini-key');
+
+        try {
+            await fs.writeFile(keyPath, 'fixture-gemini-provider-key-value\n', {mode: 0o600});
+
+            // 1. Complete cold run on local-small
+            const first = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                fake: {...greenFake({patPath}), answers: {preset: 'local-small', 'plane-credential': patPath, 'desktop-wake': 'declined'}}
+            });
+
+            expect(first.code, first.stderr).toBe(0);
+
+            const fleetTokenBefore = await fs.readFile(path.join(layout.secretsDir, 'fleet-plane-token'), 'utf8');
+
+            // 2. Change preset to local-full via --preset: rewrites carrier (4096 dim), restarts Compose, keeps fleet-plane-token untouched
+            const localFull = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                extra: ['--preset', 'local-full'],
+                fake : {
+                    ...greenFake({patPath, answers: false}),
+                    observers: {
+                        ...greenFake({patPath}).observers,
+                        validation: {provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 4096}}
+                    }
+                }
+            });
+
+            expect(localFull.code, localFull.stderr).toBe(0);
+            expect(await fs.readFile(layout.envFile, 'utf8')).toContain('NEO_VECTOR_DIMENSION=4096\n');
+            expect(await fs.readFile(path.join(layout.secretsDir, 'fleet-plane-token'), 'utf8')).toBe(fleetTokenBefore);
+            expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(2);
+
+            // 3. Switch to hosted via --preset hosted --provider-key <file>: writes gemini-api-key, rewrites carrier, restarts Compose
+            const hosted = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                extra: ['--preset', 'hosted', '--provider-key', keyPath],
+                fake : {
+                    ...greenFake({patPath, answers: false}),
+                    observers: {
+                        ...greenFake({patPath}).observers,
+                        validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}
+                    }
+                }
+            });
+
+            expect(hosted.code, hosted.stderr).toBe(0);
+            expect(await fs.readFile(layout.envFile, 'utf8')).toContain('NEO_VECTOR_DIMENSION=3072\n');
+            expect(await fs.readFile(layout.envFile, 'utf8')).toContain(`NEO_GEMINI_API_KEY_FILE=${layout.secretsDir}/gemini-api-key\n`);
+            expect((await fs.readdir(layout.secretsDir)).sort()).toEqual(['fleet-plane-token', 'gemini-api-key', 'mcp-auth-token']);
+            expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(3);
+
+            const savedRecord = JSON.parse(await fs.readFile(recordPath, 'utf8'));
+
+            expect(savedRecord.history.map(entry => [entry.effectId, entry.reason])).toEqual([
+                ['write-env',     'input-changed'],
+                ['compose-up',    'input-changed'],
+                ['write-secrets', 'input-changed'],
+                ['write-env',     'input-changed'],
+                ['compose-up',    'input-changed']
+            ]);
+
+            // 4. Inadmissible --provider-key refuses and exits 1 without mutating the record or leaking the input
+            const badKey = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                extra: ['--provider-key', 'PASTED_SECRET_NOT_A_PATH'],
+                fake : greenFake({patPath, answers: false})
+            });
+
+            expect(badKey.code).toBe(1);
+            expect(badKey.stderr).toContain('provider-key: not the absolute path of a file; the value was not recorded');
+            expect(badKey.stderr).not.toContain('PASTED_SECRET_NOT_A_PATH');
+            expect(await fs.readFile(recordPath, 'utf8')).toBe(`${JSON.stringify(savedRecord, null, 2)}\n`);
+        } finally {
+            await fs.rm(root, {recursive: true, force: true});
         }
     });
 });

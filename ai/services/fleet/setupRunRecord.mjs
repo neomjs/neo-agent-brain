@@ -54,6 +54,8 @@ export const RECEIPT_OUTCOMES = Object.freeze({
 export const RETIRE_REASONS = Object.freeze({
     targetChanged : 'target-changed',
     versionChanged: 'recipe-version-changed',
+    inputChanged  : 'input-changed',
+    reapplied     : 'reapplied',
     operator      : 'operator'
 });
 
@@ -362,6 +364,68 @@ export function withVerification(record, verification) {
  */
 export function findReceipt(record, effectId) {
     return record.receipts.find(receipt => receipt.effectId === effectId) ?? null;
+}
+
+/**
+ * @summary Returns the input key of the accepted `compose-up` receipt for `record`, or `null`.
+ * @param {Object|null} record
+ * @returns {String|null}
+ */
+export function compositionKey(record) {
+    const receipt = record ? findReceipt(record, 'compose-up') : null;
+
+    return receipt?.outcome === RECEIPT_OUTCOMES.accepted ? receipt.inputKey ?? receipt.inputDigest ?? null : null;
+}
+
+/**
+ * @summary Archives a receipt into `record.history` before a new application replaces it.
+ * @param {Object} record
+ * @param {Object} receipt
+ * @param {Object} options
+ * @param {String} [options.reason=RETIRE_REASONS.inputChanged]
+ * @param {String} options.retiredAt
+ * @returns {Object}
+ */
+export function archiveReplacedReceipt(record, receipt, {reason = RETIRE_REASONS.inputChanged, retiredAt}) {
+    if (!Object.values(RETIRE_REASONS).includes(reason)) {
+        throw new Error(`archiveReplacedReceipt: unknown reason '${reason}'.`);
+    }
+
+    return {
+        ...record,
+        history: [
+            ...record.history,
+            {
+                retiredAt,
+                reason,
+                recipeVersion: record.recipeVersion,
+                target       : normalizeTarget(record.target),
+                effectId     : receipt.effectId,
+                receipt
+            }
+        ]
+    };
+}
+
+/**
+ * @summary Whether `record.history` holds an earlier replaced receipt for `effectId` under the current binding.
+ * @param {Object|null} record
+ * @param {String}      effectId
+ * @returns {Boolean}
+ */
+export function hasReplacedReceipt(record, effectId) {
+    if (!record || !Array.isArray(record.history)) {
+        return false;
+    }
+
+    return record.history.some(entry =>
+        entry?.effectId === effectId &&
+        Boolean(entry.receipt) &&
+        describeBinding(
+            {target: entry.target ?? record.target, recipeVersion: entry.recipeVersion ?? record.recipeVersion},
+            {target: record.target, recipeVersion: record.recipeVersion}
+        ) === 'bound'
+    );
 }
 
 /**

@@ -1,14 +1,29 @@
-import {expect, test}                                                                                  from '@playwright/test';
-import fs                                                                                              from 'node:fs/promises';
-import os                                                                                              from 'node:os';
-import path                                                                                            from 'node:path';
-import {fileURLToPath}                                                                                 from 'node:url';
-import {EFFECT_IDS, createHost, persistSetupRecord, recordConsent}                                     from '../../../../../../ai/services/fleet/hostEffects.mjs';
-import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe}                       from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
-import {presets}                                                                                       from '../../../../../../ai/services/fleet/placementPresets.mjs';
-import {EFFECT_ORDER, performEffects, settlePending}                                                   from '../../../../../../ai/services/fleet/setupOrchestration.mjs';
-import {RECEIPT_OUTCOMES, contentDigest, createSetupRecord, findReceipt, setupRecordPath, withReceipt} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
-import {extractReceiverDeclaration, parseLaunchAgentPlist}                                             from '../../../../../../ai/services/fleet/wakeReceiverPlist.mjs';
+import {expect, test}  from '@playwright/test';
+import fs              from 'node:fs/promises';
+import os              from 'node:os';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {
+    EFFECT_IDS,
+    createHost,
+    hostEffectHandlers,
+    persistSetupRecord,
+    recordConsent
+} from '../../../../../../ai/services/fleet/hostEffects.mjs';
+import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
+import {presets}                                                                              from '../../../../../../ai/services/fleet/placementPresets.mjs';
+import {EFFECT_ORDER, performEffects, settlePending}                                          from '../../../../../../ai/services/fleet/setupOrchestration.mjs';
+import {
+    RECEIPT_OUTCOMES,
+    RETIRE_REASONS,
+    contentDigest,
+    createSetupRecord,
+    findReceipt,
+    setupRecordPath,
+    withReceipt
+} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {extractReceiverDeclaration, parseLaunchAgentPlist} from '../../../../../../ai/services/fleet/wakeReceiverPlist.mjs';
+import {productionObservers}                               from '../../../../../../ai/scripts/setup/firstRun.mjs';
 
 // The orchestration over a real temp layout and the checkout's own config and Compose files; the command
 // runner, the clock and every observation are scripted, and each run's file reads are recorded.
@@ -646,5 +661,427 @@ test.describe('setupOrchestration', () => {
             settled    = await settlePending({record: unsettled, recordPath: enabled.recordPath, host: enabled.host, evaluation: await evaluate(unsettled, {[EFFECT_IDS.startWakeReceiver]: runningObs})});
 
         expect(findReceipt(settled, EFFECT_IDS.startWakeReceiver)).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, settledBy: 'observation'});
+    });
+
+    test('AC-1 & failed-reapplication arm: changing preset turns write-env, write-secrets and compose-up pending; a thrown re-application reads failed (never ok) while retaining the earlier receipt in history, and retries cleanly on the next run', async () => {
+        const
+            run          = await consentedRun(),
+            keyPath      = path.join(run.root, 'operator', 'provider-key'),
+            composeCalls = () => run.calls.filter(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up')),
+            mountedDir   = () => path.join(run.stateRoot, 'wake-receiver-disabled', 'records'),
+            evaluateHost = record => evaluateRecipe({
+                target,
+                record,
+                presets,
+                now      : () => NOW,
+                observers: {
+                    ...productionObservers({
+                        layout: run.layout,
+                        host  : run.host,
+                        probe : async () => ({
+                            host        : {complete: true, availableBytes: 64 * 1073741824, pressure: 'ok'},
+                            guest       : null,
+                            observed    : {},
+                            runningPlane: composeCalls().length > 0 ? {project: run.layout.composeProject} : null
+                        }),
+                        healthcheck: async () => {
+                            if (composeCalls().length === 0) throw COLD;
+
+                            return {plane: {id: target.planeId, dataRoot: target.dataRoot}, status: 'healthy'};
+                        },
+                        validate   : async ({preset}) => ({provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: preset.vectorDimension}})
+                    }),
+                    runningPlane: async (t, {record: boundRecord = null} = {}) => {
+                        const base = await productionObservers({
+                            layout: run.layout,
+                            host  : {
+                                ...run.host,
+                                run: async (command, args, opts) => {
+                                    if (command === 'docker' && args[0] === 'ps') {
+                                        return {stdout: composeCalls().length > 0 ? 'cid-mc-1\n' : '', stderr: ''};
+                                    }
+                                    if (command === 'docker' && args[0] === 'inspect') {
+                                        return {stdout: JSON.stringify([{Destination: '/app/wake-receiver-records', Source: mountedDir()}]), stderr: ''};
+                                    }
+
+                                    return run.host.run(command, args, opts);
+                                }
+                            },
+                            probe: async () => ({runningPlane: composeCalls().length > 0 ? {project: run.layout.composeProject} : null})
+                        }).runningPlane(t, {record: boundRecord});
+
+                        return base;
+                    }
+                }
+            }),
+            consent = async (rec, stepId, answer) => (await recordConsent({stepId, answer, record: rec, recordPath: run.recordPath, host: run.host})).record,
+            row     = (evaluation, id) => evaluation.steps.find(step => step.id === id),
+            statuses = (evaluation, ids) => Object.fromEntries(ids.map(id => [id, row(evaluation, id).status]));
+
+        await fs.writeFile(keyPath, 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh\n', {mode: 0o600});
+
+        let {record} = await perform(run, {evaluation: await evaluateHost(run.record), createPlaneClient: null});
+
+        const
+            initialCarrier        = await fs.readFile(run.layout.envFile, 'utf8'),
+            initialEnvReceipt     = findReceipt(record, EFFECT_IDS.writeEnv),
+            initialSecretsReceipt = findReceipt(record, EFFECT_IDS.writeSecrets),
+            initialComposeReceipt = findReceipt(record, EFFECT_IDS.composeUp);
+
+        expect(statuses(await evaluateHost(record), ['write-secrets', 'write-env', 'compose-up', 'register-forge'])).toEqual({
+            'write-secrets' : 'ok',
+            'write-env'     : 'ok',
+            'compose-up'    : 'ok',
+            'register-forge': 'ok'
+        });
+        expect(composeCalls()).toHaveLength(1);
+
+        // Operator changes preset from local-small to hosted + provider-key
+        record = await consent(await consent(record, 'preset', 'hosted'), 'provider-key', keyPath);
+
+        const changed = await evaluateHost(record);
+
+        expect(statuses(changed, ['write-secrets', 'write-env', 'compose-up', 'register-forge'])).toEqual({
+            'write-secrets' : 'pending',
+            'write-env'     : 'pending',
+            'compose-up'    : 'pending',
+            'register-forge': 'ok'
+        });
+        for (const id of ['write-secrets', 'write-env', 'compose-up']) {
+            expect(row(changed, id).reason, id).toMatch(/^accepted for an earlier input:/);
+        }
+        expect(row(changed, 'compose-up').reason).toContain('restarts the plane');
+        expect(await fs.readFile(run.layout.envFile, 'utf8'), 'evaluating mutates nothing').toBe(initialCarrier);
+
+        // Failed re-application arm: suppose docker compose up throws after write-secrets & write-env succeed
+        let   failDockerOnce = true;
+        const flakyHost      = {
+            ...run.host,
+            run: async (command, args, opts) => {
+                if (failDockerOnce && command === 'docker' && args[0] === 'compose' && args.includes('up')) {
+                    failDockerOnce = false;
+                    throw new Error('docker daemon socket hung up during recreate');
+                }
+
+                return run.host.run(command, args, opts);
+            }
+        };
+
+        record = await performEffects({
+            record,
+            recordPath       : run.recordPath,
+            host             : flakyHost,
+            layout           : run.layout,
+            target,
+            evaluation       : changed,
+            report           : () => {},
+            configSourcePath,
+            createPlaneClient: null
+        });
+
+        const afterFailedRecompose = await evaluateHost(record);
+
+        // Even though the earlier container is still running on the host, compose-up MUST read failed (never ok)
+        expect(row(afterFailedRecompose, 'compose-up')).toMatchObject({
+            status : STEP_STATUSES.failed,
+            receipt: RECEIPT_OUTCOMES.failed,
+            reason : 'docker daemon socket hung up during recreate'
+        });
+        expect(exitCodeFor(afterFailedRecompose)).toBe(1);
+
+        // All three replaced local-small receipts were retained in record.history (bootstrap-record decision §2.7)
+        expect(record.history.map(entry => [entry.effectId, entry.reason, entry.receipt])).toEqual([
+            [EFFECT_IDS.writeSecrets, RETIRE_REASONS.inputChanged, initialSecretsReceipt],
+            [EFFECT_IDS.writeEnv,     RETIRE_REASONS.inputChanged, initialEnvReceipt],
+            [EFFECT_IDS.composeUp,    RETIRE_REASONS.inputChanged, initialComposeReceipt]
+        ]);
+
+        // Next run retries compose-up and brings all host effects to ok for the hosted inputs
+        ({record} = await perform(run, {record, evaluation: afterFailedRecompose, createPlaneClient: null}));
+
+        const
+            hostedCarrier = await fs.readFile(run.layout.envFile, 'utf8'),
+            afterRetry    = await evaluateHost(record);
+
+        expect(hostedCarrier).not.toBe(initialCarrier);
+        expect(hostedCarrier).toContain(`NEO_GEMINI_API_KEY_FILE=${path.join(run.layout.secretsDir, 'gemini-api-key')}\n`);
+        expect((await fs.readdir(run.layout.secretsDir)).sort()).toEqual(['fleet-plane-token', 'gemini-api-key', 'mcp-auth-token']);
+        expect(composeCalls()).toHaveLength(2);
+        expect(statuses(afterRetry, ['write-secrets', 'write-env', 'compose-up', 'register-forge'])).toEqual({
+            'write-secrets' : 'ok',
+            'write-env'     : 'ok',
+            'compose-up'    : 'ok',
+            'register-forge': 'ok'
+        });
+    });
+
+    test('AC-2, AC-3 & pre-merge keyless receipts: untouched effects stay ok on preset change, re-composed plane sets verify to pending with exits [run], writes one fresh marker, and keyless receipts compare inputDigest where identical to inputKey while disclosing write-secrets', async () => {
+        const
+            run          = await consentedRun(),
+            planes       = [],
+            composeCalls = () => run.calls.filter(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up')),
+            mountedDir   = () => path.join(run.stateRoot, 'wake-receiver-disabled', 'records'),
+            plane        = ({endpoint, credential}) => {
+                const client = {
+                    endpoint,
+                    credential,
+                    addMemory  : async function(content) { this.written = content.prompt; return {id: `mem-${planes.length}`, sessionId: 's', timestamp: `t-${planes.length}`} },
+                    recentTurns: async function() { return {count: 1, turns: [{id: `mem-${planes.length}`, prompt: this.written}], nextCursor: null} },
+                    recall     : async function() { return {count: 1, results: [{id: `mem-${planes.length}`, prompt: this.written}]} },
+                    close      : async () => {}
+                };
+
+                planes.push(client);
+
+                return client;
+            },
+            evaluateHost = record => evaluateRecipe({
+                target,
+                record,
+                presets,
+                now      : () => NOW,
+                observers: {
+                    ...productionObservers({
+                        layout: run.layout,
+                        host  : run.host,
+                        probe : async () => ({
+                            host        : {complete: true, availableBytes: 64 * 1073741824, pressure: 'ok'},
+                            guest       : null,
+                            observed    : {},
+                            runningPlane: composeCalls().length > 0 ? {project: run.layout.composeProject} : null
+                        }),
+                        healthcheck: async () => {
+                            if (composeCalls().length === 0) throw COLD;
+
+                            return {plane: {id: target.planeId, dataRoot: target.dataRoot}, status: 'healthy'};
+                        },
+                        validate   : async ({preset}) => ({provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: preset.vectorDimension}})
+                    }),
+                    runningPlane: async (t, {record: boundRecord = null} = {}) => productionObservers({
+                        layout: run.layout,
+                        host  : {
+                            ...run.host,
+                            run: async (command, args, opts) => {
+                                if (command === 'docker' && args[0] === 'ps') {
+                                    return {stdout: composeCalls().length > 0 ? 'cid-mc-1\n' : '', stderr: ''};
+                                }
+                                if (command === 'docker' && args[0] === 'inspect') {
+                                    return {stdout: JSON.stringify([{Destination: '/app/wake-receiver-records', Source: mountedDir()}]), stderr: ''};
+                                }
+
+                                return run.host.run(command, args, opts);
+                            }
+                        },
+                        probe: async () => ({runningPlane: composeCalls().length > 0 ? {project: run.layout.composeProject} : null})
+                    }).runningPlane(t, {record: boundRecord})
+                }
+            }),
+            consent = async (rec, stepId, answer) => (await recordConsent({stepId, answer, record: rec, recordPath: run.recordPath, host: run.host})).record,
+            row     = (evaluation, id) => evaluation.steps.find(step => step.id === id),
+            pass    = async rec => (await perform(run, {record: rec, evaluation: await evaluateHost(rec), createPlaneClient: plane})).record;
+
+        // Pass 1 brings the plane up, Pass 2 witnesses it
+        let record = await pass(await pass(run.record));
+
+        const
+            firstMarker = record.verification.attempt.marker,
+            witnessed   = await evaluateHost(record);
+
+        expect(planes).toHaveLength(1);
+        expect([row(witnessed, 'verify').status, row(witnessed, 'done').status]).toEqual(['ok', 'ok']);
+
+        // Unchanged resume writes nothing
+        expect(await pass(record)).toBe(record);
+        expect(planes).toHaveLength(1);
+
+        // AC-3: switch local-small -> local-full (touches write-env and compose-up; secret set is identical)
+        record = await consent(record, 'preset', 'local-full');
+
+        const changed = await evaluateHost(record);
+
+        expect(row(changed, 'write-secrets').status).toBe('ok');
+        expect(row(changed, 'register-forge').status).toBe('ok');
+        expect(row(changed, 'write-env')).toMatchObject({status: 'pending', reason: expect.stringMatching(/^accepted for an earlier input:/)});
+        expect(row(changed, 'compose-up')).toMatchObject({status: 'pending', reason: expect.stringContaining('restarts the plane')});
+        expect(row(changed, 'done')).toMatchObject({status: 'pending', reason: expect.stringContaining('write-env was accepted for an earlier input')});
+
+        const fleetTokenBefore = await fs.readFile(path.join(run.layout.secretsDir, 'fleet-plane-token'), 'utf8');
+
+        // Re-compose pass (without inline evaluate callback): write-env & compose-up re-run, secrets stay untouched
+        record = await pass(record);
+
+        expect(await fs.readFile(path.join(run.layout.secretsDir, 'fleet-plane-token'), 'utf8')).toBe(fleetTokenBefore);
+        expect(composeCalls()).toHaveLength(2);
+        expect(planes).toHaveLength(1);
+
+        // AC-2: after re-composition, verify reads pending and names exits: ['run'], duplicatePossible: false
+        const recomposed = await evaluateHost(record);
+
+        expect(row(recomposed, 'verify')).toMatchObject({
+            status           : 'pending',
+            reason           : expect.stringMatching(/^accepted for an earlier input:/),
+            exits            : ['run'],
+            duplicatePossible: false
+        });
+        expect(row(recomposed, 'done').status).toBe('pending');
+
+        // Witness pass for the new composition: one fresh marker, prior attempt preserved
+        record = await pass(record);
+
+        expect(planes).toHaveLength(2);
+        expect(record.verification.attempt.marker).not.toBe(firstMarker);
+        expect(record.verification.attempt.offered).toEqual(['run']);
+        expect(record.verification.priorAttempts.map(attempt => attempt.marker)).toEqual([firstMarker]);
+        expect(findReceipt(record, EFFECT_IDS.verify)).toMatchObject({
+            outcome : RECEIPT_OUTCOMES.accepted,
+            inputKey: findReceipt(record, EFFECT_IDS.composeUp).inputKey
+        });
+
+        const settled = await evaluateHost(record);
+
+        expect([row(settled, 'verify').status, row(settled, 'done').status]).toEqual(['ok', 'ok']);
+        expect(await pass(record)).toBe(record);
+        expect(planes).toHaveLength(2);
+
+        // write-env and compose-up have inputKey === inputDigest; write-secrets does not (its inputDigest covers minted content).
+        expect(findReceipt(record, EFFECT_IDS.writeEnv).inputKey).toBe(findReceipt(record, EFFECT_IDS.writeEnv).inputDigest);
+        expect(findReceipt(record, EFFECT_IDS.composeUp).inputKey).toBe(findReceipt(record, EFFECT_IDS.composeUp).inputDigest);
+        expect(findReceipt(record, EFFECT_IDS.writeSecrets).inputKey).not.toBe(findReceipt(record, EFFECT_IDS.writeSecrets).inputDigest);
+
+        const strippedReceipts = {...record, receipts: record.receipts.map(({inputKey, ...rest}) => rest)};
+        const keylessUnchanged = await evaluateHost(strippedReceipts);
+
+        expect(row(keylessUnchanged, 'write-env')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt'});
+        expect(row(keylessUnchanged, 'compose-up')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt'});
+        expect(row(keylessUnchanged, 'write-secrets')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt (input not recorded)'});
+
+        // When preset changes over pre-merge keyless receipts, write-env and compose-up compare inputDigest and turn pending; write-secrets keeps the disclosure.
+        const keylessChanged = await consent(strippedReceipts, 'preset', 'local-small');
+        const keylessEval    = await evaluateHost(keylessChanged);
+
+        expect(row(keylessEval, 'write-env')).toMatchObject({
+            status: 'pending',
+            reason: 'accepted for an earlier input: the consents now render another carrier'
+        });
+        expect(row(keylessEval, 'compose-up')).toMatchObject({
+            status: 'pending',
+            reason: 'accepted for an earlier input: the carrier changed since the plane was composed — running it again restarts the plane'
+        });
+        expect(row(keylessEval, 'write-secrets')).toMatchObject({
+            status: 'ok',
+            reason: 'observed; matches the accepted receipt (input not recorded)'
+        });
+    });
+
+    test('moving provider-key or plane-credential consent to another file turns write-secrets pending without reading secret values during evaluation, and the next run writes the new file', async () => {
+        const
+            run          = await consentedRun({preset: 'hosted'}),
+            keyPathA     = path.join(run.root, 'operator', 'provider-key-a'),
+            keyPathB     = path.join(run.root, 'operator', 'provider-key-b'),
+            patPathB     = path.join(run.root, 'operator', 'plane-pat-b'),
+            KEY_A        = 'fixture-provider-key-alpha',
+            KEY_B        = 'fixture-provider-key-bravo',
+            PAT_B        = 'ghp_FAKEPAT_BRAVO_0123456789abcdefghijklm',
+            composeCalls = () => run.calls.filter(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up')),
+            mountedDir   = () => path.join(run.stateRoot, 'wake-receiver-disabled', 'records'),
+            evaluateHost = record => evaluateRecipe({
+                target,
+                record,
+                presets,
+                now      : () => NOW,
+                observers: {
+                    ...productionObservers({
+                        layout: run.layout,
+                        host  : run.host,
+                        probe : async () => ({
+                            host        : {complete: true, availableBytes: 64 * 1073741824, pressure: 'ok'},
+                            guest       : null,
+                            observed    : {},
+                            runningPlane: composeCalls().length > 0 ? {project: run.layout.composeProject} : null
+                        }),
+                        healthcheck: async () => {
+                            if (composeCalls().length === 0) throw COLD;
+
+                            return {plane: {id: target.planeId, dataRoot: target.dataRoot}, status: 'healthy'};
+                        },
+                        validate: async ({preset}) => ({provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: preset.vectorDimension}})
+                    }),
+                    runningPlane: async (t, {record: boundRecord = null} = {}) => productionObservers({
+                        layout: run.layout,
+                        host  : {
+                            ...run.host,
+                            run: async (command, args, opts) => {
+                                if (command === 'docker' && args[0] === 'ps') {
+                                    return {stdout: composeCalls().length > 0 ? 'cid-mc-1\n' : '', stderr: ''};
+                                }
+                                if (command === 'docker' && args[0] === 'inspect') {
+                                    return {stdout: JSON.stringify([{Destination: '/app/wake-receiver-records', Source: mountedDir()}]), stderr: ''};
+                                }
+
+                                return run.host.run(command, args, opts);
+                            }
+                        },
+                        probe: async () => ({runningPlane: composeCalls().length > 0 ? {project: run.layout.composeProject} : null})
+                    }).runningPlane(t, {record: boundRecord})
+                }
+            }),
+            consent = async (rec, stepId, answer) => (await recordConsent({stepId, answer, record: rec, recordPath: run.recordPath, host: run.host})).record,
+            row     = (evaluation, id) => evaluation.steps.find(step => step.id === id);
+
+        await fs.writeFile(keyPathA, `${KEY_A}\n`, {mode: 0o600});
+        await fs.writeFile(keyPathB, `${KEY_B}\n`, {mode: 0o600});
+        await fs.writeFile(patPathB, `${PAT_B}\n`, {mode: 0o600});
+
+        let record = await consent(run.record, 'provider-key', keyPathA);
+
+        ({record} = await perform(run, {record, evaluation: await evaluateHost(record), createPlaneClient: null}));
+
+        expect(row(await evaluateHost(record), 'write-secrets').status).toBe('ok');
+        expect(await fs.readFile(path.join(run.layout.secretsDir, 'gemini-api-key'), 'utf8')).toBe(KEY_A);
+        expect(await fs.readFile(path.join(run.layout.secretsDir, 'mcp-auth-token'), 'utf8')).toBe(PAT);
+
+        // move provider-key consent to keyPathB; secretFiles observer computes inputKey without reading keyPathB
+        record     = await consent(record, 'provider-key', keyPathB);
+        run.reads.length = 0;
+
+        const secretObsAfterKeyMove = await productionObservers({layout: run.layout, host: run.host}).secretFiles(target, {record});
+
+        expect(run.reads).toEqual([]);
+        expect(secretObsAfterKeyMove.inputKey).not.toBe(findReceipt(record, EFFECT_IDS.writeSecrets).inputKey);
+
+        const afterKeyMove = await evaluateHost(record);
+
+        expect(row(afterKeyMove, 'write-secrets')).toMatchObject({
+            status: 'pending',
+            reason: 'accepted for an earlier input: the consents now render another secret set'
+        });
+        expect(row(afterKeyMove, 'write-env').status).toBe('ok');
+        expect(row(afterKeyMove, 'compose-up').status).toBe('ok');
+
+        ({record} = await perform(run, {record, evaluation: afterKeyMove, createPlaneClient: null}));
+
+        expect(await fs.readFile(path.join(run.layout.secretsDir, 'gemini-api-key'), 'utf8')).toBe(KEY_B);
+        expect(row(await evaluateHost(record), 'write-secrets').status).toBe('ok');
+
+        // move plane-credential consent to patPathB; write-secrets turns pending and next run writes PAT_B
+        record     = await consent(record, 'plane-credential', patPathB);
+        run.reads.length = 0;
+
+        await productionObservers({layout: run.layout, host: run.host}).secretFiles(target, {record});
+        expect(run.reads).toEqual([]);
+
+        const afterPatMove = await evaluateHost(record);
+
+        expect(row(afterPatMove, 'write-secrets')).toMatchObject({
+            status: 'pending',
+            reason: 'accepted for an earlier input: the consents now render another secret set'
+        });
+        expect(row(afterPatMove, 'write-env').status).toBe('ok');
+        expect(row(afterPatMove, 'compose-up').status).toBe('ok');
+
+        ({record} = await perform(run, {record, evaluation: afterPatMove, createPlaneClient: null}));
+
+        expect(await fs.readFile(path.join(run.layout.secretsDir, 'mcp-auth-token'), 'utf8')).toBe(PAT_B);
+        expect(row(await evaluateHost(record), 'write-secrets').status).toBe('ok');
     });
 });

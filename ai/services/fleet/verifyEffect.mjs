@@ -74,12 +74,12 @@ export function rowCarriesMarker(row, marker) {
  * @param {String[]} [options.offered] The exits the row named when this attempt was consented: one it does not hold was made outside them.
  * @returns {Object}
  */
-export function newAttemptSection(previous, {runId, planeId, marker, dispatchedAt, offered}) {
+export function newAttemptSection(previous, {runId, planeId, marker, dispatchedAt, offered, composition = null}) {
     return {
         runId,
         planeId,
         sessionId    : null,
-        attempt      : {marker, dispatchedAt, offered},
+        attempt      : {marker, dispatchedAt, offered, ...(composition ? {composition} : {})},
         memory       : null,
         readback     : null,
         recall       : null,
@@ -96,16 +96,25 @@ export const VERIFY_EXITS = Object.freeze({run: 'run', resume: 'resume', newAtte
 /**
  * @summary What moves the witness on from the state the record holds, as data: the branches of
  * {@link performVerify}, read without running them. `exits` is in the order a renderer offers them.
- * No attempt: `run`. A write the plane refused: `new-attempt` only — no row was minted, none can double.
- * An unacknowledged write a read has searched for without a find (`attempt.searchedAt`): `resume` and
- * `new-attempt`, the first row may still exist. Accepted: none. Everything else: `resume`.
+ * No attempt, or a plane composed again since the witness ran: `run`. A write the plane refused:
+ * `new-attempt` only — no row was minted, none can double. An unacknowledged write a read has searched for
+ * without a find (`attempt.searchedAt`): `resume` and `new-attempt`, the first row may still exist.
+ * Accepted: none. Everything else: `resume`.
  * @param {Object}      [state]
  * @param {Object|null} [state.receipt=null] The `verify` receipt.
  * @param {Object|null} [state.section=null] The record's `verification` section.
+ * @param {String|null} [state.composition=null] The current accepted composition key, when composed.
  * @returns {{exits: String[], duplicatePossible: Boolean}}
  */
-export function verifyExits({receipt = null, section = null} = {}) {
-    const {run, resume, newAttempt} = VERIFY_EXITS;
+export function verifyExits({receipt = null, section = null, composition = null} = {}) {
+    const
+        {run, resume, newAttempt} = VERIFY_EXITS,
+        recordedComposition       = section?.attempt?.composition ?? receipt?.inputKey ?? null,
+        staleComposition          = Boolean(recordedComposition && composition && recordedComposition !== composition);
+
+    if (!section || staleComposition) {
+        return {exits: [run], duplicatePossible: false};
+    }
 
     if (receipt?.outcome === RECEIPT_OUTCOMES.accepted && section?.recall?.hit === true) {
         return {exits: [], duplicatePossible: false};
@@ -113,10 +122,6 @@ export function verifyExits({receipt = null, section = null} = {}) {
 
     if (section?.attempt?.refused) {
         return {exits: [newAttempt], duplicatePossible: false};
-    }
-
-    if (!section) {
-        return {exits: [run], duplicatePossible: false};
     }
 
     if (!section.memory && section.attempt?.searchedAt) {
@@ -130,7 +135,11 @@ const
     stampOf     = host => new Date(host.now()).toISOString(),
     isRefusal   = error => error?.refused === true,
     reasonOf    = error => error?.message ?? String(error),
-    baseReceipt = section => ({effectId: EFFECT_IDS.verify, inputDigest: contentDigest(section.attempt.marker)});
+    baseReceipt = section => ({
+        effectId   : EFFECT_IDS.verify,
+        inputDigest: contentDigest(section.attempt.marker),
+        ...(section.attempt.composition ? {inputKey: section.attempt.composition} : {})
+    });
 
 function pendingReceipt(section, host, reason) {
     return {...baseReceipt(section), outcome: RECEIPT_OUTCOMES.pending, resumable: true, startedAt: section.attempt.dispatchedAt, updatedAt: stampOf(host), reason};
@@ -173,7 +182,7 @@ function acceptedReceipt(section, host) {
  * @param {Function} [options.mintMarker=randomUUID]
  * @returns {Promise<{record: Object, receipt: Object, performed: String}>}
  */
-export async function performVerify({record, recordPath, host, target, plane, newAttempt = false, mintMarker = randomUUID}) {
+export async function performVerify({record, recordPath, host, target, plane, newAttempt = false, composition = null, mintMarker = randomUUID}) {
     const existing = findReceipt(record, EFFECT_IDS.verify);
 
     let section = record.verification ?? null, current = record;
@@ -188,22 +197,25 @@ export async function performVerify({record, recordPath, host, target, plane, ne
     // `receipt:` expression, which would hand the caller the record from before the write
     const settle = async (receipt, performed) => ({receipt: await persist(receipt), record: current, performed});
 
-    const offered = verifyExits({receipt: existing, section}).exits;
+    const
+        recordedComposition = section?.attempt?.composition ?? existing?.inputKey ?? null,
+        recompose           = Boolean(section && recordedComposition && composition && recordedComposition !== composition),
+        offered             = verifyExits({receipt: existing, section, composition}).exits;
 
     // an accepted witness is complete: nothing is left for a new attempt to prove, so none is made
     if (offered.length === 0) {
         return {record, receipt: existing, performed: 'unchanged'};
     }
 
-    if (section?.attempt?.refused && !newAttempt) {
+    if (section?.attempt?.refused && !newAttempt && !recompose) {
         return {record, receipt: existing, performed: 'unchanged'};
     }
 
     let performed;
 
-    if (!section || newAttempt) {
+    if (!section || newAttempt || recompose) {
         // the attempt is durable BEFORE the write leaves: a crash between the two leaves a reconcilable trace, never a replay
-        section = newAttemptSection(section, {runId: record.runId, planeId: target.planeId, marker: mintMarker(), dispatchedAt: stampOf(host), offered});
+        section = newAttemptSection(section, {runId: record.runId, planeId: target.planeId, marker: mintMarker(), dispatchedAt: stampOf(host), offered, composition});
         await persist(pendingReceipt(section, host, 'the witness write is being dispatched'));
 
         let answer;
