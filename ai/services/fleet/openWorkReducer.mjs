@@ -307,13 +307,13 @@ function connectionOf(connection, boundary = 'hasNextPage') {
 /**
  * @summary One open search node as a snapshot row.
  * @param {Object} node A `PullRequest` node from the open-work search.
- * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
+ * @param {{complete?: Function, byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
  * @param {Object} [source] Acquisition identity; absent for legacy inputs.
  * @param {String} [source.apiBase] Provider API identity from the existing reader.
- * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner,
+ * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner, ownerName,
  *     disclosedFamilies, requested, reviews, opinions, reviewRecords, ciRepairEvidence, ciRepairClassification,
  *     ciRepairRead, ciRepairIncompleteReads, turns, blockedTargets, targetsComplete,
- *     requestsComplete, opinionsComplete, partial}`. `blockedTargets` are the issues it closes that GitHub counts an
+ *     ownerComplete, requestsComplete, opinionsComplete, partial}`. `blockedTargets` are the issues it closes that GitHub counts an
  *     open blocker for; `targetsComplete` is false when that list or a count went unread, a node without the list
  *     included, so no merge is certified.
  *     `title` is the forge's prose with whitespace collapsed, or `null`; it names the PR and is never a
@@ -325,29 +325,31 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  */
 export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
     const
-        repo      = node.repository?.nameWithOwner ?? null,
-        owner     = ownerOf(node, identities),
-        commit    = node.commits?.nodes?.[0]?.commit,
-        head      = node.headRefOid ?? commit?.oid ?? null,
-        requests  = connectionOf(node.reviewRequests),
-        reviews   = connectionOf(node.latestReviews),
-        opinions  = connectionOf(node.latestOpinionatedReviews),
-        suites    = commit?.checkSuites === undefined ? {nodes: [], complete: true} : connectionOf(commit.checkSuites, 'hasPreviousPage'),
-        messages  = node.commitMessages === undefined ? {nodes: [], complete: true} : connectionOf(node.commitMessages),
-        outside   = owner.kind === 'outside',
-        requested = requests.nodes.map(item => reviewerOf(item?.requestedReviewer, identities)),
-        targets   = connectionOf(node.closingIssuesReferences),
-        targetOf  = issue => issue?.repository?.nameWithOwner && Number.isInteger(issue.number) &&
+        repo            = node.repository?.nameWithOwner ?? null,
+        owner           = ownerOf(node, identities),
+        ownerAuthorName = AUTHOR_LINE.exec(node.body ?? '')?.[1]?.trim() ?? null,
+        ownerComplete   = !(owner.kind === 'unowned' && Boolean(ownerAuthorName) && identities?.complete?.() === false),
+        commit          = node.commits?.nodes?.[0]?.commit,
+        head            = node.headRefOid ?? commit?.oid ?? null,
+        requests        = connectionOf(node.reviewRequests),
+        reviews         = connectionOf(node.latestReviews),
+        opinions        = connectionOf(node.latestOpinionatedReviews),
+        suites          = commit?.checkSuites === undefined ? {nodes: [], complete: true} : connectionOf(commit.checkSuites, 'hasPreviousPage'),
+        messages        = node.commitMessages === undefined ? {nodes: [], complete: true} : connectionOf(node.commitMessages),
+        outside         = owner.kind === 'outside',
+        requested       = requests.nodes.map(item => reviewerOf(item?.requestedReviewer, identities)),
+        targets         = connectionOf(node.closingIssuesReferences),
+        targetOf        = issue => issue?.repository?.nameWithOwner && Number.isInteger(issue.number) &&
             Number.isInteger(issue.issueDependenciesSummary?.blockedBy) ? `${issue.repository.nameWithOwner}#${issue.number}` : null,
         // whether each review judged the current head, and whether a bot wrote it
-        judged    = item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head,
+        judged          = item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head,
             ...(item?.author?.__typename === 'Bot' ? {bot: true} : {})}),
         // each reviewer's latest review (a comment included), and their standing approval or change request, with
         // when it was given: the merge line orders approved PRs by it
-        reviewed  = reviews.nodes.map(judged),
-        opined    = opinions.nodes.map(item => ({...judged(item), at: item?.submittedAt ?? null})),
+        reviewed        = reviews.nodes.map(judged),
+        opined          = opinions.nodes.map(item => ({...judged(item), at: item?.submittedAt ?? null})),
         // the conversation's latest comments and submitted reviews, oldest first
-        turns     = [...connectionOf(node.comments).nodes.map(item => turnOf(item, item?.createdAt, identities)),
+        turns           = [...connectionOf(node.comments).nodes.map(item => turnOf(item, item?.createdAt, identities)),
             ...connectionOf(node.reviews).nodes.map(item => turnOf(item, item?.submittedAt, identities))]
             .filter(Boolean).sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : 0),
         // an item naming no reviewer is unknown, so its list is known only as far as it resolves
@@ -377,6 +379,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         bot              : node.author?.__typename === 'Bot',
         runApproval,
         owner,
+        ownerName        : ownerAuthorName,
         disclosedFamilies: outside ? disclosedFamiliesOf({
             body          : node.body ?? '',
             commitMessages: messages.nodes.map(item => item?.commit?.message)
@@ -396,9 +399,10 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         turns,
         blockedTargets,
         targetsComplete,
+        ownerComplete,
         requestsComplete,
         opinionsComplete,
-        partial      : !requestsComplete || !reviewsComplete || !opinionsComplete || !suites.complete || outside && !messages.complete
+        partial      : !ownerComplete || !requestsComplete || !reviewsComplete || !opinionsComplete || !suites.complete || outside && !messages.complete
     }
 }
 
@@ -712,8 +716,18 @@ export function reduceOpenWork({previous, observed, terminal, closeout = null, s
 
     for (const row of observed.rows) {
         const
-            before = previous?.rows[row.key],
-            merged = before && !row.requestsComplete ? {...row, requested: [...new Set([...before.requested, ...row.requested])].sort()} : row;
+            before        = previous?.rows[row.key],
+            retainedOwner = before && !row.ownerComplete && before.owner?.kind === 'seat' &&
+                before.owner.login === row.owner?.login && typeof row.ownerName === 'string' && before.ownerName === row.ownerName
+                ? before.owner
+                : row.owner,
+            merged        = before && (!row.requestsComplete || retainedOwner !== row.owner)
+                ? {
+                    ...row,
+                    owner    : retainedOwner,
+                    requested: !row.requestsComplete ? [...new Set([...before.requested, ...row.requested])].sort() : row.requested
+                }
+                : row;
 
         rows[row.key] = {...merged,
             reviewRecords: retainReviewWitnesses(row.reviewRecords, before?.reviewRecords),

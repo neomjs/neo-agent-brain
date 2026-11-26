@@ -36,21 +36,32 @@ const PULSE_MS = 60 * 1000;
  * rows) to a seat. Distinct identities may carry one name, so a shared name resolves only to the one whose
  * handle is the author's login; row order is no evidence of authorship.
  * @param {Function} listDefinitions `() → Object[]`, read at each lookup.
- * @param {Function} [identityRows] `() → Object[]`: the plane's `who_is_online` rows (`{identity, name}`), read at each lookup.
- * @returns {{byName: Function, byLogin: Function}} `byName(name, login)` and `byLogin(login)`
+ * @param {Function} [identityRows] `() → Object[]|null`: the plane's `who_is_online` rows (`{identity, name}`), or `null` when unanswered.
+ * @returns {{complete: Function, byName: Function, byLogin: Function}} `complete()`, `byName(name, login)` and `byLogin(login)`
  */
 export function seatIdentities(listDefinitions, identityRows = () => []) {
-    const bare = login => String(login ?? '').replace(/^@/, '');
+    const
+        bare = login => String(login ?? '').replace(/^@/, ''),
+        rows = () => {
+            const current = identityRows();
+
+            return Array.isArray(current) ? current : null
+        };
 
     return {
-        byName : (name, login) => {
-            const seats = [...new Set(identityRows().filter(row => row.name === name).map(row => row.identity).filter(Boolean))];
+        complete: () => rows() !== null,
+        byName  : (name, login) => {
+            const current = rows();
+
+            if (!current) return null;
+
+            const seats = [...new Set(current.filter(row => row.name === name).map(row => row.identity).filter(Boolean))];
 
             return seats.length === 1 ? seats[0] : seats.find(seat => bare(seat) === login) ?? null
         },
-        byLogin: login => listDefinitions().some(definition => bare(definition.githubUsername) === login)
+        byLogin : login => listDefinitions().some(definition => bare(definition.githubUsername) === login)
             ? `@${login}`
-            : identityRows().find(row => bare(row.identity) === login)?.identity ?? null
+            : rows()?.find(row => bare(row.identity) === login)?.identity ?? null
     }
 }
 
@@ -364,9 +375,10 @@ export function wireFleetOpenWorkSource({
 
             return typeof value === 'number' ? value : new Date(value).getTime()
         },
-        currentIdentityRows = () => retainedPresence && nowMs() - retainedPresence.settledAtMs <= AiConfig.fleet.rosterRetainedMaxAgeMs
-            ? retainedPresence.payload.agents
-            : [],
+        currentIdentityRows = () => !readPresence ? []
+            : retainedPresence && nowMs() - retainedPresence.settledAtMs <= AiConfig.fleet.rosterRetainedMaxAgeMs
+                ? retainedPresence.payload.agents
+                : null,
         recordPresence      = (payload, settledAtMs = nowMs()) => {
             if (Array.isArray(payload?.agents)) {
                 retainedPresence = {payload, settledAtMs}
@@ -410,15 +422,16 @@ export function wireFleetOpenWorkSource({
     // decides with
     bridge.openWorkSource = createFleetOpenWorkSource({
         producer,
+        ...(now ? {now: nowMs} : {}),
         seatFamilies: () => {
             const rows = currentIdentityRows();
 
-            return rows.length ? familiesOf({agents: rows}) : null
+            return rows?.length ? familiesOf({agents: rows}) : null
         },
         absentSeats: () => {
             const rows = currentIdentityRows();
 
-            return rows.length ? absentOf({agents: rows}) : null
+            return rows?.length ? absentOf({agents: rows}) : null
         }
     });
     pulse();
