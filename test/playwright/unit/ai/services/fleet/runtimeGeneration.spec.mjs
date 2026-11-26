@@ -3,8 +3,11 @@ import fs             from 'node:fs/promises';
 import os             from 'node:os';
 import path           from 'node:path';
 import {
+    CODEX_WAKE_ARTIFACT_PLIST,
+    CODEX_WAKE_ARTIFACT_VERSION,
     RUNTIME_GENERATION_RECORD,
     bindCurrentRuntime,
+    describeCodexWakeArtifact,
     isRuntimeGenerationPin,
     readRuntimeGeneration,
     readRuntimeGenerationRecord,
@@ -61,6 +64,38 @@ test('changed installed contents, redirected metadata and malformed location rec
 });
 
 const fixture = () => sealRuntimeGeneration(root);
+
+test('v2 projects the sealed carrier plist while v1 keeps its original inventory', () => {
+    const plist = 'Contents/Info.plist',
+          organism = 'Contents/Resources/organism/',
+          source = organism + CODEX_WAKE_ARTIFACT_PLIST,
+          files = ['ai/daemons/wake/codexWakeHook.mjs', 'ai/daemons/wake/fleetPrimarySessionWake.mjs'],
+          declaration = {version: 1, wire: 'neo-codex-primary-wake-v1', files, packages: []},
+          directories = ['', 'Contents', 'Contents/Frameworks', 'Contents/MacOS', 'Contents/Resources',
+              organism.slice(0, -1), organism + 'ai', organism + 'ai/daemons', organism + 'ai/daemons/wake'],
+          filePaths = [plist, 'Contents/PkgInfo', 'Contents/MacOS/Neo Harness', source,
+              ...files.map(name => organism + name), organism + 'ai/daemons/wake/codexWakeProtocol.json'],
+          entries = [...directories.map(name => [name, 'directory', 0o555]), ...filePaths.map((name, index) =>
+              [name, 'file', name.startsWith('Contents/MacOS/') ? 0o555 : 0o444, index + 1, String(index).repeat(64)])]
+              .sort(([a], [b]) => a < b ? -1 : Number(a > b));
+
+    const describe = (version, rows = entries) => describeCodexWakeArtifact({declaration: {...declaration, version}, entries: rows});
+    const change = (name, row) => entries.map(entry => entry[0] === name ? row : entry);
+    const outerOnly = change(plist, [plist, 'file', 0o444, 99, 'a'.repeat(64)]);
+    const legacy = describe(1), v2 = describe(CODEX_WAKE_ARTIFACT_VERSION);
+    const sourceRow = entries.find(row => row[0] === source);
+
+    expect(legacy).not.toHaveProperty('plistSource');
+    expect(legacy.entries).toContainEqual(entries.find(row => row[0] === plist));
+    expect(describe(1, outerOnly).digest).not.toBe(legacy.digest);
+    expect(v2.plistSource).toBe(source);
+    expect(v2.entries).toEqual(legacy.entries.map(row => row[0] === plist ? [plist, ...sourceRow.slice(1)] : row));
+    expect(describe(2, outerOnly)).toEqual(v2);
+    expect(describe(2, change(source, [source, 'file', 0o444, 99, 'a'.repeat(64)])).digest).not.toBe(v2.digest);
+    expect(() => describe(2, entries.filter(row => row[0] !== source))).toThrow(/Unattested Codex wake file/);
+    expect(() => describe(2, change(source, [source, 'link', '../other.plist']))).toThrow(/Unattested Codex wake file/);
+    expect(() => describe(2, change(source, [source, 'file', 0o644, 99, 'a'.repeat(64)]))).toThrow(/not sealed/);
+});
 
 test('the producer and reader share one format and preserve the distinct runtime and executable bindings', async () => {
     const input = await fixture();

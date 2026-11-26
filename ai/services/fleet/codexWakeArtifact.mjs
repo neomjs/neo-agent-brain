@@ -7,6 +7,8 @@ import path         from 'node:path';
  */
 export const CODEX_WAKE_ARTIFACT_DECLARATION = 'codex-wake-artifact.json';
 export const CODEX_WAKE_ARTIFACT_ROOT        = 'wake-artifacts-v1';
+export const CODEX_WAKE_ARTIFACT_VERSION     = 2;
+export const CODEX_WAKE_ARTIFACT_PLIST       = 'codex-wake-info.plist';
 export const CODEX_WAKE_WIRE                 = 'neo-codex-primary-wake-v1';
 export const CODEX_WAKE_ORGANISM             = 'Contents/Resources/organism';
 export const CODEX_WAKE_EXECUTABLE           = 'Contents/MacOS/Neo Harness';
@@ -25,13 +27,14 @@ function pathsOf(values, grammar) {
 /**
  * @summary Selects the sealed executable, all framework bytes, hook imports and whole npm package subtrees.
  * The source package owns dependency discovery. The consumer requires every declared root in its verified
- * physical inventory, and hashes the same manifest grammar as the complete runtime.
+ * physical inventory, and hashes the same manifest grammar as the complete runtime. Version 2 projects the
+ * sealed carrier plist to the same output position rather than inheriting the outer app's archive metadata.
  * @param {Object} options A parsed package declaration and its authenticated full runtime inventory.
- * @returns {{entries:Array, digest:String}} The exact rows to publish, including parent directories.
+ * @returns {{entries:Array, digest:String, plistSource?:String}} The output inventory and v2 plist source.
  */
 export function describeCodexWakeArtifact({declaration, entries}) {
     if (!declaration || Object.keys(declaration).sort().join(',') !== 'files,packages,version,wire' ||
-        declaration.version !== 1 || declaration.wire !== CODEX_WAKE_WIRE || !Array.isArray(entries)) {
+        ![1, CODEX_WAKE_ARTIFACT_VERSION].includes(declaration.version) || declaration.wire !== CODEX_WAKE_WIRE || !Array.isArray(entries)) {
         throw new Error('Unsupported Codex wake package declaration')
     }
     const files    = pathsOf(declaration.files, /^(?:[a-zA-Z0-9_-]+\/)+[a-zA-Z0-9_.-]+\.mjs$/u);
@@ -40,12 +43,16 @@ export function describeCodexWakeArtifact({declaration, entries}) {
         files.some(file => file.split('/').includes('node_modules'))) throw new Error('Codex wake entry or consumer is not declared');
     const organism = name => CODEX_WAKE_ORGANISM + '/' + name;
     const trees    = new Set(['Contents/MacOS', 'Contents/Frameworks', ...packages.map(organism)]);
-    const selected = new Set(['Contents/Info.plist','Contents/PkgInfo',CODEX_WAKE_EXECUTABLE,organism(CODEX_WAKE_PROTOCOL),
+    const plist    = 'Contents/Info.plist';
+    const selected = new Set([plist,'Contents/PkgInfo',CODEX_WAKE_EXECUTABLE,organism(CODEX_WAKE_PROTOCOL),
         ...files.map(organism), ...packages.map(name => organism(name + '/package.json'))]);
     const byName = new Map(entries.map(row => [row[0], row]));
     for (const name of selected) {
         if (byName.get(name)?.[1] !== 'file') throw new Error('Unattested Codex wake file: ' + name)
     }
+    const plistSource = declaration.version === 2 ? organism(CODEX_WAKE_ARTIFACT_PLIST) : null;
+    const carrierPlist = plistSource ? byName.get(plistSource) : null;
+    if (plistSource && carrierPlist?.[1] !== 'file') throw Error('Unattested Codex wake file: ' + plistSource);
     if (!(byName.get(CODEX_WAKE_EXECUTABLE)[2] & 0o111)) throw new Error('Codex wake executable is not executable');
     for (const tree of trees) {
         if (byName.get(tree)?.[1] !== 'directory') throw new Error('Unattested Codex wake directory: ' + tree)
@@ -63,7 +70,8 @@ export function describeCodexWakeArtifact({declaration, entries}) {
             if (trees.has(dir)) return true
         }
         return false
-    });
+    }).map(row => row[0] === plist && carrierPlist ? [plist, ...carrierPlist.slice(1)] : row);
     if (manifest.some(([,type,mode]) => type !== 'link' && mode & 0o222)) throw new Error('Codex wake payload is not sealed');
-    return {entries:manifest, digest:createHash('sha256').update(JSON.stringify(manifest)).digest('hex')}
+    return {entries:manifest, digest:createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
+        ...(plistSource ? {plistSource} : {})}
 }
