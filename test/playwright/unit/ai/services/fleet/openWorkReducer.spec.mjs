@@ -1238,3 +1238,53 @@ test.describe('openWorkReducer — parent closeout selector, holder fallback, de
         })]);
     });
 });
+
+test.describe('openWorkReducer — unanswered identity rows withhold false unowned verdicts (#1945)', () => {
+    test('unanswered identities mark a named known-account PR partial without certifying unowned, while missing author lines and answered misses stay unowned', () => {
+        const
+            unanswered = {
+                complete: () => false,
+                byLogin : login => login === 'neo-opus-ada' ? '@neo-opus-ada' : null,
+                byName  : () => null
+            },
+            answeredMiss = {
+                complete: () => true,
+                byLogin : login => login === 'neo-opus-ada' ? '@neo-opus-ada' : null,
+                byName  : () => null
+            },
+            head = 'a'.repeat(40);
+
+        // Brand-new named PR seen while identityRows is unanswered: partial=true, ownerComplete=false -> zero unowned wakes.
+        const unreadNamed = normalizePullRequest(node({head, reviewers: [], body: 'Authored by Ada (Claude Opus 5, Claude Code).'}), unanswered);
+        expect(unreadNamed.ownerComplete).toBe(false);
+        expect(unreadNamed.partial).toBe(true);
+
+        const reducedUnread = reduceOpenWork({
+            previous: null,
+            observed: {rows: [unreadNamed], complete: true},
+            terminal: {rows: [], complete: true},
+            since   : null,
+            id      : '2026-11-26T04:17:36.153Z'
+        });
+        const plannedUnread = planOpenWorkWakes({
+            state        : {observedAt: '2026-11-26T04:17:36.153Z', coverage: 'complete', snapshot: reducedUnread, transitions: []},
+            ledger       : {pulse: '2026-11-26T04:16:36.000Z', holding: {}, pendingMerges: {}, baselines: {}},
+            now          : Date.parse('2026-11-26T04:17:36.153Z'),
+            rotationSeats: ['@neo-gemini-julia'],
+            routeOf      : () => 'reachable'
+        });
+        expect(plannedUnread.wakes).toEqual([]);
+
+        // Missing Authored by line is genuinely unowned even when identityRows is unanswered.
+        const missingAuthorLine = normalizePullRequest(node({head, reviewers: [], body: 'Resolves #7'}), unanswered);
+        expect(missingAuthorLine.owner).toEqual({kind: 'unowned', seat: null, login: 'neo-opus-ada'});
+        expect(missingAuthorLine.ownerComplete).toBe(true);
+        expect(missingAuthorLine.partial).toBe(false);
+
+        // Answered identity table lacking the named social name stays genuinely unowned.
+        const answeredUnknownName = normalizePullRequest(node({head, reviewers: [], body: 'Authored by Nobody (Claude).'}), answeredMiss);
+        expect(answeredUnknownName.owner).toEqual({kind: 'unowned', seat: null, login: 'neo-opus-ada'});
+        expect(answeredUnknownName.ownerComplete).toBe(true);
+        expect(answeredUnknownName.partial).toBe(false);
+    });
+});

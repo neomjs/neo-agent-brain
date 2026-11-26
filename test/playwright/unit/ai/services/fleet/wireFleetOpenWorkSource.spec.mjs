@@ -28,6 +28,7 @@ import {
     wireFleetOpenWorkSource
 } from '../../../../../../ai/services/fleet/wireFleetOpenWorkSource.mjs';
 import {normalizePullRequest}                                               from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
+import {planOpenWorkWakes}                                                  from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
 import {OPEN_WORK_OUTSIDE_SNAPSHOT, OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const definitions = [
@@ -567,6 +568,159 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             while (pendingStalled.length) {
                 pendingStalled.shift()({agents: []});
             }
+            await wired.stop();
+        } finally {
+            console.log = origLog;
+            while (pendingStalled.length) {
+                pendingStalled.shift()({agents: []});
+            }
+            fs.rmSync(dataDir, {recursive: true, force: true})
+        }
+    });
+
+    test('expired readPresence withholds unowned classification, preserves seats[id].authored, and emits zero unowned wakes across repeated timeouts (#1945)', async () => {
+        const
+            dataDir        = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-1945-')),
+            bridge         = {},
+            pendingStalled = [],
+            origLog        = console.log,
+            head           = '8'.repeat(40),
+            seats          = [
+                {id: 'maryam', githubUsername: 'neo-gemini-maryam', metadata: {repo: {repoSlug: 'acme/app', cloneUrl: 'https://github.com/acme/app.git'}}},
+                {id: 'ada',    githubUsername: 'neo-opus-ada',      metadata: {repo: {repoSlug: 'acme/app', cloneUrl: 'https://github.com/acme/app.git'}}}
+            ],
+            pr             = {
+                number                  : 22215,
+                title                   : 'feat(vdom): flip DefaultConfig.useVdomWorker default to false (#22209)',
+                headRefOid              : head,
+                reviewDecision          : null,
+                mergeable               : 'MERGEABLE',
+                isDraft                 : false,
+                body                    : 'Authored by Maryam (Gemini 4 Carbon, Antigravity).',
+                author                  : {login: 'neo-gemini-maryam'},
+                repository              : {nameWithOwner: 'acme/app'},
+                closingIssuesReferences : {pageInfo: {hasNextPage: false}, nodes: []},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestReviews           : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []},
+                commits                 : {nodes: [{commit: {oid: head, statusCheckRollup: {state: 'SUCCESS'}}}]}
+            },
+            rosterPayload  = () => ({
+                agents: [
+                    {identity: '@neo-gemini-maryam', name: 'Maryam', signals: {participationStatus: 'active'}},
+                    {identity: '@neo-opus-ada',      name: 'Ada',    signals: {participationStatus: 'operator_benched'}}
+                ]
+            });
+        let clockMs = Date.parse('2026-11-26T04:15:00.000Z'), stall = false;
+
+        expect(seatIdentities(() => seats, () => null).complete()).toBe(false);
+        expect(seatIdentities(() => seats, () => null).byName('Maryam', 'neo-gemini-maryam')).toBeNull();
+        expect(seatIdentities(() => seats, () => null).byLogin('neo-gemini-maryam')).toBe('@neo-gemini-maryam');
+        expect(seatIdentities(() => seats, () => null).byLogin('unregistered-seat')).toBeNull();
+        expect(seatIdentities(() => seats, () => []).complete()).toBe(true);
+
+        console.log = () => {};
+
+        try {
+            const wired = wireFleetOpenWorkSource({
+                registry         : {
+                    listAgents       : () => seats,
+                    getDataDir       : () => dataDir,
+                    resolveCredential: () => 'pat-seat'
+                },
+                bridge,
+                presenceTimeoutMs: 25,
+                pulseMs          : 3600000,
+                now              : () => new Date(clockMs),
+                createQuery      : () => async (text, {query: search}) => ({
+                    rateLimit: {cost: 1},
+                    search   : {pageInfo: {hasNextPage: false}, nodes: search.includes('author:neo-gemini-maryam') && search.includes('is:open') ? [pr] : []}
+                }),
+                readPresence     : () => stall
+                    ? new Promise(resolve => { pendingStalled.push(resolve) })
+                    : Promise.resolve(rosterPayload())
+            });
+
+            // Pulse 1: quiet activation baseline with answered presence.
+            await wired.producer.pulse();
+            let plan = planOpenWorkWakes({
+                state        : wired.producer.getState(),
+                ledger       : null,
+                now          : clockMs,
+                quiet        : true,
+                rotationSeats: ['@neo-gemini-maryam', '@neo-opus-ada'],
+                routeOf      : () => 'reachable'
+            });
+            expect(plan.wakes).toEqual([]);
+
+            // Transition PR from baseline by advancing to active round on a fresh non-baselined head or first active round:
+            // simulate a fresh PR arrival on Pulse 2 with answered presence so Maryam holds route-review.
+            const head2 = '9'.repeat(40);
+            pr.headRefOid = head2;
+            pr.commits = {nodes: [{commit: {oid: head2, statusCheckRollup: {state: 'SUCCESS'}}}]};
+            clockMs += 60000;
+            await wired.producer.pulse();
+            plan = planOpenWorkWakes({
+                state        : wired.producer.getState(),
+                ledger       : plan.ledger,
+                now          : clockMs,
+                rotationSeats: ['@neo-gemini-maryam', '@neo-opus-ada'],
+                routeOf      : () => 'reachable'
+            });
+            expect(plan.wakes.map(w => ({to: w.to, kind: w.kind}))).toEqual([{to: '@neo-gemini-maryam', kind: 'route-review'}]);
+            expect(bridge.openWorkSource.readOpenWork().seats['@neo-gemini-maryam'].authored.map(r => r.number)).toEqual([22215]);
+
+            // Pulse 3: 1 ms past rosterRetainedMaxAgeMs (120000 ms) with stalled readPresence.
+            // Participation expires past the retention window, while seat authorship stays retained on a partial row with zero unowned wakes.
+            stall = true;
+            clockMs += 120001;
+            await wired.producer.pulse();
+            expect(wired.producer.getState().pulses.at(-1).seats.find(row => row.seat === '@neo-opus-ada')?.benched).toBe(false);
+            expect(wired.producer.getState().snapshot.rows['acme/app#22215']).toMatchObject({
+                owner  : {kind: 'seat', seat: '@neo-gemini-maryam', login: 'neo-gemini-maryam'},
+                partial: true
+            });
+            expect(bridge.openWorkSource.readOpenWork().seats['@neo-gemini-maryam'].authored.map(r => r.number)).toEqual([22215]);
+
+            plan = planOpenWorkWakes({
+                state        : wired.producer.getState(),
+                ledger       : plan.ledger,
+                now          : clockMs,
+                rotationSeats: ['@neo-gemini-maryam', '@neo-opus-ada'],
+                routeOf      : () => 'reachable'
+            });
+            expect(plan.wakes).toEqual([]);
+
+            // Pulse 4: readPresence answers again; Maryam's route-review holding was preserved across Pulse 3 so zero re-wakes fire.
+            stall = false;
+            clockMs += 60000;
+            await wired.producer.pulse();
+            expect(wired.producer.getState().snapshot.rows['acme/app#22215']).toMatchObject({
+                owner  : {kind: 'seat', seat: '@neo-gemini-maryam', login: 'neo-gemini-maryam'},
+                partial: false
+            });
+            plan = planOpenWorkWakes({
+                state        : wired.producer.getState(),
+                ledger       : plan.ledger,
+                now          : clockMs,
+                rotationSeats: ['@neo-gemini-maryam', '@neo-opus-ada'],
+                routeOf      : () => 'reachable'
+            });
+            expect(plan.wakes).toEqual([]);
+
+            // Pulse 5: second expired readPresence stall (~1h later in production) still emits zero unowned wakes.
+            stall = true;
+            clockMs += 120001;
+            await wired.producer.pulse();
+            plan = planOpenWorkWakes({
+                state        : wired.producer.getState(),
+                ledger       : plan.ledger,
+                now          : clockMs,
+                rotationSeats: ['@neo-gemini-maryam', '@neo-opus-ada'],
+                routeOf      : () => 'reachable'
+            });
+            expect(plan.wakes).toEqual([]);
+
             await wired.stop();
         } finally {
             console.log = origLog;
