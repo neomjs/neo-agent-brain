@@ -21,6 +21,8 @@ import {writeFileAtomic}                   from '../shared/atomicFileWrite.mjs';
 import {ANY_FORGE_NAME, forgeProviderName} from './forgeProviders.mjs';
 import {
     RECEIPT_OUTCOMES,
+    RETIRE_REASONS,
+    archiveReplacedReceipt,
     contentDigest,
     findReceipt,
     serializeSetupRecord,
@@ -242,6 +244,17 @@ export function effectInputDigest(input) {
     return contentDigest(JSON.stringify(input ?? null));
 }
 
+/**
+ * @summary Computes the consent-rendered input key recorded on an effect receipt.
+ * @param {String} effectId
+ * @param {*}      input
+ * @param {Object} [effects=hostEffectHandlers]
+ * @returns {String}
+ */
+export function effectInputKey(effectId, input, effects = hostEffectHandlers) {
+    return effects[effectId]?.key ? effects[effectId].key(input) : effectInputDigest(input);
+}
+
 async function writeOwnerOnly(filePath, content, host) {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
         throw new Error(`hostEffects: '${filePath}' is not an absolute path.`);
@@ -316,6 +329,7 @@ export const hostEffectHandlers = Object.freeze({
     [EFFECT_IDS.writeSecrets]: Object.freeze({
         id      : EFFECT_IDS.writeSecrets,
         describe: input => `write ${Array.isArray(input?.files) ? input.files.length : 0} secret file(s), owner-only`,
+        key     : input => effectInputDigest((input?.files ?? []).map(file => file?.path).sort()),
         /**
          * @param {Object} input `{files: [{path, content}]}`
          * @param {Object} host
@@ -503,6 +517,7 @@ export async function applyEffect({
 
     const
         inputDigest = effectInputDigest(input),
+        inputKey    = effectInputKey(effectId, input, effects),
         existing    = findReceipt(record, effectId),
         stamp       = () => new Date(host.now()).toISOString();
 
@@ -524,21 +539,37 @@ export async function applyEffect({
         }
     }
 
+    const
+        replaced       = Boolean(existing && (
+            existing.outcome === RECEIPT_OUTCOMES.accepted ||
+            existing.outcome === RECEIPT_OUTCOMES.operatorAction ||
+            existing.inputDigest !== inputDigest ||
+            (existing.inputKey ?? null) !== inputKey
+        )),
+        replacedReason = existing && (existing.inputDigest !== inputDigest || (existing.inputKey ?? null) !== inputKey)
+            ? RETIRE_REASONS.inputChanged
+            : RETIRE_REASONS.reapplied,
+        baseRecord     = replaced
+            ? archiveReplacedReceipt(record, existing, {reason: replacedReason, retiredAt: stamp()})
+            : record;
+
     if (!effect.handler) {
         const receipt = {
             effectId,
             outcome    : RECEIPT_OUTCOMES.operatorAction,
             inputDigest,
+            inputKey,
             recordedAt : stamp(),
             instruction: effect.describe(input)
-        }, next = withReceipt(record, receipt);
+        }, next = withReceipt(baseRecord, receipt);
 
         await persistSetupRecord(recordPath, next, host);
 
         return {record: next, receipt, applied: false};
     }
 
-    let next = withReceipt(record, {effectId, outcome: RECEIPT_OUTCOMES.pending, inputDigest, startedAt: stamp(), ...expectedContent(effect, input)});
+    const expected = expectedContent(effect, input);
+    let   next     = withReceipt(baseRecord, {effectId, outcome: RECEIPT_OUTCOMES.pending, inputDigest, inputKey, startedAt: stamp(), ...expected});
 
     await persistSetupRecord(recordPath, next, host);
 
@@ -551,12 +582,13 @@ export async function applyEffect({
             effectId,
             outcome   : RECEIPT_OUTCOMES.accepted,
             inputDigest,
+            inputKey,
             acceptedAt: stamp(),
             digest    : result.digest,
             references: result.references
         };
     } catch (error) {
-        receipt = {effectId, outcome: RECEIPT_OUTCOMES.failed, inputDigest, failedAt: stamp(), reason: error?.message ?? String(error)};
+        receipt = {effectId, outcome: RECEIPT_OUTCOMES.failed, inputDigest, inputKey, failedAt: stamp(), reason: error?.message ?? String(error), ...expected};
     }
 
     next = withReceipt(next, receipt);
@@ -638,10 +670,11 @@ export async function settleReceipt({effectId, observation, record, recordPath, 
         effectId,
         outcome    : RECEIPT_OUTCOMES.accepted,
         inputDigest: existing.inputDigest,
-        acceptedAt : observation.observedAt ?? new Date(host.now()).toISOString(),
-        settledBy  : 'observation',
-        digest     : observation.digest ?? null,
-        references : existing.references ?? []
+        ...(existing.inputKey ? {inputKey: existing.inputKey} : {}),
+        acceptedAt: observation.observedAt ?? new Date(host.now()).toISOString(),
+        settledBy : 'observation',
+        digest    : observation.digest ?? null,
+        references: existing.references ?? []
     }, next = withReceipt(record, receipt);
 
     await persistSetupRecord(recordPath, next, host);
@@ -663,7 +696,19 @@ export async function settleReceipt({effectId, observation, record, recordPath, 
  * @returns {Promise<{record: Object}>}
  */
 export async function recordVerification({record, recordPath, host, verification, receipt}) {
-    const next = withReceipt(withVerification(record, verification), receipt);
+    const
+        existing   = findReceipt(record, EFFECT_IDS.verify),
+        newAttempt = Boolean(existing && existing.inputDigest !== receipt.inputDigest && (
+            existing.outcome === RECEIPT_OUTCOMES.accepted ||
+            (existing.inputKey ?? null) !== (receipt.inputKey ?? null)
+        )),
+        baseRecord = newAttempt
+            ? archiveReplacedReceipt(record, existing, {
+                reason   : (existing.inputKey ?? null) !== (receipt.inputKey ?? null) ? RETIRE_REASONS.inputChanged : RETIRE_REASONS.reapplied,
+                retiredAt: receipt.startedAt ?? new Date(host.now()).toISOString()
+            })
+            : record,
+        next       = withReceipt(withVerification(baseRecord, verification), receipt);
 
     await persistSetupRecord(recordPath, next, host);
 

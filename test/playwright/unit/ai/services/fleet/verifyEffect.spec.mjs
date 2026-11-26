@@ -353,4 +353,93 @@ test.describe('verifyEffect: the row names its exits as data', () => {
         expect(plane.calls.addMemory).toHaveLength(1);
         expect(await onDisk(run)).toEqual(done.record);
     });
+
+    test('re-composed plane (bootstrap-record decision §3 fifth arm): verify reads pending, names run (not new-attempt), writes one fresh marker, retains priorAttempts and replaced receipt history, and resumes idempotently', async () => {
+        const
+            run     = await scratch(),
+            markers = ['mk-comp-1', 'mk-comp-2'],
+            plane   = scriptedPlane({
+                addMemory  : [answered, {id: 'mem-2', sessionId: 'sess-2', timestamp: '2026-10-03T07:10:00.000Z'}],
+                recentTurns: [turns(rowFor('mk-comp-1')), turns({id: 'mem-2', sessionId: 'sess-2', timestamp: '2026-10-03T07:10:00.000Z', prompt: 'first-run witness · marker mk-comp-2'})],
+                recall     : [args => recalled(args.query), args => ({count: 1, results: [{id: 'mem-2', prompt: args.query}]})]
+            }),
+            withCompose = (rec, key) => ({
+                ...rec,
+                receipts: [
+                    ...rec.receipts.filter(r => r.effectId !== EFFECT_IDS.composeUp),
+                    {effectId: EFFECT_IDS.composeUp, outcome: RECEIPT_OUTCOMES.accepted, inputDigest: key, inputKey: key, acceptedAt: 't'}
+                ]
+            }),
+            evalRow = rec => evaluateRecipe({
+                target,
+                record   : rec,
+                presets,
+                now      : () => NOW,
+                observers: {
+                    verification: async (_, {record: bound}) => ({
+                        present : Boolean(bound?.verification?.memory && bound.verification.recall?.hit),
+                        digest  : null,
+                        problem : null,
+                        inputKey: bound?.receipts?.find(r => r.effectId === EFFECT_IDS.composeUp)?.inputKey ?? null,
+                        reason  : 'not yet'
+                    })
+                }
+            }).then(res => res.steps.find(step => step.id === 'verify'));
+
+        const first = await performVerify({
+            ...run,
+            record     : withCompose(run.record, 'comp-1'),
+            target,
+            plane,
+            composition: 'comp-1',
+            mintMarker : () => markers.shift()
+        });
+
+        expect(first.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, inputKey: 'comp-1'});
+        expect(await evalRow(first.record)).toMatchObject({status: STEP_STATUSES.ok, exits: [], duplicatePossible: false});
+
+        // Plane is composed again under comp-2: verify turns pending and offers 'run', never 'new-attempt'
+        const recomposed = withCompose(first.record, 'comp-2');
+
+        expect(verifyExits({receipt: first.receipt, section: recomposed.verification, composition: 'comp-2'})).toEqual({
+            exits            : ['run'],
+            duplicatePossible: false
+        });
+        expect(await evalRow(recomposed)).toMatchObject({
+            status           : STEP_STATUSES.pending,
+            reason           : 'accepted for an earlier input: the witness followed an earlier composition; a new attempt follows this one',
+            exits            : ['run'],
+            duplicatePossible: false
+        });
+
+        // Plain performVerify (newAttempt: false) performs one fresh attempt for comp-2
+        const second = await performVerify({
+            ...run,
+            record     : recomposed,
+            target,
+            plane,
+            composition: 'comp-2',
+            mintMarker : () => markers.shift()
+        });
+
+        expect(second.performed).toBe('written');
+        expect(second.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, inputKey: 'comp-2', references: ['memory:mem-2']});
+        expect(second.record.verification.attempt).toMatchObject({marker: 'mk-comp-2', offered: ['run'], composition: 'comp-2'});
+        expect(second.record.verification.priorAttempts).toEqual([{
+            marker      : 'mk-comp-1',
+            dispatchedAt: new Date(NOW).toISOString(),
+            offered     : ['run'],
+            composition : 'comp-1',
+            memory      : {id: 'mem-1', at: answered.timestamp}
+        }]);
+        expect(second.record.history).toHaveLength(1);
+        expect(second.record.history[0]).toMatchObject({effectId: EFFECT_IDS.verify, receipt: first.receipt});
+        expect(plane.calls.addMemory).toHaveLength(2);
+
+        // Resume on comp-2 without another composition change writes nothing
+        const resumed = await performVerify({...run, record: second.record, target, plane, composition: 'comp-2'});
+
+        expect(resumed.performed).toBe('unchanged');
+        expect(plane.calls.addMemory).toHaveLength(2);
+    });
 });

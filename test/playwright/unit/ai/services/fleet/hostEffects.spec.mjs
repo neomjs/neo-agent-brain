@@ -11,6 +11,7 @@ import {
     applyEffect,
     createHost,
     effectInputDigest,
+    effectInputKey,
     forgeObservation,
     hostEffectHandlers,
     persistSetupRecord,
@@ -99,9 +100,9 @@ test.describe('hostEffects', () => {
     test('AC-2 (ADR 0041 §3): a pending receipt left by an interrupted run is reconcile-required on resume, the handler never re-runs, and only a fresh matching observation settles it', async () => {
         const
             {recordPath, host, record} = await scratch(),
-            input   = {path: path.join(path.dirname(recordPath), 'plane.env'), entries: {NEO_PLANE_ID: 'plane-a'}},
-            spy     = [],
-            effects = {[EFFECT_IDS.writeEnv]: {...hostEffectHandlers[EFFECT_IDS.writeEnv], handler: async (...args) => { spy.push(args); return {digest: 'x', references: []} }}},
+            input                      = {path: path.join(path.dirname(recordPath), 'plane.env'), entries: {NEO_PLANE_ID: 'plane-a'}},
+            spy                        = [],
+            effects                    = {[EFFECT_IDS.writeEnv]: {...hostEffectHandlers[EFFECT_IDS.writeEnv], handler: async (...args) => { spy.push(args); return {digest: 'x', references: []} }}},
             // what a crash between the handler and its receipt leaves on disk
             parked  = withReceipt(record, {effectId: EFFECT_IDS.writeEnv, outcome: RECEIPT_OUTCOMES.pending, inputDigest: effectInputDigest(input), startedAt: 't0'});
 
@@ -152,8 +153,8 @@ test.describe('hostEffects', () => {
     test('the pending receipt carries the digest of the content the handler is about to write where the effect declares one, and an interrupted receipt keeps it', async () => {
         const
             {recordPath, host, record} = await scratch(),
-            input   = {path: path.join(path.dirname(recordPath), 'plane.env'), entries: {NEO_PLANE_ID: 'plane-a'}},
-            seen    = [],
+            input                      = {path: path.join(path.dirname(recordPath), 'plane.env'), entries: {NEO_PLANE_ID: 'plane-a'}},
+            seen                       = [],
             // each handler reads the receipt the pending write left on disk
             reading = (effectId, digest) => ({...hostEffectHandlers[effectId], handler: async () => { seen.push(findReceipt((await readSetupRecord(recordPath, {fsModule: fs})).record, effectId)); return {digest, references: []} }}),
             effects = {[EFFECT_IDS.writeEnv]: reading(EFFECT_IDS.writeEnv, 'x'), [EFFECT_IDS.writeSecrets]: reading(EFFECT_IDS.writeSecrets, 'y')};
@@ -164,7 +165,17 @@ test.describe('hostEffects', () => {
 
         await applyEffect({effectId: EFFECT_IDS.writeSecrets, input: {files: [{path: path.join(path.dirname(recordPath), 'token'), content: 's'}]}, record: env.record, recordPath, host, effects});
 
-        expect(seen[0]).toEqual({effectId: 'write-env', outcome: RECEIPT_OUTCOMES.pending, inputDigest: effectInputDigest(input), startedAt: new Date(NOW).toISOString(), expectedDigest: contentDigest(renderEnvFile(input.entries))});
+        expect(seen[0]).toEqual({
+            effectId      : 'write-env',
+            outcome       : RECEIPT_OUTCOMES.pending,
+            inputDigest   : effectInputDigest(input),
+            inputKey      : effectInputDigest(input),
+            startedAt     : new Date(NOW).toISOString(),
+            expectedDigest: contentDigest(renderEnvFile(input.entries))
+        });
+        expect(seen[1].inputKey).toBe(effectInputKey(EFFECT_IDS.writeSecrets, {files: [{path: path.join(path.dirname(recordPath), 'token'), content: 'another value'}]}));
+        expect(seen[1].inputKey).not.toBe(seen[1].inputDigest);
+        expect(env.receipt.inputKey).toBe(seen[0].inputKey);
         expect(seen[1], 'a secret\'s content is never an expectation').not.toHaveProperty('expectedDigest');
         expect(env.receipt, 'the accepted receipt carries the handler\'s own digest').not.toHaveProperty('expectedDigest');
 
@@ -183,8 +194,8 @@ test.describe('hostEffects', () => {
     test('settleReceipt owns the pending → reconcile-required transition: a non-matching observation persists it without running any handler, a matching one settles a pending receipt directly', async () => {
         const
             {recordPath, host, record} = await scratch(),
-            input  = {path: path.join(path.dirname(recordPath), 'plane.env'), entries: {NEO_PLANE_ID: 'plane-a'}},
-            parked = withReceipt(record, {effectId: EFFECT_IDS.writeEnv, outcome: RECEIPT_OUTCOMES.pending, inputDigest: effectInputDigest(input), startedAt: 't0'});
+            input                      = {path: path.join(path.dirname(recordPath), 'plane.env'), entries: {NEO_PLANE_ID: 'plane-a'}},
+            parked                     = withReceipt(record, {effectId: EFFECT_IDS.writeEnv, outcome: RECEIPT_OUTCOMES.pending, inputDigest: effectInputDigest(input), startedAt: 't0'});
 
         await persistSetupRecord(recordPath, parked, host);
 
@@ -214,13 +225,13 @@ test.describe('hostEffects', () => {
     test('an accepted effect never re-runs on resume for the same input; a different input or a failed receipt is a new application', async () => {
         const
             {recordPath, host, record} = await scratch(),
-            runs    = [],
-            effects = {probe: {id: 'probe', describe: () => 'probe', handler: async input => { runs.push(input); if (input.fail) throw new Error('disk full'); return {digest: 'd', references: ['/x']} }}},
-            first   = await applyEffect({effectId: 'probe', input: {n: 1}, record, recordPath, host, effects}),
-            resume  = await applyEffect({effectId: 'probe', input: {n: 1}, record: first.record, recordPath, host, effects}),
-            changed = await applyEffect({effectId: 'probe', input: {n: 2}, record: resume.record, recordPath, host, effects}),
-            failed  = await applyEffect({effectId: 'probe', input: {n: 3, fail: true}, record: changed.record, recordPath, host, effects}),
-            retried = await applyEffect({effectId: 'probe', input: {n: 3, fail: true}, record: failed.record, recordPath, host, effects});
+            runs                       = [],
+            effects                    = {probe: {id: 'probe', describe: () => 'probe', handler: async input => { runs.push(input); if (input.fail) throw new Error('disk full'); return {digest: 'd', references: ['/x']} }}},
+            first                      = await applyEffect({effectId: 'probe', input: {n: 1}, record, recordPath, host, effects}),
+            resume                     = await applyEffect({effectId: 'probe', input: {n: 1}, record: first.record, recordPath, host, effects}),
+            changed                    = await applyEffect({effectId: 'probe', input: {n: 2}, record: resume.record, recordPath, host, effects}),
+            failed                     = await applyEffect({effectId: 'probe', input: {n: 3, fail: true}, record: changed.record, recordPath, host, effects}),
+            retried                    = await applyEffect({effectId: 'probe', input: {n: 3, fail: true}, record: failed.record, recordPath, host, effects});
 
         expect(first.applied).toBe(true);
         expect(first.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, digest: 'd', references: ['/x'], acceptedAt: '2026-10-01T20:00:00.000Z'});
@@ -231,8 +242,14 @@ test.describe('hostEffects', () => {
         expect(failed.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.failed, reason: 'disk full'});
         expect(retried.applied).toBe(false);
         expect(runs.map(input => input.n)).toEqual([1, 2, 3, 3]);
-        // one receipt per effect, the record on disk is the latest
+        // one current receipt per effect; replaced receipts stay in history (bootstrap-record decision §2.7) without duplicating same-input retries
         expect(retried.record.receipts).toHaveLength(1);
+        expect(retried.record.history.map(entry => [entry.effectId, entry.reason, entry.receipt.outcome])).toEqual([
+            ['probe', RETIRE_REASONS.inputChanged, RECEIPT_OUTCOMES.accepted],
+            ['probe', RETIRE_REASONS.inputChanged, RECEIPT_OUTCOMES.accepted]
+        ]);
+        expect(retried.record.history[0].receipt).toEqual(first.receipt);
+        expect(retried.record.history[1].receipt).toEqual(changed.receipt);
         expect((await readSetupRecord(recordPath, {fsModule: fs})).record.receipts[0].outcome).toBe(RECEIPT_OUTCOMES.failed);
         await expect(applyEffect({effectId: 'nope', input: {}, record, recordPath, host, effects})).rejects.toThrow(/unknown effect 'nope'/);
     });
@@ -240,8 +257,8 @@ test.describe('hostEffects', () => {
     test('an effect without a handler is an operator action: the instruction is recorded, the host is untouched', async () => {
         const
             {recordPath, host, record} = await scratch(),
-            effects = {'remote-up': {id: 'remote-up', describe: input => `run docker compose up on ${input.host}`, handler: null}},
-            result  = await applyEffect({effectId: 'remote-up', input: {host: 'edge-1'}, record, recordPath, host, effects});
+            effects                    = {'remote-up': {id: 'remote-up', describe: input => `run docker compose up on ${input.host}`, handler: null}},
+            result                     = await applyEffect({effectId: 'remote-up', input: {host: 'edge-1'}, record, recordPath, host, effects});
 
         expect(result.applied).toBe(false);
         expect(result.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.operatorAction, instruction: 'run docker compose up on edge-1'});
@@ -251,13 +268,13 @@ test.describe('hostEffects', () => {
     test('AC-4: the record holds neither the PAT nor the provider key; the env carrier, the secret files and the record are owner-only', async () => {
         const
             {root, recordPath, host, record} = await scratch(),
-            envPath    = path.join(root, 'config', 'local-agent-os.env'),
-            patPath    = path.join(root, 'secrets', 'plane-pat'),
-            keyPath    = path.join(root, 'secrets', 'provider-key'),
-            consented  = await recordConsent({stepId: 'plane-credential', answer: patPath, record, recordPath, host}),
-            env        = await applyEffect({effectId: EFFECT_IDS.writeEnv, input: {path: envPath, entries: {GH_TOKEN: PAT, NEO_MODEL_PROVIDER: 'gemini', NEO_PLANE_ID: 'plane-a'}}, record: consented.record, recordPath, host}),
-            secrets    = await applyEffect({effectId: EFFECT_IDS.writeSecrets, input: {files: [{path: patPath, content: PAT}, {path: keyPath, content: KEY}]}, record: env.record, recordPath, host}),
-            recordText = await fs.readFile(recordPath, 'utf8');
+            envPath                          = path.join(root, 'config', 'local-agent-os.env'),
+            patPath                          = path.join(root, 'secrets', 'plane-pat'),
+            keyPath                          = path.join(root, 'secrets', 'provider-key'),
+            consented                        = await recordConsent({stepId: 'plane-credential', answer: patPath, record, recordPath, host}),
+            env                              = await applyEffect({effectId: EFFECT_IDS.writeEnv, input: {path: envPath, entries: {GH_TOKEN: PAT, NEO_MODEL_PROVIDER: 'gemini', NEO_PLANE_ID: 'plane-a'}}, record: consented.record, recordPath, host}),
+            secrets                          = await applyEffect({effectId: EFFECT_IDS.writeSecrets, input: {files: [{path: patPath, content: PAT}, {path: keyPath, content: KEY}]}, record: env.record, recordPath, host}),
+            recordText                       = await fs.readFile(recordPath, 'utf8');
 
         expect(env.receipt.outcome).toBe(RECEIPT_OUTCOMES.accepted);
         expect(secrets.receipt.outcome).toBe(RECEIPT_OUTCOMES.accepted);
@@ -288,8 +305,8 @@ test.describe('hostEffects', () => {
     test('compose-up runs the canonical invocation in the checkout and records it; a failed command is a failed receipt', async () => {
         const
             {recordPath, host, record, calls} = await scratch(),
-            input = {project: 'neo-local-agent-os', cwd: '/srv/brain/deploy/cloud', envFile: '/home/op/.neo-ai/config/local-agent-os.env', composeFiles: ['docker-compose.yml', 'docker-compose.local-agent-os.yml']},
-            up    = await applyEffect({effectId: EFFECT_IDS.composeUp, input, record, recordPath, host});
+            input                             = {project: 'neo-local-agent-os', cwd: '/srv/brain/deploy/cloud', envFile: '/home/op/.neo-ai/config/local-agent-os.env', composeFiles: ['docker-compose.yml', 'docker-compose.local-agent-os.yml']},
+            up                                = await applyEffect({effectId: EFFECT_IDS.composeUp, input, record, recordPath, host});
 
         expect(calls).toEqual([{
             command: 'docker',
@@ -492,8 +509,8 @@ test.describe('hostEffects', () => {
     test('ADR 0041 §3: the record carries the run\'s verification section through the one writer, owner-only and in one write with its receipt; a rebinding retires it into history with the receipts; the pure helper refuses a non-object', async () => {
         const
             {recordPath, host, record} = await scratch(),
-            section = {runId: RUN_ID, planeId: 'plane-a', sessionId: null, attempt: {marker: 'mk-1', dispatchedAt: 't0'}, memory: null, readback: null, recall: null, priorAttempts: []},
-            receipt = {effectId: EFFECT_IDS.verify, outcome: RECEIPT_OUTCOMES.pending, resumable: true, inputDigest: contentDigest('mk-1'), startedAt: 't0', reason: 'dispatching'};
+            section                    = {runId: RUN_ID, planeId: 'plane-a', sessionId: null, attempt: {marker: 'mk-1', dispatchedAt: 't0'}, memory: null, readback: null, recall: null, priorAttempts: []},
+            receipt                    = {effectId: EFFECT_IDS.verify, outcome: RECEIPT_OUTCOMES.pending, resumable: true, inputDigest: contentDigest('mk-1'), startedAt: 't0', reason: 'dispatching'};
 
         expect(record.verification).toBeNull();
 
@@ -519,10 +536,10 @@ test.describe('hostEffects', () => {
     test('desktop-wake consent validation, write-env recordsStateDir 0700 preparation and safety refusal, and start-wake-receiver effect', async () => {
         const
             {root, recordPath, host, record} = await scratch(),
-            envPath   = path.join(root, 'config', 'local-agent-os.env'),
-            stateDir  = path.join(root, 'wake-receiver'),
-            symDir    = path.join(root, 'sym-wake'),
-            consented = await recordConsent({stepId: 'desktop-wake', answer: 'enabled', record, recordPath, host});
+            envPath                          = path.join(root, 'config', 'local-agent-os.env'),
+            stateDir                         = path.join(root, 'wake-receiver'),
+            symDir                           = path.join(root, 'sym-wake'),
+            consented                        = await recordConsent({stepId: 'desktop-wake', answer: 'enabled', record, recordPath, host});
 
         expect(consented.consent.answer).toBe('enabled');
         await expect(recordConsent({stepId: 'desktop-wake', answer: 'maybe', record, recordPath, host})).rejects.toThrow(/must be 'enabled' or 'declined'/);
@@ -530,9 +547,9 @@ test.describe('hostEffects', () => {
         expect(hostEffectHandlers[EFFECT_IDS.startWakeReceiver].describe({plistPath: '/Users/op/Library/LaunchAgents/com.neomjs.agent-os-wake.plist'})).toContain('com.neomjs.agent-os-wake');
 
         const env = await applyEffect({
-            effectId  : EFFECT_IDS.writeEnv,
-            input     : {path: envPath, recordsStateDir: stateDir, entries: {NEO_PLANE_ID: 'plane-a', NEO_WAKE_RECEIVER_RECORDS_HOST_DIR: path.join(stateDir, 'records')}},
-            record    : consented.record,
+            effectId: EFFECT_IDS.writeEnv,
+            input   : {path: envPath, recordsStateDir: stateDir, entries: {NEO_PLANE_ID: 'plane-a', NEO_WAKE_RECEIVER_RECORDS_HOST_DIR: path.join(stateDir, 'records')}},
+            record  : consented.record,
             recordPath,
             host
         });
@@ -544,9 +561,9 @@ test.describe('hostEffects', () => {
         await fs.symlink(stateDir, symDir);
 
         const refused = await applyEffect({
-            effectId  : EFFECT_IDS.writeEnv,
-            input     : {path: path.join(root, 'config', 'second.env'), recordsStateDir: symDir, entries: {NEO_PLANE_ID: 'plane-a'}},
-            record    : env.record,
+            effectId: EFFECT_IDS.writeEnv,
+            input   : {path: path.join(root, 'config', 'second.env'), recordsStateDir: symDir, entries: {NEO_PLANE_ID: 'plane-a'}},
+            record  : env.record,
             recordPath,
             host
         });

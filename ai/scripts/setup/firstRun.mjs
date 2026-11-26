@@ -53,7 +53,13 @@ import {
     runTarget,
     setupRecordPath
 } from '../../services/fleet/setupRunRecord.mjs';
-import {composeContextOf, performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
+import {
+    composeContextOf,
+    compositionKey,
+    consentedInputs,
+    performEffects,
+    settlePending
+} from '../../services/fleet/setupOrchestration.mjs';
 import {VERIFY_EXITS}                                    from '../../services/fleet/verifyEffect.mjs';
 import {
     DESKTOP_WAKE_CHOICES,
@@ -83,7 +89,7 @@ const
     // Brain (/app), behind the ingress the profile publishes on the loopback
     PROFILE_TARGET  = Object.freeze({planeId: CANONICAL_PLANE_ID, dataRoot: resolvePlaneDataRoot({rootDir: '/app'}), endpoint: 'http://127.0.0.1:3102'}),
     USAGE           = `usage: node ai/scripts/setup/firstRun.mjs [--json] [--setup-root <dir>] [--state-root <dir>] [--home-dir <dir>] [--run-id <uuid>]
-       [--plane-id <id>] [--data-root <path>] [--endpoint <url>] [--desktop-wake enabled|declined] [--fake-host <file>] [--new-attempt] [--help]
+       [--plane-id <id>] [--data-root <path>] [--endpoint <url>] [--preset <id>] [--provider-key <file>] [--desktop-wake enabled|declined] [--fake-host <file>] [--new-attempt] [--help]
 
   Evaluates the first-run recipe live, asks the pending questions, performs the effects, re-evaluates.
   A run that names no plane binds the one this profile declares: ${PROFILE_TARGET.planeId} at ${PROFILE_TARGET.dataRoot},
@@ -113,6 +119,8 @@ export function parseArgs(argv, env = process.env) {
             planeId    : null,
             dataRoot   : null,
             endpoint   : PROFILE_TARGET.endpoint,
+            preset     : null,
+            providerKey: null,
             desktopWake: null,
             fakeHost   : null,
             newAttempt : false
@@ -125,6 +133,8 @@ export function parseArgs(argv, env = process.env) {
             '--plane-id'    : 'planeId',
             '--data-root'   : 'dataRoot',
             '--endpoint'    : 'endpoint',
+            '--preset'      : 'preset',
+            '--provider-key': 'providerKey',
             '--desktop-wake': 'desktopWake',
             '--fake-host'   : 'fakeHost'
         };
@@ -462,18 +472,10 @@ export function productionObservers({layout, host, probe = probePlacement, healt
         ? `the plane refused the witness write at ${section.attempt.refused.at}: ${section.attempt.refused.reason}`
         : section?.failure ? `the plane refused the ${section.failure.step} at ${section.failure.at}: ${section.failure.reason}` : null;
 
-    return {
-        placement,
-        envCarrier  : (target, {record = null} = {}) => {
-            const platform = typeof host.platform === 'function' ? host.platform() : process.platform;
-
-            return observeEnvCarrier(layout, host, {record, supported: SUPPORTED_WAKE_PLATFORMS.includes(platform)});
-        },
-        desktopWake : target => observeDesktopWakeQuestion({layout, host, target}),
-        wakeReceiver: (target, {record = null} = {}) => observeWakeReceiverEffect({layout, target, record, host}),
-        // present means the WHOLE set the consented preset needs: the files are written one at a time,
-        // so an interrupted write leaves some of them, and "any file" would read that as done
-        secretFiles: async (target, {record = null} = {}) => {
+    const
+        supportedPlatform = () => SUPPORTED_WAKE_PLATFORMS.includes(typeof host.platform === 'function' ? host.platform() : process.platform),
+        inputKey          = (effectId, target, record) => consentedInputs({record, layout, target, supported: supportedPlatform()})?.keys[effectId] ?? null,
+        secretSet         = async record => {
             const
                 files   = await host.fsModule.readdir(layout.secretsDir).catch(error => error?.code === 'ENOENT' ? [] : Promise.reject(error)),
                 consent = record ? findConsent(record, 'preset')?.answer : null,
@@ -496,16 +498,32 @@ export function productionObservers({layout, host, probe = probePlacement, healt
             }
 
             return {present: true, digest: null, problem: null};
-        },
+        };
+
+    return {
+        placement,
+        envCarrier  : async (target, {record = null} = {}) => ({
+            ...await observeEnvCarrier(layout, host, {record, supported: supportedPlatform()}),
+            inputKey: inputKey(EFFECT_IDS.writeEnv, target, record)
+        }),
+        desktopWake : target => observeDesktopWakeQuestion({layout, host, target}),
+        wakeReceiver: (target, {record = null} = {}) => observeWakeReceiverEffect({layout, target, record, host}),
+        secretFiles : async (target, {record = null} = {}) => ({
+            ...await secretSet(record),
+            inputKey: inputKey(EFFECT_IDS.writeSecrets, target, record)
+        }),
         runningPlane: async (target, {record = null} = {}) => {
             const result = probed ?? await placement();
 
-            return observeRunningCompose({
-                layout,
-                host,
-                record,
-                running: result.runningPlane?.project === layout.composeProject
-            });
+            return {
+                ...await observeRunningCompose({
+                    layout,
+                    host,
+                    record,
+                    running: result.runningPlane?.project === layout.composeProject
+                }),
+                inputKey: inputKey(EFFECT_IDS.composeUp, target, record)
+            };
         },
         // read inside the plane's Fleet service: a plane that is not running has no registry to read, which is
         // unknown — never an empty one, and never an accepted registration gone
@@ -549,10 +567,10 @@ export function productionObservers({layout, host, probe = probePlacement, healt
             const refusal = witnessRefusal(section);
 
             if (refusal) {
-                return {present: true, digest: null, problem: refusal};
+                return {present: true, digest: null, problem: refusal, inputKey: compositionKey(record)};
             }
 
-            return {present: Boolean(section?.memory && section.recall?.hit), digest: null, problem: null, reason: section ? 'the witness has not been written and recalled yet' : 'the verify effect has not run'};
+            return {present: Boolean(section?.memory && section.recall?.hit), digest: null, problem: null, inputKey: compositionKey(record), reason: section ? 'the witness has not been written and recalled yet' : 'the verify effect has not run'};
         },
         done        : async (target, {record = null} = {}) => {
             const section = witnessOf(record);
@@ -740,6 +758,10 @@ export async function main(argv = process.argv.slice(2), io = {}) {
 
     if (options.desktopWake !== null && !Object.values(DESKTOP_WAKE_CHOICES).includes(options.desktopWake)) {
         throw new Error(`--desktop-wake must be '${DESKTOP_WAKE_CHOICES.enabled}' or '${DESKTOP_WAKE_CHOICES.declined}'`);
+    }
+
+    if (options.preset !== null && !presets.some(preset => preset.id === options.preset)) {
+        throw new Error(`'${options.preset}' is not a preset`);
     }
 
     const
@@ -931,17 +953,21 @@ export async function main(argv = process.argv.slice(2), io = {}) {
             runningPlane: async (t, {record: boundRecord = null} = {}) => {
                 const
                     composeState = await readCompose(),
-                    running      = composeState.running || (await readCalls()).some(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up'));
+                    running      = composeState.running || (await readCalls()).some(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up')),
+                    supported    = SUPPORTED_WAKE_PLATFORMS.includes(typeof host.platform === 'function' ? host.platform() : process.platform);
 
-                return observeRunningCompose({
-                    layout,
-                    host,
-                    record             : boundRecord,
-                    running,
-                    inspectRecordsMount: async () => composeState.mountedRecordsDir
-                        ? {ok: true, present: true, actualMount: path.resolve(composeState.mountedRecordsDir), error: false, reason: null}
-                        : {ok: false, present: true, actualMount: null, error: false, reason: "running mc-server container has no '/app/wake-receiver-records' bind mount"}
-                });
+                return {
+                    ...await observeRunningCompose({
+                        layout,
+                        host,
+                        record             : boundRecord,
+                        running,
+                        inspectRecordsMount: async () => composeState.mountedRecordsDir
+                            ? {ok: true, present: true, actualMount: path.resolve(composeState.mountedRecordsDir), error: false, reason: null}
+                            : {ok: false, present: true, actualMount: null, error: false, reason: "running mc-server container has no '/app/wake-receiver-records' bind mount"}
+                    }),
+                    inputKey: consentedInputs({record: boundRecord, layout, target: t, supported})?.keys[EFFECT_IDS.composeUp] ?? null
+                };
             },
             forgeConnection: async () => { throw new Error('no forge registry on the fake host') },
             ...fakeHost.observers
@@ -978,6 +1004,30 @@ export async function main(argv = process.argv.slice(2), io = {}) {
             record = retireCurrentProof(record, {target, recipeVersion: RECIPE_VERSION, reason: binding === 'version-mismatch' ? RETIRE_REASONS.versionChanged : RETIRE_REASONS.targetChanged, now: host.now});
             await persistSetupRecord(recordPath, record, host);
             stderr.write(`record ${recordPath}: ${binding}; prior consents and receipts retired into history\n`);
+        }
+    }
+
+    const desiredPreset = options.preset ?? fake?.consentOverride?.preset ?? null;
+
+    if (desiredPreset !== null) {
+        if (!presets.some(preset => preset.id === desiredPreset)) {
+            throw new Error(`'${desiredPreset}' is not a preset`);
+        }
+
+        if (findConsent(record, 'preset')?.answer !== desiredPreset) {
+            record = (await recordConsent({stepId: 'preset', answer: desiredPreset, record, recordPath, host})).record;
+        }
+    }
+
+    const desiredProviderKey = options.providerKey ?? fake?.consentOverride?.['provider-key'] ?? null;
+
+    if (desiredProviderKey !== null) {
+        const admitted = await admitCredentialReference({answer: desiredProviderKey, fsModule: host.fsModule});
+
+        if (!admitted.ok) {
+            stderr.write(`provider-key: ${admitted.reason}\n`);
+        } else if (findConsent(record, 'provider-key')?.answer !== admitted.path) {
+            record = (await recordConsent({stepId: 'provider-key', answer: admitted.path, record, recordPath, host})).record;
         }
     }
 
