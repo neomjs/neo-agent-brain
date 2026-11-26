@@ -897,7 +897,10 @@ test.describe('projectWakeRecordStage & projectWakeDeliveryStages — stage and 
 
             delivered = true;
             await receiver.drain();
-            const settledStage = projectWakeRecordStage(await state.read(accepted.recordKey), {now: '2026-11-25T10:22:00.000Z'});
+            const settledRecord = await state.read(accepted.recordKey);
+            expect(settledRecord.holdStartedAt).toBeNull();
+            expect(settledRecord.lastTranscriptGrowthAt).toBeNull();
+            const settledStage = projectWakeRecordStage(settledRecord, {now: '2026-11-25T10:22:00.000Z'});
             expect(settledStage).toMatchObject({
                 stage     : 'delivered',
                 settled   : true,

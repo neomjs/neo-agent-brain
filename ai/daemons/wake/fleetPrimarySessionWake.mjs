@@ -249,16 +249,22 @@ function resolveClockMs(now) {
 
 /**
  * @summary Tracks continuous non-idle Antigravity root hold start and `transcript.jsonl` byte growth.
- * Preserves `holdStartedAt` across consecutive non-idle sweeps, refreshes `lastTranscriptGrowthAt`
- * whenever `transcript.jsonl` grows (or rotates file identity), and sets `stalled: true` only when
- * zero transcript growth reaches `stalledHoldThresholdMs`.
+ * Preserves `holdStartedAt` and the last valid transcript `{dev, ino, size}` sample across consecutive
+ * non-idle sweeps (including transient unreadable samples), skips redundant `.hold.json` writes when
+ * unchanged, and sets `stalled: true` only when zero transcript growth reaches `stalledHoldThresholdMs`.
  */
 async function observeAntigravityBusyHold({holdPath, generation, threadId, appDataDir, antigravityTransport, nowMs, stalledHoldThresholdMs}) {
-    const nowIso   = new Date(nowMs).toISOString(),
-          progress = typeof antigravityTransport.readAntigravityTranscriptProgress === 'function'
-              ? antigravityTransport.readAntigravityTranscriptProgress({appDataDir, threadId})
-              : null,
-          currentSize = Number.isSafeInteger(progress?.size) && progress.size >= 0 ? progress.size : null,
+    const nowIso   = new Date(nowMs).toISOString();
+    let   progress = null;
+    if (typeof antigravityTransport.readAntigravityTranscriptProgress === 'function') {
+        try {
+            progress = await antigravityTransport.readAntigravityTranscriptProgress({appDataDir, threadId})
+        } catch {
+            progress = null
+        }
+    }
+
+    const currentSize = Number.isSafeInteger(progress?.size) && progress.size >= 0 ? progress.size : null,
           currentIno  = Number.isSafeInteger(progress?.ino) ? progress.ino : null,
           currentDev  = Number.isSafeInteger(progress?.dev) ? progress.dev : null,
           previous    = await readPrivate(holdPath),
@@ -266,7 +272,10 @@ async function observeAntigravityBusyHold({holdPath, generation, threadId, appDa
               previous?.threadId === threadId &&
               typeof previous?.holdStartedAt === 'string' &&
               Number.isFinite(Date.parse(previous.holdStartedAt)),
-          holdStartedAt = sameHold ? previous.holdStartedAt : nowIso;
+          holdStartedAt = sameHold ? previous.holdStartedAt : nowIso,
+          prevSize      = sameHold && Number.isSafeInteger(previous.transcriptSize) && previous.transcriptSize >= 0 ? previous.transcriptSize : null,
+          prevIno       = sameHold && Number.isSafeInteger(previous.transcriptIno) ? previous.transcriptIno : null,
+          prevDev       = sameHold && Number.isSafeInteger(previous.transcriptDev) ? previous.transcriptDev : null;
 
     let lastGrowthAt = sameHold && typeof previous.lastTranscriptGrowthAt === 'string' &&
         Number.isFinite(Date.parse(previous.lastTranscriptGrowthAt))
@@ -274,24 +283,35 @@ async function observeAntigravityBusyHold({holdPath, generation, threadId, appDa
         : holdStartedAt;
 
     if (sameHold && currentSize !== null) {
-        const prevSize = Number.isSafeInteger(previous.transcriptSize) ? previous.transcriptSize : null,
-              grew     = prevSize === null
-                  ? currentSize > 0
-                  : (currentDev !== previous.transcriptDev || currentIno !== previous.transcriptIno || currentSize > prevSize);
+        const grew = prevSize === null
+            ? currentSize > 0
+            : (currentDev !== prevDev || currentIno !== prevIno || currentSize > prevSize);
         if (grew) {
             lastGrowthAt = nowIso
         }
     }
 
-    await writeFileAtomic(holdPath, JSON.stringify({
-        generation,
-        threadId,
-        holdStartedAt,
-        lastTranscriptGrowthAt: lastGrowthAt,
-        transcriptDev         : currentDev,
-        transcriptIno         : currentIno,
-        transcriptSize        : currentSize
-    }), {mode: 0o600, fsync: true});
+    const nextDev   = currentSize !== null ? currentDev  : prevDev,
+          nextIno   = currentSize !== null ? currentIno  : prevIno,
+          nextSize  = currentSize !== null ? currentSize : prevSize,
+          unchanged = sameHold &&
+              previous.holdStartedAt === holdStartedAt &&
+              previous.lastTranscriptGrowthAt === lastGrowthAt &&
+              previous.transcriptDev === nextDev &&
+              previous.transcriptIno === nextIno &&
+              previous.transcriptSize === nextSize;
+
+    if (!unchanged) {
+        await writeFileAtomic(holdPath, JSON.stringify({
+            generation,
+            threadId,
+            holdStartedAt,
+            lastTranscriptGrowthAt: lastGrowthAt,
+            transcriptDev         : nextDev,
+            transcriptIno         : nextIno,
+            transcriptSize        : nextSize
+        }), {mode: 0o600, fsync: true}).catch(() => {})
+    }
 
     const zeroGrowthMs = Math.max(0, nowMs - Date.parse(lastGrowthAt));
     return {
@@ -382,11 +402,13 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
     const cursorPathFor = slotUrgent => statePath + (slotUrgent ? '.urgent.cursor.json' : '.cursor.json');
     const claimPathFor  = slotUrgent => statePath + (slotUrgent ? '.urgent.claim.json' : '.claim.json');
     const holdPath      = statePath + '.hold.json';
+    const clearBusyHold = () => fs.rm(holdPath, {force: true}).catch(() => {});
     let   denialReason  = null,
           activeHoldObservation = null,
           result                = await deliverPrimarySessionWake({
         statePath,seat,generation:deliveryGeneration,family,recordKey:record.recordKey,urgent,isRecordedDelivered:recorded,commitNormalAttempt,commitUrgentAttempt,
         readTarget: async (binding, {urgent: slotUrgent} = {}) => {
+            activeHoldObservation = null;
             if (binding.generation !== generation) return null;
             const root = await select();
             if (root?.root === false) return {root:false, reason:`native-recipient:${root.reason}`};
@@ -433,12 +455,12 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
                         }
                         : null
                 }
-                await fs.rm(holdPath, {force: true});
+                await clearBusyHold();
                 const admission = await antigravityTransport.verifyAntigravityWakeAdmission({instanceHome,appDataDir,projectId,threadId:root.threadId,generation,statePath});
                 return admission?.verified === true ? root : null
             }
             if (root.status === 'CASCADE_RUN_STATUS_IDLE') {
-                await fs.rm(holdPath, {force: true});
+                await clearBusyHold();
                 const admission = await antigravityTransport.verifyAntigravityWakeAdmission({instanceHome,appDataDir,projectId,threadId:root.threadId,generation,statePath});
                 return admission?.verified === true ? {...root, deliveryMode: 'idle'} : null
             }
@@ -810,18 +832,13 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
         const dependency = (reason === ACTIVE_TURN_UNAVAILABLE_REASON || result?.dependency)
             ? (result?.dependency || ACTIVE_TURN_ADAPTER_DEPENDENCY)
             : null,
-              validIso       = value => typeof value === 'string' && Number.isFinite(Date.parse(value)),
-              previousStatus = await readPrivate(pointerPath+'.status'),
-              preservedHold  = previousStatus?.subscriptionId === subscriptionId &&
-                  previousStatus?.recordKey === record.recordKey &&
-                  previousStatus?.reason !== 'native-recipient:receipt-unproven' &&
-                  validIso(previousStatus?.holdStartedAt)
-                  ? previousStatus.holdStartedAt
+              validIso      = value => typeof value === 'string' && Number.isFinite(Date.parse(value)),
+              holdStartedAt = reason !== 'native-recipient:receipt-unproven' && validIso(result?.holdStartedAt)
+                  ? result.holdStartedAt
                   : null,
-              holdStartedAt  = reason === 'native-recipient:receipt-unproven'
-                  ? null
-                  : (validIso(result?.holdStartedAt) ? result.holdStartedAt : (preservedHold || new Date(resolveClockMs(now)).toISOString())),
-              growthAt       = holdStartedAt && validIso(result?.lastTranscriptGrowthAt) ? result.lastTranscriptGrowthAt : null;
+              growthAt      = holdStartedAt && validIso(result?.lastTranscriptGrowthAt)
+                  ? result.lastTranscriptGrowthAt
+                  : null;
         await writeFileAtomic(pointerPath+'.status', JSON.stringify({
             recordKey: record.recordKey,
             subscriptionId,
