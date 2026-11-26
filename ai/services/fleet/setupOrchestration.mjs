@@ -92,7 +92,12 @@ export function consentedInputs({record, layout, target, supported = true}) {
     }
 
     const
-        carrier = {
+        needsProviderKey = Array.isArray(preset.requires) && preset.requires.includes('providerKey'),
+        secretSources    = {
+            planeCredential: record ? findConsent(record, 'plane-credential')?.answer ?? null : null,
+            providerKey    : needsProviderKey ? (record ? findConsent(record, 'provider-key')?.answer ?? null : null) : null
+        },
+        carrier          = {
             path   : layout.envFile,
             entries: {
                 ...preset.env,
@@ -103,16 +108,19 @@ export function consentedInputs({record, layout, target, supported = true}) {
             },
             ...(recordsStateDir ? {recordsStateDir} : {})
         },
-        secretsKey = effectInputKey(EFFECT_IDS.writeSecrets, {
-            files: secretFileNames(preset).map(name => ({path: path.join(layout.secretsDir, name)}))
-        });
+        secretsKey       = effectInputKey(EFFECT_IDS.writeSecrets, {
+            files  : secretFileNames(preset).map(name => ({path: path.join(layout.secretsDir, name)})),
+            sources: secretSources
+        }),
+        carrierKey       = effectInputKey(EFFECT_IDS.writeEnv, carrier);
 
-    let envDigest = null;
+    let envDigest      = null,
+        carrierProblem = null;
 
     try {
         envDigest = contentDigest(renderEnvFile(carrier.entries));
-    } catch {
-        envDigest = null;
+    } catch (error) {
+        carrierProblem = error?.message ?? String(error);
     }
 
     const
@@ -121,10 +129,12 @@ export function consentedInputs({record, layout, target, supported = true}) {
 
     return {
         carrier,
+        carrierProblem,
         composition,
+        secretSources,
         keys: {
             [EFFECT_IDS.writeSecrets]: secretsKey,
-            [EFFECT_IDS.writeEnv]    : envDigest ? effectInputKey(EFFECT_IDS.writeEnv, carrier) : null,
+            [EFFECT_IDS.writeEnv]    : carrierKey,
             [EFFECT_IDS.composeUp]   : canCompose ? effectInputKey(EFFECT_IDS.composeUp, composition) : null
         }
     };
@@ -266,9 +276,12 @@ export async function performEffects({record, recordPath, host, layout, target, 
             supported: desktopWakeStep?.capability?.supported !== false
         }),
         inputs    = {
-            [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
-            [EFFECT_IDS.writeEnv]    : consented.carrier,
-            [EFFECT_IDS.composeUp]   : consented.composition
+            [EFFECT_IDS.writeSecrets]: {
+                files  : credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content})),
+                sources: consented.secretSources
+            },
+            [EFFECT_IDS.writeEnv] : consented.carrier,
+            [EFFECT_IDS.composeUp]: consented.composition
         };
 
     let envMutated = false;

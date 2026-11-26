@@ -374,7 +374,7 @@ export function findReceipt(record, effectId) {
 export function compositionKey(record) {
     const receipt = record ? findReceipt(record, 'compose-up') : null;
 
-    return receipt?.outcome === RECEIPT_OUTCOMES.accepted ? receipt.inputKey ?? null : null;
+    return receipt?.outcome === RECEIPT_OUTCOMES.accepted ? receipt.inputKey ?? receipt.inputDigest ?? null : null;
 }
 
 /**

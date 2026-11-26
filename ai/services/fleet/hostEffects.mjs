@@ -329,9 +329,15 @@ export const hostEffectHandlers = Object.freeze({
     [EFFECT_IDS.writeSecrets]: Object.freeze({
         id      : EFFECT_IDS.writeSecrets,
         describe: input => `write ${Array.isArray(input?.files) ? input.files.length : 0} secret file(s), owner-only`,
-        key     : input => effectInputDigest((input?.files ?? []).map(file => file?.path).sort()),
+        key     : input => effectInputDigest({
+            files  : (input?.files ?? []).map(file => file?.path).sort(),
+            sources: {
+                planeCredential: input?.sources?.planeCredential ?? null,
+                providerKey    : input?.sources?.providerKey ?? null
+            }
+        }),
         /**
-         * @param {Object} input `{files: [{path, content}]}`
+         * @param {Object} input `{files: [{path, content}], sources?: {planeCredential: String|null, providerKey: String|null}}`
          * @param {Object} host
          * @returns {Promise<{digest: String, references: String[]}>}
          */
@@ -522,7 +528,7 @@ export async function applyEffect({
         stamp       = () => new Date(host.now()).toISOString();
 
     if (existing) {
-        if (existing.outcome === RECEIPT_OUTCOMES.accepted && existing.inputDigest === inputDigest && !reapplyAccepted) {
+        if (existing.outcome === RECEIPT_OUTCOMES.accepted && existing.inputDigest === inputDigest && (existing.inputKey ?? inputKey) === inputKey && !reapplyAccepted) {
             return {record, receipt: existing, applied: false};
         }
 

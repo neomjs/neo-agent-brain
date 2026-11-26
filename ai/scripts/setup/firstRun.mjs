@@ -502,10 +502,20 @@ export function productionObservers({layout, host, probe = probePlacement, healt
 
     return {
         placement,
-        envCarrier  : async (target, {record = null} = {}) => ({
-            ...await observeEnvCarrier(layout, host, {record, supported: supportedPlatform()}),
-            inputKey: inputKey(EFFECT_IDS.writeEnv, target, record)
-        }),
+        envCarrier  : async (target, {record = null} = {}) => {
+            const
+                supported = supportedPlatform(),
+                consented = consentedInputs({record, layout, target, supported}),
+                observed  = await observeEnvCarrier(layout, host, {record, supported});
+
+            return {
+                ...observed,
+                ...(observed.present && !observed.problem && target?.planeId && target?.dataRoot && consented?.carrierProblem
+                    ? {problem: consented.carrierProblem}
+                    : {}),
+                inputKey: consented?.keys[EFFECT_IDS.writeEnv] ?? null
+            };
+        },
         desktopWake : target => observeDesktopWakeQuestion({layout, host, target}),
         wakeReceiver: (target, {record = null} = {}) => observeWakeReceiverEffect({layout, target, record, host}),
         secretFiles : async (target, {record = null} = {}) => ({
@@ -760,12 +770,15 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         throw new Error(`--desktop-wake must be '${DESKTOP_WAKE_CHOICES.enabled}' or '${DESKTOP_WAKE_CHOICES.declined}'`);
     }
 
-    if (options.preset !== null && !presets.some(preset => preset.id === options.preset)) {
-        throw new Error(`'${options.preset}' is not a preset`);
+    const
+        fake          = options.fakeHost ? JSON.parse(await fsPromises.readFile(options.fakeHost, 'utf8')) : null,
+        desiredPreset = options.preset ?? fake?.consentOverride?.preset ?? null;
+
+    if (desiredPreset !== null && !presets.some(preset => preset.id === desiredPreset)) {
+        throw new Error(`'${desiredPreset}' is not a preset`);
     }
 
     const
-        fake        = options.fakeHost ? JSON.parse(await fsPromises.readFile(options.fakeHost, 'utf8')) : null,
         interactive = !options.json && (io.isTTY ?? Boolean(stdin.isTTY)) && !fake,
         layout      = hostLayout({
             ...options,
@@ -977,6 +990,19 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         observers = productionObservers({layout, host});
     }
 
+    const desiredProviderKey  = options.providerKey ?? fake?.consentOverride?.['provider-key'] ?? null;
+    let   admittedProviderKey = null;
+
+    if (desiredProviderKey !== null) {
+        const admitted = await admitCredentialReference({answer: desiredProviderKey, fsModule: host.fsModule});
+
+        if (!admitted.ok) {
+            throw new Error(`provider-key: ${admitted.reason}`);
+        }
+
+        admittedProviderKey = admitted.path;
+    }
+
     const
         runId      = options.runId ?? randomUUID(),
         recordPath = setupRecordPath(options.setupRoot, runId),
@@ -1007,28 +1033,12 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         }
     }
 
-    const desiredPreset = options.preset ?? fake?.consentOverride?.preset ?? null;
-
-    if (desiredPreset !== null) {
-        if (!presets.some(preset => preset.id === desiredPreset)) {
-            throw new Error(`'${desiredPreset}' is not a preset`);
-        }
-
-        if (findConsent(record, 'preset')?.answer !== desiredPreset) {
-            record = (await recordConsent({stepId: 'preset', answer: desiredPreset, record, recordPath, host})).record;
-        }
+    if (desiredPreset !== null && findConsent(record, 'preset')?.answer !== desiredPreset) {
+        record = (await recordConsent({stepId: 'preset', answer: desiredPreset, record, recordPath, host})).record;
     }
 
-    const desiredProviderKey = options.providerKey ?? fake?.consentOverride?.['provider-key'] ?? null;
-
-    if (desiredProviderKey !== null) {
-        const admitted = await admitCredentialReference({answer: desiredProviderKey, fsModule: host.fsModule});
-
-        if (!admitted.ok) {
-            stderr.write(`provider-key: ${admitted.reason}\n`);
-        } else if (findConsent(record, 'provider-key')?.answer !== admitted.path) {
-            record = (await recordConsent({stepId: 'provider-key', answer: admitted.path, record, recordPath, host})).record;
-        }
+    if (admittedProviderKey !== null && findConsent(record, 'provider-key')?.answer !== admittedProviderKey) {
+        record = (await recordConsent({stepId: 'provider-key', answer: admittedProviderKey, record, recordPath, host})).record;
     }
 
     const desiredDesktopWake = options.desktopWake ?? fake?.consentOverride?.['desktop-wake'] ?? null;

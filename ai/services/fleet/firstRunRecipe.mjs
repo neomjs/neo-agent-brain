@@ -258,10 +258,19 @@ function evaluateQuestion(step, {record, bound, bindingReason, presets, desktopW
 
 const EARLIER_INPUT_REASONS = Object.freeze({
     'write-env'    : 'accepted for an earlier input: the consents now render another carrier',
-    'write-secrets': 'accepted for an earlier input: the consented preset now needs another secret set',
+    'write-secrets': 'accepted for an earlier input: the consents now render another secret set',
     'compose-up'   : 'accepted for an earlier input: the carrier changed since the plane was composed — running it again restarts the plane',
     'verify'       : 'accepted for an earlier input: the witness followed an earlier composition; a new attempt follows this one'
 });
+
+/**
+ * Effects whose `receipt.inputDigest` is NOT their consent-rendered `inputKey` (`write-secrets` hashes minted
+ * secret content; `verify` hashes the witness attempt marker). Every other keyed effect (`write-env`,
+ * `compose-up`) uses `effectInputDigest(input)` as `inputKey`, so a pre-merge receipt's `inputDigest` is
+ * byte-identical to its `inputKey`.
+ * @type {Set<String>}
+ */
+const EFFECTS_WITH_SEPARATE_INPUT_KEY = Object.freeze(new Set(['write-secrets', 'verify']));
 
 async function evaluateEffect(step, {record, bound, observers, target, context, observedAt, steps}) {
     const
@@ -300,9 +309,11 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
         return status(step, STEP_STATUSES.unknown, read.reason, extra);
     }
 
-    const observed = read.value ?? {};
+    const
+        observed         = read.value ?? {},
+        recordedInputKey = receipt?.inputKey ?? (EFFECTS_WITH_SEPARATE_INPUT_KEY.has(step.effectId) ? null : receipt?.inputDigest ?? null);
 
-    if (receipt?.outcome === RECEIPT_OUTCOMES.accepted && receipt.inputKey && observed.inputKey && receipt.inputKey !== observed.inputKey) {
+    if (receipt?.outcome === RECEIPT_OUTCOMES.accepted && recordedInputKey && observed.inputKey && recordedInputKey !== observed.inputKey) {
         return status(
             step,
             STEP_STATUSES.pending,
@@ -347,7 +358,7 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
         return status(step, STEP_STATUSES.failed, 'the host content changed after the effect was accepted', extra);
     }
 
-    const keyless = receipt?.outcome === RECEIPT_OUTCOMES.accepted && !receipt.inputKey && Boolean(observed.inputKey);
+    const keyless = receipt?.outcome === RECEIPT_OUTCOMES.accepted && !recordedInputKey && Boolean(observed.inputKey);
 
     return status(
         step,

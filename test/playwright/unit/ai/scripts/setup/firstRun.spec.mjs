@@ -1120,7 +1120,7 @@ test.describe('firstRun CLI', () => {
                 pendingComposeRecord  = withReceipt(afterReplay1Record, {
                     effectId      : 'compose-up',
                     outcome       : RECEIPT_OUTCOMES.pending,
-                    inputDigest   : 'pending-compose-input',
+                    inputDigest   : findReceipt(afterReplay1Record, 'compose-up').inputDigest,
                     expectedDigest: expectedComposeDigest,
                     startedAt     : '2026-11-16T01:05:00.000Z'
                 });
@@ -1308,6 +1308,20 @@ test.describe('firstRun CLI', () => {
                 ['write-env',     'input-changed'],
                 ['compose-up',    'input-changed']
             ]);
+
+            // 4. Inadmissible --provider-key refuses and exits 1 without mutating the record or leaking the input
+            const badKey = await runCli({
+                homeDir,
+                setupRoot,
+                stateRoot,
+                extra: ['--provider-key', 'PASTED_SECRET_NOT_A_PATH'],
+                fake : greenFake({patPath, answers: false})
+            });
+
+            expect(badKey.code).toBe(1);
+            expect(badKey.stderr).toContain('provider-key: not the absolute path of a file; the value was not recorded');
+            expect(badKey.stderr).not.toContain('PASTED_SECRET_NOT_A_PATH');
+            expect(await fs.readFile(recordPath, 'utf8')).toBe(`${JSON.stringify(savedRecord, null, 2)}\n`);
         } finally {
             await fs.rm(root, {recursive: true, force: true});
         }
