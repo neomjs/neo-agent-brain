@@ -1244,7 +1244,7 @@ test.describe('firstRun CLI', () => {
             keyPath                                        = path.join(root, 'operator', 'gemini-key');
 
         try {
-            await fs.writeFile(keyPath, 'AIzaCLISENTINELKEY0123456789abcdefghijk\n', {mode: 0o600});
+            await fs.writeFile(keyPath, 'fixture-gemini-provider-key-value\n', {mode: 0o600});
 
             // 1. Complete cold run on local-small
             const first = await runCli({
