@@ -169,6 +169,28 @@ export function captureAntigravityWakeCursor({appDataDir, threadId}) {
     } finally { fs.closeSync(fd) }
 }
 
+/**
+ * @summary Reads non-content `transcript.jsonl` file identity and byte size for stalled-hold detection.
+ * Returns `null` when the transcript does not exist yet or is unreadable, never throwing into wake holds.
+ * @param {Object} options
+ * @param {String} options.appDataDir Antigravity App data root directory
+ * @param {String} options.threadId   Conversation UUID of the bound root thread
+ * @returns {{dev: Number, ino: Number, size: Number}|null}
+ */
+export function readAntigravityTranscriptProgress({appDataDir, threadId}) {
+    let fd;
+    try {
+        const transcriptPath = transcriptFor(appDataDir, threadId);
+        fd = fs.openSync(transcriptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const stat = fs.fstatSync(fd);
+        return stat.isFile() ? {dev: stat.dev, ino: stat.ino, size: stat.size} : null
+    } catch {
+        return null
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd)
+    }
+}
+
 function transcriptFor(appDataDir, threadId) {
     if (!path.isAbsolute(appDataDir || '') || !UUID.test(threadId || '')) throw new TypeError('Absolute App data directory and UUID required');
     const root   = fs.realpathSync(appDataDir);

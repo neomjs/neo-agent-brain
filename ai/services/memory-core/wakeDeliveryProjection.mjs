@@ -368,29 +368,32 @@ function emptyStageEntry(stage, overrides = {}) {
         hostToRecipientMs : null,
         policyWaitMs      : null,
         chatBoundaryWaitMs: null,
+        holdAgeMs         : null,
         receiptWaitMs     : null,
         totalLatencyMs    : null,
         timestamps        : {
-            sourceSentAt       : null,
-            firstQueuedAt      : null,
-            emittedAt          : null,
-            acceptedAt         : null,
-            hostStagedAt       : null,
-            nativeInitiatedAt  : null,
-            recipientObservedAt: null
+            sourceSentAt          : null,
+            firstQueuedAt         : null,
+            emittedAt             : null,
+            acceptedAt            : null,
+            hostStagedAt          : null,
+            holdStartedAt         : null,
+            lastTranscriptGrowthAt: null,
+            nativeInitiatedAt     : null,
+            recipientObservedAt   : null
         },
         ...overrides
     }
 }
 
 /**
- * @summary Projects one receiver record into explicit wait-stage and separate event-to-host / host-to-recipient latencies.
+ * @summary Projects one receiver record into explicit wait-stage, hold age, and separate event-to-host / host-to-recipient latencies.
  * @param {Object} record Receiver record snapshot.
  * @param {Object} [options]
  * @param {Number|String|Date|null} [options.now=null] Optional observation clock for open wait durations.
  * @param {String|null}             [options.messageId=null] Target message id for per-message `messageSentAt` resolution.
  * @param {String|Number|Date|null} [options.fallbackSentAt=null] Fallback timestamp from policy queue snapshot.
- * @returns {Object} Stage verdict distinguishing spool contention, chat-boundary holds, unproven host sends, and recipient-settled delivery.
+ * @returns {Object} Stage verdict distinguishing spool contention, chat-boundary holds (with `holdStartedAt` / `holdAgeMs`), unproven host sends, and recipient-settled delivery.
  */
 export function projectWakeRecordStage(record, {now = null, messageId = null, fallbackSentAt = null} = {}) {
     if (!record || typeof record !== 'object') {
@@ -450,14 +453,17 @@ export function projectWakeRecordStage(record, {now = null, messageId = null, fa
         recipientObservedAt = settled
             ? toIsoOrNull(record.recipientObservedAt || record.dispatchFinishedAt || record.updatedAt)
             : null,
-        dependency          = settled
+        holdStartedAt          = stage === 'waiting-for-chat-boundary' ? toIsoOrNull(record.holdStartedAt) : null,
+        lastTranscriptGrowthAt = holdStartedAt ? toIsoOrNull(record.lastTranscriptGrowthAt) : null,
+        holdAgeMs              = holdStartedAt && now !== null ? diffMs(holdStartedAt, now) : null,
+        dependency             = settled
             ? null
             : (record.namedDependency || (deferReason === ACTIVE_TURN_UNAVAILABLE_REASON ? ACTIVE_TURN_DEPENDENCY_ID : null)),
-        reason              = settled ? null : (outcomeReason || deferReason || null),
-        eventToHostMs       = diffMs(sourceSentAt, acceptedAt),
-        hostToRecipientMs   = settled ? diffMs(acceptedAt, recipientObservedAt) : null,
-        totalLatencyMs      = settled ? diffMs(sourceSentAt, recipientObservedAt) : null,
-        policyWaitMs        = diffMs(firstQueuedAt || sourceSentAt, emittedAt || acceptedAt);
+        reason                 = settled ? null : (outcomeReason || deferReason || null),
+        eventToHostMs          = diffMs(sourceSentAt, acceptedAt),
+        hostToRecipientMs      = settled ? diffMs(acceptedAt, recipientObservedAt) : null,
+        totalLatencyMs         = settled ? diffMs(sourceSentAt, recipientObservedAt) : null,
+        policyWaitMs           = diffMs(firstQueuedAt || sourceSentAt, emittedAt || acceptedAt);
 
     let chatBoundaryWaitMs = null;
     if (nativeInitiatedAt && acceptedAt) {
@@ -485,6 +491,7 @@ export function projectWakeRecordStage(record, {now = null, messageId = null, fa
         hostToRecipientMs,
         policyWaitMs,
         chatBoundaryWaitMs,
+        holdAgeMs,
         receiptWaitMs,
         totalLatencyMs,
         timestamps: {
@@ -493,6 +500,8 @@ export function projectWakeRecordStage(record, {now = null, messageId = null, fa
             emittedAt,
             acceptedAt,
             hostStagedAt,
+            holdStartedAt,
+            lastTranscriptGrowthAt,
             nativeInitiatedAt,
             recipientObservedAt
         }
@@ -590,11 +599,13 @@ export function projectWakeDeliveryStages(records, {messageIds = [], policyQueue
                 timestamps  : {
                     sourceSentAt,
                     firstQueuedAt,
-                    emittedAt          : null,
-                    acceptedAt         : null,
-                    hostStagedAt       : null,
-                    nativeInitiatedAt  : null,
-                    recipientObservedAt: null
+                    emittedAt             : null,
+                    acceptedAt            : null,
+                    hostStagedAt          : null,
+                    holdStartedAt         : null,
+                    lastTranscriptGrowthAt: null,
+                    nativeInitiatedAt     : null,
+                    recipientObservedAt   : null
                 }
             });
         } else {

@@ -4,6 +4,7 @@ import os                         from 'node:os';
 import path                       from 'node:path';
 import {expect, test}             from '@playwright/test';
 import {createWakeReceiver}       from '../../../../../../ai/daemons/wake/receiver.mjs';
+import {enrollNativeWake}         from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
 import {WakeReceiverState}        from '../../../../../../ai/daemons/wake/receiverState.mjs';
 import {SPOOL_CONTENTION_REASONS} from '../../../../../../ai/daemons/wake/primaryWakeSpool.mjs';
 import {
@@ -804,5 +805,113 @@ test.describe('projectWakeRecordStage & projectWakeDeliveryStages — stage and 
             outcomeReason : 'corrupt-record'
         }], {messageIds: ['MESSAGE:u1']});
         expect(stages['MESSAGE:u1'].stage).toBe('unknown');
+    });
+
+    test('AC-4(g) — receiver native stalled-hold transition persists holdStartedAt and projectWakeRecordStage surfaces holdAgeMs (#1854)', async () => {
+        const dir        = await fs.mkdtemp(path.join(os.tmpdir(), 'wake-stalled-hold-'));
+        const signingKey = crypto.randomBytes(32).toString('hex');
+        const t0         = Date.parse('2026-11-25T10:00:00.000Z');
+        let receiver;
+
+        try {
+            const state = new WakeReceiverState({stateDir: path.join(dir, 'state')});
+            await state.init();
+            const manifestPath = path.join(dir, 'manifest.json');
+            const subId        = 'WAKE_SUB:stalled';
+            const route        = {
+                agentIdentity        : '@stalled-seat',
+                signingKey,
+                admits               : 'wake/digest',
+                harnessTargetMetadata: {adapter: 'primary-session'},
+                adapterConfig        : {primarySession: {agentId: 'stalled-seat', family: 'antigravity'}}
+            };
+            const manifest = {schemaVersion: 1, routes: {[subId]: route}};
+            await fs.writeFile(manifestPath, JSON.stringify(manifest), {mode: 0o600});
+            await enrollNativeWake({manifestPath, stateDir: state.stateDir, agentId: 'stalled-seat', family: 'antigravity'});
+
+            const accepted = (await state.accept({
+                subscriptionId: subId,
+                eventId       : 'evt-stalled-1',
+                sourceEventIds: ['MESSAGE:stalled-1'],
+                acceptedAt    : new Date(t0).toISOString(),
+                envelope      : {
+                    schemaVersion : '1.0',
+                    eventType     : 'wake/digest',
+                    eventId       : 'evt-stalled-1',
+                    agentIdentity : '@stalled-seat',
+                    subscriptionId: subId,
+                    emittedAt     : new Date(t0).toISOString(),
+                    payload       : {
+                        totalEvents   : 1,
+                        sourceEventIds: ['MESSAGE:stalled-1'],
+                        urgent        : true,
+                        earliestSentAt: new Date(t0 - 500).toISOString(),
+                        breakdown     : {sent_to_me: {count: 1, highestPriority: 'high', latest: {priority: 'high', sentAt: new Date(t0 - 500).toISOString()}}}
+                    }
+                },
+                route
+            })).record;
+
+            let delivered = false;
+            receiver = createWakeReceiver({
+                manifest,
+                state,
+                manifestPath,
+                clock          : () => t0 + 20 * 60 * 1000,
+                dispatchPrimary: async () => delivered
+                    ? {
+                        status   : 'delivered',
+                        recipient: {
+                            seat      : '@stalled-seat',
+                            generation: '601:birth',
+                            threadId  : crypto.randomUUID(),
+                            recordKey : accepted.recordKey,
+                            nonce     : crypto.randomUUID()
+                        }
+                    }
+                    : {
+                        status                : 'pending',
+                        reason                : 'native-recipient:stalled-active-turn',
+                        dependency            : '#1741',
+                        holdStartedAt         : '2026-11-25T10:01:00.000Z',
+                        lastTranscriptGrowthAt: '2026-11-25T10:04:00.000Z'
+                    },
+                logger: {log(){}, warn(){}, error(){}}
+            });
+
+            await receiver.drain();
+            const heldRecord = await state.read(accepted.recordKey);
+            const heldStage  = projectWakeRecordStage(heldRecord, {now: '2026-11-25T10:21:00.000Z'});
+            expect(heldStage).toMatchObject({
+                stage     : 'waiting-for-chat-boundary',
+                settled   : false,
+                urgent    : true,
+                reason    : 'native-recipient:stalled-active-turn',
+                dependency: '#1741',
+                holdAgeMs : 20 * 60 * 1000,
+                timestamps: {
+                    holdStartedAt         : '2026-11-25T10:01:00.000Z',
+                    lastTranscriptGrowthAt: '2026-11-25T10:04:00.000Z'
+                }
+            });
+
+            delivered = true;
+            await receiver.drain();
+            const settledRecord = await state.read(accepted.recordKey);
+            expect(settledRecord.holdStartedAt).toBeNull();
+            expect(settledRecord.lastTranscriptGrowthAt).toBeNull();
+            const settledStage = projectWakeRecordStage(settledRecord, {now: '2026-11-25T10:22:00.000Z'});
+            expect(settledStage).toMatchObject({
+                stage     : 'delivered',
+                settled   : true,
+                holdAgeMs : null,
+                timestamps: {
+                    holdStartedAt         : null,
+                    lastTranscriptGrowthAt: null
+                }
+            });
+        } finally {
+            await fs.rm(dir, {recursive: true, force: true});
+        }
     });
 });

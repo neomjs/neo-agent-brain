@@ -5,9 +5,18 @@ import path                                                                     
 import {randomUUID}                                                                                                                   from 'node:crypto';
 import {WakeReceiverState}                                                                                                            from '../../../../../../ai/daemons/wake/receiverState.mjs';
 import {dispatchFleetPrimarySessionWake, drainFleetPrimaryWakeRecord, enrollNativeWake, readNativeWakeOptIn, consumeNativeWakePrompt} from '../../../../../../ai/daemons/wake/fleetPrimarySessionWake.mjs';
-import {stagePrimaryWake}                                                                                                             from '../../../../../../ai/daemons/wake/primaryWakeSpool.mjs';
-import {runPrimarySessionWakeCli}                                                                                                     from '../../../../../../ai/scripts/fleet/primarySessionWake.mjs';
-import {withOutboxLock}                                                                                                               from '../../../../../../ai/daemons/wake/outboxLock.mjs';
+import {
+    ACTIVE_TURN_UNAVAILABLE_REASON,
+    NATIVE_DIAGNOSTIC_REASONS,
+    primaryWakeSpoolPath,
+    stagePrimaryWake,
+    STALLED_ACTIVE_TURN_MS,
+    STALLED_ACTIVE_TURN_REASON,
+    urgentPrimaryWakeSpoolPath
+} from '../../../../../../ai/daemons/wake/primaryWakeSpool.mjs';
+import {readAntigravityTranscriptProgress} from '../../../../../../ai/daemons/wake/antigravitySessionWake.mjs';
+import {runPrimarySessionWakeCli}          from '../../../../../../ai/scripts/fleet/primarySessionWake.mjs';
+import {withOutboxLock}                    from '../../../../../../ai/daemons/wake/outboxLock.mjs';
 
 let tempDir, state, manifestPath, stateDir;
 test.beforeEach(async () => {
@@ -589,7 +598,7 @@ test('admitted prior-generation or killed-thread Antigravity wakes settle as ack
             : (ownerTerminated ? {outcome: 'turn-unacknowledged'} : {outcome: 'unknown'})
     };
     const config = {agentId: 'fixture', family, instanceHome: home, appBundle, projectId: 'p', projectRoot};
-    const route  = {agentIdentity: seat, harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
+    const route  = {agentIdentity: seat, admits: 'wake/digest', harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
     await enrollNativeWake({manifestPath, stateDir, agentId: config.agentId, family});
     await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes: {[sub]: route}}));
     const options = () => ({
@@ -645,4 +654,261 @@ test('admitted prior-generation or killed-thread Antigravity wakes settle as ack
     expect(redeem4.admitted).toBe(true);
     killedThreads.add(thread4);
     expect(await dispatchFleetPrimarySessionWake(w4, options())).toMatchObject({status: 'delivered', acknowledged: false});
+});
+
+test('busy Antigravity roots persist holdStartedAt across consecutive holds, suppress stalled classification while transcript.jsonl grows, emit stalled-active-turn on zero growth, and clear on IDLE delivery (#1854)', async () => {
+    expect(NATIVE_DIAGNOSTIC_REASONS).toContain(STALLED_ACTIVE_TURN_REASON);
+
+    const seat       = '@fixture', family = 'antigravity', sub = 'WAKE_SUB:agy-stalled-hold';
+    const home       = path.join(tempDir, 'home'), projectRoot = tempDir, appBundle = path.join(tempDir, 'gen', 'Antigravity.app');
+    const appDataDir = path.join(tempDir, 'agy'), threadId = randomUUID(), generation = '601:birth';
+    const logsDir    = path.join(appDataDir, 'brain', threadId, '.system_generated', 'logs');
+    const transcript = path.join(logsDir, 'transcript.jsonl');
+    await fs.mkdir(logsDir, {recursive: true});
+    await fs.writeFile(transcript, '{"step":1}\n');
+
+    let   rootStatus = 'CASCADE_RUN_STATUS_RUNNING', clockMs = Date.parse('2026-11-25T10:00:00.000Z');
+    const sent       = [], echoed = new Set();
+    const sidecar    = {appPid: 601, appStart: 'birth', appBundle, instanceHome: home, environment: {ANTIGRAVITY_AGENTAPI_EXE: '/bin/language_server'}};
+    const transport  = {
+        latestAntigravityWakeTarget      : async () => ({root: true, threadId, startSequence: 1, status: rootStatus, workspaceRoot: projectRoot}),
+        readAntigravityWakeThreadState   : async () => ({status: rootStatus, terminated: false}),
+        verifyAntigravityWakeAdmission   : async () => ({verified: true}),
+        readAntigravityTranscriptProgress: ({appDataDir: rootDir, threadId: id}) => readAntigravityTranscriptProgress({appDataDir: rootDir, threadId: id}),
+        captureAntigravityWakeCursor     : () => ({dev: 1, ino: 1, offset: 0, tailHash: 'a'.repeat(64)}),
+        sendAntigravitySessionWake       : async req => { sent.push(req); return {outcome: 'unknown', reason: 'agentapi-dispatch-exited-zero'} },
+        readAntigravityWakeReceipt       : ({text}) => echoed.has(text) ? {outcome: 'observed', reason: 'private-model-ack'} : {outcome: 'unknown'}
+    };
+    const config = {agentId: 'fixture', family, instanceHome: home, appBundle, projectId: 'p', projectRoot};
+    const route  = {agentIdentity: seat, admits: 'wake/digest', harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
+    await enrollNativeWake({manifestPath, stateDir, agentId: config.agentId, family});
+    await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes: {[sub]: route}}));
+
+    const accept = async (eventId, urgent) => (await state.accept({
+        subscriptionId: sub, eventId, route, metadata: {urgent},
+        envelope      : {eventType: 'wake/digest', agentIdentity: seat, subscriptionId: sub, payload: {totalEvents: 1, urgent,
+            breakdown: {sent_to_me: {count: 1, highestPriority: urgent ? 'high' : 'normal', latest: {priority: urgent ? 'high' : 'normal', sentAt: new Date(clockMs).toISOString(), subject: eventId}}}}}
+    })).record;
+
+    const normalRecord = await accept('normal-held', false);
+    const normalPath   = primaryWakeSpoolPath(stateDir, seat);
+    const holdPath     = path.join(stateDir, 'primary-sessions', 'fixture.json.hold.json');
+    const runDrain     = () => drainFleetPrimaryWakeRecord({
+        state, stateDir, manifestPath, subscriptionId: sub, route, sidecar,
+        now                   : () => clockMs,
+        stalledHoldThresholdMs: STALLED_ACTIVE_TURN_MS,
+        dispatch              : (rec, opts) => dispatchFleetPrimarySessionWake(rec, {
+            ...opts,
+            appDataDir,
+            antigravityTransport: transport,
+            inspectResident     : async () => ({generation, pid: 601, startedAt: 'birth', workspaceRoot: projectRoot})
+        })
+    });
+
+    // 1. Initial hold at t0 records holdStartedAt on .status and projects through stagePrimaryWake.
+    expect(await stagePrimaryWake(normalRecord, {state, stateDir})).toEqual({status: 'pending', reason: 'awaiting the native recipient'});
+    await runDrain();
+    const t0Iso   = '2026-11-25T10:00:00.000Z';
+    const status0 = JSON.parse(await fs.readFile(normalPath + '.status', 'utf8'));
+    expect(status0).toMatchObject({
+        recordKey             : normalRecord.recordKey,
+        subscriptionId        : sub,
+        reason                : 'native-recipient:awaiting-readiness',
+        holdStartedAt         : t0Iso,
+        lastTranscriptGrowthAt: t0Iso
+    });
+    expect(await stagePrimaryWake(normalRecord, {state, stateDir})).toEqual({
+        status                : 'pending',
+        reason                : 'native-recipient:awaiting-readiness',
+        holdStartedAt         : t0Iso,
+        lastTranscriptGrowthAt: t0Iso
+    });
+
+    // 2. Poll at t0 + 10m (zero growth, below 15m threshold): holdStartedAt stays t0, not stalled yet.
+    clockMs += 10 * 60 * 1000;
+    await runDrain();
+    expect(JSON.parse(await fs.readFile(normalPath + '.status', 'utf8'))).toMatchObject({
+        reason                : 'native-recipient:awaiting-readiness',
+        holdStartedAt         : t0Iso,
+        lastTranscriptGrowthAt: t0Iso
+    });
+
+    // 3. Active long-running turn: transcript grows at t0 + 12m and t0 + 22m (elapsed 22m > 15m, but actively growing -> NOT stalled).
+    clockMs = Date.parse('2026-11-25T10:12:00.000Z');
+    await fs.appendFile(transcript, '{"step":2,"tool":"run_command"}\n');
+    await runDrain();
+    clockMs = Date.parse('2026-11-25T10:22:00.000Z');
+    await fs.appendFile(transcript, '{"step":3,"tool":"read_file"}\n');
+    await runDrain();
+    const activeStatus = JSON.parse(await fs.readFile(normalPath + '.status', 'utf8'));
+    expect(activeStatus).toMatchObject({
+        reason                : 'native-recipient:awaiting-readiness',
+        holdStartedAt         : t0Iso,
+        lastTranscriptGrowthAt: '2026-11-25T10:22:00.000Z'
+    });
+
+    // 4. Transcript stops growing for >= 15m (t0 + 38m, 16m since last growth at 10:22Z) -> emits STALLED_ACTIVE_TURN_REASON while preserving t0 holdStartedAt.
+    clockMs = Date.parse('2026-11-25T10:38:00.000Z');
+    await runDrain();
+    expect(await stagePrimaryWake(normalRecord, {state, stateDir})).toEqual({
+        status                : 'pending',
+        reason                : STALLED_ACTIVE_TURN_REASON,
+        holdStartedAt         : t0Iso,
+        lastTranscriptGrowthAt: '2026-11-25T10:22:00.000Z'
+    });
+
+    // 5. Urgent wake arriving during the same stalled hold keeps ACTIVE_TURN_ADAPTER_DEPENDENCY alongside STALLED_ACTIVE_TURN_REASON and original holdStartedAt.
+    const urgentRecord = await accept('urgent-during-stall', true);
+    const urgentPath   = urgentPrimaryWakeSpoolPath(stateDir, seat);
+    await stagePrimaryWake(urgentRecord, {state, stateDir});
+    await runDrain();
+    expect(await stagePrimaryWake(urgentRecord, {state, stateDir})).toEqual({
+        status                : 'pending',
+        reason                : STALLED_ACTIVE_TURN_REASON,
+        dependency            : '#1741',
+        holdStartedAt         : t0Iso,
+        lastTranscriptGrowthAt: '2026-11-25T10:22:00.000Z'
+    });
+
+    // 6. Recovery to IDLE clears .hold.json on dispatch and removes .status upon delivery, starting fresh on any later hold.
+    rootStatus = 'CASCADE_RUN_STATUS_IDLE';
+    clockMs    = Date.parse('2026-11-25T10:40:00.000Z');
+    await runDrain();
+    await expect(fs.stat(holdPath)).rejects.toThrow();
+    expect(sent).toHaveLength(1);
+    const urgentNonce = sent[0].message.match(/^\[NEO_WAKE_V1:([^\]]+)\]/)[1];
+    expect((await consumeNativeWakePrompt({
+        state, stateDir, manifestPath, appDataDir, antigravityTransport: transport,
+        inspectResident: async () => ({generation, pid: 601, startedAt: 'birth', workspaceRoot: projectRoot}),
+        agentId        : config.agentId, family, threadId, nonce: urgentNonce
+    })).admitted).toBe(true);
+    echoed.add(sent[0].message);
+    await runDrain();
+    await expect(fs.stat(urgentPath + '.status')).rejects.toThrow();
+    expect((await stagePrimaryWake(urgentRecord, {state, stateDir})).status).toBe('delivered');
+});
+
+test('busy-to-idle with pending admission clears holdStartedAt, failed .hold.json cleanup never blocks admission, and unreadable transcript samples preserve prior growth control without redundant fsync (#1854)', async () => {
+    const seat       = '@fixture', family = 'antigravity', sub = 'WAKE_SUB:agy-hold-edges';
+    const home       = path.join(tempDir, 'home-edges'), projectRoot = tempDir, appBundle = path.join(tempDir, 'gen', 'Antigravity.app');
+    const appDataDir = path.join(tempDir, 'agy-edges'), threadId = randomUUID(), generation = '602:birth';
+    const logsDir    = path.join(appDataDir, 'brain', threadId, '.system_generated', 'logs');
+    const transcript = path.join(logsDir, 'transcript.jsonl');
+    await fs.mkdir(logsDir, {recursive: true});
+    await fs.writeFile(transcript, 'x'.repeat(1000));
+
+    let   rootStatus         = 'CASCADE_RUN_STATUS_IDLE';
+    let   admissionVerified  = false;
+    let   residentLive       = false;
+    let   transcriptReadable = true;
+    let   clockMs            = Date.parse('2026-11-26T08:00:00.000Z');
+    const sent               = [];
+    const sidecar            = {appPid: 602, appStart: 'birth', appBundle, instanceHome: home, environment: {ANTIGRAVITY_AGENTAPI_EXE: '/bin/language_server'}};
+    const transport          = {
+        latestAntigravityWakeTarget      : async () => ({root: true, threadId, startSequence: 1, status: rootStatus, workspaceRoot: projectRoot}),
+        readAntigravityWakeThreadState   : async () => ({status: rootStatus, terminated: false}),
+        verifyAntigravityWakeAdmission   : async () => ({verified: admissionVerified}),
+        readAntigravityTranscriptProgress: ({appDataDir: rootDir, threadId: id}) =>
+            transcriptReadable ? readAntigravityTranscriptProgress({appDataDir: rootDir, threadId: id}) : null,
+        captureAntigravityWakeCursor: () => ({dev: 1, ino: 1, offset: 0, tailHash: 'a'.repeat(64)}),
+        sendAntigravitySessionWake  : async req => { sent.push(req); return {outcome: 'unknown', reason: 'agentapi-dispatch-exited-zero'} },
+        readAntigravityWakeReceipt  : () => ({outcome: 'unknown'})
+    };
+    const config = {agentId: 'fixture', family, instanceHome: home, appBundle, projectId: 'p', projectRoot};
+    const route  = {agentIdentity: seat, admits: 'wake/digest', harnessTargetMetadata: {adapter: 'primary-session'}, adapterConfig: {primarySession: config}};
+    await enrollNativeWake({manifestPath, stateDir, agentId: config.agentId, family});
+    await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes: {[sub]: route}}));
+
+    const accept = async (eventId, urgent) => (await state.accept({
+        subscriptionId: sub, eventId, route, metadata: {urgent},
+        envelope      : {eventType: 'wake/digest', agentIdentity: seat, subscriptionId: sub, payload: {totalEvents: 1, urgent,
+            breakdown: {sent_to_me: {count: 1, highestPriority: urgent ? 'high' : 'normal', latest: {priority: urgent ? 'high' : 'normal', sentAt: new Date(clockMs).toISOString(), subject: eventId}}}}}
+    })).record;
+
+    const normalRecord = await accept('edge-normal', false);
+    const normalPath   = primaryWakeSpoolPath(stateDir, seat);
+    const holdPath     = path.join(stateDir, 'primary-sessions', 'fixture.json.hold.json');
+    const runDrain     = () => drainFleetPrimaryWakeRecord({
+        state, stateDir, manifestPath, subscriptionId: sub, route, sidecar,
+        now                   : () => clockMs,
+        stalledHoldThresholdMs: STALLED_ACTIVE_TURN_MS,
+        dispatch              : (rec, opts) => dispatchFleetPrimarySessionWake(rec, {
+            ...opts,
+            appDataDir,
+            antigravityTransport: transport,
+            inspectResident     : async () => residentLive
+                ? {generation, pid: 602, startedAt: 'birth', workspaceRoot: projectRoot}
+                : null
+        })
+    });
+
+    // 1. Generic pending (unproven resident) never fabricates holdStartedAt on .status.
+    await stagePrimaryWake(normalRecord, {state, stateDir});
+    await runDrain();
+    const genericStatus = JSON.parse(await fs.readFile(normalPath + '.status', 'utf8'));
+    expect(genericStatus.holdStartedAt).toBeUndefined();
+    expect(genericStatus.lastTranscriptGrowthAt).toBeUndefined();
+
+    // 2. Busy root at 08:05Z records holdStartedAt + 1000-byte transcript sample; unchanged sweep at 08:06Z does not rewrite .hold.json.
+    residentLive = true;
+    rootStatus   = 'CASCADE_RUN_STATUS_RUNNING';
+    clockMs      = Date.parse('2026-11-26T08:05:00.000Z');
+    await runDrain();
+    const tBusy0    = '2026-11-26T08:05:00.000Z';
+    const holdStat0 = await fs.stat(holdPath);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    clockMs = Date.parse('2026-11-26T08:06:00.000Z');
+    await runDrain();
+    const holdStat1 = await fs.stat(holdPath);
+    expect(holdStat1.mtimeMs).toBe(holdStat0.mtimeMs);
+
+    // 3. Unreadable sample at +14m (08:19Z) followed by identical 1000-byte sample at +16m (08:21Z) preserves tBusy0 and classifies as stalled.
+    transcriptReadable = false;
+    clockMs            = Date.parse('2026-11-26T08:19:00.000Z');
+    await runDrain();
+    const holdDuringUnread = JSON.parse(await fs.readFile(holdPath, 'utf8'));
+    expect(holdDuringUnread.transcriptSize).toBe(1000);
+    expect(holdDuringUnread.lastTranscriptGrowthAt).toBe(tBusy0);
+
+    transcriptReadable = true;
+    clockMs            = Date.parse('2026-11-26T08:21:00.000Z');
+    await runDrain();
+    expect(await stagePrimaryWake(normalRecord, {state, stateDir})).toEqual({
+        status                : 'pending',
+        reason                : STALLED_ACTIVE_TURN_REASON,
+        holdStartedAt         : tBusy0,
+        lastTranscriptGrowthAt: tBusy0
+    });
+
+    // 4. Busy-to-IDLE while admission is still pending (verified: false) clears .hold.json AND drops holdStartedAt/lastTranscriptGrowthAt from .status.
+    rootStatus        = 'CASCADE_RUN_STATUS_IDLE';
+    admissionVerified = false;
+    clockMs           = Date.parse('2026-11-26T09:05:00.000Z');
+    await runDrain();
+    await expect(fs.stat(holdPath)).rejects.toThrow();
+    const idlePendingStatus = JSON.parse(await fs.readFile(normalPath + '.status', 'utf8'));
+    expect(idlePendingStatus.holdStartedAt).toBeUndefined();
+    expect(idlePendingStatus.lastTranscriptGrowthAt).toBeUndefined();
+    expect(await stagePrimaryWake(normalRecord, {state, stateDir})).toEqual({
+        status: 'pending',
+        reason: 'native-recipient:awaiting-readiness'
+    });
+
+    // 5. Failed .hold.json cleanup (non-empty directory causing fs.rm({force: true}) EISDIR rejection) never blocks idle wake admission.
+    await fs.mkdir(holdPath, {recursive: true});
+    await fs.writeFile(path.join(holdPath, 'unremovable'), '1');
+    admissionVerified = true;
+    clockMs           = Date.parse('2026-11-26T09:06:00.000Z');
+    await runDrain();
+    expect(sent).toHaveLength(1);
+    await fs.rm(holdPath, {recursive: true, force: true});
+
+    // Urgent idle branch control under the same cleanup failure.
+    const urgentRecord = await accept('edge-urgent', true);
+    await stagePrimaryWake(urgentRecord, {state, stateDir});
+    await fs.mkdir(holdPath, {recursive: true});
+    await fs.writeFile(path.join(holdPath, 'unremovable'), '1');
+    await runDrain();
+    expect(sent).toHaveLength(2);
+    await fs.rm(holdPath, {recursive: true, force: true});
 });

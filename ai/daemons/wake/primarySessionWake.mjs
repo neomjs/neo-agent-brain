@@ -201,7 +201,9 @@ export async function deliverPrimarySessionWake({statePath, seat, generation, fa
                     return {
                         status: 'pending',
                         reason: target.reason,
-                        ...(target.dependency ? {dependency: target.dependency} : {})
+                        ...(target.dependency ? {dependency: target.dependency} : {}),
+                        ...(typeof target.holdStartedAt === 'string' ? {holdStartedAt: target.holdStartedAt} : {}),
+                        ...(typeof target.lastTranscriptGrowthAt === 'string' ? {lastTranscriptGrowthAt: target.lastTranscriptGrowthAt} : {})
                     }
                 }
                 if (!matchesProof(binding, target)) return {status: 'pending', reason: 'target not proven'};

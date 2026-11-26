@@ -42,6 +42,8 @@ import {
     NATIVE_DISPATCH_REASONS,
     primaryWakeSpoolPath,
     ROOT_START_CHANGED,
+    STALLED_ACTIVE_TURN_MS,
+    STALLED_ACTIVE_TURN_REASON,
     urgentPrimaryWakeSpoolPath
 } from './primaryWakeSpool.mjs';
 import {TERMINAL_STATES, WakeReceiverState}                      from './receiverState.mjs';
@@ -232,14 +234,103 @@ export async function consumeNativeWakePrompt({manifestPath,stateDir,agentId,fam
     })
 }
 
+function resolveClockMs(now) {
+    if (typeof now === 'function') {
+        const value = now();
+        return typeof value === 'number' && Number.isFinite(value) ? value : Date.now()
+    }
+    if (typeof now === 'number' && Number.isFinite(now)) return now;
+    if (typeof now === 'string' && now.length > 0) {
+        const parsed = Date.parse(now);
+        if (Number.isFinite(parsed)) return parsed
+    }
+    return Date.now()
+}
+
 /**
- * @summary Reconciles one native record. Antigravity's App-owned sidecar takes the same record and lock.
+ * @summary Tracks continuous non-idle Antigravity root hold start and `transcript.jsonl` byte growth.
+ * Preserves `holdStartedAt` and the last valid transcript `{dev, ino, size}` sample across consecutive
+ * non-idle sweeps (including transient unreadable samples), skips redundant `.hold.json` writes when
+ * unchanged, and sets `stalled: true` only when zero transcript growth reaches `stalledHoldThresholdMs`.
+ */
+async function observeAntigravityBusyHold({holdPath, generation, threadId, appDataDir, antigravityTransport, nowMs, stalledHoldThresholdMs}) {
+    const nowIso   = new Date(nowMs).toISOString();
+    let   progress = null;
+    if (typeof antigravityTransport.readAntigravityTranscriptProgress === 'function') {
+        try {
+            progress = await antigravityTransport.readAntigravityTranscriptProgress({appDataDir, threadId})
+        } catch {
+            progress = null
+        }
+    }
+
+    const currentSize = Number.isSafeInteger(progress?.size) && progress.size >= 0 ? progress.size : null,
+          currentIno  = Number.isSafeInteger(progress?.ino) ? progress.ino : null,
+          currentDev  = Number.isSafeInteger(progress?.dev) ? progress.dev : null,
+          previous    = await readPrivate(holdPath),
+          sameHold    = previous?.generation === generation &&
+              previous?.threadId === threadId &&
+              typeof previous?.holdStartedAt === 'string' &&
+              Number.isFinite(Date.parse(previous.holdStartedAt)),
+          holdStartedAt = sameHold ? previous.holdStartedAt : nowIso,
+          prevSize      = sameHold && Number.isSafeInteger(previous.transcriptSize) && previous.transcriptSize >= 0 ? previous.transcriptSize : null,
+          prevIno       = sameHold && Number.isSafeInteger(previous.transcriptIno) ? previous.transcriptIno : null,
+          prevDev       = sameHold && Number.isSafeInteger(previous.transcriptDev) ? previous.transcriptDev : null;
+
+    let lastGrowthAt = sameHold && typeof previous.lastTranscriptGrowthAt === 'string' &&
+        Number.isFinite(Date.parse(previous.lastTranscriptGrowthAt))
+        ? previous.lastTranscriptGrowthAt
+        : holdStartedAt;
+
+    if (sameHold && currentSize !== null) {
+        const grew = prevSize === null
+            ? currentSize > 0
+            : (currentDev !== prevDev || currentIno !== prevIno || currentSize > prevSize);
+        if (grew) {
+            lastGrowthAt = nowIso
+        }
+    }
+
+    const nextDev   = currentSize !== null ? currentDev  : prevDev,
+          nextIno   = currentSize !== null ? currentIno  : prevIno,
+          nextSize  = currentSize !== null ? currentSize : prevSize,
+          unchanged = sameHold &&
+              previous.holdStartedAt === holdStartedAt &&
+              previous.lastTranscriptGrowthAt === lastGrowthAt &&
+              previous.transcriptDev === nextDev &&
+              previous.transcriptIno === nextIno &&
+              previous.transcriptSize === nextSize;
+
+    if (!unchanged) {
+        await writeFileAtomic(holdPath, JSON.stringify({
+            generation,
+            threadId,
+            holdStartedAt,
+            lastTranscriptGrowthAt: lastGrowthAt,
+            transcriptDev         : nextDev,
+            transcriptIno         : nextIno,
+            transcriptSize        : nextSize
+        }), {mode: 0o600, fsync: true}).catch(() => {})
+    }
+
+    const zeroGrowthMs = Math.max(0, nowMs - Date.parse(lastGrowthAt));
+    return {
+        holdStartedAt,
+        lastTranscriptGrowthAt: lastGrowthAt,
+        stalled               : Number.isFinite(stalledHoldThresholdMs) && stalledHoldThresholdMs >= 0 && zeroGrowthMs >= stalledHoldThresholdMs
+    }
+}
+
+/**
+ * @summary Reconciles one native record, tracking continuous non-idle Antigravity root hold age and stalled zero-growth state.
+ * Antigravity's App-owned sidecar takes the same record and lock.
  * @param {Object} record Signed receiver record with its local manifest projection.
- * @param {Object} options Receiver state plus optional App-sidecar process proof.
+ * @param {Object} options Receiver state plus optional App-sidecar process proof and stalled-hold clock/threshold overrides.
  * @returns {Promise<Object>} Delivered only on recipient evidence. Uncertain sends stay pending for reconciliation.
  */
 export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, manifestPath, sidecar, currentRoute, inspectResident = observePrimaryWakeResident,
-    verifyCodexRoute, commitNormalAttempt, commitUrgentAttempt, codexTransport = codex, antigravityTransport = antigravity, appDataDir = path.join(os.homedir(), '.gemini', 'antigravity')} = {}) {
+    verifyCodexRoute, commitNormalAttempt, commitUrgentAttempt, codexTransport = codex, antigravityTransport = antigravity,
+    appDataDir = path.join(os.homedir(), '.gemini', 'antigravity'), now = null, stalledHoldThresholdMs = STALLED_ACTIVE_TURN_MS} = {}) {
     const route = record?.route, config = route?.adapterConfig?.primarySession, seat = route?.agentIdentity;
     if (!config || !bareFamily.has(config.family) || !isKey(record.recordKey)) return pending('invalid native route');
     const {family, instanceHome, appBundle, projectId} = config;
@@ -310,10 +401,14 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
     const urgent        = isUrgentWakeRecord(record) || prior.urgentInflight?.recordKey === record.recordKey;
     const cursorPathFor = slotUrgent => statePath + (slotUrgent ? '.urgent.cursor.json' : '.cursor.json');
     const claimPathFor  = slotUrgent => statePath + (slotUrgent ? '.urgent.claim.json' : '.claim.json');
+    const holdPath      = statePath + '.hold.json';
+    const clearBusyHold = () => fs.rm(holdPath, {force: true}).catch(() => {});
     let   denialReason  = null,
-          result         = await deliverPrimarySessionWake({
+          activeHoldObservation = null,
+          result                = await deliverPrimarySessionWake({
         statePath,seat,generation:deliveryGeneration,family,recordKey:record.recordKey,urgent,isRecordedDelivered:recorded,commitNormalAttempt,commitUrgentAttempt,
         readTarget: async (binding, {urgent: slotUrgent} = {}) => {
+            activeHoldObservation = null;
             if (binding.generation !== generation) return null;
             const root = await select();
             if (root?.root === false) return {root:false, reason:`native-recipient:${root.reason}`};
@@ -340,22 +435,77 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
                     : null
             }
             if (!slotUrgent) {
-                if (root.status !== 'CASCADE_RUN_STATUS_IDLE') return null;
+                if (root.status !== 'CASCADE_RUN_STATUS_IDLE') {
+                    const hold = await observeAntigravityBusyHold({
+                        holdPath,
+                        generation,
+                        threadId: root.threadId,
+                        appDataDir,
+                        antigravityTransport,
+                        nowMs   : resolveClockMs(now),
+                        stalledHoldThresholdMs
+                    });
+                    activeHoldObservation = hold;
+                    return hold.stalled
+                        ? {
+                            root                  : false,
+                            reason                : STALLED_ACTIVE_TURN_REASON,
+                            holdStartedAt         : hold.holdStartedAt,
+                            lastTranscriptGrowthAt: hold.lastTranscriptGrowthAt
+                        }
+                        : null
+                }
+                await clearBusyHold();
                 const admission = await antigravityTransport.verifyAntigravityWakeAdmission({instanceHome,appDataDir,projectId,threadId:root.threadId,generation,statePath});
                 return admission?.verified === true ? root : null
             }
             if (root.status === 'CASCADE_RUN_STATUS_IDLE') {
+                await clearBusyHold();
                 const admission = await antigravityTransport.verifyAntigravityWakeAdmission({instanceHome,appDataDir,projectId,threadId:root.threadId,generation,statePath});
                 return admission?.verified === true ? {...root, deliveryMode: 'idle'} : null
             }
             const hasActiveTurnAdapter = typeof antigravityTransport.sendAntigravityActiveTurnWake === 'function' &&
                 typeof antigravityTransport.readAntigravityActiveTurnReceipt === 'function';
             if (!hasActiveTurnAdapter) {
-                return {root: false, reason: ACTIVE_TURN_UNAVAILABLE_REASON, dependency: ACTIVE_TURN_ADAPTER_DEPENDENCY}
+                const hold = await observeAntigravityBusyHold({
+                    holdPath,
+                    generation,
+                    threadId: root.threadId,
+                    appDataDir,
+                    antigravityTransport,
+                    nowMs   : resolveClockMs(now),
+                    stalledHoldThresholdMs
+                });
+                activeHoldObservation = hold;
+                return {
+                    root                  : false,
+                    reason                : hold.stalled ? STALLED_ACTIVE_TURN_REASON : ACTIVE_TURN_UNAVAILABLE_REASON,
+                    dependency            : ACTIVE_TURN_ADAPTER_DEPENDENCY,
+                    holdStartedAt         : hold.holdStartedAt,
+                    lastTranscriptGrowthAt: hold.lastTranscriptGrowthAt
+                }
             }
             const admission = await antigravityTransport.verifyAntigravityWakeAdmission({instanceHome,appDataDir,projectId,threadId:root.threadId,generation,statePath});
-            return admission?.verified === true
-                ? {...root, deliveryMode: 'active-turn', activeTurnId: root.activeTurnId ?? null}
+            if (admission?.verified === true) {
+                return {...root, deliveryMode: 'active-turn', activeTurnId: root.activeTurnId ?? null}
+            }
+            const hold = await observeAntigravityBusyHold({
+                holdPath,
+                generation,
+                threadId: root.threadId,
+                appDataDir,
+                antigravityTransport,
+                nowMs   : resolveClockMs(now),
+                stalledHoldThresholdMs
+            });
+            activeHoldObservation = hold;
+            return hold.stalled
+                ? {
+                    root                  : false,
+                    reason                : STALLED_ACTIVE_TURN_REASON,
+                    holdStartedAt         : hold.holdStartedAt,
+                    lastTranscriptGrowthAt: hold.lastTranscriptGrowthAt
+                }
                 : null
         },
         send: async ({binding,nonce,urgent:slotUrgent,attempt,target}) => {
@@ -435,6 +585,13 @@ export async function dispatchFleetPrimarySessionWake(record, {state, stateDir, 
         }
     });
     if (result.status === 'pending' && denialReason) result = {...result,reason:`native-recipient:${denialReason}`};
+    if (result.status === 'pending' && activeHoldObservation) {
+        result = {
+            ...result,
+            holdStartedAt         : activeHoldObservation.holdStartedAt,
+            lastTranscriptGrowthAt: activeHoldObservation.lastTranscriptGrowthAt
+        }
+    }
     if (result.status === 'delivered' && result.nonce) result = {...result,recipient:{...prior.binding,recordKey:record.recordKey,nonce:result.nonce}};
     return result
 }
@@ -463,8 +620,8 @@ export async function dispatchAntigravitySidecarRecords({manifestPath,stateDir,e
     }
 }
 
-/** @summary Revalidates the host route, drains urgent spool pointers before ordinary ones, and publishes correlated receipt fields. */
-export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route,sidecar,verifyCodexRoute,dispatch = dispatchFleetPrimarySessionWake}) {
+/** @summary Revalidates the host route, drains urgent spool pointers before ordinary ones, persists `.status` `holdStartedAt`, and publishes correlated receipt fields. */
+export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,subscriptionId,route,sidecar,verifyCodexRoute,now = null,stalledHoldThresholdMs = STALLED_ACTIVE_TURN_MS,dispatch = dispatchFleetPrimarySessionWake}) {
     if (route.harnessTargetMetadata?.adapter !== 'primary-session') return;
     const config = route.adapterConfig?.primarySession;
     if (!config || (await readNativeWakeOptIn({manifestPath,agentId:config.agentId,family:config.family}))?.stateDir !== stateDir) return;
@@ -654,7 +811,7 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
             return {active:false}
         }
         const batchCapable = isBatchCapablePrimaryFamily(config.family);
-        const result       = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute,verifyCodexRoute,
+        const result       = await dispatch({...record,route:publicRoute},{state,stateDir,manifestPath,sidecar,currentRoute,verifyCodexRoute,now,stalledHoldThresholdMs,
             ...(batchCapable && pointerPath === normalPath ? {commitNormalAttempt: commit => commitOrdinary(record.recordKey,commit)} : {}),
             ...(batchCapable && pointerPath === urgentPath ? {commitUrgentAttempt: commit => commitUrgent(record.recordKey,commit)} : {})});
         if (result?.status === 'delivered' && hasPrimaryWakeRecipient(result.recipient, {seat:route.agentIdentity, recordKey:record.recordKey})) {
@@ -666,17 +823,29 @@ export async function drainFleetPrimaryWakeRecord({state,stateDir,manifestPath,s
                 ...(typeof result.recipientObservedAt === 'string' ? {recipientObservedAt: result.recipientObservedAt} : {}),
                 ...(result.acknowledged === false ? {acknowledged: false} : {})
             }), {mode:0o600,fsync:true});
+            await fs.rm(pointerPath+'.status', {force: true});
             return {active:false}
         }
         // Only fixed diagnostics cross back to the receiver; never project vendor errors or payloads.
         const reason = NATIVE_DISPATCH_REASONS.includes(result?.reason)
             ? result.reason : result?.status === 'unknown' ? 'native-recipient:receipt-unproven' : 'native-recipient:awaiting-readiness';
-        const dependency = reason === ACTIVE_TURN_UNAVAILABLE_REASON ? (result?.dependency || ACTIVE_TURN_ADAPTER_DEPENDENCY) : null;
+        const dependency = (reason === ACTIVE_TURN_UNAVAILABLE_REASON || result?.dependency)
+            ? (result?.dependency || ACTIVE_TURN_ADAPTER_DEPENDENCY)
+            : null,
+              validIso      = value => typeof value === 'string' && Number.isFinite(Date.parse(value)),
+              holdStartedAt = reason !== 'native-recipient:receipt-unproven' && validIso(result?.holdStartedAt)
+                  ? result.holdStartedAt
+                  : null,
+              growthAt      = holdStartedAt && validIso(result?.lastTranscriptGrowthAt)
+                  ? result.lastTranscriptGrowthAt
+                  : null;
         await writeFileAtomic(pointerPath+'.status', JSON.stringify({
             recordKey: record.recordKey,
             subscriptionId,
             reason,
-            ...(dependency ? {dependency} : {})
+            ...(dependency ? {dependency} : {}),
+            ...(holdStartedAt ? {holdStartedAt} : {}),
+            ...(growthAt ? {lastTranscriptGrowthAt: growthAt} : {})
         }), {mode:0o600,fsync:true});
         return {active:true}
     };

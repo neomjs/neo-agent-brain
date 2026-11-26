@@ -577,13 +577,15 @@ export function createWakeReceiver({
                 if (receipt) {
                     const finishedAt = new Date(clock()).toISOString();
                     await watched.transition(record.recordKey,'pending','delivered',{
-                        expectedRecipient  : receipt.recipient,
-                        recipientObservedAt: receipt.recipientObservedAt || finishedAt,
-                        waitStage          : 'delivered',
-                        hostStagedAt       : record.hostStagedAt || finishedAt,
-                        namedDependency    : null,
-                        blockedByWake      : null,
-                        dispatchFinishedAt : finishedAt,
+                        expectedRecipient     : receipt.recipient,
+                        recipientObservedAt   : receipt.recipientObservedAt || finishedAt,
+                        waitStage             : 'delivered',
+                        hostStagedAt          : record.hostStagedAt || finishedAt,
+                        namedDependency       : null,
+                        blockedByWake         : null,
+                        holdStartedAt         : null,
+                        lastTranscriptGrowthAt: null,
+                        dispatchFinishedAt    : finishedAt,
                         ...(receipt.acknowledged === false ? {acknowledged:false} : {})
                     });
                 } else {
@@ -602,7 +604,11 @@ export function createWakeReceiver({
                         current.agentIdentity !== record.envelope?.agentIdentity ||
                         record.envelope?.subscriptionId !== record.subscriptionId ||
                         record.envelope?.eventType !== WAKE_DIGEST_EVENT_TYPE || !newNative) {
-                        await watched.transition(record.recordKey, 'pending', 'pending', {deferReason: 'primary-session-route-unavailable'});
+                        await watched.transition(record.recordKey, 'pending', 'pending', {
+                            deferReason           : 'primary-session-route-unavailable',
+                            holdStartedAt         : null,
+                            lastTranscriptGrowthAt: null
+                        });
                         continue;
                     }
                 }
@@ -728,10 +734,12 @@ export function createWakeReceiver({
                     // wake carrying any content (a message, a GitHub notification pulse) never skips.
                     if (gate.action === 'skip') {
                         await watched.transition(record.recordKey, 'dispatching', 'skipped', {
-                            outcomeReason      : `context-gate:${gate.gateOutcome}`,
-                            lastGateOutcome    : gate.gateOutcome,
-                            probedContextTokens: gate.contextTokens,
-                            dispatchFinishedAt : new Date().toISOString()
+                            outcomeReason         : `context-gate:${gate.gateOutcome}`,
+                            lastGateOutcome       : gate.gateOutcome,
+                            probedContextTokens   : gate.contextTokens,
+                            holdStartedAt         : null,
+                            lastTranscriptGrowthAt: null,
+                            dispatchFinishedAt    : new Date().toISOString()
                         });
                         logger.log?.(
                             `[Wake Receiver] context gate SKIPPED ${record.subscriptionId}: idle-only wake, ` +
@@ -745,10 +753,12 @@ export function createWakeReceiver({
 
                         await watched.transition(record.recordKey, 'dispatching', 'pending', {
                             deferCount,
-                            deferredAt         : new Date().toISOString(),
-                            deferReason        : `context-gate:${gate.contextTokens}>${gateConfig.maxContextTokens}`,
-                            lastGateOutcome    : gate.gateOutcome,
-                            probedContextTokens: gate.contextTokens
+                            deferredAt            : new Date().toISOString(),
+                            deferReason           : `context-gate:${gate.contextTokens}>${gateConfig.maxContextTokens}`,
+                            lastGateOutcome       : gate.gateOutcome,
+                            probedContextTokens   : gate.contextTokens,
+                            holdStartedAt         : null,
+                            lastTranscriptGrowthAt: null
                         });
                         logger.warn?.(
                             `[Wake Receiver] context gate DEFERRED ${record.subscriptionId}: session at ` +
@@ -802,7 +812,12 @@ export function createWakeReceiver({
                 // A manifest can change while context probing awaited. Do not let a captured GUI
                 // snapshot type after that route has been cut over to native delivery.
                 if (activeManifest.routes[record.subscriptionId] !== current) {
-                    await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'route-changed-before-dispatch', ...pendingGatePatch});
+                    await watched.transition(record.recordKey, 'dispatching', 'pending', {
+                        deferReason           : 'route-changed-before-dispatch',
+                        holdStartedAt         : null,
+                        lastTranscriptGrowthAt: null,
+                        ...pendingGatePatch
+                    });
                     continue;
                 }
 
@@ -819,7 +834,12 @@ export function createWakeReceiver({
                         try { enrollment = manifestPath && await readNativeOptIn({manifestPath, agentId: config?.agentId, family: config?.family}) }
                         catch { /* unavailable enrollment must hold, never fall back */ }
                         if (!enrollment || enrollment.stateDir !== state.stateDir) {
-                            await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-enrollment-unproven', ...pendingGatePatch});
+                            await watched.transition(record.recordKey, 'dispatching', 'pending', {
+                                deferReason           : 'primary-session-enrollment-unproven',
+                                holdStartedAt         : null,
+                                lastTranscriptGrowthAt: null,
+                                ...pendingGatePatch
+                            });
                             continue;
                         }
                     }
@@ -884,13 +904,21 @@ export function createWakeReceiver({
                                   ? 'waiting-for-receipt'
                                   : (spoolBlocked ? 'waiting-for-spool' : 'waiting-for-chat-boundary'),
                               namedDependency = result?.dependency || (deferReason === ACTIVE_TURN_UNAVAILABLE_REASON ? ACTIVE_TURN_ADAPTER_DEPENDENCY : null),
+                              holdStartedAt   = !awaitingReceipt && !spoolBlocked && typeof result?.holdStartedAt === 'string' && Number.isFinite(Date.parse(result.holdStartedAt))
+                                  ? result.holdStartedAt
+                                  : null,
+                              growthAt        = holdStartedAt && typeof result?.lastTranscriptGrowthAt === 'string' && Number.isFinite(Date.parse(result.lastTranscriptGrowthAt))
+                                  ? result.lastTranscriptGrowthAt
+                                  : null,
                               stagedAt        = spoolBlocked ? dispatching.hostStagedAt : (dispatching.hostStagedAt || attemptIso);
                         await watched.transition(record.recordKey, 'dispatching', 'pending', {
                             deferReason,
-                            nativeStatus   : outcome,
+                            nativeStatus          : outcome,
                             ...(stagedAt ? {hostStagedAt: stagedAt} : {}),
                             waitStage,
-                            namedDependency: namedDependency || null,
+                            namedDependency       : namedDependency || null,
+                            holdStartedAt,
+                            lastTranscriptGrowthAt: growthAt,
                             blockedByWake,
                             ...(awaitingReceipt ? {nativeInitiatedAt: dispatching.nativeInitiatedAt || attemptIso} : {}),
                             ...(expectedRecipient ? {expectedRecipient} : {}),
@@ -900,7 +928,12 @@ export function createWakeReceiver({
                     }
 
                     if (native && (outcome !== 'delivered' || !hasPrimaryWakeRecipient(result?.recipient, {seat:dispatching.route.agentIdentity, recordKey:dispatching.recordKey}))) {
-                        await watched.transition(record.recordKey, 'dispatching', 'pending', {deferReason: 'primary-session-invalid-outcome', ...pendingGatePatch});
+                        await watched.transition(record.recordKey, 'dispatching', 'pending', {
+                            deferReason           : 'primary-session-invalid-outcome',
+                            holdStartedAt         : null,
+                            lastTranscriptGrowthAt: null,
+                            ...pendingGatePatch
+                        });
                         continue;
                     }
                     if (native && typeof result?.recipientObservedAt === 'string') {
@@ -992,6 +1025,8 @@ export function createWakeReceiver({
                     ...(outcomeReason ? {outcomeReason} : {}),
                     ...(expectedRecipient ? {expectedRecipient} : {}),
                     ...(outcome === 'pending' ? pendingGatePatch : {}),
+                    holdStartedAt         : null,
+                    lastTranscriptGrowthAt: null,
                     ...(outcome === 'delivered' ? {
                         waitStage          : 'delivered',
                         recipientObservedAt: nativeRecipientObservedAt || finishedIso,
@@ -1083,8 +1118,10 @@ export function createWakeReceiver({
 
                 const finishedIso = new Date(clock()).toISOString();
                 const updated     = await watched.transition(candidate.recordKey, 'pending', 'skipped', {
-                    outcomeReason     : SOURCE_EVENTS_HANDLED_REASON,
-                    dispatchFinishedAt: finishedIso
+                    outcomeReason         : SOURCE_EVENTS_HANDLED_REASON,
+                    holdStartedAt         : null,
+                    lastTranscriptGrowthAt: null,
+                    dispatchFinishedAt    : finishedIso
                 });
 
                 if (updated) skippedCount++
