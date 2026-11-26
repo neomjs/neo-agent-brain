@@ -310,7 +310,7 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  * @param {{complete?: Function, byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
  * @param {Object} [source] Acquisition identity; absent for legacy inputs.
  * @param {String} [source.apiBase] Provider API identity from the existing reader.
- * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner,
+ * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner, ownerName,
  *     disclosedFamilies, requested, reviews, opinions, reviewRecords, ciRepairEvidence, ciRepairClassification,
  *     ciRepairRead, ciRepairIncompleteReads, turns, blockedTargets, targetsComplete,
  *     ownerComplete, requestsComplete, opinionsComplete, partial}`. `blockedTargets` are the issues it closes that GitHub counts an
@@ -379,6 +379,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         bot              : node.author?.__typename === 'Bot',
         runApproval,
         owner,
+        ownerName        : ownerAuthorName,
         disclosedFamilies: outside ? disclosedFamiliesOf({
             body          : node.body ?? '',
             commitMessages: messages.nodes.map(item => item?.commit?.message)
@@ -716,7 +717,8 @@ export function reduceOpenWork({previous, observed, terminal, closeout = null, s
     for (const row of observed.rows) {
         const
             before        = previous?.rows[row.key],
-            retainedOwner = before && !row.ownerComplete && before.owner?.kind === 'seat' && before.owner.login === row.owner?.login
+            retainedOwner = before && !row.ownerComplete && before.owner?.kind === 'seat' &&
+                before.owner.login === row.owner?.login && typeof row.ownerName === 'string' && before.ownerName === row.ownerName
                 ? before.owner
                 : row.owner,
             merged        = before && (!row.requestsComplete || retainedOwner !== row.owner)

@@ -1286,5 +1286,91 @@ test.describe('openWorkReducer — unanswered identity rows withhold false unown
         expect(answeredUnknownName.owner).toEqual({kind: 'unowned', seat: null, login: 'neo-opus-ada'});
         expect(answeredUnknownName.ownerComplete).toBe(true);
         expect(answeredUnknownName.partial).toBe(false);
+
+        // Shared login across two named seats: retaining the previous seat requires the observed author name to match too.
+        const
+            sharedAnswered = {
+                complete: () => true,
+                byLogin : login => login === 'neo-shared' ? '@neo-shared' : null,
+                byName  : name => ({Alice: '@neo-alice', Bob: '@neo-bob'})[name] ?? null
+            },
+            sharedUnread   = {
+                complete: () => false,
+                byLogin : login => login === 'neo-shared' ? '@neo-shared' : null,
+                byName  : () => null
+            },
+            aliceRow       = normalizePullRequest(node({head, login: 'neo-shared', reviewers: [], body: 'Authored by Alice (Gemini).'}), sharedAnswered),
+            s1             = reduceOpenWork({
+                previous: null,
+                observed: {rows: [aliceRow], complete: true},
+                terminal: {rows: [], complete: true},
+                since   : null,
+                id      : '2026-11-26T09:00:00.000Z'
+            });
+        expect(s1.rows['acme/app#7']).toMatchObject({
+            owner        : {kind: 'seat', seat: '@neo-alice', login: 'neo-shared'},
+            ownerName    : 'Alice',
+            ownerComplete: true,
+            partial      : false
+        });
+
+        // Unchanged Alice claim during an unread presence pulse keeps @neo-alice on a partial row.
+        const
+            aliceUnread = normalizePullRequest(node({head, login: 'neo-shared', reviewers: [], body: 'Authored by Alice (Gemini).'}), sharedUnread),
+            s2          = reduceOpenWork({
+                previous: s1,
+                observed: {rows: [aliceUnread], complete: true},
+                terminal: {rows: [], complete: true},
+                since   : null,
+                id      : '2026-11-26T09:01:00.000Z'
+            });
+        expect(s2.rows['acme/app#7']).toMatchObject({
+            owner        : {kind: 'seat', seat: '@neo-alice', login: 'neo-shared'},
+            ownerName    : 'Alice',
+            ownerComplete: false,
+            partial      : true
+        });
+
+        // Changing body to Authored by Bob under the same login during an unread pulse withholds @neo-alice while staying partial.
+        const
+            bobUnread = normalizePullRequest(node({head, login: 'neo-shared', reviewers: [], body: 'Authored by Bob (Gemini).'}), sharedUnread),
+            s3        = reduceOpenWork({
+                previous: s2,
+                observed: {rows: [bobUnread], complete: true},
+                terminal: {rows: [], complete: true},
+                since   : null,
+                id      : '2026-11-26T09:02:00.000Z'
+            }),
+            planBobUnread = planOpenWorkWakes({
+                state        : {observedAt: '2026-11-26T09:02:00.000Z', coverage: 'partial', snapshot: s3, transitions: []},
+                ledger       : {pulse: '2026-11-26T09:01:00.000Z', holding: {}, pendingMerges: {}, baselines: {}},
+                now          : Date.parse('2026-11-26T09:02:00.000Z'),
+                rotationSeats: ['@neo-gemini-julia'],
+                routeOf      : () => 'reachable'
+            });
+        expect(s3.rows['acme/app#7']).toMatchObject({
+            owner        : {kind: 'unowned', seat: null, login: 'neo-shared'},
+            ownerName    : 'Bob',
+            ownerComplete: false,
+            partial      : true
+        });
+        expect(planBobUnread.wakes).toEqual([]);
+
+        // Once presence answers again, Bob resolves cleanly to @neo-bob.
+        const
+            bobAnswered = normalizePullRequest(node({head, login: 'neo-shared', reviewers: [], body: 'Authored by Bob (Gemini).'}), sharedAnswered),
+            s4          = reduceOpenWork({
+                previous: s3,
+                observed: {rows: [bobAnswered], complete: true},
+                terminal: {rows: [], complete: true},
+                since   : null,
+                id      : '2026-11-26T09:03:00.000Z'
+            });
+        expect(s4.rows['acme/app#7']).toMatchObject({
+            owner        : {kind: 'seat', seat: '@neo-bob', login: 'neo-shared'},
+            ownerName    : 'Bob',
+            ownerComplete: true,
+            partial      : false
+        });
     });
 });

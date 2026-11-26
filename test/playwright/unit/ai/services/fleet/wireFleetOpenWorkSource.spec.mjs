@@ -608,6 +608,7 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             rosterPayload  = () => ({
                 agents: [
                     {identity: '@neo-gemini-maryam', name: 'Maryam', signals: {participationStatus: 'active'}},
+                    {identity: '@neo-shared-bob',    name: 'Bob',    signals: {participationStatus: 'active'}},
                     {identity: '@neo-opus-ada',      name: 'Ada',    signals: {participationStatus: 'operator_benched'}}
                 ]
             });
@@ -720,6 +721,43 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
                 routeOf      : () => 'reachable'
             });
             expect(plan.wakes).toEqual([]);
+
+            // Pulse 6: changing Authored by Maryam -> Authored by Bob under the same login while presence stays unread
+            // withholds Maryam from authored while keeping the row partial and emitting zero unowned wakes.
+            pr.body = 'Authored by Bob (Gemini 4 Carbon, Antigravity).';
+            clockMs += 60000;
+            await wired.producer.pulse();
+            expect(wired.producer.getState().snapshot.rows['acme/app#22215']).toMatchObject({
+                owner        : {kind: 'unowned', seat: null, login: 'neo-gemini-maryam'},
+                ownerName    : 'Bob',
+                ownerComplete: false,
+                partial      : true
+            });
+            expect(bridge.openWorkSource.readOpenWork().seats['@neo-gemini-maryam'].authored).toEqual([]);
+            plan = planOpenWorkWakes({
+                state        : {
+                    ...wired.producer.getState(),
+                    observedAt: new Date(clockMs).toISOString()
+                },
+                ledger       : plan.ledger,
+                now          : clockMs,
+                rotationSeats: ['@neo-gemini-maryam', '@neo-opus-ada'],
+                routeOf      : () => 'reachable'
+            });
+            expect(plan.wakes).toEqual([]);
+
+            // Pulse 7: once readPresence answers again, Bob resolves to @neo-shared-bob and appears in Bob's authored list.
+            stall = false;
+            clockMs += 60000;
+            await wired.producer.pulse();
+            expect(wired.producer.getState().snapshot.rows['acme/app#22215']).toMatchObject({
+                owner        : {kind: 'seat', seat: '@neo-shared-bob', login: 'neo-gemini-maryam'},
+                ownerName    : 'Bob',
+                ownerComplete: true,
+                partial      : false
+            });
+            expect(bridge.openWorkSource.readOpenWork().seats['@neo-shared-bob'].authored.map(r => r.number)).toEqual([22215]);
+            expect(bridge.openWorkSource.readOpenWork().seats['@neo-gemini-maryam'].authored).toEqual([]);
 
             await wired.stop();
         } finally {
