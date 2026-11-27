@@ -220,6 +220,28 @@ test.describe('Neo.ai.mcp.server.shared.services.HeapObservationReporterService 
         expect(fs.existsSync(path.join(dir, 'mc-server.json'))).toBe(true);
     });
 
+    test('every write, the first and each interval tick, runs as the host job heap-observation (#1955)', async () => {
+        const dir  = makeDir(),
+              jobs = [];
+
+        try {
+            expect(HeapObservationReporterService.start({
+                serviceKey: 'mc-server',
+                dir,
+                readConfig: () => ({enabled: true, writeIntervalMs: 20}),
+                trackJob  : (name, fn) => {
+                    jobs.push({name, written: fn()})
+                }
+            })).toBe(true);
+
+            await expect.poll(() => jobs.length).toBeGreaterThanOrEqual(2);
+            expect(jobs.every(job => job.name === 'heap-observation' && job.written === true)).toBe(true);
+            expect(fs.existsSync(path.join(dir, 'mc-server.json'))).toBe(true)
+        } finally {
+            HeapObservationReporterService.stop()
+        }
+    });
+
     test('stop() is idempotent and start() does not stack timers', () => {
         const dir = makeDir();
 

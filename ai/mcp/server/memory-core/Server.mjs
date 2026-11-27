@@ -183,6 +183,15 @@ class Server extends BaseServer {
     getHeapObservationServiceKey() { return 'mc-server' }
 
     /**
+     * @summary Runs this server's background passes through the recorder's job hook, see
+     * {@link MemoryCoreRecorderService#trackJob}.
+     * @returns {Function}
+     */
+    getBackgroundJobTracker() {
+        return (name, fn) => MemoryCoreRecorderService.trackJob(name, fn)
+    }
+
+    /**
      * @summary Tools allowed without the healthcheck gate. The A2A
      * mailbox/permission surface is graph/SQLite-scoped and must remain reachable during
      * summarization/vector-provider incidents so agents can coordinate the recovery — as is
@@ -349,7 +358,7 @@ class Server extends BaseServer {
         CoalescingEngineService.configure(wakeDispatch, {
             resolveDeliveryReadState: readBackgroundDeliveryState,
             resolveDeliveryHold     : identity => WakeSubscriptionService.holdsWakesForRotation(identity),
-            trackJob                : (name, fn) => MemoryCoreRecorderService.trackJob(name, fn)
+            trackJob                : this.getBackgroundJobTracker()
         });
         WebhookDeliveryService.configure(wakeDispatch);
 
@@ -422,7 +431,7 @@ class Server extends BaseServer {
                     getMessageConfig    : () => aiConfig.messageWal,
                     expectedDimension   : aiConfig.vectorDimension,
                     log                 : drainLog,
-                    trackJob            : (name, fn) => MemoryCoreRecorderService.trackJob(name, fn)
+                    trackJob            : this.getBackgroundJobTracker()
                 });
 
                 this.walDrainLoop        = embedLoops.memory;
@@ -465,7 +474,7 @@ class Server extends BaseServer {
                         getProcessor: () => createMessageGraphProjectionProcessor(MailboxService),
                         afterCycle  : createMessageGraphIntegrityRepairCadence(MailboxService, {log: messageDrainLog}),
                         log         : messageDrainLog,
-                        trackJob    : (name, fn) => MemoryCoreRecorderService.trackJob(name, fn)
+                        trackJob    : this.getBackgroundJobTracker()
                     });
                     process.on('exit', () => this.messageWalDrainLock?.release());
                     logger.info('[neo-memory-core MCP] In-process message WAL drain loop active (messageWal.inProcessDrain)');

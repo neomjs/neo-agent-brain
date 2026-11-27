@@ -380,6 +380,13 @@ class BaseServer extends Base {
     getHeapObservationServiceKey() { return null }
 
     /**
+     * @summary Declares the `(name, fn)` hook that runs this server's background passes as named jobs, so
+     * an event-loop block inside one names it. `null` runs them untracked; Memory Core returns its recorder's.
+     * @returns {Function|null}
+     */
+    getBackgroundJobTracker() { return null }
+
+    /**
      * @summary Declares which of this server's resolved config values it may publish about itself.
      *
      * ONE hook returning both halves, for the reason the identity hook above is one line: a server
@@ -923,7 +930,7 @@ class BaseServer extends Base {
 
         const writeLog = (level, message) => (level === 'ERROR' ? this.logger?.error : this.logger?.info)?.call(this.logger, message);
 
-        HeapObservationReporterService.start({serviceKey, writeLog});
+        HeapObservationReporterService.start({serviceKey, writeLog, trackJob: this.getBackgroundJobTracker() ?? undefined});
 
         // Matches the embedding-probe teardown idiom: the interval is unref'd and so never holds the
         // process open, but an explicit stop keeps the timer from firing against a torn-down config.

@@ -547,6 +547,7 @@ class MemoryCoreRecorderService extends Base {
      * - `message-graph-projection`: MailboxService's deferred projection after `add_message` has answered.
      * - `embedding-write-canary`: one HealthService canary attempt.
      * - `wake-digest-flush`: a timer-fired CoalescingEngineService flush.
+     * - `heap-observation`: one heap observation write, through `BaseServer#getBackgroundJobTracker`.
      *
      * Not named, because they cannot block: the probe's own sampling interval, and timeout or backoff timers
      * (`withTimeout`, retry sleeps), which only settle a promise. The summary backfills run as lifecycle
@@ -562,7 +563,8 @@ class MemoryCoreRecorderService extends Base {
 
     /**
      * @summary Persists one event-loop block after the loop freed: its duration, the GC time inside it,
-     * and the call ids in flight across it, each of which names a start row. Best-effort only.
+     * and the ids in flight across it. A tool call's id names its start row; a job's `job:<name>:<run>`
+     * (see {@link MemoryCoreRecorderService#trackJob}) names the job and has none. Best-effort only.
      * @param {{endedAt: Number, durationMs: Number, gcMs: Number, callIds: String[]}} block
      * @returns {void}
      */
