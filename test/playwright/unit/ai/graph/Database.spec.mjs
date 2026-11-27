@@ -252,6 +252,121 @@ test.describe('Neo.ai.graph.Database', () => {
         reloadDb.destroy();
     });
 
+    const nextMacrotask = () => new Promise(resolve => setImmediate(resolve));
+
+    // A hub with eight leaves on disk (leaf1 labelled `Pinned`, e2 typed `GRANTS`), read leaf by leaf
+    // through a cache bounded at four nodes. Eviction runs on the macrotask after the reads.
+    const readHubLeavesThroughBoundedCache = async ({pins = null, collect = true} = {}) => {
+        if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+
+        const writerStorage = Neo.create(SQLite, {dbPath});
+        await writerStorage.initAsync();
+
+        const writer = Neo.create(Database, {id: 'bounded-cache-writer-' + testRun, storage: writerStorage});
+
+        writer.addNode({id: 'hub', label: 'Hub', properties: {name: 'hub'}});
+
+        for (let i = 1; i <= 8; i++) {
+            writer.addNode({id: `leaf${i}`, label: i === 1 ? 'Pinned' : 'Leaf', properties: {n: i}});
+            writer.addEdge({id: `e${i}`, source: 'hub', target: `leaf${i}`, type: i === 2 ? 'GRANTS' : 'HAS'})
+        }
+
+        writer.destroy();
+
+        const readerStorage = Neo.create(SQLite, {dbPath});
+        await readerStorage.initAsync();
+
+        const reader = Neo.create(Database, {id: 'bounded-cache-reader-' + testRun, storage: readerStorage, maxGraphNodes: 4});
+        await readerStorage.load();
+
+        if (pins) reader.pin(pins);
+
+        for (let i = 1; i <= 8; i++) reader.getAdjacentNodes(`leaf${i}`, 'both');
+
+        if (collect) await nextMacrotask();
+
+        return reader
+    };
+
+    test('eviction waits for the synchronous flow that loaded the vicinities to end (#1959)', async () => {
+        const reader = await readHubLeavesThroughBoundedCache({collect: false});
+
+        // A caller iterating the cache after its loads sees all of them
+        expect(reader.nodes.getCount()).toBe(9);
+
+        await nextMacrotask();
+
+        expect(reader.nodes.getCount()).toBeLessThanOrEqual(4);
+
+        reader.destroy()
+    });
+
+    test('pinned labels and edge types survive eviction, with the nodes at both ends of a pinned edge (#1959)', async () => {
+        const reader = await readHubLeavesThroughBoundedCache({pins: {labels: ['Pinned'], edgeTypes: ['GRANTS']}});
+
+        expect(reader.nodes.get('leaf1')?.label).toBe('Pinned');
+        expect(reader.nodes.get('leaf2')).toBeTruthy();
+        expect(reader.nodes.get('hub')).toBeTruthy();
+        expect(reader.edges.get('e2')?.type).toBe('GRANTS');
+        expect(reader.nodes.get('leaf3')).toBeFalsy();
+
+        reader.destroy()
+    });
+
+    test('a bounded cache evicts its least recent nodes with their edges, and an evicted node reloads unchanged (#1959)', async () => {
+        const reader = await readHubLeavesThroughBoundedCache();
+
+        expect(reader.nodes.getCount()).toBeLessThanOrEqual(4);
+        // A cached edge never outlives either end, so no adjacency answer comes from a partial vicinity
+        reader.edges.items.forEach(edge => {
+            expect(reader.nodes.get(edge.source), `edge ${edge.id} kept its source`).toBeTruthy();
+            expect(reader.nodes.get(edge.target), `edge ${edge.id} kept its target`).toBeTruthy()
+        });
+
+        expect(reader.nodes.get('leaf1')).toBeFalsy();
+        expect(reader.edges.get('e1')).toBeFalsy();
+        expect(reader.vicinityLoadedNodes.has('leaf1')).toBe(false);
+
+        expect(reader.getAdjacentNodes('leaf1', 'both').map(node => node.id)).toEqual(['hub']);
+        expect(reader.nodes.get('leaf1').properties).toEqual({n: 1});
+        expect(reader.edges.get('e1').type).toBe('HAS');
+
+        reader.destroy()
+    });
+
+    test('eviction deletes no storage row (#1959)', async () => {
+        const rowCount = () => {
+            const raw   = new BetterSqlite(dbPath, {readonly: true}),
+                  count = raw.prepare('SELECT (SELECT COUNT(*) FROM Nodes) AS nodes, (SELECT COUNT(*) FROM Edges) AS edges').get();
+
+            raw.close();
+            return count
+        };
+
+        const reader = await readHubLeavesThroughBoundedCache();
+
+        expect(reader.nodes.getCount()).toBeLessThanOrEqual(4);
+        expect(rowCount()).toEqual({nodes: 9, edges: 8});
+
+        reader.destroy()
+    });
+
+    test('an unbounded cache keeps every node it loaded', async () => {
+        if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+
+        const storage = Neo.create(SQLite, {dbPath});
+        await storage.initAsync();
+
+        const graph = Neo.create(Database, {id: 'unbounded-cache-' + testRun, storage});
+
+        for (let i = 1; i <= 8; i++) graph.addNode({id: `n${i}`, label: 'Leaf'});
+
+        expect(graph.maxGraphNodes).toBeNull();
+        expect(graph.nodes.getCount()).toBe(8);
+
+        graph.destroy()
+    });
+
     test('SQLite storage rejects invalid node ids before persistence (#11698)', async () => {
         let storage = Neo.create(SQLite, { dbPath });
         await storage.initAsync();

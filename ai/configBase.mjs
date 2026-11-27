@@ -1377,7 +1377,13 @@ class ConfigBase extends ConfigProvider {
                 graphProjectionMaxAttempts    : leaf(5, 'NEO_MC_GRAPH_PROJECTION_MAX_ATTEMPTS', 'number'),
                 graphProjectionRetryBaseMs    : leaf(250, 'NEO_MC_GRAPH_PROJECTION_RETRY_BASE_MS', 'number'),
                 graphProjectionRetryMaxMs     : leaf(5000, 'NEO_MC_GRAPH_PROJECTION_RETRY_MAX_MS', 'number'),
-                graphProjectionDrainIntervalMs: leaf(60000, 'NEO_MC_GRAPH_PROJECTION_DRAIN_INTERVAL_MS', 'number')
+                graphProjectionDrainIntervalMs: leaf(60000, 'NEO_MC_GRAPH_PROJECTION_DRAIN_INTERVAL_MS', 'number'),
+                /**
+                 * How many nodes Memory Core's in-memory graph cache holds before its collector evicts the
+                 * least recently used ones with their edges. Unbounded, the cache keeps everything the
+                 * process touched and the heap grows until V8's ceiling.
+                 */
+                graphCacheMaxNodes            : leaf(60000, 'NEO_MC_GRAPH_CACHE_MAX_NODES', 'number')
             },
             /**
              * Temporal-pyramid durable aggregation lane (L1 session / L2 daily tiers).

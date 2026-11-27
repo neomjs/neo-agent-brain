@@ -115,6 +115,20 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         await TestLifecycleHelper.cleanupGraphService(GraphService, SystemLifecycleService, testDbPath, fs, 'clear');
     });
 
+    test('the Memory Core graph cache is bounded by its config leaf and pins what other services scan (#1959)', async () => {
+        const
+            aiConfig           = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default,
+            {GRAPH_CACHE_PINS} = await import('../../../../../../ai/services/memory-core/GraphService.mjs'),
+            PermissionService  = (await import('../../../../../../ai/services/memory-core/PermissionService.mjs')).default;
+
+        expect(GraphService.db.maxGraphNodes).toBe(aiConfig.memoryService.graphCacheMaxNodes);
+        expect(GraphService.db.maxGraphNodes).toBeGreaterThan(0);
+        // The pinned grant types are PermissionService's scopes: a scope added there and not here would be evictable
+        expect([...GRAPH_CACHE_PINS.edgeTypes]).toEqual(PermissionService.validScopes);
+        expect([...GraphService.db.pinnedEdgeTypes]).toEqual(expect.arrayContaining(PermissionService.validScopes));
+        expect(GraphService.db.pinnedNodeLabels.has('WAKE_SUBSCRIPTION')).toBe(true)
+    });
+
     test('should extract node neighbors properly', async () => {
         test.skip(!!process.env.NEO_TEST_SKIP_CI, 'CI-skip: SqliteError disk I/O - bucket G3 (#10924)');
         await GraphService.upsertNode({id: 'EpicA', name: 'Roadmap Planner'});
@@ -1097,6 +1111,7 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         GraphService.db.vicinityLoadedNodes.clear();
 
         // Set maximum capacity constraint to 3 nodes
+        const leafBound = GraphService.db.maxGraphNodes;
         GraphService.db.maxGraphNodes = 3;
 
         await GraphService.upsertNode({id: 'N1', name: 'First'});
@@ -1119,18 +1134,19 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
 
         // This 4th insert will push the length over 3 when accessed.
         await GraphService.upsertNode({id: 'N4', name: 'Fourth'});
-        await GraphService.getNode({id: 'N4'}); // GC fires here natively!
+        await GraphService.getNode({id: 'N4'});
 
-        // V8 footprint must hold 3 items cleanly locally natively. Output should be N2, N3, N4
-        expect(GraphService.db.nodes.getCount()).toBe(3);
+        // The collector runs on the next macrotask and trims to 80 % of the bound: the two most recent stay
+        await new Promise(resolve => setImmediate(resolve));
 
-        expect(GraphService.db.nodes.has('N1')).toBe(false); // N1 dropped out of cache natively gracefully!
-        expect(GraphService.db.nodes.has('N2')).toBe(true);
+        expect(GraphService.db.nodes.getCount()).toBe(2);
+
+        expect(GraphService.db.nodes.has('N1')).toBe(false);
+        expect(GraphService.db.nodes.has('N2')).toBe(false);
         expect(GraphService.db.nodes.has('N3')).toBe(true);
         expect(GraphService.db.nodes.has('N4')).toBe(true);
 
-        // Restore maxGraphNodes constraint cleanly safely natively
-        GraphService.db.maxGraphNodes = null;
+        GraphService.db.maxGraphNodes = leafBound;
     });
 
     test('should resolve queryNodeTopology correctly formatting root and neighbors', async () => {
