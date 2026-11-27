@@ -1980,7 +1980,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         }
     });
     const graphqlError = type => {
-    const error = new Error(`GitHub GraphQL error: ${type}`);
+    const error        = new Error(`GitHub GraphQL error: ${type}`);
     error.graphqlErrors = [{type}];
 
     return error;
@@ -5734,84 +5734,6 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(refusedFullCarry.valid).toBe(false);
         expect(refusedFullCarry.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
         expect(refusedFullCarry.message).toContain('did not use `# PR Micro-Review`');
-    });
-
-    test('#1949: resolveEffectiveEvaluationMetrics prefers Round-2 APPROVED final metrics over Round-1 CHANGES_REQUESTED deductions, with legacy fallback', () => {
-        const round1Rc = {
-            id         : 'PRR_rc1',
-            state      : 'CHANGES_REQUESTED',
-            submittedAt: '2026-11-27T01:00:00Z',
-            author     : {login: 'neo-opus-vega'},
-            body       : VALID_ORDINARY_REQUEST_CHANGES_BODY
-                .replace('[ARCH_ALIGNMENT]: 80 - structural fit', '[ARCH_ALIGNMENT]: 55 - missing config hook')
-                .replace('[EFFORT_PROFILE]: Quick Win', '[EFFORT_PROFILE]: Heavy Lift')
-        };
-
-        const round2Approved = {
-            id         : 'PRR_app2',
-            state      : 'APPROVED',
-            submittedAt: '2026-11-27T02:00:00Z',
-            author     : {login: 'neo-opus-vega'},
-            body       : VALID_ROUND_2_REVIEW_BODY
-        };
-
-        const resolved = PullRequestService.resolveEffectiveEvaluationMetrics([round1Rc, round2Approved]);
-        expect(resolved).toEqual({
-            reviewId      : 'PRR_app2',
-            reviewer      : 'neo-opus-vega',
-            state         : 'APPROVED',
-            submittedAt   : '2026-11-27T02:00:00Z',
-            source        : 'approved',
-            legacyFallback: false,
-            metrics       : {
-                ARCH_ALIGNMENT      : 94,
-                CONTENT_COMPLETENESS: 92,
-                EXECUTION_QUALITY   : 95,
-                PRODUCTIVITY        : 92,
-                IMPACT              : 65,
-                COMPLEXITY          : 42,
-                EFFORT_PROFILE      : 'Maintenance'
-            }
-        });
-
-        // Historical pre-cutover Round-2 approval without metrics falls back with legacyFallback: true
-        const historicalRound2NoMetrics = {
-            id         : 'PRR_legacy_app',
-            state      : 'APPROVED',
-            submittedAt: '2026-11-20T02:00:00Z',
-            author     : {login: 'neo-opus-vega'},
-            body       : VALID_ROUND_2_REVIEW_BODY.replace(
-                /\n### 📊 Final Evaluation Metrics[\s\S]*?(?=\n### 🔚 Verdict)/,
-                ''
-            )
-        };
-        const legacyResolved = PullRequestService.resolveEffectiveEvaluationMetrics([round1Rc, historicalRound2NoMetrics]);
-        expect(legacyResolved.reviewId).toBe('PRR_rc1');
-        expect(legacyResolved.source).toBe('legacy-prior-review');
-        expect(legacyResolved.legacyFallback).toBe(true);
-        expect(legacyResolved.metrics.ARCH_ALIGNMENT).toBe(55);
-
-        // Cycle-1 Micro-Review -> Round-2 N/A — Cycle 1 was Micro-Review resolves to null
-        const microApproved = {
-            id         : 'PRR_micro_app',
-            state      : 'APPROVED',
-            submittedAt: '2026-11-27T03:00:00Z',
-            author     : {login: 'neo-opus-vega'},
-            body       : VALID_ROUND_2_REVIEW_BODY.replace(
-                /### 📊 Final Evaluation Metrics[\s\S]*?(?=\n### 🔚 Verdict)/,
-                '### 📊 Final Evaluation Metrics\n\nN/A — Cycle 1 was Micro-Review\n'
-            )
-        };
-        expect(PullRequestService.resolveEffectiveEvaluationMetrics([microApproved])).toBeNull();
-
-        // Unapproved PR in CHANGES_REQUESTED returns latest scored review without legacyFallback
-        const openRcOnly = PullRequestService.resolveEffectiveEvaluationMetrics([
-            round1Rc,
-            {...round2Approved, id: 'PRR_dismissed', state: 'DISMISSED', submittedAt: '2026-11-27T04:00:00Z'}
-        ]);
-        expect(openRcOnly.reviewId).toBe('PRR_rc1');
-        expect(openRcOnly.source).toBe('latest-review');
-        expect(openRcOnly.legacyFallback).toBe(false);
     });
 });
  

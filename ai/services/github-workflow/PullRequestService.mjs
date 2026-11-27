@@ -35,7 +35,7 @@ import {commentMatches, isSelectorPresent, malformedCommentIdError, omitScopedBo
                                               from './shared/commentSelector.mjs';
 import {projectConversationTrust} from './shared/conversationTrust.mjs';
 import {resolveRepositoryTarget}  from './shared/repositoryTarget.mjs';
-import nullIfNotFound from './shared/nullIfNotFound.mjs';
+import nullIfNotFound             from './shared/nullIfNotFound.mjs';
 
 const execAsync                           = promisify(exec);
 const execFileAsync                       = promisify(execFile);
@@ -1281,19 +1281,17 @@ function getTemplateHeadingAnchorsByLabel(templatePath, labels, {
 }
 
 /**
- * **Visible** template-anchor substrings — checked AND named in the error response on miss.
+ * **Visible** evaluation-metric anchor substrings — checked AND named in the error response on miss.
  *
- * These are the 7 evaluation-metric tags from `.agents/skills/pr-review/assets/pr-review-template.md`
- * (cycle-1) and `.agents/skills/pr-review/assets/pr-review-followup-template.md` (cycle-N). They are
- * also the regex parse keys that `ai/services/ingestion/ConceptDiscoveryService.mjs` consumes during
- * Retrospective-daemon REM-sleep graph ingestion — a malformed review with hallucinated metric
- * names produces zero graph ingest signal and is silently lost from the Native Edge Graph.
+ * These 6 numeric `0-100` tags (`NUMERIC_PR_REVIEW_METRIC_ANCHORS`) plus categorical
+ * `EFFORT_PROFILE_PR_REVIEW_ANCHOR` (`[EFFORT_PROFILE]`) are the 7 evaluation-metric tags from
+ * `.agents/skills/pr-review/assets/pr-review-template.md` (cycle-1),
+ * `.agents/skills/pr-review/assets/pr-review-followup-template.md` (exceptional cycle-N), and
+ * `.agents/skills/pr-review/assets/pr-review-round-2-template.md` (Round-2 `Approved` / `Approve+Follow-Up`).
  *
- * Cycle-followup templates use the same 7 metric tags, so this set applies to both cycle-1
- * and cycle-N reviews without false-positive separation.
- *
- * Extension protocol: if the pr-review skill adds a new evaluation metric, append the literal
- * `[NEW_TAG]` string here AND update both template files in the same PR.
+ * Extension protocol: if the pr-review skill adds a new evaluation metric, append numeric `[NEW_TAG]`
+ * strings to `NUMERIC_PR_REVIEW_METRIC_ANCHORS` (or categorical tags alongside
+ * `EFFORT_PROFILE_PR_REVIEW_ANCHOR`) AND update the template files and `check-pr-review-body.mjs` in lockstep.
  */
 const NUMERIC_PR_REVIEW_METRIC_ANCHORS = Object.freeze([
     '[ARCH_ALIGNMENT]',
@@ -1313,11 +1311,6 @@ const VALID_PR_REVIEW_EFFORT_PROFILES = Object.freeze([
     'Architectural Pillar'
 ]);
 
-const VISIBLE_PR_REVIEW_ANCHORS = [
-    ...NUMERIC_PR_REVIEW_METRIC_ANCHORS,
-    EFFORT_PROFILE_PR_REVIEW_ANCHOR
-];
-
 const ROUND_2_FINAL_METRICS_HEADING                  = '### 📊 Final Evaluation Metrics';
 const ROUND_2_MICRO_REVIEW_METRICS_EXEMPTION_PATTERN = /^[ \t]*(?:[-*][ \t]+)?N\/A[ \t]*(?:—|--|-)[ \t]*Cycle[ \t]+1[ \t]+was[ \t]+Micro-Review\.?[ \t]*$/i;
 const NUMERIC_PR_REVIEW_VALUE_AFTER_TAG_PATTERN      = /^[\s*_`]*:[\s*_`]*(\d{1,3})(?:\s*\/\s*100)?(?!\.\d)(?=$|[^0-9A-Za-z_])/;
@@ -1330,7 +1323,7 @@ const EFFORT_PROFILE_PR_REVIEW_VALUE_PATTERN         = new RegExp(`^[\\s*_\`]*:[
  */
 function unfencedPrReviewLines(body) {
     const lines = [];
-    let fence   = null;
+    let   fence = null;
 
     for (const line of String(body || '').split(/\r\n|[\n\r]/)) {
         const fenceMatch = MARKDOWN_FENCE_PATTERN.exec(line);
@@ -1423,66 +1416,6 @@ function parsePrReviewEvaluationMetrics(body) {
         metrics: missingVisible.length === 0 ? Object.freeze(parsed) : null,
         missingVisible
     }
-}
-
-/**
- * @summary Resolves the effective evaluation metrics for a pull request across its review history.
- *
- * Prefers the latest `APPROVED` review carrying complete valid evaluation metrics (`6` numeric `0-100`
- * scores + `1` categorical `[EFFORT_PROFILE]`) so post-fix Round-2 approvals supersede stale Round-1
- * `CHANGES_REQUESTED` deductions. When no `APPROVED` review carries metrics:
- * - returns `null` if the latest `APPROVED` review explicitly declares `N/A — Cycle 1 was Micro-Review`;
- * - falls back to the latest non-dismissed scored review with `legacyFallback: true` (`source: 'legacy-prior-review'`)
- *   when a historical pre-cutover `APPROVED` review omitted metrics;
- * - returns the latest non-dismissed scored review with `legacyFallback: false` (`source: 'latest-review'`)
- *   while the PR has no `APPROVED` review yet.
- *
- * @param {Object[]} reviews Pull-request review nodes (`{id, state, body, submittedAt, author}`).
- * @returns {Object|null} Effective evaluation-metric envelope, or `null` when no valid metrics apply.
- */
-function resolveEffectivePrEvaluationMetrics(reviews) {
-    if (!Array.isArray(reviews) || reviews.length === 0) return null;
-
-    const ordered = reviews
-        .map((review, index) => ({index, review}))
-        .filter(({review}) => review && typeof review === 'object' && review.state !== 'DISMISSED')
-        .sort((a, b) => (getReviewSubmittedMs(a.review) - getReviewSubmittedMs(b.review)) || (a.index - b.index))
-        .map(({review}) => ({
-            microExempt: hasRound2MicroReviewMetricsExemption(review.body || ''),
-            metrics    : parsePrReviewEvaluationMetrics(review.body || '').metrics,
-            review
-        }));
-
-    const approvals            = ordered.filter(({review}) => review.state === 'APPROVED'),
-          latestApproval       = approvals.at(-1) || null,
-          latestScoredApproval = approvals.filter(({metrics}) => metrics !== null).at(-1) || null,
-          latestScoredReview   = ordered.filter(({metrics}) => metrics !== null).at(-1) || null;
-
-    const formatResult = (entry, source, legacyFallback) => deepFreeze({
-        reviewId      : entry.review.id ?? null,
-        reviewer      : entry.review.author?.login ?? entry.review.reviewer ?? null,
-        state         : entry.review.state ?? null,
-        submittedAt   : entry.review.submittedAt ?? null,
-        source,
-        legacyFallback,
-        metrics       : {...entry.metrics}
-    });
-
-    if (latestScoredApproval) {
-        return formatResult(latestScoredApproval, 'approved', false)
-    }
-
-    if (latestApproval?.microExempt) {
-        return null
-    }
-
-    if (latestScoredReview) {
-        return latestApproval
-            ? formatResult(latestScoredReview, 'legacy-prior-review', true)
-            : formatResult(latestScoredReview, 'latest-review', false)
-    }
-
-    return null
 }
 
 /**
@@ -5245,19 +5178,11 @@ class PullRequestService extends Base {
             };
         }
     }
-    /**
-     * @summary Resolves the effective evaluation metrics for a pull request across its review history.
-     * @param {Object[]} reviews Pull-request review nodes (`{id, state, body, submittedAt, author}`).
-     * @returns {Object|null} Effective evaluation-metric envelope, or `null` when no valid metrics apply.
-     */
-    resolveEffectiveEvaluationMetrics(reviews) {
-        return resolveEffectivePrEvaluationMetrics(reviews);
-    }
 }
 
 const PullRequestServiceSingleton = Neo.setupClass(PullRequestService);
 
 // Named for the spec: the relation is a pure function of (body, prior reviews, state), so it is
 // worth driving directly rather than only through a stubbed GraphQL round-trip.
-export {buildCheckoutPullRequest, getRound2DispositionRelationFailure, resolveEffectivePrEvaluationMetrics};
+export {buildCheckoutPullRequest, getRound2DispositionRelationFailure};
 export default PullRequestServiceSingleton;
