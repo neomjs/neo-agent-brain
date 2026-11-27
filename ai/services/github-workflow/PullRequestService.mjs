@@ -1295,15 +1295,195 @@ function getTemplateHeadingAnchorsByLabel(templatePath, labels, {
  * Extension protocol: if the pr-review skill adds a new evaluation metric, append the literal
  * `[NEW_TAG]` string here AND update both template files in the same PR.
  */
-const VISIBLE_PR_REVIEW_ANCHORS = [
+const NUMERIC_PR_REVIEW_METRIC_ANCHORS = Object.freeze([
     '[ARCH_ALIGNMENT]',
     '[CONTENT_COMPLETENESS]',
     '[EXECUTION_QUALITY]',
     '[PRODUCTIVITY]',
     '[IMPACT]',
-    '[COMPLEXITY]',
-    '[EFFORT_PROFILE]'
+    '[COMPLEXITY]'
+]);
+
+const EFFORT_PROFILE_PR_REVIEW_ANCHOR = '[EFFORT_PROFILE]';
+
+const VALID_PR_REVIEW_EFFORT_PROFILES = Object.freeze([
+    'Quick Win',
+    'Heavy Lift',
+    'Maintenance',
+    'Architectural Pillar'
+]);
+
+const VISIBLE_PR_REVIEW_ANCHORS = [
+    ...NUMERIC_PR_REVIEW_METRIC_ANCHORS,
+    EFFORT_PROFILE_PR_REVIEW_ANCHOR
 ];
+
+const ROUND_2_FINAL_METRICS_HEADING                  = '### 📊 Final Evaluation Metrics';
+const ROUND_2_MICRO_REVIEW_METRICS_EXEMPTION_PATTERN = /^[ \t]*(?:[-*][ \t]+)?N\/A[ \t]*(?:—|--|-)[ \t]*Cycle[ \t]+1[ \t]+was[ \t]+Micro-Review\.?[ \t]*$/i;
+const NUMERIC_PR_REVIEW_VALUE_AFTER_TAG_PATTERN      = /^[\s*_`]*:[\s*_`]*(\d{1,3})(?:\s*\/\s*100)?(?!\.\d)(?=$|[^0-9A-Za-z_])/;
+const EFFORT_PROFILE_PR_REVIEW_VALUE_PATTERN         = new RegExp(`^[\\s*_\`]*:[\\s*_\`]*(${VALID_PR_REVIEW_EFFORT_PROFILES.join('|')})(?=$|[^0-9A-Za-z_])`);
+
+/**
+ * @summary Returns a review body's lines outside fenced code blocks, split on CR/LF.
+ * @param {String} body
+ * @returns {String[]}
+ */
+function unfencedPrReviewLines(body) {
+    const lines = [];
+    let fence   = null;
+
+    for (const line of String(body || '').split(/\r\n|[\n\r]/)) {
+        const fenceMatch = MARKDOWN_FENCE_PATTERN.exec(line);
+
+        if (fenceMatch) {
+            if      (fence === null)             fence = fenceMatch[1][0];
+            else if (fenceMatch[1][0] === fence) fence = null;
+            continue
+        }
+
+        if (fence === null) {
+            lines.push(line)
+        }
+    }
+
+    return lines
+}
+
+/**
+ * @summary Whether a Round-2 body declares `N/A — Cycle 1 was Micro-Review` outside fenced blocks.
+ * @param {String} body
+ * @returns {Boolean}
+ */
+function hasRound2MicroReviewMetricsExemption(body) {
+    return unfencedPrReviewLines(body).some(line => ROUND_2_MICRO_REVIEW_METRICS_EXEMPTION_PATTERN.test(line))
+}
+
+/**
+ * @summary Parses and validates the 6 numeric `0-100` scores and 1 categorical `[EFFORT_PROFILE]` in a review body.
+ * @param {String} body
+ * @returns {{metrics: Object|null, missingVisible: String[]}}
+ */
+function parsePrReviewEvaluationMetrics(body) {
+    const lines          = unfencedPrReviewLines(body),
+          missingVisible = [],
+          parsed         = {};
+
+    for (const tag of NUMERIC_PR_REVIEW_METRIC_ANCHORS) {
+        const matching = lines.filter(line => line.includes(tag));
+
+        if (matching.length === 0) {
+            missingVisible.push(tag);
+            continue
+        }
+
+        let matchedScore = null;
+
+        for (const line of matching) {
+            const after = line.slice(line.indexOf(tag) + tag.length),
+                  match = NUMERIC_PR_REVIEW_VALUE_AFTER_TAG_PATTERN.exec(after);
+
+            if (match && !/^0\d/.test(match[1]) && Number(match[1]) <= 100) {
+                matchedScore = Number(match[1]);
+                break
+            }
+        }
+
+        if (matchedScore === null) {
+            missingVisible.push(`${tag}: an integer score from 0 to 100`)
+        } else {
+            parsed[tag.slice(1, -1)] = matchedScore
+        }
+    }
+
+    const profileLines = lines.filter(line => line.includes(EFFORT_PROFILE_PR_REVIEW_ANCHOR));
+
+    if (profileLines.length === 0) {
+        missingVisible.push(EFFORT_PROFILE_PR_REVIEW_ANCHOR)
+    } else {
+        let matchedProfile = null;
+
+        for (const line of profileLines) {
+            const after = line.slice(line.indexOf(EFFORT_PROFILE_PR_REVIEW_ANCHOR) + EFFORT_PROFILE_PR_REVIEW_ANCHOR.length),
+                  match = EFFORT_PROFILE_PR_REVIEW_VALUE_PATTERN.exec(after);
+
+            if (match) {
+                matchedProfile = match[1];
+                break
+            }
+        }
+
+        if (matchedProfile === null) {
+            missingVisible.push(`${EFFORT_PROFILE_PR_REVIEW_ANCHOR}: ${VALID_PR_REVIEW_EFFORT_PROFILES.join(' | ')}`)
+        } else {
+            parsed.EFFORT_PROFILE = matchedProfile
+        }
+    }
+
+    return {
+        metrics: missingVisible.length === 0 ? Object.freeze(parsed) : null,
+        missingVisible
+    }
+}
+
+/**
+ * @summary Resolves the effective evaluation metrics for a pull request across its review history.
+ *
+ * Prefers the latest `APPROVED` review carrying complete valid evaluation metrics (`6` numeric `0-100`
+ * scores + `1` categorical `[EFFORT_PROFILE]`) so post-fix Round-2 approvals supersede stale Round-1
+ * `CHANGES_REQUESTED` deductions. When no `APPROVED` review carries metrics:
+ * - returns `null` if the latest `APPROVED` review explicitly declares `N/A — Cycle 1 was Micro-Review`;
+ * - falls back to the latest non-dismissed scored review with `legacyFallback: true` (`source: 'legacy-prior-review'`)
+ *   when a historical pre-cutover `APPROVED` review omitted metrics;
+ * - returns the latest non-dismissed scored review with `legacyFallback: false` (`source: 'latest-review'`)
+ *   while the PR has no `APPROVED` review yet.
+ *
+ * @param {Object[]} reviews Pull-request review nodes (`{id, state, body, submittedAt, author}`).
+ * @returns {Object|null} Effective evaluation-metric envelope, or `null` when no valid metrics apply.
+ */
+function resolveEffectivePrEvaluationMetrics(reviews) {
+    if (!Array.isArray(reviews) || reviews.length === 0) return null;
+
+    const ordered = reviews
+        .map((review, index) => ({index, review}))
+        .filter(({review}) => review && typeof review === 'object' && review.state !== 'DISMISSED')
+        .sort((a, b) => (getReviewSubmittedMs(a.review) - getReviewSubmittedMs(b.review)) || (a.index - b.index))
+        .map(({review}) => ({
+            microExempt: hasRound2MicroReviewMetricsExemption(review.body || ''),
+            metrics    : parsePrReviewEvaluationMetrics(review.body || '').metrics,
+            review
+        }));
+
+    const approvals            = ordered.filter(({review}) => review.state === 'APPROVED'),
+          latestApproval       = approvals.at(-1) || null,
+          latestScoredApproval = approvals.filter(({metrics}) => metrics !== null).at(-1) || null,
+          latestScoredReview   = ordered.filter(({metrics}) => metrics !== null).at(-1) || null;
+
+    const formatResult = (entry, source, legacyFallback) => deepFreeze({
+        reviewId      : entry.review.id ?? null,
+        reviewer      : entry.review.author?.login ?? entry.review.reviewer ?? null,
+        state         : entry.review.state ?? null,
+        submittedAt   : entry.review.submittedAt ?? null,
+        source,
+        legacyFallback,
+        metrics       : {...entry.metrics}
+    });
+
+    if (latestScoredApproval) {
+        return formatResult(latestScoredApproval, 'approved', false)
+    }
+
+    if (latestApproval?.microExempt) {
+        return null
+    }
+
+    if (latestScoredReview) {
+        return latestApproval
+            ? formatResult(latestScoredReview, 'legacy-prior-review', true)
+            : formatResult(latestScoredReview, 'latest-review', false)
+    }
+
+    return null
+}
 
 /**
  * **Invisible** template-anchor substrings — checked SILENTLY; NOT named in the error response
@@ -1565,6 +1745,10 @@ function getRound2DispositionRelationFailure({body, reviews, state}) {
     rows.slice(expected.length).forEach(row => {
         defects.push(`"${row.action}" appears in the table but not in the prior round — an ordinary Round 2 raises nothing new`)
     });
+
+    if (hasRound2MicroReviewMetricsExemption(body) && !isMicroReview(prior.body)) {
+        defects.push(`claims \`N/A — Cycle 1 was Micro-Review\`, but the cited Round-1 review (${prior.url || prior.id}) did not use \`# PR Micro-Review\` — record final \`0-100\` scores and \`[EFFORT_PROFILE]\` under \`${ROUND_2_FINAL_METRICS_HEADING}\``)
+    }
 
     const stillOpen = rows.some(row => row.disposition === 'STILL_OPEN');
 
@@ -2272,6 +2456,21 @@ function getRound2PrReviewTemplateValidationFailure(body) {
         defects.push('mints a new action checklist — an ordinary Round 2 carries prior actions in the disposition table and never opens a fresh packet. A STILL_OPEN row keeps the original review authoritative instead')
     }
 
+    const statusMatch = String(body || '').match(ROUND_2_STATUS_PATTERN),
+          declared    = statusMatch ? statusMatch[1].replace(/[*_`]/g, '').trim().toLowerCase() : null;
+
+    if (declared === 'approved' || declared === 'approve+follow-up') {
+        if (!body.includes(ROUND_2_FINAL_METRICS_HEADING)) {
+            defects.push(`omits \`${ROUND_2_FINAL_METRICS_HEADING}\` — Round-2 \`Approved\` and \`Approve+Follow-Up\` reviews record post-fix evaluation metrics (or \`N/A — Cycle 1 was Micro-Review\`)`)
+        } else if (!hasRound2MicroReviewMetricsExemption(body)) {
+            const {missingVisible} = parsePrReviewEvaluationMetrics(body);
+
+            if (missingVisible.length > 0) {
+                defects.push(`omits or misformats final evaluation metrics (first miss: \`${missingVisible[0]}\`; supply 6 numeric \`0-100\` scores and 1 categorical \`[EFFORT_PROFILE]\`, or \`N/A — Cycle 1 was Micro-Review\` when Cycle 1 used \`# PR Micro-Review\`)`)
+            }
+        }
+    }
+
     if (defects.length === 0) return null;
 
     return {
@@ -2344,7 +2543,7 @@ function getMicroDeltaPrReviewTemplateValidationFailure(body) {
  * @returns {Object|null} Validation failure payload or `null` when valid.
  */
 function getCanonicalPrReviewTemplateValidationFailure(body, {includeTemplateDiagnostics = false} = {}) {
-    const missingVisible          = VISIBLE_PR_REVIEW_ANCHORS          .filter(anchor => !body.includes(anchor));
+    const {missingVisible}        = parsePrReviewEvaluationMetrics(body);
     const missingInvisible        = INVISIBLE_PR_REVIEW_ANCHORS        .filter(anchor => !body.includes(anchor));
     const missingTemplateSkeleton = getPrReviewTemplateSkeletonMisses(body);
     const missingPremiseSnapshot  = REQUIRED_PR_REVIEW_PREMISE_ANCHORS
@@ -5046,11 +5245,19 @@ class PullRequestService extends Base {
             };
         }
     }
+    /**
+     * @summary Resolves the effective evaluation metrics for a pull request across its review history.
+     * @param {Object[]} reviews Pull-request review nodes (`{id, state, body, submittedAt, author}`).
+     * @returns {Object|null} Effective evaluation-metric envelope, or `null` when no valid metrics apply.
+     */
+    resolveEffectiveEvaluationMetrics(reviews) {
+        return resolveEffectivePrEvaluationMetrics(reviews);
+    }
 }
 
 const PullRequestServiceSingleton = Neo.setupClass(PullRequestService);
 
 // Named for the spec: the relation is a pure function of (body, prior reviews, state), so it is
 // worth driving directly rather than only through a stubbed GraphQL round-trip.
-export {buildCheckoutPullRequest, getRound2DispositionRelationFailure};
+export {buildCheckoutPullRequest, getRound2DispositionRelationFailure, resolveEffectivePrEvaluationMetrics};
 export default PullRequestServiceSingleton;
