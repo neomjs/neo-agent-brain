@@ -125,6 +125,27 @@ test.describe('Neo.ai.daemons.message.drainCycle', () => {
         expect(summaries[0]).toMatchObject({observed: 0, drained: 0, outstanding: 0, inactive: false});
     });
 
+    test('the loop host runs the cycle and the after-cycle hook as named jobs, each spanning its pass (#1955)', async () => {
+        const jobs = [];
+        const loop = startMessageDrainLoop({
+            getConfig   : () => ({dir: tmpDir, batchSize: 5, maxRetries: 0, backoffBaseMs: 1, pollIntervalMs: 10}),
+            getProcessor: () => async () => ({drained: 0, failed: 0, deferred: 0}),
+            afterCycle  : async () => 'repaired',
+            trackJob    : async (name, fn) => {
+                const result = await fn();
+
+                jobs.push({name, result});
+                return result
+            }
+        });
+
+        await expect.poll(() => jobs.length).toBeGreaterThanOrEqual(2);
+        loop.stop();
+
+        expect(jobs[0]).toMatchObject({name: 'message-wal-drain', result: {observed: 0, inactive: false}});
+        expect(jobs[1]).toEqual({name: 'message-graph-integrity-repair', result: 'repaired'});
+    });
+
     test('without a replay processor, the cycle skips WAL reads instead of doing active no-op work', async () => {
         await seed('MESSAGE:deferred');
 

@@ -1078,7 +1078,7 @@ class MemoryService extends Base {
             me.graphProjectionRetryTimers.delete(timer);
 
             try {
-                await me._projectMemoryToGraph(options);
+                await MemoryCoreRecorderService.trackJob('memory-graph-projection', () => me._projectMemoryToGraph(options));
             } catch (error) {
                 if (attempt < maxAttempts) {
                     logger.warn(`[MemoryService] Deferred graph projection failed for ${options.memoryId} (attempt ${attempt}/${maxAttempts}); retrying: ${error.message}`);
@@ -1155,12 +1155,14 @@ class MemoryService extends Base {
     _startGraphProjectionDrainLoop() {
         if (this.graphProjectionDrainTimer) return;
 
-        this.drainPendingGraphProjections().catch(error => {
+        const drain = () => MemoryCoreRecorderService.trackJob('graph-projection-drain', () => this.drainPendingGraphProjections());
+
+        drain().catch(error => {
             logger.warn(`[MemoryService] graph projection startup drain failed: ${error.message}`);
         });
 
         this.graphProjectionDrainTimer = setInterval(() => {
-            this.drainPendingGraphProjections().catch(error => {
+            drain().catch(error => {
                 logger.warn(`[MemoryService] graph projection drain failed: ${error.message}`);
             });
         }, aiConfig.memoryService.graphProjectionDrainIntervalMs);

@@ -12,6 +12,9 @@
  * A late tick is reported on the tick after it, so the `gc` performance entries from inside the window
  * have been delivered. The window runs from the last on-time tick to the late one, so it can name a
  * call that ended up to one interval before the block began.
+ *
+ * Background work joins the same in-flight set as a job: `trackJob(name, fn)` holds `job:<name>:<n>`
+ * across one run of `fn`, so a block with no tool call in flight still names what ran.
  */
 import {PerformanceObserver, performance} from 'node:perf_hooks';
 
@@ -42,16 +45,28 @@ const ATTRIBUTION_MS = 60 * 1000;
  * `callIds` the calls in flight across it.
  * @param {Number} [options.thresholdMs=BLOCK_THRESHOLD_MS] Tests shorten it.
  * @param {Number} [options.intervalMs=BLOCK_SAMPLE_INTERVAL_MS] Tests shorten it.
- * @returns {{callStarted: Function, callEnded: Function, noteGc: Function, stop: Function}} `noteGc`
- * takes `(startedAt, durationMs)` in `performance.now()` time; the observer feeds it, and so can a test.
+ * @returns {{callStarted: Function, callEnded: Function, trackJob: Function, noteGc: Function, stop: Function}}
+ * `trackJob` takes `(name, fn)` and resolves to what `fn` returns. `noteGc` takes `(startedAt, durationMs)` in
+ * `performance.now()` time; the observer feeds it, and so can a test.
  */
 export function createEventLoopBlockProbe({onBlock, thresholdMs = BLOCK_THRESHOLD_MS, intervalMs = BLOCK_SAMPLE_INTERVAL_MS}) {
     const
         calls = new Map(),
         gcs   = [];
 
-    let lastTick = performance.now(),
+    let jobRuns  = 0,
+        lastTick = performance.now(),
         pending  = null;
+
+    const callStarted = id => {
+        calls.set(id, {startedAt: performance.now(), endedAt: null})
+    };
+
+    const callEnded = id => {
+        const call = calls.get(id);
+
+        if (call) call.endedAt = performance.now()
+    };
 
     const noteGc = (startedAt, durationMs) => {
         gcs.push({startedAt, endedAt: startedAt + durationMs})
@@ -98,13 +113,18 @@ export function createEventLoopBlockProbe({onBlock, thresholdMs = BLOCK_THRESHOL
     observer.observe({entryTypes: ['gc']});
 
     return {
-        callStarted(id) {
-            calls.set(id, {startedAt: performance.now(), endedAt: null})
-        },
-        callEnded(id) {
-            const call = calls.get(id);
+        callStarted,
+        callEnded,
+        async trackJob(name, fn) {
+            const id = `job:${name}:${++jobRuns}`;
 
-            if (call) call.endedAt = performance.now()
+            callStarted(id);
+
+            try {
+                return await fn()
+            } finally {
+                callEnded(id)
+            }
         },
         noteGc,
         stop() {

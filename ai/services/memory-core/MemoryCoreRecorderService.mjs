@@ -535,6 +535,31 @@ class MemoryCoreRecorderService extends Base {
     }
 
     /**
+     * @summary Runs one pass of background work as a named job, so an event-loop block inside it names
+     * the job the way a tool call names itself. With telemetry off there is no probe and it only runs `fn`.
+     *
+     * A job is one pass, never a whole loop: a loop held across its sleeps would be in flight across every
+     * block and name none. What mc-server runs outside tool calls, by job name:
+     * - `memory-wal-drain`, `message-embed-drain`: one cycle of each embed drain (`startEmbedDrainLoops`).
+     * - `message-wal-drain`, `message-graph-integrity-repair`: one message-drain cycle, and the repair after it.
+     * - `graph-projection-drain`, `memory-graph-projection`: MemoryService's projection drain and a deferred
+     *   per-write projection.
+     * - `embedding-write-canary`: one HealthService canary attempt.
+     * - `wake-digest-flush`: a timer-fired CoalescingEngineService flush.
+     *
+     * Not named, because they cannot block: the probe's own sampling interval, and timeout or backoff timers
+     * (`withTimeout`, retry sleeps), which only settle a promise. The summary backfills run as lifecycle
+     * scripts in their own processes.
+     *
+     * @param {String} name Job name; blocks carry `job:<name>:<run>`.
+     * @param {Function} fn The pass; may be async.
+     * @returns {Promise<*>} What `fn` returns.
+     */
+    async trackJob(name, fn) {
+        return this.blockProbe ? this.blockProbe.trackJob(name, fn) : fn()
+    }
+
+    /**
      * @summary Persists one event-loop block after the loop freed: its duration, the GC time inside it,
      * and the call ids in flight across it, each of which names a start row. Best-effort only.
      * @param {{endedAt: Number, durationMs: Number, gcMs: Number, callIds: String[]}} block

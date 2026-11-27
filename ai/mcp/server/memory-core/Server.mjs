@@ -348,7 +348,8 @@ class Server extends BaseServer {
         // leaves live on the Tier-1 root yields `{}` — silently, with every named read still correct.
         CoalescingEngineService.configure(wakeDispatch, {
             resolveDeliveryReadState: readBackgroundDeliveryState,
-            resolveDeliveryHold     : identity => WakeSubscriptionService.holdsWakesForRotation(identity)
+            resolveDeliveryHold     : identity => WakeSubscriptionService.holdsWakesForRotation(identity),
+            trackJob                : (name, fn) => MemoryCoreRecorderService.trackJob(name, fn)
         });
         WebhookDeliveryService.configure(wakeDispatch);
 
@@ -420,7 +421,8 @@ class Server extends BaseServer {
                     getMemoryConfig     : () => aiConfig.memoryWal,
                     getMessageConfig    : () => aiConfig.messageWal,
                     expectedDimension   : aiConfig.vectorDimension,
-                    log                 : drainLog
+                    log                 : drainLog,
+                    trackJob            : (name, fn) => MemoryCoreRecorderService.trackJob(name, fn)
                 });
 
                 this.walDrainLoop        = embedLoops.memory;
@@ -462,7 +464,8 @@ class Server extends BaseServer {
                         getConfig   : () => aiConfig.messageWal,
                         getProcessor: () => createMessageGraphProjectionProcessor(MailboxService),
                         afterCycle  : createMessageGraphIntegrityRepairCadence(MailboxService, {log: messageDrainLog}),
-                        log         : messageDrainLog
+                        log         : messageDrainLog,
+                        trackJob    : (name, fn) => MemoryCoreRecorderService.trackJob(name, fn)
                     });
                     process.on('exit', () => this.messageWalDrainLock?.release());
                     logger.info('[neo-memory-core MCP] In-process message WAL drain loop active (messageWal.inProcessDrain)');

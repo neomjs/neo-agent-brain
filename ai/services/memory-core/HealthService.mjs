@@ -2286,7 +2286,7 @@ class HealthService extends Base {
                         producer.activeAttempt = {startedAt: producer.clock(), timeoutMs: producer.timeoutMs};
 
                         try {
-                            return await producer.runCanary(ctx);
+                            return await MemoryCoreRecorderService.trackJob('embedding-write-canary', () => producer.runCanary(ctx));
                         } finally {
                             producer.activeAttempt = null;
                         }

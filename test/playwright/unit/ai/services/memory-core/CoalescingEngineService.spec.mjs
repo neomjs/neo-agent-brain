@@ -984,6 +984,43 @@ test.describe('CoalescingEngineService', () => {
             }
         }
 
+        test('a timer-fired flush runs as the host job wake-digest-flush (#1955)', async () => {
+            const clock = createFakeClock(),
+                  jobs  = [];
+
+            CoalescingEngineService.configure({
+                coalesceWindowSeconds       : 150,
+                flushRefractorySeconds      : 120,
+                flushHardCapSeconds         : 300,
+                urgentCoalesceWindowMs      : 50,
+                urgentFlushRefractorySeconds: 5
+            }, {
+                resolveDeliveryReadState: () => ({}),
+                nowFn                   : clock.now,
+                setTimerFn              : clock.setTimer,
+                clearTimerFn            : clock.clearTimer,
+                trackJob                : async (name, fn) => {
+                    jobs.push(name);
+                    return fn()
+                }
+            });
+
+            CoalescingEngineService.enqueue(buildSubscription({
+                id                   : 'WAKE_SUB:job-seat',
+                agentIdentity        : '@job',
+                harnessTargetMetadata: {url: 'https://example.com/job'}
+            }), buildEnvelope('wake/sent_to_me', {
+                messageId: 'M-JOB-1',
+                priority : 'normal',
+                sentAt   : clock.iso()
+            }, 100));
+
+            await clock.advanceBy(151_000);
+
+            expect(jobs).toEqual(['wake-digest-flush']);
+            expect(deliverCalls.length).toBe(1)
+        });
+
         test('AC-1 — high event expedites during ordinary 150s debounce and 120s refractory while normal control holds', async () => {
             const clock = createFakeClock();
             CoalescingEngineService.configure({
