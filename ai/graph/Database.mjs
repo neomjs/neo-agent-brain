@@ -45,8 +45,10 @@ class Database extends Base {
          */
         lastSyncId: 0,
         /**
-         * System cache constraints restricting V8 Memory map thresholds natively ensuring GC loops function effectively cleanly.
-         * Set to null to disable garbage collection, which is required for massive global GraphRAG traversals (Public/Private Contexts).
+         * @summary How many nodes the in-memory cache may hold. Past it, {@link Neo.ai.graph.Database#runGarbageCollector}
+         * evicts the least recently used nodes together with their incident edges; storage keeps every row.
+         * `null` keeps every node, which a global GraphRAG traversal over the whole graph needs. A long-lived
+         * server must set it: its cache otherwise grows with everything the process reads and writes.
          * @member {Number|null} maxGraphNodes=null
          */
         maxGraphNodes: null,
@@ -74,6 +76,12 @@ class Database extends Base {
         vicinityLoadedNodes_: null
     }
 
+    /**
+     * @summary Every node the cache holds, least recently used first: a touch re-inserts its id, so the
+     * collector evicts from the front without sorting.
+     * @member {Map<String, Number>} lastAccessMap
+     * @protected
+     */
     lastAccessMap = new Map();
 
     /**
@@ -188,35 +196,70 @@ class Database extends Base {
     }
 
     /**
-     * Purges Least-Recently-Used vectors protecting V8 Memory Limits synchronously natively gracefully erasing footprint internally.
-     * Implements strict structural LRU checks mapping `lastAccessMap` metadata to guarantee total V8 Virtual Memory isolation boundaries smoothly.
-     * Bypassed implicitly if `maxGraphNodes` evaluates identically strictly to `null`.
+     * @summary Evicts the least recently used nodes once the cache holds more than `maxGraphNodes`, down to
+     * 80 % of the bound, so one pass buys room for many reads.
+     *
+     * An evicted node takes its incident edges along, and both ends of every such edge lose their
+     * vicinity mark: a later {@link Neo.ai.graph.Database#getAdjacentNodes} on either reloads the whole
+     * vicinity from storage rather than answering from a partial one. Eviction never writes to storage,
+     * and it waits while a transaction runs, since the cache then holds state storage has not committed.
      * @see Neo.ai.graph.Database#lastAccessMap
      */
     runGarbageCollector() {
-        let me = this;
-        if (me.maxGraphNodes !== null && me.lastAccessMap.size > me.maxGraphNodes) {
-            let nodesArray = Array.from(me.lastAccessMap.entries());
-            nodesArray.sort((a, b) => a[1] - b[1]); // Oldest timestamps first
+        const me = this;
 
-            let deleteCount = Math.max(1, Math.floor(me.maxGraphNodes * 0.2)); // Execute 20% chunk truncation cleanly locally guaranteeing at least 1 dropped
-            let toDelete    = nodesArray.slice(0, deleteCount).map(entry => entry[0]);
+        if (me.maxGraphNodes === null || me.lastAccessMap.size <= me.maxGraphNodes || me.isExecutingTransaction) return;
 
-            let wasTransacting = me.isExecutingTransaction;
-            let wasAutoSave    = me.autoSave;
-            me.isExecutingTransaction = false;
-            me.autoSave               = false;
+        const
+            evictCount = me.lastAccessMap.size - Math.floor(me.maxGraphNodes * 0.8),
+            victims    = [],
+            edgeRefs   = new Set();
 
-            me.nodes.remove(toDelete);
-            toDelete.forEach(id => {
-                me.vicinityLoadedNodes.delete(id);
-                me.lastAccessMap.delete(id);
-            });
-
-            // Note: Cascade deletions for attached unmapped edges isn't strictly required instantly unless Edges Map exceeds threshold natively safely.
-            me.autoSave               = wasAutoSave;
-            me.isExecutingTransaction = wasTransacting;
+        for (const id of me.lastAccessMap.keys()) {
+            victims.push(id);
+            if (victims.length === evictCount) break;
         }
+
+        for (const id of victims) {
+            for (const property of ['source', 'target']) {
+                for (const edge of me.edges.getByIndex(property, id)) {
+                    edgeRefs.add(edge);
+                    me.vicinityLoadedNodes.delete(edge.source);
+                    me.vicinityLoadedNodes.delete(edge.target)
+                }
+            }
+        }
+
+        const wasAutoSave = me.autoSave;
+
+        me.autoSave = false;
+
+        try {
+            if (edgeRefs.size > 0) {
+                me.edges.remove([...new Set([...edgeRefs].map(edge => edge.id))]);
+                // As in syncCache: an index Set can still hold an older same-id object the Store map no longer points at
+                me.edges.updateIndexMaps?.(null, [...edgeRefs])
+            }
+
+            me.nodes.remove(victims);
+
+            victims.forEach(id => {
+                me.vicinityLoadedNodes.delete(id);
+                me.lastAccessMap.delete(id)
+            })
+        } finally {
+            me.autoSave = wasAutoSave
+        }
+    }
+
+    /**
+     * @summary Marks a node as the most recently used one the cache holds.
+     * @param {String} nodeId
+     * @protected
+     */
+    touchNode(nodeId) {
+        this.lastAccessMap.delete(nodeId);
+        this.lastAccessMap.set(nodeId, Date.now())
     }
 
     /**
@@ -239,6 +282,7 @@ class Database extends Base {
     addNode(node) {
         node.id ??= globalThis.crypto.randomUUID();
         this.nodes.add(node);
+        this.runGarbageCollector()
     }
 
     /**
@@ -373,11 +417,8 @@ class Database extends Base {
             }
         }
 
-        // 3. Increment LRU Matrix bounds tracking footprint usage cleanly natively
-        me.lastAccessMap.set(nodeId, Date.now());
-        if (me.maxGraphNodes !== null && me.lastAccessMap.size > me.maxGraphNodes) {
-            me.runGarbageCollector();
-        }
+        // 3. The anchor is the most recent access; what the vicinity load added was touched as it entered
+        if (me.nodes.get(nodeId)) me.touchNode(nodeId);
 
         if (direction === 'outbound' || direction === 'both') {
             edges = me.edges.getByIndex('source', nodeId).slice();
@@ -412,6 +453,11 @@ class Database extends Base {
                 nodes.push(adjacentNode);
             }
         }
+
+        nodes.forEach(node => me.touchNode(node.id));
+
+        // After the answer exists: a vicinity larger than the bound must not trim the read that loaded it
+        me.runGarbageCollector();
 
         return nodes;
     }
@@ -448,6 +494,11 @@ class Database extends Base {
      * @param {Object} mutation
      */
     onNodesMutate(mutation) {
+        // Every path into the cache passes here (vicinity loads, writes, transactions), so the LRU sees it all
+        const idOf = item => typeof item === 'string' ? item : item?.id;
+
+        mutation.addedItems?.forEach(item => this.touchNode(idOf(item)));
+        mutation.removedItems?.forEach(item => this.lastAccessMap.delete(idOf(item)));
 
         if (this.isExecutingTransaction) {
             this.transactionDiff.push({type: 'nodes', mutation});
