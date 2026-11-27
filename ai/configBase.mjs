@@ -1380,10 +1380,12 @@ class ConfigBase extends ConfigProvider {
                 graphProjectionDrainIntervalMs: leaf(60000, 'NEO_MC_GRAPH_PROJECTION_DRAIN_INTERVAL_MS', 'number'),
                 /**
                  * How many nodes Memory Core's in-memory graph cache holds before its collector evicts the
-                 * least recently used ones with their edges. Unbounded, the cache keeps everything the
-                 * process touched and the heap grows until V8's ceiling.
+                 * least recently used ones with their edges. Unbounded (`null`), the heap grows until V8's
+                 * ceiling. Off by default: an eviction strips the identity hubs' vicinities, so each message
+                 * projection reloads them and blocks the loop for minutes. A default bound needs a collector
+                 * that keeps hub vicinities whole, or projections that do not load them.
                  */
-                graphCacheMaxNodes            : leaf(60000, 'NEO_MC_GRAPH_CACHE_MAX_NODES', 'number')
+                graphCacheMaxNodes            : leaf(null, 'NEO_MC_GRAPH_CACHE_MAX_NODES', 'number')
             },
             /**
              * Temporal-pyramid durable aggregation lane (L1 session / L2 daily tiers).
