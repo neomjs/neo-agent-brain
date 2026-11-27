@@ -2496,7 +2496,8 @@ async function classifyMailboxGraphProjectionCandidates() {
             SELECT id
               FROM Nodes
              WHERE id IN (${placeholders})
-               AND json_extract(data, '$.label') = 'MESSAGE'
+               -- the + keeps the plan on the id list: with no planner stats, SQLite picks idx_nodes_label and walks every MESSAGE row per chunk
+               AND +json_extract(data, '$.label') = 'MESSAGE'
         `).all(...chunk)) {
             messageIds.add(row.id);
         }

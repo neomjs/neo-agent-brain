@@ -1441,7 +1441,8 @@ class MemoryService extends Base {
                        json_extract(memory.data, '$.properties.miniSummary') AS miniSummary
                 FROM Nodes memory
                 WHERE memory.id IN (${placeholders})
-                  AND json_extract(memory.data, '$.label')                  = 'AGENT_MEMORY'
+                  -- the + keeps the plan on the id list: with no planner stats, SQLite picks idx_nodes_label and walks every AGENT_MEMORY row
+                  AND +json_extract(memory.data, '$.label')                 = 'AGENT_MEMORY'
                   AND json_extract(memory.data, '$.properties.miniSummary') IS NOT NULL
             `).all(...lookupIds);
 

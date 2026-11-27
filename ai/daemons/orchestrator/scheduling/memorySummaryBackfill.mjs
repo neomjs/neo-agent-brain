@@ -92,7 +92,8 @@ export function getStillPendingMemorySummaryBackfillJobs(db, ids = []) {
         return db.prepare(`
             SELECT memory.id AS id
             FROM Nodes memory
-            WHERE json_extract(memory.data, '$.label') = 'AGENT_MEMORY'
+            -- the + keeps the plan on the id list: with no planner stats, SQLite picks idx_nodes_label and walks every AGENT_MEMORY row
+            WHERE +json_extract(memory.data, '$.label') = 'AGENT_MEMORY'
               AND json_extract(memory.data, '$.properties.miniSummary') IS NULL
               -- an archived row is no longer pending: it counts as progress, not a stuck attempt
               AND json_extract(memory.data, '$.properties.archivedAt') IS NULL
