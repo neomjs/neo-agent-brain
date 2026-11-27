@@ -1,0 +1,17 @@
+# Thin caller for neomjs/neo's reusable merge-comment workflow: a merged pull request from outside the team gets the
+# Engine's merge comment here too (the author's standing, curated issues to take next, the badge). Owns only the
+# trigger and the token's permissions; the filter, the concurrency and the words live in neomjs/neo at the pinned SHA.
+name: Merge comment
+
+permissions:
+  contents: read       # the comment modules, read from neomjs/neo at the pinned SHA
+  issues: read         # the labels of the issues the pull request closes
+  pull-requests: write # the comment on the merged pull request
+
+on:
+  pull_request_target:
+    types: [closed]
+
+jobs:
+  comment:
+    uses: neomjs/neo/.github/workflows/merge-comment.yml@c991ccb0907504e676c477a6a60e6c5d020dea64
