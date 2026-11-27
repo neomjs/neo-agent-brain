@@ -1253,10 +1253,9 @@ function buildTaggedConceptFilterGroups(values = []) {
  * UNSTAMPED edge is unknown provenance, fail-closed until `ensureBroadcastCohortStamps` or the
  * repair classifies it) and, for the outbox, a `SENT_BY` the target.
  * Receipt state is read where the view stores it, as `resolveReceiptState` reads it per
- * row: the target's `DELIVERED_TO` edge when one exists (the first non-null across its spellings,
- * as `getStorageDeliveryMutableState` reads it), the MESSAGE node otherwise. Identity spellings
- * ride `json_each` arrays so one named parameter covers every legacy variant, and the
- * `Edges(target)` / `Edges(source)` indexes carry each branch.
+ * row: the target's `DELIVERED_TO` edge when one exists (aggregated once in `target_deliveries`),
+ * the MESSAGE node otherwise. Routing branches pin `idx_edges_target` and join `Nodes` via `CROSS JOIN`
+ * on primary key so `json_each` target sets never invert into a full `idx_nodes_label` message scan.
  *
  * @param {Object} view
  * @param {String} view.box `'inbox'`, `'outbox'` or `'all'`.
@@ -1269,22 +1268,23 @@ function buildTaggedConceptFilterGroups(values = []) {
  * @param {Boolean} [view.includeArchived=false] Keep archived rows.
  * @param {Boolean} [view.statusOnOutbox=true] Apply `status` to outbox rows too (a sent direct
  *     message's `readAt` is its recipient's); `countMessages` keeps its documented no-op.
- * @returns {{matchesSql: String, params: Object}} `matchesSql` is a `WITH matches AS (...)` prefix
- *     whose rows are `(messageId, sentAt)`; `params` are its named parameters.
+ * @returns {{matchesSql: String, params: Object}} `matchesSql` is a `WITH ... matches AS (...)` prefix
+ *     whose rows are `(messageId, sentAt, readAt)`; `params` are its named parameters.
  * @private
  */
-function buildMailboxMatchQuery({box, status, target, fromIdentity = null, threadId = null, taggedConceptGroups = [], since = null, includeArchived = false, statusOnOutbox = true}) {
+export function buildMailboxMatchQuery({box, status, target, fromIdentity = null, threadId = null, taggedConceptGroups = [], since = null, includeArchived = false, statusOnOutbox = true}) {
     const
         params = {
             targetVariants: JSON.stringify(getMailboxIdentityStorageVariants(target))
         },
-        targetIn         = `(SELECT value FROM json_each(@targetVariants))`,
-        isMessage        = `json_extract(n.data, '$.label') = 'MESSAGE'`,
-        deliveryToTarget = `SELECT 1 FROM Edges de WHERE de.source = n.id AND de.type = 'DELIVERED_TO' AND de.target IN ${targetIn}`,
-        receiptOnEdge    = property => `(SELECT MAX(json_extract(de.data, '$.properties.${property}')) FROM Edges de WHERE de.source = n.id AND de.type = 'DELIVERED_TO' AND de.target IN ${targetIn})`,
-        receiptOnNode    = property => `json_extract(n.data, '$.properties.${property}')`,
-        receipt          = property => `CASE WHEN EXISTS (${deliveryToTarget}) THEN ${receiptOnEdge(property)} ELSE ${receiptOnNode(property)} END`,
-        common           = [isMessage];
+        targetIn   = `(SELECT value FROM json_each(@targetVariants))`,
+        isMessage  = `+json_extract(n.data, '$.label') = 'MESSAGE'`,
+        includeIn  = box === 'inbox' || box === 'all',
+        includeOut = box === 'outbox' || box === 'all',
+        receipt    = property => includeIn
+            ? `CASE WHEN td.messageId IS NOT NULL THEN td.${property} ELSE json_extract(n.data, '$.properties.${property}') END`
+            : `json_extract(n.data, '$.properties.${property}')`,
+        common     = [isMessage];
 
     if (since) {
         params.since = since;
@@ -1293,17 +1293,17 @@ function buildMailboxMatchQuery({box, status, target, fromIdentity = null, threa
 
     if (fromIdentity) {
         params.senderVariants = JSON.stringify(getMailboxIdentityStorageVariants(fromIdentity));
-        common.push(`EXISTS (SELECT 1 FROM Edges sb WHERE sb.source = n.id AND sb.type = 'SENT_BY' AND sb.target IN (SELECT value FROM json_each(@senderVariants)))`);
+        common.push(`EXISTS (SELECT 1 FROM Edges sb INDEXED BY idx_edges_source WHERE sb.source = n.id AND sb.type = 'SENT_BY' AND sb.target IN (SELECT value FROM json_each(@senderVariants)))`);
     }
 
     if (threadId) {
         params.threadId = threadId;
-        common.push(`EXISTS (SELECT 1 FROM Edges th WHERE th.source = n.id AND th.type = 'PART_OF_THREAD' AND th.target = @threadId)`);
+        common.push(`EXISTS (SELECT 1 FROM Edges th INDEXED BY idx_edges_source WHERE th.source = n.id AND th.type = 'PART_OF_THREAD' AND th.target = @threadId)`);
     }
 
     taggedConceptGroups.forEach((group, index) => {
         params[`conceptGroup${index}`] = JSON.stringify(group);
-        common.push(`EXISTS (SELECT 1 FROM Edges tc WHERE tc.source = n.id AND tc.type = 'TAGGED_CONCEPT' AND tc.target IN (SELECT value FROM json_each(@conceptGroup${index})))`);
+        common.push(`EXISTS (SELECT 1 FROM Edges tc INDEXED BY idx_edges_source WHERE tc.source = n.id AND tc.type = 'TAGGED_CONCEPT' AND tc.target IN (SELECT value FROM json_each(@conceptGroup${index})))`);
     });
 
     if (!includeArchived) {
@@ -1311,32 +1311,59 @@ function buildMailboxMatchQuery({box, status, target, fromIdentity = null, threa
     }
 
     const
-        statusClause = status === 'unread'
+        statusClause     = status === 'unread'
             ? `${receipt('readAt')} IS NULL`
             : status === 'read'
                 ? `${receipt('readAt')} IS NOT NULL`
                 : null,
-        branch       = (routing, applyStatus = true) => `
-        SELECT n.id AS messageId, json_extract(n.data, '$.properties.sentAt') AS sentAt
-        FROM Edges e
-        JOIN Nodes n ON n.id = e.source
-        WHERE ${[routing, ...common, ...(applyStatus && statusClause ? [statusClause] : [])].join('\n          AND ')}`,
-        branches     = [];
+        mixedOutboxState = Boolean(statusClause && includeIn && includeOut && !statusOnOutbox),
+        candidateArms    = [];
 
-    if (box === 'inbox' || box === 'all') {
-        branches.push(
-            branch(`e.type = 'SENT_TO' AND e.target IN ${targetIn}`),
-            branch(`e.type = 'DELIVERED_TO' AND e.target IN ${targetIn}`),
-            branch(`e.type = 'SENT_TO' AND e.target = 'AGENT:*' AND (json_extract(e.data, '$.properties.broadcastCohort') = 'legacy-unknown' OR json_extract(e.data, '$.properties.intendedRecipientCount') = 0) AND NOT EXISTS (SELECT 1 FROM Edges de WHERE de.source = n.id AND de.type = 'DELIVERED_TO')`)
+    if (includeIn) {
+        candidateArms.push(
+            `SELECT e.source AS messageId${mixedOutboxState ? ', 1 AS applyStatus' : ''} FROM Edges e INDEXED BY idx_edges_target WHERE e.type = 'SENT_TO' AND e.target IN ${targetIn}`,
+            `SELECT messageId${mixedOutboxState ? ', 1 AS applyStatus' : ''} FROM target_deliveries`,
+            `SELECT e.source AS messageId${mixedOutboxState ? ', 1 AS applyStatus' : ''} FROM Edges e INDEXED BY idx_edges_target WHERE e.type = 'SENT_TO' AND e.target = 'AGENT:*' AND (json_extract(e.data, '$.properties.broadcastCohort') = 'legacy-unknown' OR json_extract(e.data, '$.properties.intendedRecipientCount') = 0) AND NOT EXISTS (SELECT 1 FROM Edges de INDEXED BY idx_edges_source WHERE de.source = e.source AND de.type = 'DELIVERED_TO')`
         );
     }
 
-    if (box === 'outbox' || box === 'all') {
-        branches.push(branch(`e.type = 'SENT_BY' AND e.target IN ${targetIn}`, statusOnOutbox));
+    if (includeOut) {
+        candidateArms.push(
+            `SELECT e.source AS messageId${mixedOutboxState ? ', 0 AS applyStatus' : ''} FROM Edges e INDEXED BY idx_edges_target WHERE e.type = 'SENT_BY' AND e.target IN ${targetIn}`
+        );
     }
 
+    const
+        deliveriesCte = includeIn ? `target_deliveries AS MATERIALIZED (
+        SELECT e.source AS messageId,
+               MAX(json_extract(e.data, '$.properties.readAt')) AS readAt,
+               MAX(json_extract(e.data, '$.properties.archivedAt')) AS archivedAt
+        FROM Edges e INDEXED BY idx_edges_target
+        WHERE e.type = 'DELIVERED_TO' AND e.target IN ${targetIn}
+        GROUP BY e.source
+    ),\n    ` : '',
+        candidatesCte = mixedOutboxState
+            ? `candidate_rows AS (\n        ${candidateArms.join('\n        UNION ALL\n        ')}\n    ),\n    candidate_ids AS MATERIALIZED (\n        SELECT messageId, MIN(applyStatus) AS applyStatus FROM candidate_rows GROUP BY messageId\n    )`
+            : `candidate_ids AS MATERIALIZED (\n        ${candidateArms.join('\n        UNION\n        ')}\n    )`,
+        effectiveStatusClause = !statusClause
+            ? null
+            : mixedOutboxState
+                ? `(c.applyStatus = 0 OR ${statusClause})`
+                : (includeOut && !includeIn && !statusOnOutbox)
+                    ? null
+                    : statusClause,
+        whereClauses = [...common, ...(effectiveStatusClause ? [effectiveStatusClause] : [])];
+
     return {
-        matchesSql: `WITH matches AS (${branches.join('\n        UNION')}\n    )`,
+        matchesSql: `WITH ${deliveriesCte}${candidatesCte},\n    matches AS (
+        SELECT n.id AS messageId,
+               json_extract(n.data, '$.properties.sentAt') AS sentAt,
+               ${receipt('readAt')} AS readAt
+        FROM candidate_ids c
+        CROSS JOIN Nodes n ON n.id = c.messageId
+        ${includeIn ? 'LEFT JOIN target_deliveries td ON td.messageId = c.messageId' : ''}
+        WHERE ${whereClauses.join('\n          AND ')}
+    )`,
         params
     }
 }
@@ -4747,10 +4774,10 @@ class MailboxService extends Base {
         const
             taskView = taskStates !== undefined,
             viewSql  = taskView ? `${matchesSql}, tasks AS (
-                SELECT m.messageId, m.sentAt, json_extract(n.data, '$.properties.task') AS task,
+                SELECT m.messageId, m.sentAt, m.readAt, json_extract(n.data, '$.properties.task') AS task,
                        json_extract(n.data, '$.properties.task.expiredAt') AS expiredAt,
                        CASE COALESCE(json_extract(n.data, '$.properties.priority'), 'normal') WHEN 'high' THEN 0 WHEN 'low' THEN 2 ELSE 1 END AS priorityRank
-                FROM matches m JOIN Nodes n ON n.id = m.messageId
+                FROM matches m CROSS JOIN Nodes n ON n.id = m.messageId
                 WHERE json_extract(n.data, '$.properties.task.state') IN (SELECT value FROM json_each(@taskStates))
                 ${expiredSince ? `AND datetime(json_extract(n.data, '$.properties.task.expiredAt')) >= datetime(@expiredSince)` : ''}
             )` : matchesSql,
@@ -4760,19 +4787,16 @@ class MailboxService extends Base {
 
         if (projection === 'counts') {
             const
-                targetIn       = `(SELECT value FROM json_each(@targetVariants))`,
-                deliveryExists = `SELECT 1 FROM Edges de WHERE de.source = n.id AND de.type = 'DELIVERED_TO' AND de.target IN ${targetIn}`,
-                edgeReadAt     = `(SELECT MAX(json_extract(de.data, '$.properties.readAt')) FROM Edges de WHERE de.source = n.id AND de.type = 'DELIVERED_TO' AND de.target IN ${targetIn})`,
-                matchedRows    = sqlite.prepare(`${viewSql}
+                matchedRows = sqlite.prepare(`${viewSql}
                     SELECT
                         m.messageId AS messageId,
                         json_extract(n.data, '$.properties.subject') AS subject,
-                        (SELECT sb.target FROM Edges sb WHERE sb.source = m.messageId AND sb.type = 'SENT_BY' ORDER BY sb.rowid DESC LIMIT 1) AS sentBy,
-                        EXISTS (SELECT 1 FROM Edges st WHERE st.source = m.messageId AND st.type = 'SENT_TO' AND +st.target = 'AGENT:*') AS isBroadcast,
-                        CASE WHEN EXISTS (${deliveryExists}) THEN ${edgeReadAt} ELSE json_extract(n.data, '$.properties.readAt') END AS readAt
+                        (SELECT sb.target FROM Edges sb INDEXED BY idx_edges_source WHERE sb.source = m.messageId AND sb.type = 'SENT_BY' ORDER BY sb.rowid DESC LIMIT 1) AS sentBy,
+                        EXISTS (SELECT 1 FROM Edges st INDEXED BY idx_edges_source WHERE st.source = m.messageId AND st.type = 'SENT_TO' AND st.target = 'AGENT:*') AS isBroadcast,
+                        m.readAt AS readAt
                     FROM ${view} m
-                    JOIN Nodes n ON n.id = m.messageId
-                    WHERE json_extract(n.data, '$.label') = 'MESSAGE'
+                    CROSS JOIN Nodes n ON n.id = m.messageId
+                    WHERE +json_extract(n.data, '$.label') = 'MESSAGE'
                     ORDER BY ${orderBy}`).all(viewParams);
 
             const countsResult = {
@@ -4792,12 +4816,28 @@ class MailboxService extends Base {
         }
 
         const
-            readSnapshot  = sqlite.transaction(() => ({
-                totalCount: sqlite.prepare(`${viewSql} SELECT COUNT(*) AS count FROM ${view}`).get(viewParams).count,
-                pageRows  : sqlite
-                    .prepare(`${viewSql} SELECT messageId${taskView ? ', task' : ''} FROM ${view} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`)
-                    .all({...viewParams, limit: numericLimit, offset: numericOffset})
-            })),
+            readSnapshot = sqlite.transaction(() => {
+                if (taskView) {
+                    return {
+                        totalCount: sqlite.prepare(`${viewSql} SELECT COUNT(*) AS count FROM ${view}`).get(viewParams).count,
+                        pageRows  : sqlite
+                            .prepare(`${viewSql} SELECT messageId, task FROM ${view} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`)
+                            .all({...viewParams, limit: numericLimit, offset: numericOffset})
+                    }
+                }
+
+                const pageRows = sqlite
+                    .prepare(`${viewSql} SELECT messageId, COUNT(*) OVER () AS _totalCount FROM ${view} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`)
+                    .all({...viewParams, limit: numericLimit, offset: numericOffset});
+
+                const totalCount = pageRows.length > 0
+                    ? pageRows[0]._totalCount
+                    : numericOffset === 0
+                        ? 0
+                        : sqlite.prepare(`${viewSql} SELECT COUNT(*) AS count FROM ${view}`).get(viewParams).count;
+
+                return {pageRows, totalCount}
+            }),
             {totalCount, pageRows} = readSnapshot(),
             messages      = [],
             appliedOffset = numericOffset,
@@ -5877,11 +5917,11 @@ class MailboxService extends Base {
             rows                = sqlite.prepare(`
                 WITH unread_messages AS (
                     SELECT n.id AS messageId
-                    FROM Edges e
-                    JOIN Nodes n ON n.id = e.source
+                    FROM Edges e INDEXED BY idx_edges_target
+                    CROSS JOIN Nodes n ON n.id = e.source
                     WHERE e.type = 'SENT_TO'
                       AND e.target IN (${placeholders})
-                      AND json_extract(n.data, '$.label') = 'MESSAGE'
+                      AND +json_extract(n.data, '$.label') = 'MESSAGE'
                       AND json_extract(n.data, '$.properties.readAt') IS NULL
                       AND json_extract(n.data, '$.properties.archivedAt') IS NULL
                       ${directSeenClause}
@@ -5889,14 +5929,14 @@ class MailboxService extends Base {
                     UNION
 
                     SELECT n.id AS messageId
-                    FROM Edges e
-                    JOIN Nodes n ON n.id = e.source
+                    FROM Edges e INDEXED BY idx_edges_target
+                    CROSS JOIN Nodes n ON n.id = e.source
                     WHERE e.type = 'DELIVERED_TO'
                       AND e.target IN (${placeholders})
-                      AND json_extract(n.data, '$.label') = 'MESSAGE'
                       AND json_extract(e.data, '$.properties.readAt') IS NULL
                       AND json_extract(e.data, '$.properties.archivedAt') IS NULL
                       ${broadcastSeenClause}
+                      AND +json_extract(n.data, '$.label') = 'MESSAGE'
                 )
                 SELECT DISTINCT messageId
                 FROM unread_messages
@@ -5928,11 +5968,11 @@ class MailboxService extends Base {
             : includeUnseenBroadcasts
                 ? sqlite.prepare(`
                     SELECT COUNT(DISTINCT n.id) AS count
-                    FROM Edges e
-                    JOIN Nodes n ON n.id = e.source
+                    FROM Edges e INDEXED BY idx_edges_target
+                    CROSS JOIN Nodes n ON n.id = e.source
                     WHERE e.type = 'SENT_TO'
                       AND e.target IN (${placeholders})
-                      AND json_extract(n.data, '$.label') = 'MESSAGE'
+                      AND +json_extract(n.data, '$.label') = 'MESSAGE'
                       AND json_extract(n.data, '$.properties.readAt') IS NULL
                       AND json_extract(n.data, '$.properties.archivedAt') IS NULL
                       AND json_extract(n.data, '$.properties.seenAt') IS NULL
@@ -5940,11 +5980,11 @@ class MailboxService extends Base {
                 : sqlite.prepare(`
                     WITH unseen_unread AS (
                         SELECT n.id AS messageId
-                        FROM Edges e
-                        JOIN Nodes n ON n.id = e.source
+                        FROM Edges e INDEXED BY idx_edges_target
+                        CROSS JOIN Nodes n ON n.id = e.source
                         WHERE e.type = 'SENT_TO'
                           AND e.target IN (${placeholders})
-                          AND json_extract(n.data, '$.label') = 'MESSAGE'
+                          AND +json_extract(n.data, '$.label') = 'MESSAGE'
                           AND json_extract(n.data, '$.properties.readAt') IS NULL
                           AND json_extract(n.data, '$.properties.archivedAt') IS NULL
                           AND json_extract(n.data, '$.properties.seenAt') IS NULL
@@ -5952,14 +5992,14 @@ class MailboxService extends Base {
                         UNION
 
                         SELECT n.id AS messageId
-                        FROM Edges e
-                        JOIN Nodes n ON n.id = e.source
+                        FROM Edges e INDEXED BY idx_edges_target
+                        CROSS JOIN Nodes n ON n.id = e.source
                         WHERE e.type = 'DELIVERED_TO'
                           AND e.target IN (${placeholders})
-                          AND json_extract(n.data, '$.label') = 'MESSAGE'
                           AND json_extract(e.data, '$.properties.readAt') IS NULL
                           AND json_extract(e.data, '$.properties.archivedAt') IS NULL
                           AND json_extract(e.data, '$.properties.seenAt') IS NULL
+                          AND +json_extract(n.data, '$.label') = 'MESSAGE'
                     )
                     SELECT COUNT(DISTINCT messageId) AS count FROM unseen_unread
                 `).get(...targetStorageVariants, ...targetStorageVariants)?.count ?? 0;
