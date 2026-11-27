@@ -115,14 +115,15 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         await TestLifecycleHelper.cleanupGraphService(GraphService, SystemLifecycleService, testDbPath, fs, 'clear');
     });
 
-    test('the Memory Core graph cache is bounded by its config leaf and pins what other services scan (#1959)', async () => {
+    test('the Memory Core graph cache boots unbounded by default and pins what other services scan (#1959, #1964)', async () => {
         const
             aiConfig           = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default,
             {GRAPH_CACHE_PINS} = await import('../../../../../../ai/services/memory-core/GraphService.mjs'),
             PermissionService  = (await import('../../../../../../ai/services/memory-core/PermissionService.mjs')).default;
 
-        expect(GraphService.db.maxGraphNodes).toBe(aiConfig.memoryService.graphCacheMaxNodes);
-        expect(GraphService.db.maxGraphNodes).toBeGreaterThan(0);
+        // A default bound evicts the identity hubs' vicinities, and every message projection reloads them
+        expect(aiConfig.memoryService.graphCacheMaxNodes).toBeNull();
+        expect(GraphService.db.maxGraphNodes).toBeNull();
         // The pinned grant types are PermissionService's scopes: a scope added there and not here would be evictable
         expect([...GRAPH_CACHE_PINS.edgeTypes]).toEqual(PermissionService.validScopes);
         expect([...GraphService.db.pinnedEdgeTypes]).toEqual(expect.arrayContaining(PermissionService.validScopes));
