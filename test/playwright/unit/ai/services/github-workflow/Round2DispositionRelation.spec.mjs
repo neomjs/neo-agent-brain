@@ -423,4 +423,37 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — the Round-
         expect(failure?.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
         expect(failure.message).toContain('lists no Required Actions');
     });
+
+    test('#1949: N/A — Cycle 1 was Micro-Review passes when Cycle 1 used PR Micro-Review and fails when Cycle 1 was full-form', () => {
+        const microRound2Body = [
+            round2With(['| RA-1 | **P2 — make the oracle retain transient mounts.** Replay the records. | ADDRESSED | replayed |']),
+            '',
+            '### 📊 Final Evaluation Metrics',
+            '',
+            'N/A — Cycle 1 was Micro-Review'
+        ].join('\n');
+
+        expect(getRound2DispositionRelationFailure({
+            body   : microRound2Body,
+            reviews: [PRIOR_MICRO_RC],
+            state  : 'APPROVED'
+        }), 'Cycle 1 was PR Micro-Review, so the metric exemption is valid').toBeNull();
+
+        const fullRound2WithBogusExemption = [
+            round2With(BOTH_ACTIONS_ADDRESSED),
+            '',
+            '### 📊 Final Evaluation Metrics',
+            '',
+            'N/A — Cycle 1 was Micro-Review'
+        ].join('\n');
+
+        const refused = getRound2DispositionRelationFailure({
+            body   : fullRound2WithBogusExemption,
+            reviews: [PRIOR_RC],
+            state  : 'APPROVED'
+        });
+
+        expect(refused?.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+        expect(refused.message).toContain('did not use `# PR Micro-Review`');
+    });
 });

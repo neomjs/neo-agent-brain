@@ -1980,7 +1980,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         }
     });
     const graphqlError = type => {
-    const error = new Error(`GitHub GraphQL error: ${type}`);
+    const error        = new Error(`GitHub GraphQL error: ${type}`);
     error.graphqlErrors = [{type}];
 
     return error;
@@ -2078,13 +2078,13 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         '* **What survives:** the whole diff; nothing is being retired.',
         '',
         '### 📊 Metrics Delta',
-        '* **`[ARCH_ALIGNMENT]`**: unchanged from prior review',
-        '* **`[CONTENT_COMPLETENESS]`**: unchanged from prior review',
-        '* **`[EXECUTION_QUALITY]`**: unchanged from prior review',
-        '* **`[PRODUCTIVITY]`**: unchanged from prior review',
-        '* **`[IMPACT]`**: unchanged from prior review',
-        '* **`[COMPLEXITY]`**: unchanged from prior review',
-        '* **`[EFFORT_PROFILE]`**: unchanged from prior review',
+        '* **`[ARCH_ALIGNMENT]`**: 90 - up from 60: boundary fixed',
+        '* **`[CONTENT_COMPLETENESS]`**: 88 - covers delta scope',
+        '* **`[EXECUTION_QUALITY]`**: 90 - regression tests green',
+        '* **`[PRODUCTIVITY]`**: 85 - resolves prior blocker',
+        '* **`[IMPACT]`**: 60 - localized substrate fix',
+        '* **`[COMPLEXITY]`**: 40 - narrow delta',
+        '* **`[EFFORT_PROFILE]`**: Maintenance - bounded follow-up pass',
         '',
         '### 📋 Required Actions',
         '',
@@ -2127,6 +2127,15 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         '| # | Required Action (verbatim from Round 1) | Disposition | Evidence |',
         '|---|---|---|---|',
         '| RA-1 | prior template miss | ADDRESSED | current body keeps canonical headings |',
+        '',
+        '### 📊 Final Evaluation Metrics',
+        '* **`[ARCH_ALIGNMENT]`**: 94 - (up from 58: RA-1 addressed)',
+        '* **`[CONTENT_COMPLETENESS]`**: 92 - complete anchors and JSDoc',
+        '* **`[EXECUTION_QUALITY]`**: 95 - contract and unit specs green',
+        '* **`[PRODUCTIVITY]`**: 92 - delivers ticket scope cleanly',
+        '* **`[IMPACT]`**: 65 - restores post-fix evaluation accuracy',
+        '* **`[COMPLEXITY]`**: 42 - bounded validator and template parity',
+        '* **`[EFFORT_PROFILE]`**: Maintenance - bounded hygiene pass',
         '',
         '### 🔚 Verdict',
         '',
@@ -5599,6 +5608,132 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         expect(result.error).toBeUndefined();
         expect(mutationCallCount).toBe(1)
+    });
+
+    test('#1949: Round-2 Approved and Approve+Follow-Up require 6 numeric 0-100 scores + 1 categorical EFFORT_PROFILE, while Comment omits metrics', () => {
+        const round2WithoutMetrics = VALID_ROUND_2_REVIEW_BODY.replace(
+            /\n### 📊 Final Evaluation Metrics[\s\S]*?(?=\n### 🔚 Verdict)/,
+            ''
+        );
+
+        expect(PullRequestService.validatePrReviewBody({body: VALID_ROUND_2_REVIEW_BODY}).valid,
+            'Maintenance profile fixture passes').toBe(true);
+
+        expect(PullRequestService.validatePrReviewBody({
+            body: VALID_ROUND_2_REVIEW_BODY.replace('**Status:** Approved', '**Status:** Approve+Follow-Up')
+        }).valid, 'Approve+Follow-Up with Maintenance metrics passes').toBe(true);
+
+        const missingMetricsApproved = PullRequestService.validatePrReviewBody({body: round2WithoutMetrics});
+        expect(missingMetricsApproved.valid).toBe(false);
+        expect(missingMetricsApproved.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+        expect(missingMetricsApproved.message).toContain('### 📊 Final Evaluation Metrics');
+
+        const missingMetricsFollowUp = PullRequestService.validatePrReviewBody({
+            body: round2WithoutMetrics.replace('**Status:** Approved', '**Status:** Approve+Follow-Up')
+        });
+        expect(missingMetricsFollowUp.valid).toBe(false);
+        expect(missingMetricsFollowUp.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+
+        const commentWithoutMetrics = round2WithoutMetrics
+            .replace('**Status:** Approved', '**Status:** Comment')
+            .replace('| RA-1 | prior template miss | ADDRESSED | current body keeps canonical headings |',
+                     '| RA-1 | prior template miss | STILL_OPEN | awaiting fix |');
+        expect(PullRequestService.validatePrReviewBody({body: commentWithoutMetrics}).valid,
+            'Round-2 Comment without metrics passes').toBe(true);
+
+        const numericEffortProfile = VALID_ROUND_2_REVIEW_BODY.replace(
+            '* **`[EFFORT_PROFILE]`**: Maintenance - bounded hygiene pass',
+            '* **`[EFFORT_PROFILE]`**: 85 - numeric mistake'
+        );
+        const refusedNumericProfile = PullRequestService.validatePrReviewBody({body: numericEffortProfile});
+        expect(refusedNumericProfile.valid).toBe(false);
+        expect(refusedNumericProfile.message).toContain('[EFFORT_PROFILE]: Quick Win | Heavy Lift | Maintenance | Architectural Pillar');
+
+        const outOfRangeScore = VALID_ROUND_2_REVIEW_BODY.replace(
+            '* **`[ARCH_ALIGNMENT]`**: 94 - (up from 58: RA-1 addressed)',
+            '* **`[ARCH_ALIGNMENT]`**: 105 - out of range'
+        );
+        const refusedOutOfRange = PullRequestService.validatePrReviewBody({body: outOfRangeScore});
+        expect(refusedOutOfRange.valid).toBe(false);
+        expect(refusedOutOfRange.message).toContain('[ARCH_ALIGNMENT]: an integer score from 0 to 100');
+
+        const unchangedFollowUp = VALID_FOLLOWUP_REVIEW_BODY.replace(
+            '* **`[ARCH_ALIGNMENT]`**: 90 - up from 60: boundary fixed',
+            '* **`[ARCH_ALIGNMENT]`**: unchanged from prior review'
+        );
+        const refusedUnchanged = PullRequestService.validatePrReviewBody({body: unchangedFollowUp});
+        expect(refusedUnchanged.valid).toBe(false);
+        expect(refusedUnchanged.missing_visible[0]).toBe('[ARCH_ALIGNMENT]: an integer score from 0 to 100');
+    });
+
+    test('#1949: validatePrReviewBody with pr_number verifies N/A — Cycle 1 was Micro-Review against the cited Round-1 review', async () => {
+        const microExemptRound2 = VALID_ROUND_2_REVIEW_BODY
+            .replace(
+                '| RA-1 | prior template miss | ADDRESSED | current body keeps canonical headings |',
+                '| RA-1 | **RA-1:** Add missing guard assertion | ADDRESSED | added in spec |'
+            )
+            .replace(
+                /### 📊 Final Evaluation Metrics[\s\S]*?(?=\n### 🔚 Verdict)/,
+                '### 📊 Final Evaluation Metrics\n\nN/A — Cycle 1 was Micro-Review\n'
+            );
+
+        expect(PullRequestService.validatePrReviewBody({body: microExemptRound2}).valid,
+            'dry-run without pr_number accepts explicit Micro-Review N/A').toBe(true);
+
+        const priorMicroRc = priorRequestChanges({
+            body: [
+                '# PR Micro-Review',
+                '',
+                '**Class:** mechanical — unit spec addition',
+                '',
+                '**Verdict:** Request Changes',
+                '',
+                '**Glance:** Missing assertion on empty input.',
+                '',
+                '**Findings:**',
+                '- [ ] **RA-1:** Add missing guard assertion',
+                '',
+                `- **Origin Session ID:** ${REVIEW_ORIGIN_SESSION_ID}`
+            ].join('\n')
+        });
+
+        GraphqlService.query = async queryString => {
+            if (queryString.includes('GetPullRequestId')) {
+                return pullRequestLookup({
+                    reviewDecision: 'CHANGES_REQUESTED',
+                    reviews       : {nodes: [priorMicroRc], pageInfo: {hasPreviousPage: false}}
+                });
+            }
+            throw new Error('unexpected mutation');
+        };
+
+        const acceptedMicroCarry = await PullRequestService.validatePrReviewBody({
+            body     : microExemptRound2,
+            pr_number: 11273
+        });
+        expect(acceptedMicroCarry.valid).toBe(true);
+
+        const priorFullRc = priorRequestChanges({
+            body: ['# PR Review Summary', '', '### 📋 Required Actions', '', '- [ ] **RA-1:** Add missing guard assertion'].join('\n')
+        });
+
+        GraphqlService.query = async queryString => {
+            if (queryString.includes('GetPullRequestId')) {
+                return pullRequestLookup({
+                    reviewDecision: 'CHANGES_REQUESTED',
+                    reviews       : {nodes: [priorFullRc], pageInfo: {hasPreviousPage: false}}
+                });
+            }
+            throw new Error('unexpected mutation');
+        };
+
+        const refusedFullCarry = await PullRequestService.validatePrReviewBody({
+            body     : microExemptRound2,
+            pr_number: 11273
+        });
+        expect(refusedFullCarry.valid).toBe(false);
+        expect(refusedFullCarry.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+        expect(refusedFullCarry.message).toContain('did not use `# PR Micro-Review`');
     });
 });
  

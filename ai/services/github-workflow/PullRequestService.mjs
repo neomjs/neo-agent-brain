@@ -35,7 +35,7 @@ import {commentMatches, isSelectorPresent, malformedCommentIdError, omitScopedBo
                                               from './shared/commentSelector.mjs';
 import {projectConversationTrust} from './shared/conversationTrust.mjs';
 import {resolveRepositoryTarget}  from './shared/repositoryTarget.mjs';
-import nullIfNotFound from './shared/nullIfNotFound.mjs';
+import nullIfNotFound             from './shared/nullIfNotFound.mjs';
 
 const execAsync                           = promisify(exec);
 const execFileAsync                       = promisify(execFile);
@@ -1281,29 +1281,142 @@ function getTemplateHeadingAnchorsByLabel(templatePath, labels, {
 }
 
 /**
- * **Visible** template-anchor substrings — checked AND named in the error response on miss.
+ * **Visible** evaluation-metric anchor substrings — checked AND named in the error response on miss.
  *
- * These are the 7 evaluation-metric tags from `.agents/skills/pr-review/assets/pr-review-template.md`
- * (cycle-1) and `.agents/skills/pr-review/assets/pr-review-followup-template.md` (cycle-N). They are
- * also the regex parse keys that `ai/services/ingestion/ConceptDiscoveryService.mjs` consumes during
- * Retrospective-daemon REM-sleep graph ingestion — a malformed review with hallucinated metric
- * names produces zero graph ingest signal and is silently lost from the Native Edge Graph.
+ * These 6 numeric `0-100` tags (`NUMERIC_PR_REVIEW_METRIC_ANCHORS`) plus categorical
+ * `EFFORT_PROFILE_PR_REVIEW_ANCHOR` (`[EFFORT_PROFILE]`) are the 7 evaluation-metric tags from
+ * `.agents/skills/pr-review/assets/pr-review-template.md` (cycle-1),
+ * `.agents/skills/pr-review/assets/pr-review-followup-template.md` (exceptional cycle-N), and
+ * `.agents/skills/pr-review/assets/pr-review-round-2-template.md` (Round-2 `Approved` / `Approve+Follow-Up`).
  *
- * Cycle-followup templates use the same 7 metric tags, so this set applies to both cycle-1
- * and cycle-N reviews without false-positive separation.
- *
- * Extension protocol: if the pr-review skill adds a new evaluation metric, append the literal
- * `[NEW_TAG]` string here AND update both template files in the same PR.
+ * Extension protocol: if the pr-review skill adds a new evaluation metric, append numeric `[NEW_TAG]`
+ * strings to `NUMERIC_PR_REVIEW_METRIC_ANCHORS` (or categorical tags alongside
+ * `EFFORT_PROFILE_PR_REVIEW_ANCHOR`) AND update the template files and `check-pr-review-body.mjs` in lockstep.
  */
-const VISIBLE_PR_REVIEW_ANCHORS = [
+const NUMERIC_PR_REVIEW_METRIC_ANCHORS = Object.freeze([
     '[ARCH_ALIGNMENT]',
     '[CONTENT_COMPLETENESS]',
     '[EXECUTION_QUALITY]',
     '[PRODUCTIVITY]',
     '[IMPACT]',
-    '[COMPLEXITY]',
-    '[EFFORT_PROFILE]'
-];
+    '[COMPLEXITY]'
+]);
+
+const EFFORT_PROFILE_PR_REVIEW_ANCHOR = '[EFFORT_PROFILE]';
+
+const VALID_PR_REVIEW_EFFORT_PROFILES = Object.freeze([
+    'Quick Win',
+    'Heavy Lift',
+    'Maintenance',
+    'Architectural Pillar'
+]);
+
+const ROUND_2_FINAL_METRICS_HEADING                  = '### 📊 Final Evaluation Metrics';
+const ROUND_2_MICRO_REVIEW_METRICS_EXEMPTION_PATTERN = /^[ \t]*(?:[-*][ \t]+)?N\/A[ \t]*(?:—|--|-)[ \t]*Cycle[ \t]+1[ \t]+was[ \t]+Micro-Review\.?[ \t]*$/i;
+const NUMERIC_PR_REVIEW_VALUE_AFTER_TAG_PATTERN      = /^[\s*_`]*:[\s*_`]*(\d{1,3})(?:\s*\/\s*100)?(?!\.\d)(?=$|[^0-9A-Za-z_])/;
+const EFFORT_PROFILE_PR_REVIEW_VALUE_PATTERN         = new RegExp(`^[\\s*_\`]*:[\\s*_\`]*(${VALID_PR_REVIEW_EFFORT_PROFILES.join('|')})(?=$|[^0-9A-Za-z_])`);
+
+/**
+ * @summary Returns a review body's lines outside fenced code blocks, split on CR/LF.
+ * @param {String} body
+ * @returns {String[]}
+ */
+function unfencedPrReviewLines(body) {
+    const lines = [];
+    let   fence = null;
+
+    for (const line of String(body || '').split(/\r\n|[\n\r]/)) {
+        const fenceMatch = MARKDOWN_FENCE_PATTERN.exec(line);
+
+        if (fenceMatch) {
+            if      (fence === null)             fence = fenceMatch[1][0];
+            else if (fenceMatch[1][0] === fence) fence = null;
+            continue
+        }
+
+        if (fence === null) {
+            lines.push(line)
+        }
+    }
+
+    return lines
+}
+
+/**
+ * @summary Whether a Round-2 body declares `N/A — Cycle 1 was Micro-Review` outside fenced blocks.
+ * @param {String} body
+ * @returns {Boolean}
+ */
+function hasRound2MicroReviewMetricsExemption(body) {
+    return unfencedPrReviewLines(body).some(line => ROUND_2_MICRO_REVIEW_METRICS_EXEMPTION_PATTERN.test(line))
+}
+
+/**
+ * @summary Parses and validates the 6 numeric `0-100` scores and 1 categorical `[EFFORT_PROFILE]` in a review body.
+ * @param {String} body
+ * @returns {{metrics: Object|null, missingVisible: String[]}}
+ */
+function parsePrReviewEvaluationMetrics(body) {
+    const lines          = unfencedPrReviewLines(body),
+          missingVisible = [],
+          parsed         = {};
+
+    for (const tag of NUMERIC_PR_REVIEW_METRIC_ANCHORS) {
+        const matching = lines.filter(line => line.includes(tag));
+
+        if (matching.length === 0) {
+            missingVisible.push(tag);
+            continue
+        }
+
+        let matchedScore = null;
+
+        for (const line of matching) {
+            const after = line.slice(line.indexOf(tag) + tag.length),
+                  match = NUMERIC_PR_REVIEW_VALUE_AFTER_TAG_PATTERN.exec(after);
+
+            if (match && !/^0\d/.test(match[1]) && Number(match[1]) <= 100) {
+                matchedScore = Number(match[1]);
+                break
+            }
+        }
+
+        if (matchedScore === null) {
+            missingVisible.push(`${tag}: an integer score from 0 to 100`)
+        } else {
+            parsed[tag.slice(1, -1)] = matchedScore
+        }
+    }
+
+    const profileLines = lines.filter(line => line.includes(EFFORT_PROFILE_PR_REVIEW_ANCHOR));
+
+    if (profileLines.length === 0) {
+        missingVisible.push(EFFORT_PROFILE_PR_REVIEW_ANCHOR)
+    } else {
+        let matchedProfile = null;
+
+        for (const line of profileLines) {
+            const after = line.slice(line.indexOf(EFFORT_PROFILE_PR_REVIEW_ANCHOR) + EFFORT_PROFILE_PR_REVIEW_ANCHOR.length),
+                  match = EFFORT_PROFILE_PR_REVIEW_VALUE_PATTERN.exec(after);
+
+            if (match) {
+                matchedProfile = match[1];
+                break
+            }
+        }
+
+        if (matchedProfile === null) {
+            missingVisible.push(`${EFFORT_PROFILE_PR_REVIEW_ANCHOR}: ${VALID_PR_REVIEW_EFFORT_PROFILES.join(' | ')}`)
+        } else {
+            parsed.EFFORT_PROFILE = matchedProfile
+        }
+    }
+
+    return {
+        metrics: missingVisible.length === 0 ? Object.freeze(parsed) : null,
+        missingVisible
+    }
+}
 
 /**
  * **Invisible** template-anchor substrings — checked SILENTLY; NOT named in the error response
@@ -1565,6 +1678,10 @@ function getRound2DispositionRelationFailure({body, reviews, state}) {
     rows.slice(expected.length).forEach(row => {
         defects.push(`"${row.action}" appears in the table but not in the prior round — an ordinary Round 2 raises nothing new`)
     });
+
+    if (hasRound2MicroReviewMetricsExemption(body) && !isMicroReview(prior.body)) {
+        defects.push(`claims \`N/A — Cycle 1 was Micro-Review\`, but the cited Round-1 review (${prior.url || prior.id}) did not use \`# PR Micro-Review\` — record final \`0-100\` scores and \`[EFFORT_PROFILE]\` under \`${ROUND_2_FINAL_METRICS_HEADING}\``)
+    }
 
     const stillOpen = rows.some(row => row.disposition === 'STILL_OPEN');
 
@@ -2272,6 +2389,21 @@ function getRound2PrReviewTemplateValidationFailure(body) {
         defects.push('mints a new action checklist — an ordinary Round 2 carries prior actions in the disposition table and never opens a fresh packet. A STILL_OPEN row keeps the original review authoritative instead')
     }
 
+    const statusMatch = String(body || '').match(ROUND_2_STATUS_PATTERN),
+          declared    = statusMatch ? statusMatch[1].replace(/[*_`]/g, '').trim().toLowerCase() : null;
+
+    if (declared === 'approved' || declared === 'approve+follow-up') {
+        if (!body.includes(ROUND_2_FINAL_METRICS_HEADING)) {
+            defects.push(`omits \`${ROUND_2_FINAL_METRICS_HEADING}\` — Round-2 \`Approved\` and \`Approve+Follow-Up\` reviews record post-fix evaluation metrics (or \`N/A — Cycle 1 was Micro-Review\`)`)
+        } else if (!hasRound2MicroReviewMetricsExemption(body)) {
+            const {missingVisible} = parsePrReviewEvaluationMetrics(body);
+
+            if (missingVisible.length > 0) {
+                defects.push(`omits or misformats final evaluation metrics (first miss: \`${missingVisible[0]}\`; supply 6 numeric \`0-100\` scores and 1 categorical \`[EFFORT_PROFILE]\`, or \`N/A — Cycle 1 was Micro-Review\` when Cycle 1 used \`# PR Micro-Review\`)`)
+            }
+        }
+    }
+
     if (defects.length === 0) return null;
 
     return {
@@ -2344,7 +2476,7 @@ function getMicroDeltaPrReviewTemplateValidationFailure(body) {
  * @returns {Object|null} Validation failure payload or `null` when valid.
  */
 function getCanonicalPrReviewTemplateValidationFailure(body, {includeTemplateDiagnostics = false} = {}) {
-    const missingVisible          = VISIBLE_PR_REVIEW_ANCHORS          .filter(anchor => !body.includes(anchor));
+    const {missingVisible}        = parsePrReviewEvaluationMetrics(body);
     const missingInvisible        = INVISIBLE_PR_REVIEW_ANCHORS        .filter(anchor => !body.includes(anchor));
     const missingTemplateSkeleton = getPrReviewTemplateSkeletonMisses(body);
     const missingPremiseSnapshot  = REQUIRED_PR_REVIEW_PREMISE_ANCHORS
