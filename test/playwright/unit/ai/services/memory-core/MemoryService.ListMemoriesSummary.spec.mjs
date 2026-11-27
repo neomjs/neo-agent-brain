@@ -92,6 +92,38 @@ test.describe('MemoryService.listMemories compact summary contract', () => {
         }
     });
 
+    test('#1958: a summary page reads its stored titles by id, never by walking idx_nodes_label', async () => {
+        // Without planner stats an id list of five or more loses to the label index: a page, not one id
+        const sessionId = `summary-plan-${process.pid}`,
+              ids       = Array.from({length: 6}, (_, i) => `${sessionId}-${i}`),
+              sqlite    = GraphService.db.storage.db,
+              prepare   = sqlite.prepare,
+              executed  = [];
+
+        ids.forEach((id, i) => GraphService.upsertNode({id, type: 'AGENT_MEMORY', name: `plan witness ${i}`, properties: {sessionId, miniSummary: `title ${i}`}}));
+
+        sqlite.prepare = sql => {
+            executed.push(sql);
+            return prepare.call(sqlite, sql)
+        };
+
+        try {
+            const summaries = MemoryService._getMiniSummariesByIds(ids);
+
+            delete sqlite.prepare;
+
+            const [sql] = executed,
+                  plan  = prepare.call(sqlite, `EXPLAIN QUERY PLAN ${sql}`).all(...sql.match(/\?/g).map(() => ids[0])).map(row => row.detail).join('\n');
+
+            expect(summaries.get(ids[5]), 'the stored title still comes back').toBe('title 5');
+            expect(plan).toContain('(id=?)');
+            expect(plan).not.toContain('idx_nodes_label')
+        } finally {
+            delete sqlite.prepare;
+            ids.forEach(id => GraphService.db?.removeNode(id))
+        }
+    });
+
     test('#1580 serializes decisionContext without thought on listMemories and rewrites Agent Thought: headers at read boundaries only', async () => {
         const sessionId = `list-dc-${process.pid}`,
               legacyId  = `${sessionId}-legacy`,

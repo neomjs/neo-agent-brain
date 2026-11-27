@@ -36,6 +36,8 @@ import {
     SUBJECT_BINDING_ACTIVATION_TABLE,
     activateSubjectBinding
 } from '../../../../../../ai/services/memory-core/helpers/subjectBinding.mjs';
+// Pure as well: storage constants only.
+import {SQLITE_IN_CLAUSE_BATCH_SIZE} from '../../../../../../ai/graph/storage/constants.mjs';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -1702,6 +1704,46 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(seriesSql).toHaveLength(2);
         for (const sql of seriesSql) expect(planOf(sql)).toContain('SEARCH s USING INDEX idx_edges_source (source=?)');
         expect(planOf(stampSql, res.messageId)).toContain('USING INDEX idx_edges_source (source=?)');
+    });
+
+    test('#1958: a repair pass finds each projected id\'s MESSAGE node by its key, never by walking idx_nodes_label', async () => {
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'}));
+
+        const res = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+            MailboxService.addMessage({to: '@bob', subject: 'label plan', body: 'found by its key'}));
+
+        const
+            sqlite   = GraphService.db.storage.db,
+            prepare  = sqlite.prepare,
+            executed = [];
+
+        prepare.call(sqlite, 'DELETE FROM Nodes WHERE id = ?').run(res.messageId);
+        clearGraphCacheWithoutStorageMutation();
+
+        sqlite.prepare = sql => {
+            executed.push(sql);
+            return prepare.call(sqlite, sql)
+        };
+
+        let summary;
+
+        try {
+            summary = await MailboxService.repairMessageGraphIntegrity({box: 'all'});
+        } finally {
+            delete sqlite.prepare
+        }
+
+        // Without planner stats an id list of five or more loses to the label index, so the plan is read
+        // at the chunk size a live pass sends, not at this store's few ids
+        const
+            labelSql = executed.find(sql => /FROM Nodes\s+WHERE id IN \(/.test(sql) && sql.includes("'$.label') = 'MESSAGE'")),
+            chunk    = Array(SQLITE_IN_CLAUSE_BATCH_SIZE).fill(res.messageId),
+            plan     = prepare.call(sqlite, `EXPLAIN QUERY PLAN ${labelSql.replace(/IN \([?, ]+\)/, `IN (${chunk.map(() => '?').join(', ')})`)}`)
+                .all(...chunk).map(row => row.detail).join('\n');
+
+        expect(summary, 'the lost node is still found and rebuilt').toMatchObject({repaired: 1, failed: 0});
+        expect(plan).toContain('(id=?)');
+        expect(plan).not.toContain('idx_nodes_label');
     });
 
     test('a broadcast whose cohort cannot be classified — no marker, no readable WAL record — stays unknown after the gate: served to nobody, never read as legacy', async () => {
