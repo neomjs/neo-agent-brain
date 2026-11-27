@@ -215,6 +215,17 @@ export function syncCachedEdgeProperties(db, {id, source, target}, propertyPatch
 const ORPHAN_COLLECTABLE_LABELS = Object.freeze(['CONCEPT']);
 
 /**
+ * The populations other services read straight from the cache, which its collector must never shrink:
+ * `WakeSubscriptionService` scans `db.nodes.items` for its subscriptions, and `PermissionService` scans
+ * `db.edges.items` for its grants (its `validScopes`). A new reader of that kind pins its class here.
+ * @see Neo.ai.graph.Database#pin
+ */
+export const GRAPH_CACHE_PINS = Object.freeze({
+    labels   : Object.freeze(['WAKE_SUBSCRIPTION']),
+    edgeTypes: Object.freeze(['CAN_READ_INBOX_OF', 'CAN_READ_MEMORIES_OF', 'CAN_READ_SESSIONS_OF', 'CAN_REPLY_TO', 'BLOCKED_BY'])
+});
+
+/**
  * Authoritative property keys owned by an admitted, source-backed `ADR` node.
  * Non-authoritative graph writers (such as REM Tri-Vector extraction or concept-spine merges)
  * may enrich an admitted ADR node with relationships or non-reserved properties, but cannot
@@ -381,6 +392,10 @@ class GraphService extends Base {
                         storage: storage
                     });
                 }
+
+                // A long-lived server bounds its cache; the populations other services scan stay whole
+                this.db.maxGraphNodes = aiConfig.memoryService.graphCacheMaxNodes;
+                this.db.pin(GRAPH_CACHE_PINS);
 
                 await storage.load();
                 this.graphInitError = null;

@@ -85,6 +85,27 @@ class Database extends Base {
     lastAccessMap = new Map();
 
     /**
+     * @summary Node labels the collector never evicts: a service that reads a population straight from the
+     * cache (`db.nodes.items`) pins its label, so eviction cannot shrink what it reads.
+     * @member {Set<String>} pinnedNodeLabels
+     */
+    pinnedNodeLabels = new Set();
+
+    /**
+     * @summary Edge types the collector never removes, nor the nodes at either end, for the same reason
+     * as {@link Neo.ai.graph.Database#pinnedNodeLabels}.
+     * @member {Set<String>} pinnedEdgeTypes
+     */
+    pinnedEdgeTypes = new Set();
+
+    /**
+     * @summary Whether a collector pass is already queued for the next macrotask.
+     * @member {Boolean} gcScheduled=false
+     * @protected
+     */
+    gcScheduled = false;
+
+    /**
      * @summary Resolves the same canonical requester key used by SQLite's RLS-filtered
      * `loadNodeVicinitySync()` query. Null is a real scope: unbound/system callers share the
      * same public/team/shared projection, while each authenticated tenant gets its own marker.
@@ -201,8 +222,10 @@ class Database extends Base {
      *
      * An evicted node takes its incident edges along, and both ends of every such edge lose their
      * vicinity mark: a later {@link Neo.ai.graph.Database#getAdjacentNodes} on either reloads the whole
-     * vicinity from storage rather than answering from a partial one. Eviction never writes to storage,
-     * and it waits while a transaction runs, since the cache then holds state storage has not committed.
+     * vicinity from storage rather than answering from a partial one. Pinned labels and edge types stay.
+     * Eviction never writes to storage, and it waits while a transaction runs, since the cache then holds
+     * state storage has not committed. Callers request it through
+     * {@link Neo.ai.graph.Database#requestGarbageCollection}, so it never runs inside their synchronous flow.
      * @see Neo.ai.graph.Database#lastAccessMap
      */
     runGarbageCollector() {
@@ -216,6 +239,8 @@ class Database extends Base {
             edgeRefs   = new Set();
 
         for (const id of me.lastAccessMap.keys()) {
+            if (me.isPinned(id)) continue;
+
             victims.push(id);
             if (victims.length === evictCount) break;
         }
@@ -253,6 +278,51 @@ class Database extends Base {
     }
 
     /**
+     * @summary Whether the collector must keep a node: its label is pinned, or an incident edge's type is.
+     * @param {String} nodeId
+     * @returns {Boolean}
+     * @protected
+     */
+    isPinned(nodeId) {
+        const me = this;
+
+        if (me.pinnedNodeLabels.has(me.nodes.get(nodeId)?.label)) return true;
+        if (me.pinnedEdgeTypes.size === 0) return false;
+
+        return ['source', 'target'].some(property => me.edges.getByIndex(property, nodeId).some(edge => me.pinnedEdgeTypes.has(edge.type)))
+    }
+
+    /**
+     * @summary Pins node labels and edge types against eviction, see {@link Neo.ai.graph.Database#pinnedNodeLabels}.
+     * @param {Object} pins
+     * @param {String[]} [pins.labels=[]]
+     * @param {String[]} [pins.edgeTypes=[]]
+     */
+    pin({labels = [], edgeTypes = []}) {
+        labels   .forEach(label => this.pinnedNodeLabels.add(label));
+        edgeTypes.forEach(type  => this.pinnedEdgeTypes .add(type))
+    }
+
+    /**
+     * @summary Queues one collector pass for the next macrotask once the cache is over its bound. A caller
+     * that loads a vicinity and then reads or iterates the cache in the same synchronous flow never sees
+     * an eviction in between.
+     */
+    requestGarbageCollection() {
+        const me = this;
+
+        if (me.maxGraphNodes === null || me.lastAccessMap.size <= me.maxGraphNodes || me.gcScheduled) return;
+
+        me.gcScheduled = true;
+
+        setImmediate(() => {
+            me.gcScheduled = false;
+
+            if (!me.isDestroyed) me.runGarbageCollector()
+        })
+    }
+
+    /**
      * @summary Marks a node as the most recently used one the cache holds.
      * @param {String} nodeId
      * @protected
@@ -282,7 +352,7 @@ class Database extends Base {
     addNode(node) {
         node.id ??= globalThis.crypto.randomUUID();
         this.nodes.add(node);
-        this.runGarbageCollector()
+        this.requestGarbageCollection()
     }
 
     /**
@@ -455,9 +525,7 @@ class Database extends Base {
         }
 
         nodes.forEach(node => me.touchNode(node.id));
-
-        // After the answer exists: a vicinity larger than the bound must not trim the read that loaded it
-        me.runGarbageCollector();
+        me.requestGarbageCollection();
 
         return nodes;
     }

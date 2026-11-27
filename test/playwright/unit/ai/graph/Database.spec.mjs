@@ -252,8 +252,11 @@ test.describe('Neo.ai.graph.Database', () => {
         reloadDb.destroy();
     });
 
-    // A hub with eight leaves on disk, read leaf by leaf through a cache bounded at four nodes
-    const readHubLeavesThroughBoundedCache = async () => {
+    const nextMacrotask = () => new Promise(resolve => setImmediate(resolve));
+
+    // A hub with eight leaves on disk (leaf1 labelled `Pinned`, e2 typed `GRANTS`), read leaf by leaf
+    // through a cache bounded at four nodes. Eviction runs on the macrotask after the reads.
+    const readHubLeavesThroughBoundedCache = async ({pins = null, collect = true} = {}) => {
         if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
 
         const writerStorage = Neo.create(SQLite, {dbPath});
@@ -264,8 +267,8 @@ test.describe('Neo.ai.graph.Database', () => {
         writer.addNode({id: 'hub', label: 'Hub', properties: {name: 'hub'}});
 
         for (let i = 1; i <= 8; i++) {
-            writer.addNode({id: `leaf${i}`, label: 'Leaf', properties: {n: i}});
-            writer.addEdge({id: `e${i}`, source: 'hub', target: `leaf${i}`, type: 'HAS'})
+            writer.addNode({id: `leaf${i}`, label: i === 1 ? 'Pinned' : 'Leaf', properties: {n: i}});
+            writer.addEdge({id: `e${i}`, source: 'hub', target: `leaf${i}`, type: i === 2 ? 'GRANTS' : 'HAS'})
         }
 
         writer.destroy();
@@ -276,10 +279,39 @@ test.describe('Neo.ai.graph.Database', () => {
         const reader = Neo.create(Database, {id: 'bounded-cache-reader-' + testRun, storage: readerStorage, maxGraphNodes: 4});
         await readerStorage.load();
 
+        if (pins) reader.pin(pins);
+
         for (let i = 1; i <= 8; i++) reader.getAdjacentNodes(`leaf${i}`, 'both');
+
+        if (collect) await nextMacrotask();
 
         return reader
     };
+
+    test('eviction waits for the synchronous flow that loaded the vicinities to end (#1959)', async () => {
+        const reader = await readHubLeavesThroughBoundedCache({collect: false});
+
+        // A caller iterating the cache after its loads sees all of them
+        expect(reader.nodes.getCount()).toBe(9);
+
+        await nextMacrotask();
+
+        expect(reader.nodes.getCount()).toBeLessThanOrEqual(4);
+
+        reader.destroy()
+    });
+
+    test('pinned labels and edge types survive eviction, with the nodes at both ends of a pinned edge (#1959)', async () => {
+        const reader = await readHubLeavesThroughBoundedCache({pins: {labels: ['Pinned'], edgeTypes: ['GRANTS']}});
+
+        expect(reader.nodes.get('leaf1')?.label).toBe('Pinned');
+        expect(reader.nodes.get('leaf2')).toBeTruthy();
+        expect(reader.nodes.get('hub')).toBeTruthy();
+        expect(reader.edges.get('e2')?.type).toBe('GRANTS');
+        expect(reader.nodes.get('leaf3')).toBeFalsy();
+
+        reader.destroy()
+    });
 
     test('a bounded cache evicts its least recent nodes with their edges, and an evicted node reloads unchanged (#1959)', async () => {
         const reader = await readHubLeavesThroughBoundedCache();

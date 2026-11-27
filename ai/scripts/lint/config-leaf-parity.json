@@ -298,6 +298,7 @@
         "memoryService",
         "memoryService.chromaFetchTimeoutMs",
         "memoryService.generateMiniSummaryTimeoutMs",
+        "memoryService.graphCacheMaxNodes",
         "memoryService.graphProjectionDrainIntervalMs",
         "memoryService.graphProjectionMaxAttempts",
         "memoryService.graphProjectionRetryBaseMs",
