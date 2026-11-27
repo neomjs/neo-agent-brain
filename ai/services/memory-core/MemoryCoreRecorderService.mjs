@@ -544,6 +544,7 @@ class MemoryCoreRecorderService extends Base {
      * - `message-wal-drain`, `message-graph-integrity-repair`: one message-drain cycle, and the repair after it.
      * - `graph-projection-drain`, `memory-graph-projection`: MemoryService's projection drain and a deferred
      *   per-write projection.
+     * - `message-graph-projection`: MailboxService's deferred projection after `add_message` has answered.
      * - `embedding-write-canary`: one HealthService canary attempt.
      * - `wake-digest-flush`: a timer-fired CoalescingEngineService flush.
      *
