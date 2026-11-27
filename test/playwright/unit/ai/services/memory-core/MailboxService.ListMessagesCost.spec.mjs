@@ -182,4 +182,129 @@ test.describe('MailboxService.listMessages — the cost of a page is bounded by 
         expect(page.statements, `prepared statements for a recordSeen page of ${LIMIT} (bound ${READ_BOUND})`).toBeLessThanOrEqual(READ_BOUND);
         expect(page.vicinityLoads, `vicinity loads for a recordSeen page of ${LIMIT} (bound ${READ_BOUND})`).toBeLessThanOrEqual(READ_BOUND)
     });
+
+    test('drives candidate selection from idx_edges_target and primary-key Nodes lookup without scanning idx_nodes_label (#1954)', async () => {
+        const {buildMailboxMatchQuery} = await import('../../../../../../ai/services/memory-core/MailboxService.mjs'),
+              sqlite                   = GraphService.db.storage.db;
+
+        for (const view of [
+            {box: 'all',    status: 'all',    target: RECIPIENT},
+            {box: 'inbox',  status: 'unread', target: RECIPIENT},
+            {box: 'outbox', status: 'all',    target: SENDER},
+            {box: 'all',    status: 'unread', target: RECIPIENT, statusOnOutbox: false},
+            {
+                box                : 'all',
+                status             : 'all',
+                target             : RECIPIENT,
+                fromIdentity       : SENDER,
+                threadId           : 'MESSAGE:thread-1',
+                taggedConceptGroups: [['lane-claim', 'lane_claim']]
+            }
+        ]) {
+            const {matchesSql, params} = buildMailboxMatchQuery(view),
+                  planRows             = sqlite.prepare(
+                      `EXPLAIN QUERY PLAN ${matchesSql} SELECT messageId, COUNT(*) OVER () AS _totalCount FROM matches ORDER BY sentAt DESC, messageId DESC LIMIT 50 OFFSET 0`
+                  ).all(params),
+                  details              = planRows.map(row => row.detail);
+
+            expect(details.some(d => d.includes('idx_nodes_label')), `idx_nodes_label scan in ${JSON.stringify(view)}: ${details.join(' | ')}`).toBe(false);
+            expect(details.some(d => d.includes('SEARCH e USING INDEX idx_edges_target')), `idx_edges_target missing in ${JSON.stringify(view)}`).toBe(true);
+            expect(details.some(d => d.includes('sqlite_autoindex_Nodes_1')), `Nodes PK lookup missing in ${JSON.stringify(view)}`).toBe(true);
+
+            if (view.fromIdentity) {
+                expect(details.some(d => d.startsWith('SEARCH sb ') && d.includes('USING INDEX idx_edges_source'))).toBe(true);
+                expect(details.some(d => d.startsWith('SEARCH th ') && d.includes('USING INDEX idx_edges_source'))).toBe(true);
+                expect(details.some(d => d.startsWith('SEARCH tc ') && d.includes('USING INDEX idx_edges_source'))).toBe(true);
+            }
+        }
+    });
+
+    test('preserves exact row order, counts, out-of-range offset totalCount, and legacy + cohort broadcast parity on box:all (#1954)', async () => {
+        const sqlite    = GraphService.db.storage.db,
+              PEER_A    = '@parity-peer-a',
+              PEER_B    = '@parity-peer-b',
+              BYSTANDER = '@parity-bystander';
+
+        GraphService.upsertNode({id: PEER_A,    type: 'AgentIdentity', name: 'Parity Peer A',    properties: {accountType: 'agent'}});
+        GraphService.upsertNode({id: PEER_B,    type: 'AgentIdentity', name: 'Parity Peer B',    properties: {accountType: 'agent'}});
+        GraphService.upsertNode({id: BYSTANDER, type: 'AgentIdentity', name: 'Parity Bystander', properties: {accountType: 'agent'}});
+
+        // 1. Direct message to PEER_A (unread)
+        const directMsg = await RequestContextService.run({agentIdentityNodeId: PEER_B}, () => MailboxService.addMessage({
+            to     : PEER_A,
+            subject: 'parity direct unread',
+            body   : 'direct body'
+        }));
+
+        // 2. Cohort broadcast delivered to PEER_A (unread for PEER_A)
+        const cohortMsg = await RequestContextService.run({agentIdentityNodeId: PEER_B}, () => MailboxService.addMessage({
+            to     : 'AGENT:*',
+            subject: 'parity cohort broadcast',
+            body   : 'cohort body'
+        }));
+
+        // 3. Outbox message sent by PEER_A to PEER_B, then marked read by PEER_B
+        const outboxReadMsg = await RequestContextService.run({agentIdentityNodeId: PEER_A}, () => MailboxService.addMessage({
+            to     : PEER_B,
+            subject: 'parity outbox read by recipient',
+            body   : 'outbox body'
+        }));
+        await RequestContextService.run({agentIdentityNodeId: PEER_B}, () => MailboxService.markRead({messageId: outboxReadMsg.messageId}));
+
+        // 4. Legacy broadcast (SENT_TO AGENT:* with broadcastCohort: 'legacy-unknown' and zero DELIVERED_TO edges)
+        const legacyId   = 'MESSAGE:parity-legacy-unknown-001',
+              legacySent = '2099-01-01T00:00:00.000Z';
+        sqlite.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(legacyId, JSON.stringify({
+            id        : legacyId,
+            label     : 'MESSAGE',
+            properties: {subject: 'parity legacy broadcast', bodyText: 'legacy', priority: 'normal', sentAt: legacySent, readAt: null, archivedAt: null}
+        }));
+        sqlite.prepare('INSERT INTO Edges (id, source, target, type, data) VALUES (?, ?, ?, ?, ?)').run(
+            `${legacyId}:sb`, legacyId, PEER_B, 'SENT_BY', JSON.stringify({id: `${legacyId}:sb`, source: legacyId, target: PEER_B, type: 'SENT_BY', properties: {}})
+        );
+        sqlite.prepare('INSERT INTO Edges (id, source, target, type, data) VALUES (?, ?, ?, ?, ?)').run(
+            `${legacyId}:st`, legacyId, 'AGENT:*', 'SENT_TO', JSON.stringify({id: `${legacyId}:st`, source: legacyId, target: 'AGENT:*', type: 'SENT_TO', properties: {broadcastCohort: 'legacy-unknown'}})
+        );
+
+        // 5. Unrelated bystander direct message (must never leak into PEER_A's view)
+        await RequestContextService.run({agentIdentityNodeId: PEER_B}, () => MailboxService.addMessage({
+            to     : BYSTANDER,
+            subject: 'bystander private',
+            body   : 'hidden'
+        }));
+
+        const asPeerA = fn => RequestContextService.run({agentIdentityNodeId: PEER_A}, fn);
+
+        // Single-statement readSnapshot (`COUNT(*) OVER ()` => <= 4 SQLite statements when limit=4, zero vicinity loads on warm second call)
+        await asPeerA(() => MailboxService.listMessages({box: 'all', status: 'all', limit: 10}));
+        const allObserved = await observeStorage(() => asPeerA(() => MailboxService.listMessages({box: 'all', status: 'all', limit: 2, offset: 0})));
+
+        expect(allObserved.result.totalCount).toBe(4);
+        expect(allObserved.result.truncated).toBe(true);
+        expect(allObserved.result.nextOffset).toBe(2);
+        expect(allObserved.result.messages.map(m => m.messageId)).toEqual([legacyId, outboxReadMsg.messageId]);
+
+        const page2 = await asPeerA(() => MailboxService.listMessages({box: 'all', status: 'all', limit: 2, offset: 2}));
+        expect(page2.totalCount).toBe(4);
+        expect(page2.truncated).toBe(false);
+        expect(page2.nextOffset).toBeNull();
+        expect(page2.messages.map(m => m.messageId)).toEqual([cohortMsg.messageId, directMsg.messageId]);
+
+        // Out-of-range offset (> totalCount) still returns exact totalCount via fallback COUNT(*)
+        const pastEnd = await asPeerA(() => MailboxService.listMessages({box: 'all', status: 'all', limit: 10, offset: 50}));
+        expect(pastEnd.messages).toEqual([]);
+        expect(pastEnd.totalCount).toBe(4);
+        expect(pastEnd.truncated).toBe(false);
+
+        // status: 'unread' on listMessages applies to outbox too (`outboxReadMsg` excluded => 3 unread),
+        // whereas countMessages({box: 'outbox', status: 'unread'}) sets statusOnOutbox: false (`outboxReadMsg` included => 1)
+        const listUnread  = await asPeerA(() => MailboxService.listMessages({box: 'all', status: 'unread', limit: 10})),
+              countOutbox = await asPeerA(() => MailboxService.countMessages({box: 'outbox', status: 'unread'})),
+              countsProj  = await asPeerA(() => MailboxService.listMessages({box: 'inbox', status: 'unread', projection: 'counts'}));
+
+        expect(listUnread.totalCount).toBe(3);
+        expect(listUnread.messages.map(m => m.messageId)).toEqual([legacyId, cohortMsg.messageId, directMsg.messageId]);
+        expect(countOutbox.count).toBe(1);
+        expect(countsProj.unreadCount).toBe(3);
+    });
 });
