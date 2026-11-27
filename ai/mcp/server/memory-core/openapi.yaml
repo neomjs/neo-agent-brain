@@ -4444,7 +4444,7 @@ components:
                 description: Garbage-collection time inside the block's window.
               callIds:
                 type: array
-                description: Opaque telemetry row ids (`callId`) of the calls in flight across the block.
+                description: What was in flight across the block. A tool call's opaque `callId` names its telemetry row; a background pass's `job:<name>:<run>` names the job and has no row.
                 items:
                   type: string
         providerActivity:

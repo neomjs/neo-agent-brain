@@ -252,11 +252,13 @@ export async function drainMessageWalOnce({
  * @param {Function|null} [options.afterCycle] Runs after each completed cycle with its summary —
  *     the seat of {@link createMessageGraphIntegrityRepairCadence}, so maintenance that used to ride
  *     the read path rides the drain host instead.
+ * @param {Function} [options.trackJob] `(name, fn)` host hook that runs a pass as a named job: the cycle
+ *     as `message-wal-drain`, `afterCycle` as `message-graph-integrity-repair`. Defaults to running it.
  * @returns {{stop: Function, getDisposition: Function}} Loop handle. `stop()` ends the loop
  *     (idempotent); `getDisposition()` returns this plane's drain receipt
  *     (`{state, drainedClean, reason, counts, at}` — see {@link createDrainDispositionTracker}).
  */
-export function startMessageDrainLoop({getConfig, getProcessor = () => null, log = () => {}, now = Date.now, afterCycle = null}) {
+export function startMessageDrainLoop({getConfig, getProcessor = () => null, log = () => {}, now = Date.now, afterCycle = null, trackJob = (name, fn) => fn()}) {
     let stopped        = false,
         timer          = null,
         inactiveLogged = false;
@@ -272,14 +274,14 @@ export function startMessageDrainLoop({getConfig, getProcessor = () => null, log
         const processRecords = getProcessor();
 
         try {
-            const summary = await drainMessageWalOnce({
+            const summary = await trackJob('message-wal-drain', () => drainMessageWalOnce({
                 dir,
                 batchSize,
                 maxRetries,
                 backoffBaseMs,
                 processRecords,
                 log
-            });
+            }));
 
             if (summary.inactive) {
                 if (!inactiveLogged) {
@@ -297,7 +299,7 @@ export function startMessageDrainLoop({getConfig, getProcessor = () => null, log
             }
 
             if (afterCycle) {
-                await afterCycle(summary);
+                await trackJob('message-graph-integrity-repair', () => afterCycle(summary));
             }
         } catch (error) {
             disposition.recordFailure(error);

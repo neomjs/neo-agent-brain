@@ -146,6 +146,15 @@ class CoalescingEngineService extends Base {
     resolveDeliveryHold = null
 
     /**
+     * @member {Function|null} trackJob=null
+     * @protected
+     * @summary Entrypoint-injected `(name, fn) => Promise` that runs a timer-fired flush as the job
+     * `wake-digest-flush` (`MemoryCoreRecorderService#trackJob`), so an event-loop block inside it is named.
+     * Null runs the flush as it is.
+     */
+    trackJob = null
+
+    /**
      * @member {Number|null} refractoryMs=null
      * @protected
      * @summary Entrypoint-injected post-delivery refractory in milliseconds.
@@ -270,13 +279,14 @@ class CoalescingEngineService extends Base {
      * @param {Function|null}   [collaborators.nowFn]                    `() => Number`
      * @param {Function|null}   [collaborators.setTimerFn]               `(fn, delayMs) => TimerId`
      * @param {Function|null}   [collaborators.clearTimerFn]             `(timerId) => void`
+     * @param {Function|null}   [collaborators.trackJob]                 `(name, fn) => Promise`
      */
     configure({coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds, urgentCoalesceWindowMs, urgentFlushRefractorySeconds} = {},
-        {resolveDeliveryReadState = null, resolveDeliveryHold = null, nowFn = null, setTimerFn = null, clearTimerFn = null} = {}
+        {resolveDeliveryReadState = null, resolveDeliveryHold = null, nowFn = null, setTimerFn = null, clearTimerFn = null, trackJob = null} = {}
     ) {
         const values = {coalesceWindowSeconds, flushRefractorySeconds, flushHardCapSeconds, urgentCoalesceWindowMs, urgentFlushRefractorySeconds};
 
-        for (const [name, collaborator] of Object.entries({resolveDeliveryReadState, resolveDeliveryHold, nowFn, setTimerFn, clearTimerFn})) {
+        for (const [name, collaborator] of Object.entries({resolveDeliveryReadState, resolveDeliveryHold, nowFn, setTimerFn, clearTimerFn, trackJob})) {
             if (collaborator !== null && typeof collaborator !== 'function') {
                 throw new Error(`CoalescingEngineService.configure requires '${name}' to be a function or null`);
             }
@@ -301,6 +311,18 @@ class CoalescingEngineService extends Base {
         this.nowFn                    = nowFn || (() => Date.now());
         this.setTimerFn               = setTimerFn || ((fn, ms) => setTimeout(fn, ms));
         this.clearTimerFn             = clearTimerFn || (timer => clearTimeout(timer));
+        this.trackJob                 = trackJob;
+    }
+
+    /**
+     * @summary Flushes a subscription from its timer, as the job `wake-digest-flush` when a host wired
+     * {@link CoalescingEngineService#trackJob}. A flush a caller starts runs inside that caller's own span.
+     * @protected
+     * @param {String} subscriptionId
+     * @returns {Promise<*>}
+     */
+    _flushFromTimer(subscriptionId) {
+        return this.trackJob ? this.trackJob('wake-digest-flush', () => this._flush(subscriptionId)) : this._flush(subscriptionId)
     }
 
     /**
@@ -438,7 +460,7 @@ class CoalescingEngineService extends Base {
 
             state.scheduledAt = targetAt;
             state.timer       = this.setTimerFn(() => {
-                void this._flush(subId);
+                void this._flushFromTimer(subId);
             }, delayMs);
             return;
         }
@@ -463,7 +485,7 @@ class CoalescingEngineService extends Base {
 
         state.scheduledAt = now + delayMs;
         state.timer       = this.setTimerFn(() => {
-            void this._flush(subId);
+            void this._flushFromTimer(subId);
         }, delayMs);
     }
 
@@ -664,7 +686,7 @@ class CoalescingEngineService extends Base {
                 const nowHold = this.nowFn();
                 state.scheduledAt = nowHold + this.hardCapMs;
                 state.timer       = this.setTimerFn(() => {
-                    void this._flush(subscriptionId);
+                    void this._flushFromTimer(subscriptionId);
                 }, this.hardCapMs);
             }
             return;
@@ -743,7 +765,7 @@ class CoalescingEngineService extends Base {
                 state.queue       = surviving;
                 state.scheduledAt = now + holdMs;
                 state.timer       = this.setTimerFn(() => {
-                    void this._flush(subscriptionId);
+                    void this._flushFromTimer(subscriptionId);
                 }, holdMs);
                 return;
             }

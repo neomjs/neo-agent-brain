@@ -644,12 +644,15 @@ export async function drainWalOnce({
  * @param {Map}      [options.retryState]  Cross-cycle per-record cooldown state.
  * @param {Function} [options.now]         Clock source (epoch ms), injected into the disposition
  *     receipt so its `at` timestamp is testable without a real clock. Defaults to `Date.now`.
+ * @param {String}   [options.jobName='memory-wal-drain'] The job name each cycle runs under.
+ * @param {Function} [options.trackJob]    `(name, fn)` host hook that runs one cycle as a named job, so an
+ *     event-loop block inside it can name the cycle (`MemoryCoreRecorderService#trackJob`). Defaults to running it.
  * @returns {{stop: Function, getDisposition: Function}} Loop handle. `stop()` ends the loop
  *     (idempotent); `getDisposition()` returns this plane's drain receipt
  *     (`{state, drainedClean, reason, counts, at}` — see {@link createDrainDispositionTracker}),
  *     the field the parity pilot consumes to decide a seat's WAL write disposition.
  */
-export function startDrainLoop({getCollection, getConfig, expectedDimension, store = MEMORY_WAL_STORE, log = () => {}, retryState = new Map(), now = Date.now}) {
+export function startDrainLoop({getCollection, getConfig, expectedDimension, store = MEMORY_WAL_STORE, log = () => {}, retryState = new Map(), now = Date.now, jobName = 'memory-wal-drain', trackJob = (name, fn) => fn()}) {
     let stopped = false;
     let timer   = null;
 
@@ -662,8 +665,11 @@ export function startDrainLoop({getCollection, getConfig, expectedDimension, sto
         const {dir, batchSize, maxRetries, backoffBaseMs, retentionLimit, pollIntervalMs} = getConfig();
 
         try {
-            const collection = await getCollection();
-            const summary    = await drainWalOnce({dir, collection, batchSize, maxRetries, backoffBaseMs, retentionLimit, expectedDimension, store, retryState, log, onCycleStart: disposition.recordCycleStart});
+            const summary = await trackJob(jobName, async () => {
+                const collection = await getCollection();
+
+                return drainWalOnce({dir, collection, batchSize, maxRetries, backoffBaseMs, retentionLimit, expectedDimension, store, retryState, log, onCycleStart: disposition.recordCycleStart})
+            });
 
             // Idle cycles stay silent — at a multi-second poll interval, per-cycle no-op lines
             // would dominate the log without adding signal.
@@ -729,11 +735,13 @@ export function startDrainLoop({getCollection, getConfig, expectedDimension, sto
  * @param {Function} options.getMessageConfig     Returns the `messageWal` config slice (read per cycle).
  * @param {Number}   [options.expectedDimension]  Required vector dimension for the post-add verify.
  * @param {Function} [options.log]                `(level, message)` sink.
+ * @param {Function} [options.trackJob]           Host job hook; cycles run as `memory-wal-drain` and
+ *     `message-embed-drain` (see {@link startDrainLoop}).
  * @returns {{memory: Object, message: Object}} Both loop handles (see {@link startDrainLoop}).
  */
-export function startEmbedDrainLoops({getMemoryCollection, getMessageCollection, getMemoryConfig, getMessageConfig, expectedDimension, log}) {
+export function startEmbedDrainLoops({getMemoryCollection, getMessageCollection, getMemoryConfig, getMessageConfig, expectedDimension, log, trackJob}) {
     return {
-        memory : startDrainLoop({getCollection: getMemoryCollection, getConfig: getMemoryConfig, expectedDimension, log}),
-        message: startDrainLoop({getCollection: getMessageCollection, getConfig: getMessageConfig, expectedDimension, store: MESSAGE_WAL_STORE, log})
+        memory : startDrainLoop({getCollection: getMemoryCollection, getConfig: getMemoryConfig, expectedDimension, log, trackJob}),
+        message: startDrainLoop({getCollection: getMessageCollection, getConfig: getMessageConfig, expectedDimension, store: MESSAGE_WAL_STORE, log, jobName: 'message-embed-drain', trackJob})
     }
 }

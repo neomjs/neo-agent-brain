@@ -152,9 +152,11 @@ class HeapObservationReporterService extends Base {
      * @param {String}   [options.dir]        Directory to publish into.
      * @param {Function} [options.writeLog]   Optional logger, called `(level, message)`.
      * @param {Function} [options.readConfig] Returns the resolved `heapObservation` leaves.
+     * @param {Function} [options.trackJob]   `(name, fn)` host hook that runs each write as the job
+     *     `heap-observation`, since it reads V8 heap spaces and writes a file synchronously. Defaults to running it.
      * @returns {Boolean} Whether reporting started.
      */
-    start({serviceKey, dir, writeLog, readConfig = () => AiConfig.heapObservation}) {
+    start({serviceKey, dir, writeLog, readConfig = () => AiConfig.heapObservation, trackJob = (name, fn) => fn()}) {
         try {
             const config = readConfig();
 
@@ -162,12 +164,14 @@ class HeapObservationReporterService extends Base {
                 return false
             }
 
-            const writeIntervalMs = config.writeIntervalMs;
+            const
+                writeIntervalMs = config.writeIntervalMs,
+                write           = () => trackJob('heap-observation', () => this.writeOnce({serviceKey, dir, writeLog}));
 
             this.stop();
-            this.writeOnce({serviceKey, dir, writeLog});
+            write();
 
-            this.timer = setInterval(() => this.writeOnce({serviceKey, dir, writeLog}), writeIntervalMs);
+            this.timer = setInterval(write, writeIntervalMs);
             this.timer.unref?.();
 
             return true

@@ -983,6 +983,27 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(result.messages[1]).toMatchObject({subject: '[retracted by sender]', body: '[retracted by sender]', distance: 0.4});
     });
 
+    test('the deferred projection after add_message has answered runs as the job message-graph-projection (#1955)', async () => {
+        const MemoryCoreRecorderService = (await import('../../../../../../ai/services/memory-core/MemoryCoreRecorderService.mjs')).default,
+              originalTrackJob          = MemoryCoreRecorderService.trackJob,
+              originalProject           = MailboxService._projectMessageWalRecord,
+              jobs                      = [];
+
+        MemoryCoreRecorderService.trackJob = async (name, fn) => {
+            jobs.push({name, result: await fn()})
+        };
+        MailboxService._projectMessageWalRecord = async walRecord => `projected ${walRecord.id}`;
+
+        try {
+            MailboxService._scheduleMessageGraphProjection({id: 'MESSAGE:job'});
+
+            await expect.poll(() => jobs).toEqual([{name: 'message-graph-projection', result: 'projected MESSAGE:job'}])
+        } finally {
+            MemoryCoreRecorderService.trackJob      = originalTrackJob;
+            MailboxService._projectMessageWalRecord = originalProject
+        }
+    });
+
     for (const deferred of [false, true]) {
         test(`defect-note capture feedback accompanies the durable receipt (deferred=${deferred})`, async () => {
             const originalSchedule = MailboxService._scheduleMessageGraphProjection,

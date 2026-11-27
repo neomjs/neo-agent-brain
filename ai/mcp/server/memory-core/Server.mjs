@@ -183,6 +183,15 @@ class Server extends BaseServer {
     getHeapObservationServiceKey() { return 'mc-server' }
 
     /**
+     * @summary Runs this server's background passes through the recorder's job hook, see
+     * {@link MemoryCoreRecorderService#trackJob}.
+     * @returns {Function}
+     */
+    getBackgroundJobTracker() {
+        return (name, fn) => MemoryCoreRecorderService.trackJob(name, fn)
+    }
+
+    /**
      * @summary Tools allowed without the healthcheck gate. The A2A
      * mailbox/permission surface is graph/SQLite-scoped and must remain reachable during
      * summarization/vector-provider incidents so agents can coordinate the recovery — as is
@@ -348,7 +357,8 @@ class Server extends BaseServer {
         // leaves live on the Tier-1 root yields `{}` — silently, with every named read still correct.
         CoalescingEngineService.configure(wakeDispatch, {
             resolveDeliveryReadState: readBackgroundDeliveryState,
-            resolveDeliveryHold     : identity => WakeSubscriptionService.holdsWakesForRotation(identity)
+            resolveDeliveryHold     : identity => WakeSubscriptionService.holdsWakesForRotation(identity),
+            trackJob                : this.getBackgroundJobTracker()
         });
         WebhookDeliveryService.configure(wakeDispatch);
 
@@ -420,7 +430,8 @@ class Server extends BaseServer {
                     getMemoryConfig     : () => aiConfig.memoryWal,
                     getMessageConfig    : () => aiConfig.messageWal,
                     expectedDimension   : aiConfig.vectorDimension,
-                    log                 : drainLog
+                    log                 : drainLog,
+                    trackJob            : this.getBackgroundJobTracker()
                 });
 
                 this.walDrainLoop        = embedLoops.memory;
@@ -462,7 +473,8 @@ class Server extends BaseServer {
                         getConfig   : () => aiConfig.messageWal,
                         getProcessor: () => createMessageGraphProjectionProcessor(MailboxService),
                         afterCycle  : createMessageGraphIntegrityRepairCadence(MailboxService, {log: messageDrainLog}),
-                        log         : messageDrainLog
+                        log         : messageDrainLog,
+                        trackJob    : this.getBackgroundJobTracker()
                     });
                     process.on('exit', () => this.messageWalDrainLock?.release());
                     logger.info('[neo-memory-core MCP] In-process message WAL drain loop active (messageWal.inProcessDrain)');

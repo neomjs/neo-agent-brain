@@ -756,6 +756,31 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
             }
         });
 
+        test('startEmbedDrainLoops runs every cycle as a named job of its host, memory and message apart (#1955)', async () => {
+            const jobs  = [],
+                  loops = startEmbedDrainLoops({
+                      getMemoryCollection : async () => createFakeCollection(),
+                      getMessageCollection: async () => createFakeCollection(),
+                      getMemoryConfig     : loopConfig(tmpDir),
+                      getMessageConfig    : loopConfig(path.join(tmpDir, 'messages')),
+                      trackJob            : async (name, fn) => {
+                          const summary = await fn();
+
+                          jobs.push({name, summary});
+                          return summary
+                      }
+                  });
+
+            try {
+                await expect.poll(() => new Set(jobs.map(job => job.name)), {timeout: 5000}).toEqual(new Set(['memory-wal-drain', 'message-embed-drain']));
+                // The job spans the drain itself: what it returns is the cycle's summary
+                expect(jobs.every(job => Number.isInteger(job.summary.pending))).toBe(true);
+            } finally {
+                loops.memory.stop();
+                loops.message.stop();
+            }
+        });
+
         test('absorbs a failing cycle and keeps looping (collection resolution failure)', async () => {
             await seed('resilient');
             const collection  = createFakeCollection();

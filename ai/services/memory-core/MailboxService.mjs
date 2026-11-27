@@ -5,6 +5,7 @@ import logger                                         from '../../mcp/server/mem
 import RequestContextService, {normalizeUserId}       from '../../mcp/server/shared/services/RequestContextService.mjs';
 import {canonicalizeTaggedConceptIds}                 from '../graph/conceptSpineCanonicalization.mjs';
 import GraphService, {isRlsVisible, resolveRlsUserId} from './GraphService.mjs';
+import MemoryCoreRecorderService                      from './MemoryCoreRecorderService.mjs';
 import PermissionService                              from './PermissionService.mjs';
 import SourceRegistryService                          from './SourceRegistryService.mjs';
 import WakeSubscriptionService                        from './WakeSubscriptionService.mjs';
@@ -4080,7 +4081,7 @@ class MailboxService extends Base {
      */
     _scheduleMessageGraphProjection(walRecord) {
         const timer = setTimeout(() => {
-            this._projectMessageWalRecord(walRecord).catch(error => {
+            MemoryCoreRecorderService.trackJob('message-graph-projection', () => this._projectMessageWalRecord(walRecord)).catch(error => {
                 logger.error('[MailboxService.addMessage] deferred graph projection failed after durable receipt', {
                     messageId: walRecord.id,
                     error    : error?.message || String(error)

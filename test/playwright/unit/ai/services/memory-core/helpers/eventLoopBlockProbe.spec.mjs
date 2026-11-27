@@ -56,4 +56,47 @@ test.describe('ai/services/memory-core/helpers/eventLoopBlockProbe', () => {
             probe.stop()
         }
     });
+
+    test('a block inside a tracked job names the job, and a block inside an untracked timer names nothing', async () => {
+        const blocks = [],
+              probe  = createEventLoopBlockProbe({onBlock: block => blocks.push(block), thresholdMs: 150, intervalMs: 20});
+
+        try {
+            await sleep(100);
+
+            const result = await probe.trackJob('drain', async () => {
+                await sleep(10);
+                busyWait(400);
+                return 'drained'
+            });
+
+            expect(result).toBe('drained');
+            await expect.poll(() => blocks.length, {timeout: 2_000}).toBe(1);
+            expect(blocks[0].callIds).toEqual(['job:drain:1']);
+
+            // the job ended before this block's window opened, so nothing in flight names it
+            await new Promise(resolve => setTimeout(() => {busyWait(400); resolve()}, 50));
+            await expect.poll(() => blocks.length, {timeout: 2_000}).toBe(2);
+            expect(blocks[1].callIds).toEqual([])
+        } finally {
+            probe.stop()
+        }
+    });
+
+    test('a job that throws still ends, so it stops naming later blocks, and its error reaches the caller', async () => {
+        const blocks = [],
+              probe  = createEventLoopBlockProbe({onBlock: block => blocks.push(block), thresholdMs: 150, intervalMs: 20});
+
+        try {
+            await expect(probe.trackJob('canary', () => {throw new Error('canary failed')})).rejects.toThrow('canary failed');
+
+            // a job its throw left open would be in flight across this block and name it
+            await sleep(100);
+            busyWait(400);
+            await expect.poll(() => blocks.length, {timeout: 2_000}).toBe(1);
+            expect(blocks[0].callIds).toEqual([])
+        } finally {
+            probe.stop()
+        }
+    });
 });
