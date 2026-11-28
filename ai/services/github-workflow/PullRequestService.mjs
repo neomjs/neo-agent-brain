@@ -4464,6 +4464,13 @@ class PullRequestService extends Base {
             return templateValidationFailure;
         }
 
+        // Every check decidable from the body alone runs here too, so the dry-run is optional.
+        const stateCoherenceFailure = getRound2StateCoherenceFailure(body);
+
+        if (stateCoherenceFailure) {
+            return stateCoherenceFailure;
+        }
+
         if (action === 'create') {
             if (typeof pr_number !== 'number') {
                 return {

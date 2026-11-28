@@ -2648,6 +2648,41 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         }).valid, 'Comment carrying a STILL_OPEN row').toBe(true)
     });
 
+    test('#1973: submit refuses a Round 2 whose Status contradicts its table, as the dry-run does and before any GitHub call', async () => {
+        let githubCalls = 0;
+
+        const
+            originalQuery = GraphqlService.query,
+            dryRun        = PullRequestService.validatePrReviewBody({body: ROUND_2_STILL_OPEN_BODY}),
+            countingExec  = async () => {githubCalls++; return ''};
+
+        GraphqlService.query = async (...args) => {githubCalls++; return originalQuery(...args)};
+
+        try {
+            for (const args of [
+                {action: 'create', pr_number: 11273, state: 'APPROVED'},
+                {action: 'update', review_id: 'PRR_kwDOcoherence'}
+            ]) {
+                const result = await PullRequestService.managePrReview({...args, body: ROUND_2_STILL_OPEN_BODY}, {execFn: countingExec});
+
+                expect(result.code, `${args.action} refuses the contradiction`).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+                expect(result.message, `${args.action} names it as the dry-run does`).toBe(dryRun.message);
+            }
+
+            expect(githubCalls, 'the refusal precedes every GitHub call').toBe(0);
+
+            // Control: the coherent shape of the same body never meets this refusal on submit.
+            const coherent = await PullRequestService.managePrReview({
+                action: 'create', pr_number: 11273, state: 'COMMENT',
+                body  : ROUND_2_STILL_OPEN_BODY.replace('**Status:** Approved', '**Status:** Comment')
+            }, {execFn: countingExec});
+
+            expect(coherent.message ?? '', 'a coherent Round 2 passes the coherence check').not.toMatch(/contradicts itself/);
+        } finally {
+            GraphqlService.query = originalQuery;
+        }
+    });
+
     test('#17354: a body missing a silent anchor is refused SILENTLY, even when it also contradicts itself', () => {
         // The ordering is the anti-Goodhart guard, and making refusals friendlier is exactly what
         // would sand it off. A body that trips BOTH layers must return the silent one: the named
