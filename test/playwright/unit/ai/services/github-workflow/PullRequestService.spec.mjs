@@ -550,9 +550,11 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         };
     };
 
+    // `full` keeps the per-check lists these arms pin; the summary arms call without `detail`.
     const project = (deps, extra = {}) => PullRequestService.getConversation({
         pr_number : 16029,
         projection: 'merge-readiness',
+        detail    : 'full',
         ...extra,
         identityAssertion: IDENTITY
     }, deps);
@@ -1103,6 +1105,52 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         expect(result.checksVerdict).toBe('green');
         expect(result.emittedContexts).toHaveLength(1);
         expect(result.emittedContexts[0].workflow).toBeNull();
+    });
+
+    test('#1972: by default each emitted check appears once, by name and state, under the same observationId', async () => {
+        const
+            contexts = [
+                checkRun('success'),
+                checkRun('failing', {name: 'unit'}),
+                checkRun('pending', {name: 'lint'}),
+                checkRun('success', {name: 'docs'})
+            ],
+            fixture  = () => dependencies({snapshots: [pullRequest({contexts}), pullRequest({contexts})]}),
+            full     = await project(fixture()),
+            summary  = await PullRequestService.getConversation({
+                pr_number: 16029, projection: 'merge-readiness', identityAssertion: IDENTITY
+            }, fixture());
+
+        expect(full.emittedContexts).toHaveLength(4);
+        expect(summary.emittedContexts).toBeUndefined();
+        expect(summary.emittedOnly).toBeUndefined();
+        expect(summary.contextStates.some(state => 'emissions' in state)).toBe(false);
+        expect(summary.contextStates.map(state => state.state)).toEqual(full.contextStates.map(state => state.state));
+        expect(summary.checks).toEqual({total: 4, byState: {success: 2, failing: 1, pending: 1}, failing: ['unit'], pending: ['lint']});
+        expect(summary.observationId).toBe(full.observationId);
+        expect(summary.verdict).toBe(full.verdict);
+    });
+
+    test('#1972: the default reply grows by at most 100 characters per emitted check; the full one by more', async () => {
+        const sizes = async count => {
+            const
+                contexts = [checkRun('success'), ...Array.from({length: count - 1}, (_, index) =>
+                    checkRun(index % 2 ? 'success' : 'failing', {name: `job-${String(index).padStart(2, '0')}`}))],
+                fixture  = () => dependencies({snapshots: [pullRequest({contexts}), pullRequest({contexts})]}),
+                summary  = await PullRequestService.getConversation({
+                    pr_number: 16029, projection: 'merge-readiness', identityAssertion: IDENTITY
+                }, fixture()),
+                full     = await project(fixture());
+
+            expect(summary.checks.total).toBe(count);
+
+            return {summary: JSON.stringify(summary).length, full: JSON.stringify(full).length};
+        };
+
+        const [ten, thirty] = [await sizes(10), await sizes(30)];
+
+        expect((thirty.summary - ten.summary) / 20, 'default characters per added check').toBeLessThanOrEqual(100);
+        expect((thirty.full - ten.full) / 20, 'full characters per added check, the cost the default removes').toBeGreaterThan(100);
     });
 
     test('#16902: fails closed on incomplete or ambiguous workflow-run evidence', async () => {
