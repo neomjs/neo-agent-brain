@@ -1104,7 +1104,7 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
             'gitlab-workflow': 14,
             'knowledge-base' : 13,
             'memory-core'    : 62,
-            'neural-link'    : 60
+            'neural-link'    : 61
         };
 
         for (const server of servers) {

@@ -29,6 +29,7 @@ const serviceMapping = {
     capture_perspective          : DockService       .capturePerspective        .bind(DockService),
     diff_dock_topology           : DockService       .diffDockTopology          .bind(DockService),
     drive_drag                   : InteractionService.driveDrag                 .bind(InteractionService),
+    drive_gesture                : InteractionService.driveGesture              .bind(InteractionService),
     execute_dock_operation       : DockService       .executeDockOperation      .bind(DockService),
     find_instances               : InstanceService   .findInstances             .bind(InstanceService),
     focus_window                 : RuntimeService    .focusWindow               .bind(RuntimeService),

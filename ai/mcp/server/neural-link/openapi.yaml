@@ -2307,6 +2307,59 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /interaction/drive_gesture:
+    post:
+      summary: Replay bounded touch traces or presets on a managed component; use when testing gesture behavior.
+      operationId: drive_gesture
+      x-neo-tool-tier: write-locked
+      x-pass-as-object: true
+      description: |
+        Replay one trace or preset in an explicitly named App Worker session and owning window.
+        The Engine resolves the component or managed DOM node, applies current writer ownership,
+        validates contact transitions, dispatches input, and cleans up outstanding contacts.
+        Provide exactly one of `frames` and `preset`. Each frame holds only the contacts
+        that changed, at absolute coordinates in target-relative CSS pixels. Omitted
+        contacts retain their positions. Start at `t: 0`, keep times nondecreasing,
+        and release or cancel every contact. There may be up to 120 frames, 10 active
+        contacts and 240 dispatches in a trace of up to 30 seconds.
+
+        **When to Use:**
+        Use provider `engine` to exercise the Engine's recognizers with synthetic touch.
+        Its events report `trusted: false`. The public tool has no attached browser-input
+        driver. Requesting provider `browser` returns `BROWSER_PROVIDER_UNAVAILABLE`
+        without delivering synthetic input. Use a browser-attached fixture when native
+        scroll, zoom, capture or browser ownership needs to be observed.
+        Check the application result independently of the receipt. Recognizer phases
+        are included when observable and may be empty.
+      tags: [Interaction]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriveGestureRequest'
+      responses:
+        '200':
+          description: Observed Engine receipt on completion, or an MCP error preserving the typed Engine refusal receipt.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/GestureReplayReceipt'
+                  - $ref: '#/components/schemas/GestureReplayRefusal'
+        '400':
+          description: Invalid tool arguments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Disconnected session, unavailable Engine method or transport failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /interaction/simulate_event:
     post:
       summary: Dispatch synthetic DOM click, key, or pointer events on a component; use when driving discrete UI interactions in E2E.
@@ -3123,6 +3176,304 @@ components:
         sessionId:
           type: string
           description: The target App Worker Session ID.
+
+    GestureProvider:
+      type: string
+      enum: [engine, browser]
+
+    GestureContactId:
+      oneOf:
+        - type: integer
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+        - type: string
+          minLength: 1
+          maxLength: 128
+      description: Stable contact label. A string label cannot be blank.
+
+    GesturePoint:
+      type: object
+      additionalProperties: false
+      required: [x, y]
+      properties:
+        x:
+          type: number
+          description: Absolute horizontal position relative to the target border box, in CSS pixels.
+        y:
+          type: number
+          description: Absolute vertical position relative to the target border box, in CSS pixels.
+
+    GestureContact:
+      type: object
+      additionalProperties: false
+      required: [id, x, y, state]
+      properties:
+        id:
+          $ref: '#/components/schemas/GestureContactId'
+        x:
+          type: number
+          description: Absolute horizontal position relative to the target border box, in CSS pixels.
+        y:
+          type: number
+          description: Absolute vertical position relative to the target border box, in CSS pixels.
+        state:
+          type: string
+          enum: [down, move, up, cancel]
+
+    GestureFrame:
+      type: object
+      additionalProperties: false
+      required: [t, contacts]
+      properties:
+        t:
+          type: number
+          minimum: 0
+          maximum: 30000
+          description: Trace-relative milliseconds. The first frame starts at zero.
+        contacts:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/GestureContact'
+          description: Changed contacts for this frame. An empty array waits without dispatching input.
+
+    GesturePresetDuration:
+      type: number
+      minimum: 0
+      exclusiveMinimum: true
+      maximum: 30000
+      default: 350
+      description: Positive gesture duration in milliseconds.
+
+    GesturePresetSteps:
+      type: integer
+      minimum: 1
+      maximum: 118
+      default: 8
+      description: Number of move frames between the opening and terminal frames.
+
+    GestureRadius:
+      type: number
+      minimum: 0
+      exclusiveMinimum: true
+      description: Positive distance from the center to each contact, in CSS pixels.
+
+    GesturePreset:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, at]
+          properties:
+            kind:
+              type: string
+              enum: [hold]
+            at:
+              $ref: '#/components/schemas/GesturePoint'
+            durationMs:
+              $ref: '#/components/schemas/GesturePresetDuration'
+        - type: object
+          additionalProperties: false
+          required: [kind, from, to]
+          properties:
+            kind:
+              type: string
+              enum: [swipe]
+            from:
+              $ref: '#/components/schemas/GesturePoint'
+            to:
+              $ref: '#/components/schemas/GesturePoint'
+            durationMs:
+              $ref: '#/components/schemas/GesturePresetDuration'
+            steps:
+              $ref: '#/components/schemas/GesturePresetSteps'
+        - type: object
+          additionalProperties: false
+          required: [kind, center, fromRadius, toRadius]
+          properties:
+            kind:
+              type: string
+              enum: [pinch]
+            center:
+              $ref: '#/components/schemas/GesturePoint'
+            fromRadius:
+              $ref: '#/components/schemas/GestureRadius'
+            toRadius:
+              $ref: '#/components/schemas/GestureRadius'
+            durationMs:
+              $ref: '#/components/schemas/GesturePresetDuration'
+            steps:
+              $ref: '#/components/schemas/GesturePresetSteps'
+        - type: object
+          additionalProperties: false
+          required: [kind, center, radius, degrees]
+          properties:
+            kind:
+              type: string
+              enum: [rotate]
+            center:
+              $ref: '#/components/schemas/GesturePoint'
+            radius:
+              $ref: '#/components/schemas/GestureRadius'
+            degrees:
+              type: number
+              description: Signed rotation angle in degrees.
+            durationMs:
+              $ref: '#/components/schemas/GesturePresetDuration'
+            steps:
+              $ref: '#/components/schemas/GesturePresetSteps'
+
+    DriveGestureRequest:
+      type: object
+      additionalProperties: false
+      required: [sessionId, windowId, target, provider]
+      properties:
+        sessionId:
+          type: string
+          description: Explicit App Worker session ID.
+        windowId:
+          type: string
+          description: ID of the window that owns the target.
+        target:
+          type: string
+          description: Component or DOM node ID resolved to a live managed component in the named window.
+        provider:
+          $ref: '#/components/schemas/GestureProvider'
+        frames:
+          type: array
+          minItems: 1
+          maxItems: 120
+          items:
+            $ref: '#/components/schemas/GestureFrame'
+          description: Explicit trace. Supply this or preset, exactly one.
+        preset:
+          $ref: '#/components/schemas/GesturePreset'
+        timeoutMs:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 31000
+          description: Positive Engine execution deadline in milliseconds. Defaults to the trace duration plus 1000.
+
+    GestureTerminal:
+      type: string
+      enum: [end, cancel, none]
+
+    GestureObservedContact:
+      type: object
+      required: [id, clientX, clientY]
+      properties:
+        id:
+          $ref: '#/components/schemas/GestureContactId'
+        clientX:
+          type: number
+        clientY:
+          type: number
+
+    GestureObservedEvent:
+      type: object
+      required: [active, changed, elapsedMs, type]
+      properties:
+        active:
+          type: array
+          items:
+            $ref: '#/components/schemas/GestureObservedContact'
+        changed:
+          type: array
+          items:
+            $ref: '#/components/schemas/GestureObservedContact'
+        elapsedMs:
+          type: number
+        type:
+          type: string
+          enum: [touchstart, touchmove, touchend, touchcancel]
+
+    GestureObservedFrame:
+      type: object
+      required: [active, changed, events, frame, t]
+      properties:
+        active:
+          type: array
+          items:
+            $ref: '#/components/schemas/GestureContactId'
+        changed:
+          type: array
+          items:
+            $ref: '#/components/schemas/GestureContactId'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/GestureObservedEvent'
+        frame:
+          type: integer
+          description: Zero-based index in the normalized trace.
+        t:
+          type: number
+          description: Requested time of the frame in trace-relative milliseconds.
+
+    GestureReplayReceipt:
+      type: object
+      required: [observed, observationAvailable, phases, provider, sequences, status, success, terminal, trusted]
+      properties:
+        observed:
+          type: array
+          items:
+            $ref: '#/components/schemas/GestureObservedFrame'
+          description: Observed contact samples. A refusal or interruption can return an empty or partial array.
+        observationAvailable:
+          type: boolean
+          description: False when the Engine could not obtain a reliable receipt across an execution boundary.
+        phases:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: Semantic recognizer events, when observable. May be empty.
+        provider:
+          $ref: '#/components/schemas/GestureProvider'
+        sequences:
+          type: array
+          items:
+            $ref: '#/components/schemas/GestureTerminal'
+        status:
+          type: string
+          enum: [complete, busy, denied, interrupted, invalid, unavailable]
+        success:
+          type: boolean
+        terminal:
+          $ref: '#/components/schemas/GestureTerminal'
+        trusted:
+          type: boolean
+          nullable: true
+          description: False for observed Engine events, or null when trust was not observed.
+        cleanup:
+          type: object
+          required: [attempted, succeeded]
+          properties:
+            attempted:
+              type: boolean
+            succeeded:
+              type: boolean
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+
+    GestureReplayRefusal:
+      type: object
+      required: [error, message, receipt]
+      properties:
+        error:
+          type: string
+          description: MCP error summary.
+        message:
+          type: string
+          description: The Engine refusal reason for text-only MCP clients.
+        receipt:
+          $ref: '#/components/schemas/GestureReplayReceipt'
 
     SimulateEventRequest:
       type: object

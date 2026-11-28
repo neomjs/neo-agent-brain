@@ -1,6 +1,8 @@
 import Base              from 'neo.mjs/src/core/Base.mjs';
 import ConnectionService from './ConnectionService.mjs';
 
+const gestureExecutionBudgetMs = 31_000; // The maximum Engine replay deadline, including terminal cleanup.
+
 /**
  * @summary Manages interaction inspection for the Neural Link MCP Server.
  *
@@ -85,6 +87,43 @@ class InteractionService extends Base {
         }
 
         return result
+    }
+
+    /**
+     * @summary Replays target-relative contacts through the owning Engine and preserves its receipt.
+     * The Engine validates transitions, resolves the mounted target, grants writer ownership and
+     * retires outstanding contacts. The transport allows that work to reach its own deadline.
+     * @param {Object} params
+     * @param {Object[]} [params.frames] Explicit contact changes, ordered by their elapsed timestamps.
+     * @param {Object} [params.preset] A named gesture in place of explicit frames.
+     * @param {String} params.provider Requested input provider.
+     * @param {String} params.sessionId Owning App Worker session.
+     * @param {String} params.target Component or managed node in the owning window.
+     * @param {Number} [params.timeoutMs] Engine execution deadline in milliseconds.
+     * @param {String} params.windowId Owning Main window.
+     * @returns {Promise<Object>}
+     */
+    async driveGesture({sessionId, ...request}) {
+        if (typeof sessionId !== 'string' || !sessionId.trim()) {
+            throw new TypeError('An explicit App Worker sessionId is required')
+        }
+
+        if ((request.frames === undefined) === (request.preset === undefined)) {
+            throw new TypeError('Provide either frames or a preset')
+        }
+
+        const receipt = await ConnectionService.call(sessionId, 'drive_gesture', request, {executionBudgetMs: gestureExecutionBudgetMs});
+
+        if (typeof receipt?.success !== 'boolean' || receipt.provider !== request.provider ||
+            (receipt.success && receipt.trusted !== (request.provider === 'browser'))) {
+            throw new Error('Engine drive_gesture returned no compatible provider receipt')
+        }
+
+        return receipt.success ? receipt : {
+            error  : 'Gesture replay failed',
+            message: receipt.error?.message || 'The Engine rejected the gesture replay.',
+            receipt
+        }
     }
 
     /**

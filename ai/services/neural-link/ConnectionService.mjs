@@ -455,9 +455,11 @@ class ConnectionService extends Base {
      * @param {String} sessionId    The target session ID.
      * @param {String} method      The RPC method name.
      * @param {Object} [params={}] The RPC parameters.
+     * @param {Object} [options]
+     * @param {Number} [options.executionBudgetMs=0] Time allowed for bounded work in the target, in addition to the transport deadline.
      * @returns {Promise<any>}
      */
-    async call(sessionId, method, params={}) {
+    async call(sessionId, method, params={}, {executionBudgetMs=0}={}) {
         const socket = this.bridgeSocket;
         if (!socket) {
             throw new Error('Not connected to Neural Link Bridge');
@@ -483,12 +485,11 @@ class ConnectionService extends Base {
         logger.info(`[ConnectionService] Sending call ${id} to ${sessionId}: ${method}`);
 
         return new Promise((resolve, reject) => {
-            // Timeout after configured time
             const timeout = setTimeout(() => {
                 if (this.settleRequest(id, new Error('Request timed out'))) {
                     logger.error(`[ConnectionService] Call ${id} timed out`);
                 }
-            }, aiConfig.rpcTimeout);
+            }, aiConfig.rpcTimeout + executionBudgetMs);
 
             this.pendingRequests.set(id, {sessionId, socket, resolve, reject, timeout});
 
