@@ -454,6 +454,11 @@ paths:
                   enum: [conversation, merge-readiness]
                   default: conversation
                   description: Response projection. `merge-readiness` requires `pr_number`, is identity-bound, and cannot be combined with comment selectors.
+                detail:
+                  type: string
+                  enum: [summary, full]
+                  default: summary
+                  description: "`merge-readiness` only. `summary` names each emitted check once in `checks` (`total`, `byState`, `failing`, `pending`); `full` adds the per-check lists `emittedContexts`, `emittedOnly` and `contextStates[].emissions`."
                 comment_id:
                   type: string
                   description: >-

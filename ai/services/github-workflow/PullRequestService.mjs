@@ -804,6 +804,40 @@ function createMergeReadinessFailure({
     });
 }
 
+/**
+ * @summary Folds the merge-readiness reply's per-check lists into one entry per emitted check.
+ *
+ * `emittedContexts`, `contextStates[].emissions` and `emittedOnly` carry the same check nodes, a
+ * required check three times. The default reply names each check once, by name and state, in
+ * `checks`; `detail: 'full'` skips this fold. `observationId` is digested before it runs, so it is
+ * equal for both. A reply without `emittedContexts` (an unavailable verdict) passes through.
+ * @param {Object} readiness The `buildMergeReadinessProjection` reply.
+ * @returns {Object} The reply with `checks: {total, byState, failing, pending}` in place of the lists.
+ */
+function summarizeMergeReadinessChecks(readiness) {
+    if (!Array.isArray(readiness.emittedContexts)) return readiness;
+
+    const
+        {emittedContexts, emittedOnly, contextStates, ...rest} = readiness,
+        byState                                                = {},
+        namesIn                                                = state => emittedContexts.filter(context => context.state === state).map(context => context.name);
+
+    for (const context of emittedContexts) {
+        byState[context.state] = (byState[context.state] || 0) + 1;
+    }
+
+    return {
+        ...rest,
+        contextStates: contextStates.map(({emissions, ...requiredState}) => requiredState),
+        checks       : {
+            total  : emittedContexts.length,
+            byState,
+            failing: namesIn('failing'),
+            pending: namesIn('pending')
+        }
+    };
+}
+
 async function buildMergeReadinessProjection({
     prNumber,
     identityAssertion,
@@ -3883,6 +3917,9 @@ class PullRequestService extends Base {
      *                                or an object with the shape below.
      * @param {number}        options.pr_number         The pull request number (required when object form).
      * @param {string}        [options.projection='conversation'] Response projection.
+     * @param {string}        [options.detail='summary'] Merge-readiness only: `'summary'` names each emitted
+     *                                                  check once in `checks`; `'full'` adds the per-check
+     *                                                  lists (see `summarizeMergeReadinessChecks`).
      * @param {string}        [options.comment_id]      Return only the matching comment; others elided.
      *                                                  Accepts a node ID (current `IC_…` or legacy base64),
      *                                                  the numeric database id, an `issuecomment-N` anchor,
@@ -3917,6 +3954,7 @@ class PullRequestService extends Base {
             since_comment_id,
             last_n,
             projection = 'conversation',
+            detail     = 'summary',
             identityAssertion,
             repo
         } = typeof options === 'number'
@@ -3952,13 +3990,15 @@ class PullRequestService extends Base {
                 };
             }
 
-            return buildMergeReadinessProjection({
+            const readiness = await buildMergeReadinessProjection({
                 prNumber: pr_number,
                 identityAssertion,
                 owner   : target.owner,
                 repo    : target.repo,
                 ...dependencies
             });
+
+            return detail === 'full' ? readiness : summarizeMergeReadinessChecks(readiness);
         }
 
         const variables = {
