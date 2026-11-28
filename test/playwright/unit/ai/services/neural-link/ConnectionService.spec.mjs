@@ -183,6 +183,32 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         });
     }
 
+    test('adds a target execution window to the gesture RPC only', async () => {
+        const client = createRpcClient(), delays = [],
+              originalSetTimeout = globalThis.setTimeout;
+        let ordinary, gesture;
+
+        globalThis.setTimeout = (callback, delay, ...args) => {
+            delays.push(delay);
+            return originalSetTimeout(callback, delay, ...args)
+        };
+        try {
+            ordinary = client.call('app-a', 'get_drag_state');
+            gesture  = client.call('app-a', 'drive_gesture', {provider: 'engine'}, {executionBudgetMs: 31_000})
+        } finally {
+            globalThis.setTimeout = originalSetTimeout
+        }
+
+        expect(delays).toHaveLength(2);
+        expect(delays[1] - delays[0]).toBe(31_000);
+        for (const {message: {id, method}} of client.sent) {
+            client.handleAppMessage('app-a', {id, result: method})
+        }
+        await expect(ordinary).resolves.toBe('get_drag_state');
+        await expect(gesture).resolves.toBe('drive_gesture');
+        expect(client.pendingRequests.size).toBe(0)
+    });
+
     test('disconnect error codes are stable public contracts', () => {
         expect(TARGET_DISCONNECTED_ERROR_CODE).toBe('NEURAL_LINK_TARGET_DISCONNECTED');
         expect(BRIDGE_CLOSED_ERROR_CODE).toBe('NEURAL_LINK_BRIDGE_CLOSED')

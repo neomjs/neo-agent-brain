@@ -101,6 +101,7 @@ const expectedNeuralLinkToolTiers = {
     create_instance              : 'write-locked',
     diff_dock_topology           : 'read',
     drive_drag                   : 'write-locked',
+    drive_gesture                : 'write-locked',
     execute_dock_operation       : 'write-locked',
     find_instances               : 'read',
     focus_window                 : 'write-locked',
@@ -161,6 +162,7 @@ const neuralLinkDangerousReadForbidden = [
     'create_component',
     'create_instance',
     'drive_drag',
+    'drive_gesture',
     'focus_window',
     'highlight_component',
     'manage_connection',
@@ -953,6 +955,119 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
         expect(listed.additionalProperties).toBe(false);
         expect(listed.properties.destination.anyOf).toHaveLength(3);
         expect(listed.properties.destination.anyOf.every(mode => mode.additionalProperties === false)).toBe(true)
+    });
+
+    test('neural-link drive_gesture advertises explicit addressing and bounds for traces and presets', () => {
+        const doc       = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/neural-link/openapi.yaml'), 'utf8')),
+              operation = getOperationsById(doc).drive_gesture,
+              schema    = buildZodSchema(doc, operation),
+              listed    = toOpenApiJsonSchema(schema),
+              address   = {sessionId: 'app-worker-1', windowId: 'main', target: 'helix', provider: 'engine'},
+              contact   = {id: 0, x: 80, y: 27.5, state: 'down'},
+              wait      = {t: 15000.5, contacts: []},
+              frames    = [{t: 0, contacts: [contact]}, wait, {t: 30000, contacts: [{...contact, state: 'up'}]}],
+              point     = {x: 60, y: 30};
+
+        expect(operation['x-neo-tool-tier']).toBe('write-locked');
+        expect(operation['x-pass-as-object']).toBe(true);
+        expect(operation.description).toContain('exactly one');
+        expect(operation.description).toContain('BROWSER_PROVIDER_UNAVAILABLE');
+        expect(schema.parse({...address, frames, timeoutMs: 31000})).toEqual({...address, frames, timeoutMs: 31000});
+
+        for (const preset of [
+            {kind: 'hold', at: point},
+            {kind: 'swipe', from: point, to: {x: 120, y: 30}},
+            {kind: 'pinch', center: point, fromRadius: 20, toRadius: 35},
+            {kind: 'rotate', center: point, radius: 20, degrees: -45, steps: 118}
+        ]) {
+            expect(schema.parse({...address, provider: 'browser', preset})).toMatchObject({provider: 'browser', preset})
+        }
+
+        const invalidRequests = [
+            {...address, sessionId: undefined, frames},
+            {...address, windowId: undefined, frames},
+            {...address, target: undefined, frames},
+            {...address, provider: undefined, frames},
+            {...address, provider: 'auto', frames},
+            {...address, frames, timeoutMs: 31001},
+            {...address, frames: []},
+            {...address, frames: Array(121).fill(wait)},
+            {...address, frames: [{t: 30001, contacts: [contact]}]},
+            {...address, frames: [{t: 0, contacts: Array(11).fill(contact)}]},
+            {...address, frames: [{t: 0, contacts: [{...contact, state: 'stationary'}]}]},
+            {...address, frames: [{t: 0, contacts: [{...contact, clientX: 120}]}]},
+            {...address, frames, agentId: 'spoofed-writer'},
+            {...address, preset: {kind: 'swipe', from: point, to: point, steps: 119}},
+            {...address, preset: {kind: 'hold', at: point, durationMs: 30001}},
+            {...address, preset: {kind: 'pinch', center: point, fromRadius: 20}},
+            {...address, preset: {kind: 'rotate', center: point, radius: 20, degrees: -45, to: point}}
+        ];
+
+        for (const request of invalidRequests) {
+            expect(schema.safeParse(request).success, JSON.stringify(request)).toBe(false)
+        }
+
+        expect(listed.additionalProperties).toBe(false);
+        expect(listed.properties.frames).toMatchObject({minItems: 1, maxItems: 120});
+        expect(listed.properties.frames.items.properties.contacts.maxItems).toBe(10);
+        expect(listed.properties.preset.anyOf).toHaveLength(4);
+        expect(listed.properties.preset.anyOf.every(preset => preset.additionalProperties === false)).toBe(true)
+    });
+
+    test('neural-link drive_gesture output admits observed and partial typed receipts', () => {
+        const doc       = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/neural-link/openapi.yaml'), 'utf8')),
+              operation = getOperationsById(doc).drive_gesture,
+              output    = toOpenApiJsonSchema(buildOutputZodSchema(doc, operation)),
+              validate  = new Ajv({strict: false}).compile(output),
+              point     = {id: 'A', clientX: 80, clientY: 30},
+              sample    = {
+                  active : ['A'],
+                  changed: ['A'],
+                  events : [{active: [point], changed: [point], elapsedMs: 0.7, type: 'touchstart'}],
+                  frame  : 0,
+                  t      : 0
+              },
+              observed  = {
+                  cleanup             : {attempted: false, succeeded: true},
+                  observed            : [sample],
+                  observationAvailable: true,
+                  phases              : [],
+                  provider            : 'engine',
+                  sequences           : ['cancel', 'end'],
+                  status              : 'complete',
+                  success             : true,
+                  terminal            : 'end',
+                  trusted             : false
+              },
+              browserRefusal = {
+                  ...observed,
+                  error    : {code: 'BROWSER_PROVIDER_UNAVAILABLE', message: 'No browser-input driver'},
+                  observed : [],
+                  provider : 'browser',
+                  sequences: [],
+                  status   : 'unavailable',
+                  success  : false,
+                  terminal : 'none',
+                  trusted  : null
+              },
+              interrupted = {
+                  ...observed,
+                  error               : {code: 'GESTURE_TIMEOUT', message: 'Execution deadline reached'},
+                  observationAvailable: false,
+                  sequences           : ['none'],
+                  status              : 'interrupted',
+                  success             : false,
+                  terminal            : 'none'
+              };
+
+        expect(validate(observed), JSON.stringify(validate.errors)).toBe(true);
+        expect(validate({error: 'Gesture replay failed', message: browserRefusal.error.message, receipt: browserRefusal}),
+            JSON.stringify(validate.errors)).toBe(true);
+        expect(validate({error: 'Gesture replay failed', message: interrupted.error.message, receipt: interrupted}),
+            JSON.stringify(validate.errors)).toBe(true);
+        expect(validate({...observed, sequences: ['unknown']})).toBe(false);
+        expect(validate({...observed, observed: [{...sample, events: [{}]}]})).toBe(false);
+        expect(validate({error: 'Gesture replay failed', message: 'Untyped', receipt: {success: false}})).toBe(false);
     });
 
     test('knowledge-base declares the harness-visible projection policy (#14164)', () => {
