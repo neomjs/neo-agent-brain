@@ -330,6 +330,8 @@ test.describe('MailboxService.listMessages — projection (full | compact | coun
             '[merged]'          : 42,
             '[review-requested]': DIRECT_COUNT
         });
+        expect(counts.otherSubjectTags, 'under the tag limit the map is the whole answer').toBeUndefined();
+        expect(counts.unreadDirectMessageIdsOmitted, 'under the id limit the list is complete').toBeUndefined();
         expect([...counts.unreadDirectMessageIds].sort()).toEqual([...seededDirectIds].sort());
 
         // Compare against a full walk to verify counts totals equal a full walk.
@@ -460,5 +462,112 @@ test.describe('MailboxService.listMessages — projection (full | compact | coun
         expect(validate(compact), 'compact projection validates against outputSchema').toMatchObject({valid: true});
         expect(validate(counts),  'counts projection validates against outputSchema').toMatchObject({valid: true});
         expect(validate({foo: 'bar'}).valid, 'payload matching neither branch is rejected').toBe(false);
+    });
+});
+
+test.describe('MailboxService.listMessages — counts stays bounded on any backlog (#1555)', () => {
+    const
+        BOUND_SENDER    = '@list-bound-sender',
+        BOUND_RECIPIENT = '@list-bound-recipient',
+        DIRECT_COUNT    = 14;
+
+    let MailboxService, GraphService, LifecycleService, callTool, listTools;
+
+    const
+        asBoundRecipient = callback => RequestContextService.run({agentIdentityNodeId: BOUND_RECIPIENT}, callback),
+        asBoundSender    = callback => RequestContextService.run({agentIdentityNodeId: BOUND_SENDER},    callback),
+        countsArgs       = {box: 'inbox', status: 'unread', projection: 'counts', fromIdentity: BOUND_SENDER};
+
+    test.beforeAll(async () => {
+        GraphService           = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        MailboxService         = (await import('../../../../../../ai/services/memory-core/MailboxService.mjs')).default;
+        LifecycleService       = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
+        ({callTool, listTools} = await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs'));
+
+        if (!LifecycleService._initPromise) {
+            await LifecycleService.initAsync();
+        } else {
+            await LifecycleService.ready();
+        }
+
+        GraphService.upsertNode({id: BOUND_SENDER,    type: 'AgentIdentity', name: 'Bound Sender',    properties: {accountType: 'agent'}});
+        GraphService.upsertNode({id: BOUND_RECIPIENT, type: 'AgentIdentity', name: 'Bound Recipient', properties: {accountType: 'agent'}});
+
+        // 30 distinct tags: [bound-tag-00..13] carry 3 broadcasts each, [bound-tag-14..29] one each
+        for (let tag = 0; tag < 30; tag++) {
+            for (let copy = 0; copy < (tag < 14 ? 3 : 1); copy++) {
+                await asBoundSender(() => MailboxService.addMessage({
+                    to            : 'AGENT:*',
+                    subject       : `[bound-tag-${String(tag).padStart(2, '0')}] broadcast ${copy}`,
+                    body          : 'broadcast body',
+                    wakeSuppressed: true
+                }));
+            }
+        }
+
+        for (let d = 0; d < DIRECT_COUNT; d++) {
+            await asBoundSender(() => MailboxService.addMessage({
+                to     : BOUND_RECIPIENT,
+                subject: `[review-requested] direct row ${d}`,
+                body   : 'direct message body'
+            }));
+        }
+    });
+
+    test('past both limits: the 12 most frequent tags (ties by name) and the first 10 direct ids, with totals for the rest', async () => {
+        const counts = await asBoundRecipient(() => callTool('list_messages', countsArgs));
+
+        expect(counts.totalCount).toBe(58 + DIRECT_COUNT);
+        expect(counts.bySubjectTag).toEqual({
+            '[review-requested]': DIRECT_COUNT,
+            ...Object.fromEntries(Array.from({length: 11}, (_, tag) => [`[bound-tag-${String(tag).padStart(2, '0')}]`, 3]))
+        });
+        expect(counts.otherSubjectTags).toEqual({tags: 19, messages: 25});
+
+        const keptMessages = Object.values(counts.bySubjectTag).reduce((sum, count) => sum + count, 0);
+        expect(keptMessages + counts.otherSubjectTags.messages, 'kept tags plus the rest cover every row').toBe(counts.totalCount);
+
+        const fullWalk             = await asBoundRecipient(() => MailboxService.listMessages({box: 'inbox', status: 'unread', fromIdentity: BOUND_SENDER, limit: 200}));
+        const directIdsInViewOrder = fullWalk.messages.filter(message => message.to === BOUND_RECIPIENT).map(message => message.messageId);
+
+        expect(directIdsInViewOrder).toHaveLength(DIRECT_COUNT);
+        expect(counts.unreadDirectMessageIds).toEqual(directIdsInViewOrder.slice(0, 10));
+        expect(counts.unreadDirectMessageIdsOmitted).toBe(DIRECT_COUNT - 10);
+        expect(counts.byToClass).toEqual({direct: DIRECT_COUNT, broadcast: 58});
+        expect(JSON.stringify(counts).length, 'character budget under 1,500').toBeLessThan(1500);
+    });
+
+    test('the capped answer validates against the listed list_messages outputSchema', async () => {
+        const
+            {tools}  = listTools(),
+            validate = new AjvJsonSchemaValidator().getValidator(tools.find(item => item.name === 'list_messages').outputSchema),
+            counts   = await asBoundRecipient(() => callTool('list_messages', countsArgs));
+
+        expect(counts.otherSubjectTags).toBeDefined();
+        expect(counts.unreadDirectMessageIdsOmitted).toBeDefined();
+        expect(validate(counts)).toMatchObject({valid: true});
+    });
+
+    test('the answer holds the 1,500-character budget at the scale peers measured: 2,100 unread, 150 tags, 800 direct', () => {
+        const
+            senders     = Array.from({length: 10}, (_, index) => `@neo-specimen-seat-${index}`),
+            messageId   = index => `MESSAGE:00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+            matchedRows = Array.from({length: 2100}, (_, index) => ({
+                messageId  : messageId(index),
+                subject    : index < 1300 ? `[specimen-tag-${index % 150}] broadcast` : '[review-requested] direct',
+                sentBy     : senders[index % senders.length],
+                isBroadcast: index < 1300 ? 1 : 0,
+                readAt     : null
+            })),
+            counts      = MailboxService._buildCountsProjection({matchedRows, resolvedIdentityAliases: {}});
+
+        expect(Object.keys(counts.bySubjectTag)).toHaveLength(12);
+        expect(counts.otherSubjectTags.tags).toBe(151 - 12);
+        expect(counts.unreadDirectMessageIds).toEqual(Array.from({length: 10}, (_, index) => messageId(1300 + index)));
+        expect(counts.unreadDirectMessageIdsOmitted).toBe(790);
+
+        const serialized = JSON.stringify(counts);
+        expect(serialized.length, 'character budget under 1,500').toBeLessThan(1500);
+        expect(Buffer.byteLength(serialized, 'utf8'), 'UTF-8 byte budget under 1,500').toBeLessThan(1500);
     });
 });

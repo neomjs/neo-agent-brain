@@ -3130,7 +3130,7 @@ paths:
         - name: projection
           in: query
           required: false
-          description: "Response shape (`'full'`, `'compact'`, or `'counts'`). `'full'` (default) returns the complete row summary and stamps `seenAt` on ordinary reads. `'compact'` returns the 9 triage fields (`messageId, from, to, sentAt, readAt, wakeSuppressed, priority, taskState, subject` truncated to 160 chars) on both ordinary reads (stamping `seenAt`) and `observer` reads (non-stamping). `'counts'` applies to ordinary reads only, ignores `limit`/`offset` (`paginationIgnored: true`), stamps nothing, and returns `totalCount`, `unreadCount`, `byToClass`, `bySender`, `bySubjectTag`, and `unreadDirectMessageIds`."
+          description: "Response shape (`'full'`, `'compact'`, or `'counts'`). `'full'` (default) returns the complete row summary and stamps `seenAt` on ordinary reads. `'compact'` returns the 9 triage fields (`messageId, from, to, sentAt, readAt, wakeSuppressed, priority, taskState, subject` truncated to 160 chars) on both ordinary reads (stamping `seenAt`) and `observer` reads (non-stamping). `'counts'` applies to ordinary reads only, ignores `limit`/`offset` (`paginationIgnored: true`), stamps nothing, and returns `totalCount`, `unreadCount`, `byToClass`, `bySender`, `bySubjectTag`, and `unreadDirectMessageIds`, bounded on any backlog: the 12 most frequent tags (`otherSubjectTags` totals the rest) and the 10 newest unread direct ids (`unreadDirectMessageIdsOmitted` counts the rest)."
           schema:
             type: string
             enum: [full, compact, counts]
@@ -3246,14 +3246,26 @@ paths:
                           type: integer
                       bySubjectTag:
                         type: object
-                        description: "Counts keyed by first bracketed subject tag (e.g. `[lane-claim]`, `[pr-opened]`, `[merged]`) or `'untagged'` (`'counts'` projection)."
+                        description: "Counts keyed by first bracketed subject tag (e.g. `[lane-claim]`, `[pr-opened]`, `[merged]`) or `'untagged'` (`'counts'` projection). At most the 12 most frequent tags, ties by name."
                         additionalProperties:
                           type: integer
+                      otherSubjectTags:
+                        type: object
+                        description: "Present only when more than 12 tags match: how many further tags there are and how many messages they hold."
+                        required: [tags, messages]
+                        properties:
+                          tags:
+                            type: integer
+                          messages:
+                            type: integer
                       unreadDirectMessageIds:
                         type: array
-                        description: "Message IDs of unread direct messages so callers can fetch them via `get_message` without paging (`'counts'` projection)."
+                        description: "Message IDs of unread direct messages so callers can fetch them via `get_message` without paging (`'counts'` projection). At most the first 10 in view order (newest first by default)."
                         items:
                           type: string
+                      unreadDirectMessageIdsOmitted:
+                        type: integer
+                        description: "Present only when more than 10 unread direct messages match: how many ids the list leaves out."
         '500':
           description: Error
           content:
