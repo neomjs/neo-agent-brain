@@ -1044,7 +1044,7 @@ paths:
 
   /pulls/review/validate:
     post:
-      summary: Dry-run check a GitHub PR review body against template and Round-2 rules; use when pre-validating before submitting.
+      summary: Optional dry-run of a PR review body's template and Round-2 checks; use when iterating on a draft before posting.
       operationId: validate_pr_review_body
       x-neo-tool-tier: read
       x-pass-as-object: true
