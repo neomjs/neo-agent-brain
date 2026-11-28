@@ -2309,7 +2309,7 @@ paths:
 
   /interaction/drive_gesture:
     post:
-      summary: Replay a bounded touch trace or gesture preset on a managed component in a named window.
+      summary: Replay bounded touch traces or presets on a managed component; use when testing gesture behavior.
       operationId: drive_gesture
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
